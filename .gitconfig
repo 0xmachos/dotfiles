@@ -1,0 +1,18 @@
+[user]
+	name = 0xmachos
+	# Full name recorded in newly created commits
+	email = 0xmachos@gmail.com
+	# Email address recorded in newly created commits
+	signingkey = 0xCE2EECA25627B507
+	# Key to sign newly created commits
+	# Use long IDs or fingerprints
+	# http://www.asheesh.org/note/debian/short-key-ids-are-bad-news.html
+
+[commit]
+	gpgsign = true
+	# Specify whether all commits should be GPG signed
+	# Needed for commit signing with Tower
+
+[gpg]
+	program = /usr/local/MacGPG2/bin/gpg2
+	# Use this instead of "gpg", found on $PATH when making or verifying a PGP signature
