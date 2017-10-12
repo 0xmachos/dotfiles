@@ -68,6 +68,47 @@ function change_vmware_home {
 }
 
 
+function install_file { 
+
+	# install_file $dir $source $destination
+	# Check if directory ($dir) exists if not create it
+	# Check if cp -i suceeds, if file exists ask user whether to overwrite
+	# TODO: Get $dir from $destination path     
+
+
+	local dir=${1:-""}
+	local source=${2:-""}
+	local destination=${3:-""}
+
+	if [ -d $dir ]; then
+		echo "[🍺] '$destination' already exists"
+
+		if cp -i "$source" "$destination" ; then
+			echo "[✅] Successfully installed '$destination'"
+		else
+			echo "[❌] Failed to install '$destination'"
+			exit 1
+		fi
+
+	else
+		
+		if mkdir $dir ; then
+			echo "[✅] Successfully created $HOME/.ssh"
+		
+			if cp -i "$source" "$destination" ; then
+				echo "[✅] Successfully installed '$destination'"
+			else
+				echo "[❌] Failed to install '$destination'"
+				exit 1
+			fi
+
+		else
+			echo "[❌] Failed to create '$dir'"
+			exit 1	
+		fi	
+	fi
+
+}
 function main {
 	local cmd=${1:-"usage"}
 
