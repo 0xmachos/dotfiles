@@ -10,12 +10,15 @@ set -euo pipefail
 # -e exit if any command returns non-zero status code
 # -u prevent using undefined variables
 # -o pipefail force pipelines to fail on first non-zero status code
+
+
 function usage {
+
 	echo -e "\nConfigures macOS just the way I like it 🤓\n"
 	echo "Usage:"
 	echo "	defaults	- Write new system and application default settings"
 	echo "	vmware 		- Change VMWare defaultVMPath to $HOME/Virtual Machines" 
-	
+	echo "	configs 	- Install ssh, gpg, etc configuration files"
 
 	echo -e "\n 	\033[0;31mhailmary\033[0m 	- Run every function in order listed above"
 
