@@ -127,22 +127,36 @@ function install_configs {
 
 
 function main {
+
 	local cmd=${1:-"usage"}
 
-    if [[ $cmd == "defaults" ]]; then
+    if [[ "$cmd" == "defaults" ]]; then
         defaults
 
-    elif [[ $cmd == "vmware" ]]; then
+    elif [[ "$cmd" == "vmware" ]]; then
 		change_vmware_home
 
-    elif [[ $cmd == "hailmary" ]]; then
+
+	elif [[ "$cmd" == "configs" ]]; then
+
+		local git_dir=${2:-$( cd .. "$( dirname "${BASH_SOURCE[0]}" )" && pwd )}
+		# Get the path to ../dotfiles/ expecetd that the script is run from dotfiles/bin 
+		# https://stackoverflow.com/a/246128
+		# https://gist.github.com/tvlooy/cbfbdb111a4ebad8b93e
+
+		install_configs "$git_dir"
+
+    elif [[ "$cmd" == "hailmary" ]]; then
     # Execute all the functions
 		# Order matters!
 		# TODO: Manually adding new fucntions sucks
-		echo -e "[🍺] \033[0;31mHailmary\033[0m engaged "
+		echo -e "[🍺] \033[0;31mHailmary\033[0m engaged"
 
-		#defaults
-		#change_vmware_home
+		defaults
+		change_vmware_home
+
+		# install_configs should probably be done last
+		install_configs "$git_dir"
 
 	else
 		usage
