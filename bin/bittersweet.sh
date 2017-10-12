@@ -45,6 +45,9 @@ function defaults {
 
 function change_vmware_home {
 
+	# Create new directory in $HOME
+	# Set prefvmx.defaultVMPath to new directory in VMWare preferences file
+
 	echo "[🍺] Setting VMWare VM Default Location"
 
 	if mkdir $HOME/Virtual\ Machines ; then
@@ -54,12 +57,12 @@ function change_vmware_home {
 			echo "[✅] Successfully changed prefvmx.defaultVMPath"
 			exit 0
 		else
-			echo "[❌]Failed to change prefvmx.defaultVMPath to $HOME/Virtual Machines"
+			echo "[❌] Failed to change prefvmx.defaultVMPath to $HOME/Virtual Machines"
 			exit 1
 		fi
 
 	else
-		echo "[❌]Failed to create $HOME/Virtual Machines"
+		echo "[❌] Failed to create $HOME/Virtual Machines"
 		exit 1
 	fi
 }
