@@ -1,11 +1,15 @@
 #!/bin/bash
-set -euo pipefail
+# dotfiles/bin/bittersweet.sh
 
-# funfair.sh
+# bittersweet.sh
 #	Configures macOS just the way I like it
 # Tested on:
 #	10.13
 
+set -euo pipefail
+# -e exit if any command returns non-zero status code
+# -u prevent using undefined variables
+# -o pipefail force pipelines to fail on first non-zero status code
 function usage {
 	echo -e "\nConfigures macOS just the way I like it 🤓\n"
 	echo "Usage:"
