@@ -109,6 +109,23 @@ function install_file {
 	fi
 
 }
+
+
+function install_configs {
+	# Always call this last
+
+	# Install SSH config file
+	# config
+	install_file $HOME/.ssh  $git_dir/.ssh/config. $HOME/.ssh/config
+
+	# Install GPG configs 
+	# ggp.conf and gpg-agent.conf
+	install_file $HOME/.gnupg  			$git_dir/.gnupg/ggp.conf  		$HOME/.gnupg/gpg.conf
+	install_file $HOME/.gpg-agent.conf  $git_dir/.gnupg/gpg-agent.conf  $HOME/.gnupg/gpg-agent.conf	
+
+}
+
+
 function main {
 	local cmd=${1:-"usage"}
 
