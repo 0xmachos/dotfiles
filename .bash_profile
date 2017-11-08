@@ -15,7 +15,7 @@
 
 
 
-#	-----------------------------
+#   -----------------------------
 #   0. ENVIRONMENT CONFIGURATION
 #   -----------------------------
 
@@ -25,7 +25,7 @@ cd /Users/$USER/Documents/Projects
 
 
 #   -----------------------------
-#	1. REMAP DEFAULT COMMANDS
+#   1. REMAP DEFAULT COMMANDS
 #   -----------------------------
 
 alias ..='cd ..' 
