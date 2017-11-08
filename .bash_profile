@@ -1,6 +1,32 @@
-#~/.bash_profile
+# ~/.bash_profile
+
+#  ---------------------------------------------------------------------------
+#
+#	Description: My BASH configurations and aliases
+#
+#	Based on:
+#	https://gist.github.com/natelandau/10654137
+#	
+#  	Sections:
+#  	0.  Environment Configuration
+#  	1.  Make Terminal Better (remapping defaults and adding functionality)
+#
+#  ---------------------------------------------------------------------------
+
+
+
+#	-----------------------------
+#   0. ENVIRONMENT CONFIGURATION
+#   -----------------------------
 
 cd /Users/$USER/Documents/Projects
+# Start each terminal session in this directory
+
+
+
+#   -----------------------------
+#	1. REMAP DEFAULT COMMANDS
+#   -----------------------------
 
 alias ..='cd ..' 
 # Go up one directory level
