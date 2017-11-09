@@ -48,26 +48,33 @@ function defaults {
 
 function change_vmware_home {
 
-	# Create new directory in $HOME
-	# Set prefvmx.defaultVMPath to new directory in VMWare preferences file
+	# Create new directory $HOME/Virtual Machines
+	# Set prefvmx.defaultVMPath to $HOME/Virtual Machines in ~/Library/Preferences/VMWare Fusion/preferences
 
-	echo "[🍺] Setting VMWare VM Default Location"
+	if grep prefvmx.defaultVMPath "$HOME"/Library/Preferences/VMware\ Fusion/preferences ; then
+		echo "[❌] prefvmx.defaultVMPath is already set"
+		exit 1
+	else
+		echo "[🍺] Setting VMWare VM Default Location"
 
-	if mkdir $HOME/Virtual\ Machines ; then
-		echo "[✅] Successfully created $HOME/Virtual Machines"
-		
-		if echo 'prefvmx.defaultVMPath = "'$HOME'/Virtual Machines/"' >> ~/Library/Preferences/VMWare\ Fusion/preferences ; then
-			echo "[✅] Successfully changed prefvmx.defaultVMPath"
-			exit 0
+		if mkdir $HOME/Virtual\ Machines ; then
+			echo "[✅] Successfully created $HOME/Virtual Machines"
+			
+			if echo 'prefvmx.defaultVMPath = "'$HOME'/Virtual Machines/"' >> ~/Library/Preferences/VMWare\ Fusion/preferences ; then
+				echo "[✅] Successfully set prefvmx.defaultVMPath"
+				exit 0
+			else
+				echo "[❌] Failed to set prefvmx.defaultVMPath to $HOME/Virtual Machines"
+				exit 1
+			fi
+
 		else
-			echo "[❌] Failed to change prefvmx.defaultVMPath to $HOME/Virtual Machines"
+			echo "[❌] Failed to create $HOME/Virtual Machines"
 			exit 1
 		fi
+	fi	
+}
 
-	else
-		echo "[❌] Failed to create $HOME/Virtual Machines"
-		exit 1
-	fi
 }
 
 
