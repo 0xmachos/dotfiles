@@ -21,9 +21,12 @@
 
 cd /Users/$USER/Documents/Projects
 # Start each terminal session in this directory
+
 export PATH=/usr/local/bin:/usr/local/sbin:$PATH
 # Export path to include Homebrew binaries
 
+export HOMEBREW_BREWFILE=/Users/$USER/Documents/Projects/dotfiles/Brewfile
+# Set location of Brewfile 
 
 
 #   -----------------------------
