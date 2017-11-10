@@ -73,6 +73,32 @@ function change_vmware_home {
 			exit 1
 		fi
 	fi	
+function install_brew {
+
+	# Install Homebrew
+
+	echo "[🍺] Installing Homebrew"
+	echo -e "[🍺] \033[0;31mStick around\033[0m - Requires you to press RETURN and input your password"
+	sleep 5
+   	
+   	if /usr/bin/ruby -e "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install)" ; then
+   		echo "[✅] Successfully installed Homebrew 🍻"
+   	else
+   		echo "[❌] Failed to install Homebrew 😢"
+   		exit 1
+   	fi    
+
+   	# Install Homebrew-file
+
+   	echo "[🍺] Installing Homebrew-file"
+   	
+   	if brew install rcmdnk/file/brew-file ; then
+   		echo "[✅] Successfully installed Homebrew-file"
+   	else
+   		echo "[❌] Failed to install Homebrew-file"
+   		exit 1
+   	fi
+}
 }
 
 }
@@ -146,6 +172,8 @@ function main {
     elif [[ "$cmd" == "vmware" ]]; then
 		change_vmware_home
 
+    elif [[ "$cmd" == "brew" ]]; then
+        install_brew
 
 	elif [[ "$cmd" == "configs" ]]; then
 
@@ -164,6 +192,7 @@ function main {
 
 		write_defaults
 		change_vmware_home
+		install_brew
 
 		# install_configs should probably be done last
 		install_configs "$git_dir"
