@@ -99,6 +99,25 @@ function install_brew {
    		exit 1
    	fi
 }
+
+
+function install_brewfile {
+
+	# Install Homebrew packages from dotfiles/Brewfile
+	# Will install programs from the Mac AppStore if user is logged in
+	
+	export HOMEBREW_BREWFILE="$homebrew_brewfile"
+	echo "[🍺] Exported HOMEBREW_BREWFILE="$homebrew_brewfile""
+
+   	echo "[🍺] Installing Homebrew packages from Brewfile"
+   	
+   	if brew file install ; then 
+   		echo "[✅] Successfully installed packages from Brewfile"
+	else
+		echo "[❌] Failed to install packages from Brewfile"
+		exit 1
+	fi
+}
 }
 
 }
@@ -165,6 +184,7 @@ function install_configs {
 function main {
 
 	local cmd=${1:-"usage"}
+	local homebrew_brewfile=${2:-"/Users/"$USER"/Documents/Projects/dotfiles/Brewfile"}
 
     if [[ "$cmd" == "defaults" ]]; then
         write_defaults
@@ -176,6 +196,8 @@ function main {
         install_brew
 
 	elif [[ "$cmd" == "configs" ]]; then
+    elif [[ "$cmd" == "brewfile" ]]; then
+        install_brewfile "$homebrew_brewfile"
 
 		local git_dir=${2:-$( cd .. "$( dirname "${BASH_SOURCE[0]}" )" && pwd )}
 		# Get the path to ../dotfiles/ expecetd that the script is run from dotfiles/bin 
@@ -193,6 +215,7 @@ function main {
 		write_defaults
 		change_vmware_home
 		install_brew
+		install_brewfile "$homebrew_brewfile"
 
 		# install_configs should probably be done last
 		install_configs "$git_dir"
