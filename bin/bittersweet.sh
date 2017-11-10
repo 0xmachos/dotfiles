@@ -184,25 +184,25 @@ function main {
 
 	local cmd=${1:-"usage"}
 	local homebrew_brewfile=${2:-"/Users/"$USER"/Documents/Projects/dotfiles/Brewfile"}
-
-    if [[ "$cmd" == "defaults" ]]; then
-        write_defaults
-
-    elif [[ "$cmd" == "vmware" ]]; then
-		change_vmware_home
-
-    elif [[ "$cmd" == "brew" ]]; then
-        install_brew
-
-	elif [[ "$cmd" == "configs" ]]; then
-    elif [[ "$cmd" == "brewfile" ]]; then
-        install_brewfile "$homebrew_brewfile"
-
-		local git_dir=${2:-$( cd .. "$( dirname "${BASH_SOURCE[0]}" )" && pwd )}
-		# Get the path to ../dotfiles/ expecetd that the script is run from dotfiles/bin 
+	local git_dir=${2:-$( cd .. "$( dirname "${BASH_SOURCE[0]}" )" && pwd )}
+		# Get the path to ../dotfiles 
+		# Expected that this script is run from ../dotfiles/bin 
 		# https://stackoverflow.com/a/246128
 		# https://gist.github.com/tvlooy/cbfbdb111a4ebad8b93e
 
+    if [[ "$cmd" == "defaults" ]]; then
+    	write_defaults
+
+    elif [[ "$cmd" == "vmware" ]]; then
+    	change_vmware_home
+
+    elif [[ "$cmd" == "brew" ]]; then
+    	install_brew
+
+    elif [[ "$cmd" == "brewfile" ]]; then
+    	install_brewfile "$homebrew_brewfile"
+
+	elif [[ "$cmd" == "configs" ]]; then
 		install_configs "$git_dir"
 
     elif [[ "$cmd" == "hailmary" ]]; then
