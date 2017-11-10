@@ -30,9 +30,9 @@ function write_defaults {
 
 	echo "[🍺] Writing some system & application defaults"
 
-    defaults write com.apple.TextEdit RichText -int 0
-    # TextEdit: Use Plain Text Mode as Default
-    # Default: com.apple.TextEdit RichText -int 1
+	defaults write com.apple.TextEdit RichText -int 0
+	# TextEdit: Use Plain Text Mode as Default
+	# Default: com.apple.TextEdit RichText -int 1
 
 	defaults write com.apple.mail minSizeKB 5000
 	# Mail: If attatchment is over 5MB ask to send via Mail Drop
@@ -190,26 +190,25 @@ function main {
 	# https://stackoverflow.com/a/246128
 	# https://gist.github.com/tvlooy/cbfbdb111a4ebad8b93e
 
-    if [[ "$cmd" == "defaults" ]]; then
-    	write_defaults
+	if [[ "$cmd" == "defaults" ]]; then
+		write_defaults
 
-    elif [[ "$cmd" == "vmware" ]]; then
-    	change_vmware_home
+	elif [[ "$cmd" == "vmware" ]]; then
+		change_vmware_home
 
-    elif [[ "$cmd" == "brew" ]]; then
-    	install_brew
+	elif [[ "$cmd" == "brew" ]]; then
+		install_brew
 
-    elif [[ "$cmd" == "brewfile" ]]; then
-    	install_brewfile "$homebrew_brewfile"
+	elif [[ "$cmd" == "brewfile" ]]; then
+		install_brewfile "$homebrew_brewfile"
 
-    elif [[ "$cmd" == "configs" ]]; then
+	elif [[ "$cmd" == "configs" ]]; then
 		install_configs "$git_dir"
 
-    elif [[ "$cmd" == "hailmary" ]]; then
-    	# Execute all the functions
+	elif [[ "$cmd" == "hailmary" ]]; then
+		# Execute all the functions
 		# Order matters!
 		# TODO: Manually adding new fucntions sucks
-		
 		echo -e "[🍺] \033[0;31mHailmary\033[0m engaged"
 
 		write_defaults
