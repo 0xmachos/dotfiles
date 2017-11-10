@@ -26,7 +26,7 @@ function usage {
 }
 
 
-function defaults {
+function write_defaults {
 
 	echo "[🍺] Writing some system & application defaults"
 
@@ -141,7 +141,7 @@ function main {
 	local cmd=${1:-"usage"}
 
     if [[ "$cmd" == "defaults" ]]; then
-        defaults
+        write_defaults
 
     elif [[ "$cmd" == "vmware" ]]; then
 		change_vmware_home
@@ -162,7 +162,7 @@ function main {
 		# TODO: Manually adding new fucntions sucks
 		echo -e "[🍺] \033[0;31mHailmary\033[0m engaged"
 
-		defaults
+		write_defaults
 		change_vmware_home
 
 		# install_configs should probably be done last
