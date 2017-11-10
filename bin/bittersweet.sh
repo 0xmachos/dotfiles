@@ -73,6 +73,8 @@ function change_vmware_home {
 			exit 1
 		fi
 	fi	
+
+
 function install_brew {
 
 	# Install Homebrew
@@ -117,9 +119,6 @@ function install_brewfile {
 		echo "[❌] Failed to install packages from Brewfile"
 		exit 1
 	fi
-}
-}
-
 }
 
 
@@ -207,9 +206,10 @@ function main {
 		install_configs "$git_dir"
 
     elif [[ "$cmd" == "hailmary" ]]; then
-    # Execute all the functions
+    	# Execute all the functions
 		# Order matters!
 		# TODO: Manually adding new fucntions sucks
+		
 		echo -e "[🍺] \033[0;31mHailmary\033[0m engaged"
 
 		write_defaults
