@@ -52,28 +52,34 @@ function change_vmware_home {
 	# Create new directory $HOME/Virtual Machines
 	# Set prefvmx.defaultVMPath to $HOME/Virtual Machines in ~/Library/Preferences/VMWare Fusion/preferences
 
-	if grep prefvmx.defaultVMPath "$HOME"/Library/Preferences/VMware\ Fusion/preferences ; then
-		echo "[❌] prefvmx.defaultVMPath is already set"
-		exit 1
+	if [ ! -d "${HOME}"/Library/Preferences/VMware\ Fusion  ]; then
+		echo "[❌] VMWare Fusion is not installed"
 	else
-		echo "[🍺] Setting VMWare VM Default Location"
 
-		if mkdir $HOME/Virtual\ Machines ; then
-			echo "[✅] Successfully created $HOME/Virtual Machines"
-			
-			if echo 'prefvmx.defaultVMPath = "'$HOME'/Virtual Machines/"' >> ~/Library/Preferences/VMWare\ Fusion/preferences ; then
-				echo "[✅] Successfully set prefvmx.defaultVMPath"
-				exit 0
+		if grep prefvmx.defaultVMPath "$HOME"/Library/Preferences/VMware\ Fusion/preferences ; then
+			echo "[❌] prefvmx.defaultVMPath is already set"
+			exit 1
+		else
+			echo "[🍺] Setting VMWare prefvmx.defaultVMPath to '"${HOME}"/Virtual Machines'"
+
+			if mkdir $HOME/Virtual\ Machines ; then
+				echo "[✅] Successfully created $HOME/Virtual Machines"
+				
+				if echo 'prefvmx.defaultVMPath = "'$HOME'/Virtual Machines/"' >> ~/Library/Preferences/VMWare\ Fusion/preferences ; then
+					echo "[✅] Successfully set prefvmx.defaultVMPath"
+					exit 0
+				else
+					echo "[❌] Failed to set prefvmx.defaultVMPath to $HOME/Virtual Machines"
+					exit 1
+				fi
+
 			else
-				echo "[❌] Failed to set prefvmx.defaultVMPath to $HOME/Virtual Machines"
+				echo "[❌] Failed to create $HOME/Virtual Machines"
 				exit 1
 			fi
-
-		else
-			echo "[❌] Failed to create $HOME/Virtual Machines"
-			exit 1
 		fi
 	fi	
+}
 
 
 function install_brew {
