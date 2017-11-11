@@ -17,7 +17,7 @@ function usage {
 	echo -e "\nConfigures macOS just the way I like it 🤓\n"
 	echo "Usage:"
 	echo "	defaults	- Write new system and application default settings"
-	echo "	vmware 		- Change VMWare defaultVMPath to $HOME/Virtual Machines"
+	echo "	vmware 		- Change VMWare defaultVMPath to '"${HOME}"/Virtual Machines'"
 	echo "	brew 		- Install Homebrew, Homebrew-file and export HOMEBREW_BREWFILE" 
 	echo "	brewfile 	- Install Homebrew packages from Brewfile"
 	echo "	configs 	- Install ssh, gpg, etc configuration files"
@@ -110,8 +110,8 @@ function install_brewfile {
 	# Install Homebrew packages from dotfiles/Brewfile
 	# Will install programs from the Mac AppStore if user is logged in
 	
-	export HOMEBREW_BREWFILE="$homebrew_brewfile"
-	echo "[🍺] Exported HOMEBREW_BREWFILE="$homebrew_brewfile""
+	export HOMEBREW_BREWFILE="${homebrew_brewfile}"
+	echo "[🍺] Exported HOMEBREW_BREWFILE="${homebrew_brewfile}""
 
    	echo "[🍺] Installing Homebrew packages from Brewfile"
    	
@@ -137,29 +137,29 @@ function install_file {
 	local destination=${3:-""}
 
 	if [ -d $dir ]; then
-		echo "[🍺] '$destination' already exists"
+		echo "[🍺] "${dir}" already exists"
 
-		if cp -i "$source" "$destination" ; then
-			echo "[✅] Successfully installed '$destination'"
+		if cp -i "${source}" "${destination}" ; then
+			echo "[✅] Successfully installed "${destination}""
 		else
-			echo "[❌] Failed to install '$destination'"
+			echo "[❌] Failed to install "${destination}""
 			exit 1
 		fi
 
 	else
 		
-		if mkdir $dir ; then
-			echo "[✅] Successfully created $HOME/.ssh"
+		if mkdir -p "${dir}" ; then
+			echo "[✅] Successfully created "${HOME}"/.ssh"
 		
-			if cp -i "$source" "$destination" ; then
-				echo "[✅] Successfully installed '$destination'"
+			if cp -i "${source}" "${destination}" ; then
+				echo "[✅] Successfully installed "${destination}""
 			else
-				echo "[❌] Failed to install '$destination'"
+				echo "[❌] Failed to install "${destination}""
 				exit 1
 			fi
 
 		else
-			echo "[❌] Failed to create '$dir'"
+			echo "[❌] Failed to create "${dir}""
 			exit 1	
 		fi	
 	fi
@@ -172,12 +172,12 @@ function install_configs {
 
 	# Install SSH config file
 	# config
-	install_file $HOME/.ssh  $git_dir/.ssh/config. $HOME/.ssh/config
+	install_file "${HOME}"/.ssh 	"${git_dir}"/.ssh/config 	"${HOME}"/.ssh/config
 
 	# Install GPG configs 
 	# ggp.conf and gpg-agent.conf
-	install_file $HOME/.gnupg  			$git_dir/.gnupg/ggp.conf  		$HOME/.gnupg/gpg.conf
-	install_file $HOME/.gpg-agent.conf  $git_dir/.gnupg/gpg-agent.conf  $HOME/.gnupg/gpg-agent.conf	
+	install_file "${HOME}"/.gnupg 	"${git_dir}"/.gnupg/gpg.conf  		"${HOME}"/.gnupg/gpg.conf
+	install_file "${HOME}"/.gnupg  	"${git_dir}"/.gnupg/gpg-agent.conf  "${HOME}"/.gnupg/gpg-agent.conf	
 
 }
 
@@ -185,29 +185,29 @@ function install_configs {
 function main {
 
 	local cmd=${1:-"usage"}
-	local homebrew_brewfile=${2:-"/Users/"$USER"/Documents/Projects/dotfiles/Brewfile"}
+	local homebrew_brewfile=${2:-"/Users/"${USER}"/Documents/Projects/dotfiles/Brewfile"}
 	local git_dir=${2:-$( cd .. "$( dirname "${BASH_SOURCE[0]}" )" && pwd )}
 	# Get the path to ../dotfiles 
 	# Expected that this script is run from ../dotfiles/bin 
 	# https://stackoverflow.com/a/246128
 	# https://gist.github.com/tvlooy/cbfbdb111a4ebad8b93e
 
-	if [[ "$cmd" == "defaults" ]]; then
+	if [[ "${cmd}" == "defaults" ]]; then
 		write_defaults
 
-	elif [[ "$cmd" == "vmware" ]]; then
+	elif [[ "${cmd}" == "vmware" ]]; then
 		change_vmware_home
 
-	elif [[ "$cmd" == "brew" ]]; then
+	elif [[ "${cmd}" == "brew" ]]; then
 		install_brew
 
-	elif [[ "$cmd" == "brewfile" ]]; then
-		install_brewfile "$homebrew_brewfile"
+	elif [[ "${cmd}" == "brewfile" ]]; then
+		install_brewfile "${homebrew_brewfile}"
 
-	elif [[ "$cmd" == "configs" ]]; then
-		install_configs "$git_dir"
+	elif [[ "${cmd}" == "configs" ]]; then
+		install_configs "${git_dir}"
 
-	elif [[ "$cmd" == "hailmary" ]]; then
+	elif [[ "${cmd}" == "hailmary" ]]; then
 		# Execute all the functions
 		# Order matters!
 		# TODO: Manually adding new fucntions sucks
@@ -216,10 +216,10 @@ function main {
 		write_defaults
 		change_vmware_home
 		install_brew
-		install_brewfile "$homebrew_brewfile"
+		install_brewfile "${homebrew_brewfile}"
 
 		# install_configs should probably be done last
-		install_configs "$git_dir"
+		install_configs "${git_dir}"
 
 	else
 		usage
