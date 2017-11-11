@@ -44,7 +44,6 @@ function write_defaults {
 	# Menu Bar: Show battery percentage
 	# Default: com.apple.menuextra.battery ShowPercent -string "NO"
 
-	exit 0
 }
 
 
