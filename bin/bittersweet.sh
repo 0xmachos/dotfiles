@@ -17,7 +17,9 @@ function usage {
 	echo -e "\nConfigures macOS just the way I like it 🤓\n"
 	echo "Usage:"
 	echo "	defaults	- Write new system and application default settings"
-	echo "	vmware 		- Change VMWare defaultVMPath to $HOME/Virtual Machines" 
+	echo "	vmware 		- Change VMWare defaultVMPath to $HOME/Virtual Machines"
+	echo "	brew 		- Install Homebrew, Homebrew-file and export HOMEBREW_BREWFILE" 
+	echo "	brewfile 	- Install Homebrew packages from Brewfile"
 	echo "	configs 	- Install ssh, gpg, etc configuration files"
 
 	echo -e "\n 	\033[0;31mhailmary\033[0m 	- Run every function in order listed above"
