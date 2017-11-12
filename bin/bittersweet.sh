@@ -17,7 +17,7 @@ function usage {
 	echo -e "\nConfigures macOS just the way I like it 🤓\n"
 	echo "Usage:"
 	echo "	defaults	- Write new system and application default settings"
-	echo "	vmware 		- Change VMWare defaultVMPath to '"${HOME}"/Virtual Machines'"
+	echo "	vmware 		- Change VMWare defaultVMPath to '${HOME}/Virtual Machines'"
 	echo "	brew 		- Install Homebrew, Homebrew-file and export HOMEBREW_BREWFILE" 
 	echo "	brewfile 	- Install Homebrew packages from Brewfile"
 	echo "	configs 	- Install ssh, gpg, etc configuration files"
@@ -55,17 +55,17 @@ function change_vmware_home {
 	if [ ! -d "${HOME}"/Library/Preferences/VMware\ Fusion  ]; then
 		echo "[❌] VMWare Fusion is not installed"
 	else
-
-		if grep prefvmx.defaultVMPath "$HOME"/Library/Preferences/VMware\ Fusion/preferences ; then
+		
+		if grep prefvmx.defaultVMPath "${HOME}/Library/Preferences/VMware Fusion/preferences" ; then
 			echo "[❌] prefvmx.defaultVMPath is already set"
 			exit 1
 		else
-			echo "[🍺] Setting VMWare prefvmx.defaultVMPath to '"${HOME}"/Virtual Machines'"
+			echo "[🍺] Setting VMWare prefvmx.defaultVMPath to '${HOME}/Virtual Machines'"
 
 			if mkdir $HOME/Virtual\ Machines ; then
 				echo "[✅] Successfully created $HOME/Virtual Machines"
 				
-				if echo 'prefvmx.defaultVMPath = "'$HOME'/Virtual Machines/"' >> ~/Library/Preferences/VMWare\ Fusion/preferences ; then
+				if echo "prefvmx.defaultVMPath = ${HOME}/Virtual Machines/" >> "${HOME}/Library/Preferences/VMWare Fusion/preferences" ; then
 					echo "[✅] Successfully set prefvmx.defaultVMPath"
 					exit 0
 				else
@@ -116,7 +116,7 @@ function install_brewfile {
 	# Will install programs from the Mac AppStore if user is logged in
 	
 	export HOMEBREW_BREWFILE="${homebrew_brewfile}"
-	echo "[🍺] Exported HOMEBREW_BREWFILE="${homebrew_brewfile}""
+	echo "[🍺] Exported HOMEBREW_BREWFILE=${homebrew_brewfile}"
 
    	echo "[🍺] Installing Homebrew packages from Brewfile"
    	
@@ -142,29 +142,29 @@ function install_file {
 	local destination=${3:-""}
 
 	if [ -d $dir ]; then
-		echo "[🍺] "${dir}" already exists"
+		echo "[🍺] ${dir} already exists"
 
 		if cp -i "${source}" "${destination}" ; then
-			echo "[✅] Successfully installed "${destination}""
+			echo "[✅] Successfully installed ${destination}"
 		else
-			echo "[❌] Failed to install "${destination}""
+			echo "[❌] Failed to install ${destination}"
 			exit 1
 		fi
 
 	else
 		
 		if mkdir -p "${dir}" ; then
-			echo "[✅] Successfully created "${HOME}"/.ssh"
+			echo "[✅] Successfully created ${dir}"
 		
 			if cp -i "${source}" "${destination}" ; then
-				echo "[✅] Successfully installed "${destination}""
+				echo "[✅] Successfully installed ${destination}"
 			else
-				echo "[❌] Failed to install "${destination}""
+				echo "[❌] Failed to install ${destination}"
 				exit 1
 			fi
 
 		else
-			echo "[❌] Failed to create "${dir}""
+			echo "[❌] Failed to create ${dir}"
 			exit 1	
 		fi	
 	fi
@@ -190,7 +190,7 @@ function install_configs {
 function main {
 
 	local cmd=${1:-"usage"}
-	local homebrew_brewfile=${2:-"/Users/"${USER}"/Documents/Projects/dotfiles/Brewfile"}
+	local homebrew_brewfile=${2:-${HOME}/Documents/Projects/dotfiles/Brewfile}
 	local git_dir=${2:-$( cd .. "$( dirname "${BASH_SOURCE[0]}" )" && pwd )}
 	# Get the path to ../dotfiles 
 	# Expected that this script is run from ../dotfiles/bin 
