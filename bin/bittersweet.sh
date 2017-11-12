@@ -131,7 +131,7 @@ function install_brewfile {
 function install_file { 
 
 	# install_file $dir $source $destination
-	# Check if directory ($dir) exists if not create it
+	# Check if $dir exists if not create it
 	# Check if cp -i suceeds, if file exists ask user whether to overwrite
 	# TODO: Get $dir from $destination path     
 
