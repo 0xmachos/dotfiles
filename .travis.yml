@@ -1,0 +1,4 @@
+
+sudo: enabled
+script:
+  - ./bin/test.sh
