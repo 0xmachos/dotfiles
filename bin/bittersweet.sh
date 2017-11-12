@@ -52,7 +52,7 @@ function change_vmware_home {
 	# Create new directory $HOME/Virtual Machines
 	# Set prefvmx.defaultVMPath to $HOME/Virtual Machines in ~/Library/Preferences/VMWare Fusion/preferences
 
-	if [ ! -d "${HOME}"/Library/Preferences/VMware\ Fusion  ]; then
+	if [ ! -d "${HOME}/Library/Preferences/VMware Fusion"  ]; then
 		echo "[❌] VMWare Fusion is not installed"
 	else
 		
@@ -62,7 +62,7 @@ function change_vmware_home {
 		else
 			echo "[🍺] Setting VMWare prefvmx.defaultVMPath to '${HOME}/Virtual Machines'"
 
-			if mkdir $HOME/Virtual\ Machines ; then
+			if mkdir -p "${HOME}/Virtual Machines" ; then
 				echo "[✅] Successfully created $HOME/Virtual Machines"
 				
 				if echo "prefvmx.defaultVMPath = ${HOME}/Virtual Machines/" >> "${HOME}/Library/Preferences/VMWare Fusion/preferences" ; then
