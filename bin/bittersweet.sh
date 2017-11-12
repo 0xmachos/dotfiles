@@ -141,7 +141,7 @@ function install_file {
 	local source=${2:-""}
 	local destination=${3:-""}
 
-	if [ -d $dir ]; then
+	if [ -d "${dir}" ]; then
 		echo "[🍺] ${dir} already exists"
 
 		if cp -i "${source}" "${destination}" ; then
