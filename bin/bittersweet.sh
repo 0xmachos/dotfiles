@@ -67,7 +67,6 @@ function change_vmware_home {
 				
 				if echo "prefvmx.defaultVMPath = ${HOME}/Virtual Machines/" >> "${HOME}/Library/Preferences/VMWare Fusion/preferences" ; then
 					echo "[✅] Successfully set prefvmx.defaultVMPath"
-					exit 0
 				else
 					echo "[❌] Failed to set prefvmx.defaultVMPath to $HOME/Virtual Machines"
 					exit 1
