@@ -105,17 +105,20 @@ function install_brew {
      	brew cleanup
     fi
 
-
-   	# Install Homebrew-file
-
    	echo "[🍺] Installing Homebrew-file"
-   	
-   	if brew install rcmdnk/file/brew-file ; then
-   		echo "[✅] Successfully installed Homebrew-file"
+
+   	if ! [ -x "$(command -v brew-file)" ]; then
+
+   		if brew install rcmdnk/file/brew-file ; then
+   			echo "[✅] Successfully installed Homebrew-file"
+   		else
+   			echo "[❌] Failed to install Homebrew-file"
+   			exit 1
+   		fi
    	else
-   		echo "[❌] Failed to install Homebrew-file"
-   		exit 1
-   	fi
+   		echo "[🍺] Homebrew-file already installed"
+   	fi 
+
 }
 
 
