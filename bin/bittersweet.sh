@@ -83,18 +83,28 @@ function change_vmware_home {
 
 function install_brew {
 
-	# Install Homebrew
+	# Install Homebrew and Homebrew-file
+	
+	if ! [ -x "$(command -v brew)" ]; then
 
-	echo "[🍺] Installing Homebrew"
-	echo -e "[🍺] \033[0;31mStick around\033[0m - Requires you to press RETURN and input your password"
-	sleep 5
-   	
-   	if /usr/bin/ruby -e "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install)" ; then
-   		echo "[✅] Successfully installed Homebrew 🍻"
-   	else
-   		echo "[❌] Failed to install Homebrew 😢"
-   		exit 1
-   	fi    
+		echo "[🍺] Installing Homebrew"
+		echo -e "[🍺] \033[0;31mStick around\033[0m - Requires you to press RETURN and input your password"
+		sleep 5
+	   	
+	   	if /usr/bin/ruby -e "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install)" ; then
+	   		echo "[✅] Successfully installed Homebrew 🍻"
+	   	else
+	   		echo "[❌] Failed to install Homebrew 😢"
+	   		exit 1
+	   	fi    
+
+  	else
+  		
+  		brew update
+     	brew upgrade
+     	brew cleanup
+    fi
+
 
    	# Install Homebrew-file
 
