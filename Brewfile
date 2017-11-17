@@ -8,6 +8,7 @@ brew openssl
 brew pkg-config
 brew python3
 brew readline
+brew shellcheck
 brew sqlite
 brew xz
 
