@@ -92,29 +92,37 @@ function change_vmware_home {
 
 	# Create new directory $HOME/Virtual Machines
 	# Set prefvmx.defaultVMPath to $HOME/Virtual Machines in ~/Library/Preferences/VMWare Fusion/preferences
+	# TODO: Allow user to pass their own path for prefvmx_defaultVMPath  
 
-	if [ ! -d "${HOME}/Library/Preferences/VMware Fusion"  ]; then
+	local vmware_preferences_file="${HOME}/Library/Preferences/VMware Fusion/preferences"
+	local vmware_preferences_directory="${HOME}/Library/Preferences/VMware Fusion"
+	local prefvmx_defaultVMPath="${HOME}/VMware Fusion"
+
+	if [ ! -d "${vmware_preferences_directory}" ]; then
+		# Check if VMWare Fusion is installed
 		echo "[❌] VMWare Fusion is not installed"
 	else
 		
-		if grep prefvmx.defaultVMPath "${HOME}/Library/Preferences/VMware Fusion/preferences" ; then
+		if grep -q prefvmx.defaultVMPath "${vmware_preferences_file}" ; then
+			# Check if prefvmx.defaultVMPath is already set
 			echo "[❌] prefvmx.defaultVMPath is already set"
 			exit 1
 		else
-			echo "[🍺] Setting VMWare prefvmx.defaultVMPath to '${HOME}/Virtual Machines'"
+			echo "[🍺] Setting VMWare prefvmx.defaultVMPath to '${prefvmx_defaultVMPath}'"
 
-			if mkdir -p "${HOME}/Virtual Machines" ; then
-				echo "[✅] Successfully created $HOME/Virtual Machines"
+			if mkdir -p "${prefvmx_defaultVMPath}" ; then
+				# Attempt to create the directory for VM storage 
+				echo "[✅] Successfully created '${prefvmx_defaultVMPath}'"
 				
-				if echo "prefvmx.defaultVMPath = ${HOME}/Virtual Machines/" >> "${HOME}/Library/Preferences/VMWare Fusion/preferences" ; then
+				if echo "prefvmx.defaultVMPath = ${prefvmx_defaultVMPath}" >> "${vmware_preferences_file}" ; then
 					echo "[✅] Successfully set prefvmx.defaultVMPath"
 				else
-					echo "[❌] Failed to set prefvmx.defaultVMPath to $HOME/Virtual Machines"
+					echo "[❌] Failed to set prefvmx.defaultVMPath to '${prefvmx_defaultVMPath}'"
 					exit 1
 				fi
 
 			else
-				echo "[❌] Failed to create $HOME/Virtual Machines"
+				echo "[❌] Failed to create '${prefvmx_defaultVMPath}'"
 				exit 1
 			fi
 		fi
