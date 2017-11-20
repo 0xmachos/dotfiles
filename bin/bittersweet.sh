@@ -49,16 +49,18 @@ function write_defaults {
 
 function install_gpgtools {
 
-	local version=$(curl -s https://gpgtools.org/releases/gpgsuite/release-notes.html \
+	local version
+	local url="https://releases.gpgtools.org/GPG_Suite-${version}.dmg"
+	local download_path="${HOME}/Downloads/GPG_Suite-${version}.dmg"
+	local installed_version
+	
+	if ! [ -x "$(command -v brew)" ]; then
+
+		version=$(curl -s https://gpgtools.org/releases/gpgsuite/release-notes.html \
 					| grep -m 1 data-version= \
 					| awk -F\" '{print $(NF-1)}')
 					# Get the latest gpgtools version string
-					# Not sure if this method will survive an update  
-	
-	local url="https://releases.gpgtools.org/GPG_Suite-${version}.dmg"
-	local download_path="${HOME}/Downloads/GPG_Suite-${version}.dmg"
-	
-	if ! [ -x "$(command -v brew)" ]; then
+					# Not sure if this method will survive an update 
 
 		echo "[🍺] Installing GPGTools"
 		
@@ -79,7 +81,7 @@ function install_gpgtools {
 
 	else
 
-		local installed_version=$(gpg --version | head -n 1)
+		installed_version=$(gpg --version | head -n 1)
 
 		echo "[🍺] ${installed_version} already installed"
 
