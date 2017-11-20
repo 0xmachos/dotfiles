@@ -137,7 +137,7 @@ function install_brew {
 	if ! [ -x "$(command -v brew)" ]; then
 
 		echo "[🍺] Installing Homebrew"
-		echo -e "[🍺] \033[0;31mStick around\033[0m - Requires you to press RETURN and input your password"
+		echo -e "[⚠️ ] \033[0;31mStick around\033[0m - Requires you to press RETURN and input your password"
 		sleep 5
 	   	
 	   	if /usr/bin/ruby -e "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install)" ; then
