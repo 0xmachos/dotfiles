@@ -18,6 +18,7 @@ function usage {
 	echo "Usage:"
 	echo "	defaults	- Write new system and application default settings"
 	echo "	vmware 		- Change VMWare defaultVMPath to '${HOME}/Virtual Machines'"
+	echo "	gpgtools 	- Install GPGTools"
 	echo "	brew 		- Install Homebrew, Homebrew-file and export HOMEBREW_BREWFILE" 
 	echo "	brewfile 	- Install Homebrew packages from Brewfile"
 	echo "	configs 	- Install ssh, gpg, etc configuration files"
@@ -44,6 +45,46 @@ function write_defaults {
 	# Menu Bar: Show battery percentage
 	# Default: com.apple.menuextra.battery ShowPercent -string "NO"
 
+}
+
+
+function install_gpgtools {
+
+	local version=$(curl -s https://gpgtools.org/releases/gpgsuite/release-notes.html \
+					| grep -m 1 data-version= \
+					| awk -F\" '{print $(NF-1)}')
+					# Get the latest gpgtools version string
+					# Not sure if this method will survive an update  
+	
+	local url="https://releases.gpgtools.org/GPG_Suite-${version}.dmg"
+	local download_path="${HOME}/Downloads/GPG_Suite-${version}.dmg"
+	
+	if ! [ -x "$(command -v brew)" ]; then
+
+		echo "[🍺] Installing GPGTools"
+		
+		echo "[🍺] Downloading GPG_Suite-${version}.dmg"
+		curl -o "${download_path}" "${url}" 
+		# Download 
+
+		echo "[🍺] Mounting ${download_path}"
+		hdiutil attach -quiet "${download_path}"
+		# Mount the DMG
+
+
+		echo "[⚠️ ] Password required for install"
+		sudo installer -pkg "/Volumes/GPG Suite/Install.pkg" -target "/"
+
+		echo "[🍺] Unmounting /Volumes/GPG Suite"
+		hdiutil detach -quiet "/Volumes/GPG Suite"
+
+	else
+
+		local installed_version=$(gpg --version | head -n 1)
+
+		echo "[🍺] ${installed_version} already installed"
+
+	fi
 }
 
 
@@ -224,6 +265,9 @@ function main {
 	elif [[ "${cmd}" == "configs" ]]; then
 		install_configs "${git_dir}"
 
+	elif [[ "${cmd}" == "gpgtools" ]]; then 
+		install_gpgtools
+
 	elif [[ "${cmd}" == "hailmary" ]]; then
 		# Execute all the functions
 		# Order matters!
@@ -231,6 +275,7 @@ function main {
 		echo -e "[🍺] \033[0;31mHailmary\033[0m engaged"
 
 		write_defaults
+		install_gpgtools
 		change_vmware_home
 		install_brew
 		install_brewfile "${homebrew_brewfile}"
