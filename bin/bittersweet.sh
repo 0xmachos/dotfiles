@@ -71,7 +71,7 @@ function install_gpgtools {
 		# Mount the DMG
 
 
-		echo "[⚠️ ] Password required for install"
+		echo "[⚠️ ] Password required for installer"
 		sudo installer -pkg "/Volumes/GPG Suite/Install.pkg" -target "/"
 
 		echo "[🍺] Unmounting /Volumes/GPG Suite"
@@ -179,7 +179,8 @@ function install_brewfile {
 	echo "[🍺] Exported HOMEBREW_BREWFILE=${homebrew_brewfile}"
 
    	echo "[🍺] Installing Homebrew packages from Brewfile"
-   	
+   	echo "[⚠️ ] Password required for brew file install"
+
    	if brew file install ; then 
    		echo "[✅] Successfully installed packages from Brewfile"
 	else
