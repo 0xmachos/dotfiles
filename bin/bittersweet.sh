@@ -21,7 +21,6 @@ function usage {
 	echo "	gpgtools 	- Install GPGTools"
 	echo "	brew 		- Install Homebrew, Homebrew-file and export HOMEBREW_BREWFILE" 
 	echo "	brewfile 	- Install Homebrew packages from Brewfile"
-	echo "	configs 	- Install ssh, gpg, etc configuration files"
 
 	echo -e "\n 	\033[0;31mhailmary\033[0m 	- Run every function in order listed above"
 
@@ -190,73 +189,10 @@ function install_brewfile {
 }
 
 
-function install_file { 
-
-	# install_file $dir $source $destination
-	# Check if $dir exists if not create it
-	# Check if cp -i suceeds, if file exists ask user whether to overwrite
-	# TODO: Get $dir from $destination path     
-
-
-	local dir=${1:-""}
-	local source=${2:-""}
-	local destination=${3:-""}
-
-	if [ -d "${dir}" ]; then
-		echo "[🍺] ${dir} already exists"
-
-		if cp -i "${source}" "${destination}" ; then
-			echo "[✅] Successfully installed ${destination}"
-		else
-			echo "[❌] Failed to install ${destination}"
-			exit 1
-		fi
-
-	else
-		
-		if mkdir -p "${dir}" ; then
-			echo "[✅] Successfully created ${dir}"
-		
-			if cp -i "${source}" "${destination}" ; then
-				echo "[✅] Successfully installed ${destination}"
-			else
-				echo "[❌] Failed to install ${destination}"
-				exit 1
-			fi
-
-		else
-			echo "[❌] Failed to create ${dir}"
-			exit 1	
-		fi	
-	fi
-
-}
-
-
-function install_configs {
-	# Always call this last
-
-	# Install SSH config file
-	# config
-	install_file "${HOME}"/.ssh 	"${git_dir}"/.ssh/config 	"${HOME}"/.ssh/config
-
-	# Install GPG configs 
-	# ggp.conf and gpg-agent.conf
-	install_file "${HOME}"/.gnupg 	"${git_dir}"/.gnupg/gpg.conf  		"${HOME}"/.gnupg/gpg.conf
-	install_file "${HOME}"/.gnupg  	"${git_dir}"/.gnupg/gpg-agent.conf  "${HOME}"/.gnupg/gpg-agent.conf	
-
-}
-
-
 function main {
 
 	local cmd=${1:-"usage"}
 	local homebrew_brewfile=${2:-${HOME}/Documents/Projects/dotfiles/Brewfile}
-	local git_dir=${2:-$( cd .. "$( dirname "${BASH_SOURCE[0]}" )" && pwd )}
-	# Get the path to ../dotfiles 
-	# Expected that this script is run from ../dotfiles/bin 
-	# https://stackoverflow.com/a/246128
-	# https://gist.github.com/tvlooy/cbfbdb111a4ebad8b93e
 
 	if [[ "${cmd}" == "defaults" ]]; then
 		write_defaults
@@ -269,9 +205,6 @@ function main {
 
 	elif [[ "${cmd}" == "brewfile" ]]; then
 		install_brewfile "${homebrew_brewfile}"
-
-	elif [[ "${cmd}" == "configs" ]]; then
-		install_configs "${git_dir}"
 
 	elif [[ "${cmd}" == "gpgtools" ]]; then 
 		install_gpgtools
@@ -287,9 +220,6 @@ function main {
 		change_vmware_home
 		install_brew
 		install_brewfile "${homebrew_brewfile}"
-
-		# install_configs should probably be done last
-		install_configs "${git_dir}"
 
 	else
 		usage
