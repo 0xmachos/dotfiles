@@ -51,19 +51,29 @@ function install_gpgtools {
 	
 	if ! [ -x "$(command -v gpg2)" ]; then
 		
-		echo "[🍺] Installing GPGTools"
+		echo "[🍺] Installing GPGTools (GPG Suite)"
 
 		# shellcheck disable=SC2155
 		local latest_gpgtools_version=$(curl -s "https://gpgtools.org/releases/gpgsuite/release-notes.html" \
 										| grep -m 1 "data-version=" \
 										| awk -F \" '{print $(NF-1)}')
-		# Get the latest gpgtools version string
+		# Get the latest version string
 		# Not sure if this method will survive an update to the site
 		local dmg_name="GPG_Suite-${latest_gpgtools_version}.dmg"
-		local download_path="${HOME}/Downloads/${dmg_name}" 
+		local dmg_download_path="${HOME}/Downloads/${dmg_name}" 
+		# shellcheck disable=SC2155
+		local dmg_sha256="$(curl -s "https://gpgtools.org" \
+							| grep -m 1 "SHA256" \
+							| awk '{print $6}' \
+							| cut -c 21-84)"
+		# Get the SHA256 hash of the latest DMG
+		# HACK: 
+		# Need better method to extract the hash than cuting the charcter positions
+		# Almost certinly won't survive an update to the site 
+		local dmg_mount_point="/Volumes/GPG Suite/" 
 
 		echo "[🍺] Downloading ${dmg_name}"
-		if curl -o "${download_path}" "https://releases.gpgtools.org/${dmg_name}" ; then 
+		if curl -o "${dmg_download_path}" "https://releases.gpgtools.org/${dmg_name}" ; then 
 			# Download 
 			echo "[✅] Successfully downladed ${dmg_name}"
 		else
@@ -71,12 +81,50 @@ function install_gpgtools {
 			exit 1
 		fi
 
-		echo "[🍺] Mounting ${download_path}"
-		hdiutil attach -quiet "${download_path}"
-		# Mount the DMG
+		echo "${dmg_sha256}  ${dmg_name}" > "${dmg_download_path}.sha256"
+		# Construct a correctly formatted SHA256 checksum line
+		# 01705da33b9dadaf5282d28f9ef58f2eb7cd8ff6f19b4ade78861bf87668a061  GPG_Suite-2017.1.dmg
 
+		(
+			# Execute in a subshell so the working directory is not permanantly changed
+			cd "${HOME}/Downloads"
+
+			if shasum -a 256 -c "${dmg_download_path}.sha256" ; then 
+			# Attempt to validate the DMGs SHA256 hash
+				echo "[✅] Successfully validated ${dmg_name} SHA256 hash"
+			else
+				echo "[❌] Failed to validate ${dmg_name} SHA256 hash"
+				exit 1
+			fi
+
+		)
+
+		echo "[🍺] Attempting to mount ${dmg_download_path}"
+		if hdiutil attach -quiet "${dmg_download_path}" ; then
+		# Attempt to mount the DMG 
+			echo "[✅] Successfully mounted ${dmg_name}"
+		else
+			echo "[❌] Failed to mount ${dmg_name}"
+			exit 1
+		fi	
+
+		if pkgutil --check-signature "${dmg_mount_point}/Install.pkg" ; then
+		# Check PKG is correctly sogned
+			echo "[✅] Successfully validated the signature on the package"
+		else
+			echo "[❌] Failed to validate the signature on the package"
+			exit 1
+		fi
+
+		
 		echo "[⚠️ ] Password required for installer"
-		sudo installer -pkg "/Volumes/GPG Suite/Install.pkg" -target "/"
+		if sudo installer -pkg "${dmg_mount_point}/Install.pkg" -target "/" ; then
+			# Install
+			echo "[✅] Successfully installed GPGTools"
+		else
+			echo "[❌] Failed to install GPGTools"
+			exit 1
+		fi
 
 		echo "[🍺] Unmounting /Volumes/GPG Suite"
 		hdiutil detach -quiet "/Volumes/GPG Suite"
