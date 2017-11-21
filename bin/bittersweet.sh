@@ -126,8 +126,18 @@ function install_gpgtools {
 			exit 1
 		fi
 
-		echo "[🍺] Unmounting /Volumes/GPG Suite"
-		hdiutil detach -quiet "/Volumes/GPG Suite"
+		# Cleanup 
+		echo "[🍺] Unmounting ${dmg_mount_point}"
+		hdiutil detach -quiet "${dmg_mount_point}"
+		# Unmount the DMG
+		
+		echo "[🍺] Deleting ${dmg_download_path}"
+		rm "${dmg_download_path}"
+		# Delete the DMG
+		
+		echo "[🍺] Deleting ${dmg_download_path}.sha256"
+		rm "${dmg_download_path}.sha256"
+		# Delete the SHA256 file 
 
 	else
 		echo "[🍺] $(gpg --version | head -n 1) already installed"
