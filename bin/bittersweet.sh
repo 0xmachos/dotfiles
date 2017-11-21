@@ -48,30 +48,32 @@ function write_defaults {
 
 
 function install_gpgtools {
-
-	local version
-	local url="https://releases.gpgtools.org/GPG_Suite-${version}.dmg"
-	local download_path="${HOME}/Downloads/GPG_Suite-${version}.dmg"
-	local installed_version
 	
-	if ! [ -x "$(command -v brew)" ]; then
-
-		version=$(curl -s https://gpgtools.org/releases/gpgsuite/release-notes.html \
-					| grep -m 1 data-version= \
-					| awk -F\" '{print $(NF-1)}')
-					# Get the latest gpgtools version string
-					# Not sure if this method will survive an update 
-
-		echo "[🍺] Installing GPGTools"
+	if ! [ -x "$(command -v gpg2)" ]; then
 		
-		echo "[🍺] Downloading GPG_Suite-${version}.dmg"
-		curl -o "${download_path}" "${url}" 
-		# Download 
+		echo "[🍺] Installing GPGTools"
+
+		# shellcheck disable=SC2155
+		local latest_gpgtools_version=$(curl -s "https://gpgtools.org/releases/gpgsuite/release-notes.html" \
+										| grep -m 1 "data-version=" \
+										| awk -F \" '{print $(NF-1)}')
+		# Get the latest gpgtools version string
+		# Not sure if this method will survive an update to the site
+		local dmg_name="GPG_Suite-${latest_gpgtools_version}.dmg"
+		local download_path="${HOME}/Downloads/${dmg_name}" 
+
+		echo "[🍺] Downloading ${dmg_name}"
+		if curl -o "${download_path}" "https://releases.gpgtools.org/${dmg_name}" ; then 
+			# Download 
+			echo "[✅] Successfully downladed ${dmg_name}"
+		else
+			echo "[❌] Failed to download ${dmg_name}"
+			exit 1
+		fi
 
 		echo "[🍺] Mounting ${download_path}"
 		hdiutil attach -quiet "${download_path}"
 		# Mount the DMG
-
 
 		echo "[⚠️ ] Password required for installer"
 		sudo installer -pkg "/Volumes/GPG Suite/Install.pkg" -target "/"
@@ -80,11 +82,7 @@ function install_gpgtools {
 		hdiutil detach -quiet "/Volumes/GPG Suite"
 
 	else
-
-		installed_version=$(gpg --version | head -n 1)
-
-		echo "[🍺] ${installed_version} already installed"
-
+		echo "[🍺] $(gpg --version | head -n 1) already installed"
 	fi
 }
 
