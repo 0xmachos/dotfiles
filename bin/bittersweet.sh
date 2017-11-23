@@ -54,12 +54,12 @@ function install_gpgtools {
 		echo "[🍺] Installing GPGTools (GPG Suite)"
 
 		# shellcheck disable=SC2155
-		local latest_gpgtools_version=$(curl -s "https://gpgtools.org/releases/gpgsuite/release-notes.html" \
+		local latest_version="$(curl -s "https://gpgtools.org/releases/gpgsuite/release-notes.html" \
 										| grep -m 1 "data-version=" \
-										| awk -F \" '{print $(NF-1)}')
+										| awk -F \" '{print $(NF-1)}')"
 		# Get the latest version string
 		# Not sure if this method will survive an update to the site
-		local dmg_name="GPG_Suite-${latest_gpgtools_version}.dmg"
+		local dmg_name="GPG_Suite-${latest_version}.dmg"
 		local dmg_download_path="${HOME}/Downloads/${dmg_name}" 
 		# shellcheck disable=SC2155
 		local dmg_sha256="$(curl -s "https://gpgtools.org" \
@@ -75,7 +75,7 @@ function install_gpgtools {
 		echo "[🍺] Downloading ${dmg_name}"
 		if curl -o "${dmg_download_path}" "https://releases.gpgtools.org/${dmg_name}" ; then 
 			# Download 
-			echo "[✅] Successfully downladed ${dmg_name}"
+			echo "[✅] Successfully downloaded ${dmg_name}"
 		else
 			echo "[❌] Failed to download ${dmg_name}"
 			exit 1
