@@ -43,6 +43,26 @@ function write_defaults {
 	defaults write com.apple.menuextra.battery ShowPercent -string "YES"
 	# Menu Bar: Show battery percentage
 	# Default: com.apple.menuextra.battery ShowPercent -string "NO"
+	defaults write -g NSNavPanelExpandedStateForSaveMode -bool true && \
+	defaults write -g NSNavPanelExpandedStateForSaveMode2 -bool true
+	# Save Panel: Show expanded version 
+	# Default: defaults write -g NSNavPanelExpandedStateForSaveMode -bool false && \
+	# defaults write -g NSNavPanelExpandedStateForSaveMode2 -bool false
+
+	defaults write com.apple.finder ShowStatusBar -bool true
+	# Finder: Show the status bar
+	# Default: defaults write com.apple.finder ShowStatusBar -bool false
+
+	defaults write com.apple.AppleMultitouchTrackpad TrackpadThreeFingerDrag -bool true
+	# Trackpad: Enable three finger drag
+	# defaults write com.apple.AppleMultitouchTrackpad TrackpadThreeFingerDrag -bool false
+
+	defaults write com.apple.AppleMultitouchTrackpad Clicking -bool true
+	# Trackpad: Enable tap to click
+	# defaults write com.apple.AppleMultitouchTrackpad Clicking -bool false
+
+	sudo defaults write /Library/Preferences/com.apple.AppleFileServer guestAccess -bool false
+	# Guest User: Disable 
 
 }
 
