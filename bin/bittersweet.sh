@@ -30,7 +30,7 @@ function usage {
 
 function write_defaults {
 
-	echo "[🍺] Writing some system & application defaults"
+	echo "[🍺] Writing system & application defaults"
 
 	defaults write com.apple.TextEdit RichText -int 0
 	# TextEdit: Use Plain Text Mode as Default
@@ -43,6 +43,7 @@ function write_defaults {
 	defaults write com.apple.menuextra.battery ShowPercent -string "YES"
 	# Menu Bar: Show battery percentage
 	# Default: com.apple.menuextra.battery ShowPercent -string "NO"
+
 	defaults write -g NSNavPanelExpandedStateForSaveMode -bool true && \
 	defaults write -g NSNavPanelExpandedStateForSaveMode2 -bool true
 	# Save Panel: Show expanded version 
@@ -94,7 +95,7 @@ function install_gpgtools {
 
 		echo "[🍺] Downloading ${dmg_name}"
 		if curl -o "${dmg_download_path}" "https://releases.gpgtools.org/${dmg_name}" ; then 
-			# Download 
+		# Download 
 			echo "[✅] Successfully downloaded ${dmg_name}"
 		else
 			echo "[❌] Failed to download ${dmg_name}"
@@ -128,6 +129,7 @@ function install_gpgtools {
 			exit 1
 		fi	
 
+		echo "[🍺] Attempting to validate the signature on the package"
 		if pkgutil --check-signature "${dmg_mount_point}/Install.pkg" ; then
 		# Check PKG is correctly sogned
 			echo "[✅] Successfully validated the signature on the package"
@@ -135,11 +137,10 @@ function install_gpgtools {
 			echo "[❌] Failed to validate the signature on the package"
 			exit 1
 		fi
-
 		
 		echo "[⚠️ ] Password required for installer"
 		if sudo installer -pkg "${dmg_mount_point}/Install.pkg" -target "/" ; then
-			# Install
+		# Install
 			echo "[✅] Successfully installed GPGTools"
 		else
 			echo "[❌] Failed to install GPGTools"
@@ -186,7 +187,7 @@ function install_sublime_text {
 
 		echo "[🍺] Downloading ${dmg_name}"
 		if curl -o "${dmg_download_path}" "https://download.sublimetext.com/Sublime%20Text%20Build%20${latest_build}.dmg" ; then 
-			# Download 
+		# Download 
 			echo "[✅] Successfully downloaded ${dmg_name}"
 		else
 			echo "[❌] Failed to download ${dmg_name}"
@@ -204,7 +205,7 @@ function install_sublime_text {
 
 		echo "[🍺] Attempting to validated the signature on Sublime Text.app"
 		if pkgutil --check-signature "${dmg_mount_point}/Sublime Text.app" ; then
-		# Check .app is correctly sogned
+		# Check Sublime Text.app is correctly sogned
 			echo "[✅] Successfully validated the signature on Sublime Text.app"
 		else
 			echo "[❌] Failed to validate the signature on Sublime Text.app"
@@ -280,7 +281,7 @@ function change_vmware_home {
 function install_brew {
 
 	# Install Homebrew and Homebrew-file
-	
+
 	if ! [ -x "$(command -v brew)" ]; then
 
 		echo "[🍺] Installing Homebrew"
