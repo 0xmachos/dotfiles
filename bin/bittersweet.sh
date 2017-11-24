@@ -235,6 +235,69 @@ function install_sublime_text {
 	fi
 }
 
+function install_tower {
+
+	if [ ! -d "/Applications/Tower.app" ]; then
+
+		local url="https://updates.fournova.com/tower2-mac/stable/releases/latest/download"
+		local zip_name="$(curl -s -I "${url}" \
+							| grep "Location:" \
+							| awk -F / '{print $7}' \
+							| tr -d '\r')"
+		# Get the ZIP file name from the Location HTTP header
+		# curl: -s Silent mode
+		# 		-I Fetch headers only
+		# awk: 	-F Define input field seperator as "/"
+		# tr: 	-d Delete "\r" (carriage return)
+		local zip_download_path="${HOME}/Downloads/${zip_name}" 
+
+		if curl -L -o "${zip_download_path}" "${url}" ; then 
+			#
+		# Download 
+			echo "[✅] Successfully downloaded ${zip_name}"
+		else
+			echo "[❌] Failed to download ${zip_name}"
+			exit 1
+		fi
+
+		echo "[🍺] Attempting to unzip ${zip_name}"
+		if unzip -qa "${zip_download_path}" -d "${HOME}/Downloads"; then
+		# Attempt to unzip the download
+			echo "[✅] Successfully unzipped ${zip_name}"
+		else
+			echo "[❌] Failed to unzip ${zip_name}"
+			exit 1
+		fi	
+
+		echo "[🍺] Attempting to validated the signature on Sublime Text.app"
+		if pkgutil --check-signature "${HOME}/Downloads/Tower.app" ; then
+		# Check Tower.app is correctly sogned
+			echo "[✅] Successfully validated the signature on Tower.app"
+		else
+			echo "[❌] Failed to validate the signature on Tower.app"
+			exit 1
+		fi
+
+		echo "[🍺] Attempting to copy Tower.app into /Applications"
+		if mv -i "${HOME}/Downloads/Tower.app" "/Applications" ; then
+		# Attempt to copy Tower.app into /Applications 
+			echo "[✅] Successfully installed Tower"
+		else
+			echo "[❌] Failed to install Tower"
+			exit 1
+		fi
+
+		# Cleanup 
+		echo "[🍺] Deleting ${zip_download_path}"
+		rm -r "${zip_download_path}"
+		echo "[🍺] Deleting ${HOME}/Downloads/__MACOSX"
+		rm -r "${HOME}/Downloads/__MACOSX"
+		# Delete the downloaded ZIP file, the reosurce fork file
+	else 
+		echo "[🍺] Tower already installed"
+	fi
+}
+
 
 function change_vmware_home {
 
@@ -347,8 +410,14 @@ function main {
 	if [[ "${cmd}" == "defaults" ]]; then
 		write_defaults
 
+	elif [[ "${cmd}" == "gpgtools" ]]; then 
+		install_gpgtools
+
 	elif [[ "${cmd}" == "sublimetext" ]]; then
 		install_sublime_text 
+
+	elif [[ "${cmd}" == "tower" ]]; then
+		install_tower
 
 	elif [[ "${cmd}" == "vmware" ]]; then
 		change_vmware_home
@@ -358,9 +427,6 @@ function main {
 
 	elif [[ "${cmd}" == "brewfile" ]]; then
 		install_brewfile "${homebrew_brewfile}"
-
-	elif [[ "${cmd}" == "gpgtools" ]]; then 
-		install_gpgtools
 
 	elif [[ "${cmd}" == "hailmary" ]]; then
 		# Execute all the functions
