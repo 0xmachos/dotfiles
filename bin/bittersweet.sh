@@ -240,6 +240,7 @@ function install_tower {
 	if [ ! -d "/Applications/Tower.app" ]; then
 
 		local url="https://updates.fournova.com/tower2-mac/stable/releases/latest/download"
+		# shellcheck disable=SC2155
 		local zip_name="$(curl -s -I "${url}" \
 							| grep "Location:" \
 							| awk -F / '{print $7}' \
