@@ -145,6 +145,76 @@ function install_gpgtools {
 }
 
 
+function install_sublime_text {
+
+	if [ ! -d "/Applications/Sublime Text.app" ]; then
+
+		echo "[🍺] Installing Sublime Text"
+
+		# shellcheck disable=SC2155
+		local latest_build="$(curl -s https://www.sublimetext.com/3 \
+								| grep "Version:" \
+								| awk '{print ($4+0)}')"
+		# Get the latest build string
+		# grep "Version:" \ : <p class="latest"><i>Version:</i> Build 3143</p>
+		# awk '{print $4}' : 3143</p>
+		# awk '{print ($4+0)}' : 3143
+		# ($4+0) converts captured string to numeric
+		local dmg_name="Sublime Text Build ${latest_build}.dmg"
+		local dmg_download_path="${HOME}/Downloads/${dmg_name}"
+		local dmg_mount_point="/Volumes/Sublime Text" 
+
+		echo "[🍺] Downloading ${dmg_name}"
+		if curl -o "${dmg_download_path}" "https://download.sublimetext.com/Sublime%20Text%20Build%20${latest_build}.dmg" ; then 
+			# Download 
+			echo "[✅] Successfully downloaded ${dmg_name}"
+		else
+			echo "[❌] Failed to download ${dmg_name}"
+			exit 1
+		fi
+
+		echo "[🍺] Attempting to mount ${dmg_download_path}"
+		if hdiutil attach -quiet "${dmg_download_path}" ; then
+		# Attempt to mount the DMG 
+			echo "[✅] Successfully mounted ${dmg_name}"
+		else
+			echo "[❌] Failed to mount ${dmg_name}"
+			exit 1
+		fi	
+
+		echo "[🍺] Attempting to validated the signature on Sublime Text.app"
+		if pkgutil --check-signature "${dmg_mount_point}/Sublime Text.app" ; then
+		# Check .app is correctly sogned
+			echo "[✅] Successfully validated the signature on Sublime Text.app"
+		else
+			echo "[❌] Failed to validate the signature on Sublime Text.app"
+			exit 1
+		fi
+
+		echo "[🍺] Attempting to copy Sublime Text.app into /Applications"
+		if cp -Ri "${dmg_mount_point}/Sublime Text.app" "/Applications" ; then
+		# Attempt to copy Sublime Text.app into /Applications 
+			echo "[✅] Successfully installed Sublime Text"
+		else
+			echo "[❌] Failed to install Sublime Text"
+			exit 1
+		fi
+
+		# Cleanup 
+		echo "[🍺] Unmounting ${dmg_mount_point}"
+		hdiutil detach -quiet "${dmg_mount_point}"
+		# Unmount the DMG
+	
+		echo "[🍺] Deleting ${dmg_download_path}"
+		rm "${dmg_download_path}"
+		# Delete the DMG
+
+	else 
+		echo "[🍺] Sublime Text already installed"
+	fi
+}
+
+
 function change_vmware_home {
 
 	# Create new directory $HOME/Virtual Machines
