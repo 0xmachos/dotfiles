@@ -326,6 +326,9 @@ function main {
 	if [[ "${cmd}" == "defaults" ]]; then
 		write_defaults
 
+	elif [[ "${cmd}" == "sublimetext" ]]; then
+		install_sublime_text 
+
 	elif [[ "${cmd}" == "vmware" ]]; then
 		change_vmware_home
 
@@ -346,6 +349,7 @@ function main {
 
 		write_defaults
 		install_gpgtools
+		install_sublime_text
 		change_vmware_home
 		install_brew
 		install_brewfile "${homebrew_brewfile}"
