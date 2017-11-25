@@ -172,8 +172,8 @@ function install_sublime_text {
 
 		echo "[🍺] Installing Sublime Text"
 
-		# shellcheck disable=SC2155
-		local latest_build="$(curl -s https://www.sublimetext.com/3 \
+		local latest_build	
+		latest_build="$(curl -s https://www.sublimetext.com/3 \
 								| grep "Version:" \
 								| awk '{print ($4+0)}')"
 		# Get the latest build string
@@ -240,8 +240,8 @@ function install_tower {
 	if [ ! -d "/Applications/Tower.app" ]; then
 
 		local url="https://updates.fournova.com/tower2-mac/stable/releases/latest/download"
-		# shellcheck disable=SC2155
-		local zip_name="$(curl -s -I "${url}" \
+		local zip_name
+		zip_name="$(curl -s -I "${url}" \
 							| grep "Location:" \
 							| awk -F / '{print $7}' \
 							| tr -d '\r')"
