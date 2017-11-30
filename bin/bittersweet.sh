@@ -177,7 +177,7 @@ function install_gpgtools {
 		# Delete the SHA256 file 
 
 	else
-		echo "[🍺] $(gpg --version | head -n 1) already installed"
+		echo "[🍺] $(gpg2 --version | head -n 1) already installed"
 	fi
 }
 
