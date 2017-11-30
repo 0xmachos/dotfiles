@@ -478,6 +478,9 @@ function main {
 
 	elif [[ "${cmd}" == "tower" ]]; then
 		install_tower
+	
+	elif [[ "${cmd}" == "go" ]]; then
+		install_go
 
 	elif [[ "${cmd}" == "vmware" ]]; then
 		change_vmware_home
@@ -497,6 +500,7 @@ function main {
 		write_defaults
 		install_gpgtools
 		install_sublime_text
+		install_go
 		change_vmware_home
 		install_brew
 		install_brewfile "${homebrew_brewfile}"
