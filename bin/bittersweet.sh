@@ -84,6 +84,17 @@ function write_defaults {
 }
 
 
+function check_efi_integrity {
+
+	if /usr/libexec/firmwarecheckers/eficheck/eficheck --integrity-check ; then 
+		echo "[✅] Successfully verified EFI firmware integrity"
+	else
+		echo "[❌] Failed to verify EFI firmware integrity"
+		exit 1
+	fi
+}
+
+
 function install_gpgtools {
 	
 	if ! [ -x "$(command -v gpg2)" ]; then
@@ -508,6 +519,9 @@ function main {
 
 	elif [[ "${cmd}" == "brewfile" ]]; then
 		install_brewfile "${homebrew_brewfile}"
+
+	elif [[ "${cmd}" == "eficheck" ]]; then
+		check_efi_integrity
 
 	elif [[ "${cmd}" == "hailmary" ]]; then
 		# Execute all the functions
