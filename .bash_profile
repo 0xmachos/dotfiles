@@ -28,6 +28,10 @@ export PATH=/usr/local/bin:/usr/local/sbin:$PATH
 export HOMEBREW_BREWFILE=/Users/$USER/Documents/Projects/dotfiles/Brewfile
 # Set location of Brewfile 
 
+# Export GO 
+export PATH=$PATH:/usr/local/go/bin
+export GOPATH=$HOME/Documents/Projects/Go
+
 
 #   -----------------------------
 #   1. REMAP DEFAULT COMMANDS
