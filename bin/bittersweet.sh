@@ -221,7 +221,23 @@ function install_sublime_text {
 			exit 1
 		fi
 
-		# Cleanup 
+		## Install config files
+		echo "[🍺] Installing Sublime Text config files"
+		if mkdir -p "$HOME/Library/Application Support/Sublime Text 3/Packages/" ; then
+			echo "[✅] Successfully created ~/Library/Application Support/Sublime Text 3/Packages/"
+		else
+			echo "[❌] Failed to create ~/Library/Application Support/Sublime Text 3/Packages/"
+			exit 1
+		fi 
+
+		if cp -r "../Sublime Text 3/Packages/User" "$HOME/Library/Application Support/Sublime Text 3/Packages" ; then
+			echo "[✅] Successfully installed Sublime Text config files"
+		else
+			echo "[❌] Failed to install Sublime Text config files"
+			exit 1
+		fi
+
+		## Cleanup 
 		echo "[🍺] Unmounting ${dmg_mount_point}"
 		hdiutil detach -quiet "${dmg_mount_point}"
 		# Unmount the DMG
