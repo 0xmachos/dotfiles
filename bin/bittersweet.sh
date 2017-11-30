@@ -254,6 +254,8 @@ function install_sublime_text {
 function install_tower {
 
 	if [ ! -d "/Applications/Tower.app" ]; then
+		
+		echo "[🍺] Installing Tower"
 
 		local url="https://updates.fournova.com/tower2-mac/stable/releases/latest/download"
 		local zip_name
@@ -268,8 +270,8 @@ function install_tower {
 		# tr: 	-d Delete "\r" (carriage return)
 		local zip_download_path="${HOME}/Downloads/${zip_name}" 
 
+		echo "[🍺] Downloading ${zip_name}"
 		if curl -L -o "${zip_download_path}" "${url}" ; then 
-			#
 		# Download 
 			echo "[✅] Successfully downloaded ${zip_name}"
 		else
@@ -494,7 +496,7 @@ function main {
 	elif [[ "${cmd}" == "hailmary" ]]; then
 		# Execute all the functions
 		# Order matters!
-		# TODO: Manually adding new fucntions sucks
+		# TODO: Manually adding new functions sucks 
 		echo -e "[🍺] \033[0;31mHailmary\033[0m engaged"
 
 		write_defaults
