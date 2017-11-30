@@ -56,14 +56,30 @@ function write_defaults {
 
 	defaults write com.apple.AppleMultitouchTrackpad TrackpadThreeFingerDrag -bool true
 	# Trackpad: Enable three finger drag
-	# defaults write com.apple.AppleMultitouchTrackpad TrackpadThreeFingerDrag -bool false
+	# Default: defaults write com.apple.AppleMultitouchTrackpad TrackpadThreeFingerDrag -bool false
 
 	defaults write com.apple.AppleMultitouchTrackpad Clicking -bool true
 	# Trackpad: Enable tap to click
-	# defaults write com.apple.AppleMultitouchTrackpad Clicking -bool false
+	# Default: defaults write com.apple.AppleMultitouchTrackpad Clicking -bool false
 
 	sudo defaults write /Library/Preferences/com.apple.AppleFileServer guestAccess -bool false
-	# Guest User: Disable 
+	# Guest User: Disable
+	# Default: sudo defaults write /Library/Preferences/com.apple.AppleFileServer guestAccess -bool true
+
+	defaults write com.apple.menuextra.clock DateFormat -string "EEE d MMM  HH:mm"
+	# Clock: Set format to Sun 26 Nov 16:00 
+
+	defaults write com.apple.lookup.shared LookupSuggestionsDisabled -bool true
+	# Spotlight: Disable suggestions in Lookup
+	# Default: defaults write com.apple.lookup.shared LookupSuggestionsDisabled -bool false
+
+	defaults write com.apple.Terminal SecureKeyboardEntry -bool true
+	# Terminal: Enable Secure Keyboard Entry
+	# Deafult: defaults write com.apple.Terminal SecureKeyboardEntry -bool false
+
+	sudo defaults write /Library/Preferences/com.apple.alf globalstate -bool true
+	# Firewall: Enable
+	# Default: sudo defaults write /Library/Preferences/com.apple.alf globalstate -bool falee
 
 }
 
