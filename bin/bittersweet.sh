@@ -349,6 +349,7 @@ function install_go {
 
 	if ! [ -x "$(command -v go)" ]; then
 
+		# shellcheck disable=SC2155
 		local pkg_version="$(curl -s https://golang.org/ | grep 'Build version' | awk '{print $3}' | tr -d '<br>')"
 		local url="https://redirector.gvt1.com/edgedl/go/${pkg_version}darwin-amd64.pkg"
 		local pkg_name="${pkg_version}darwin-amd64.pkg"
