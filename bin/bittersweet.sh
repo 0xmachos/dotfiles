@@ -106,21 +106,17 @@ function install_gpgtools {
 
 		# shellcheck disable=SC2155
 		local latest_version="$(curl -s "https://gpgtools.org/releases/gpgsuite/release-notes.html" \
-										| grep -m 1 "data-version=" \
-										| awk -F \" '{print $(NF-1)}')"
+								| grep -m 1 'class="version"' \
+								| awk -F '"' '{print $(NF-1)}')"
 		# Get the latest version string
-		# Not sure if this method will survive an update to the site
+		# Query the id field from the latest div class="version"
 		local dmg_name="GPG_Suite-${latest_version}.dmg"
 		local dmg_download_path="${HOME}/Downloads/${dmg_name}" 
 		# shellcheck disable=SC2155
 		local dmg_sha256="$(curl -s "https://gpgtools.org" \
 							| grep -m 1 "SHA256" \
-							| awk '{print $6}' \
-							| cut -c 21-84)"
+							| perl -nle "print $& if m{(?<=class='tooltiptext'>).*(?=</span></span>)}")"
 		# Get the SHA256 hash of the latest DMG
-		# HACK: 
-		# Need better method to extract the hash than cuting the charcter positions
-		# Almost certinly won't survive an update to the site 
 		local dmg_mount_point="/Volumes/GPG Suite/" 
 
 		echo "[🍺] Downloading ${dmg_name}"
