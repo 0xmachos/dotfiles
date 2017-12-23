@@ -345,50 +345,6 @@ function install_tower {
 }
 
 
-function install_go {
-
-	if ! [ -x "$(command -v go)" ]; then
-
-		# shellcheck disable=SC2155
-		local pkg_version="$(curl -s https://golang.org/ | grep 'Build version' | awk '{print $3}' | tr -d '<br>')"
-		local url="https://redirector.gvt1.com/edgedl/go/${pkg_version}darwin-amd64.pkg"
-		local pkg_name="${pkg_version}darwin-amd64.pkg"
-		local pkg_download_path="${HOME}/Downloads/${pkg_name}"
-
-		if curl -L -o "${pkg_download_path}" "${url}" ; then
-			echo "[✅] Successfully downloaded ${pkg_name}"
-		else
-			echo "[❌] Failed to download ${pkg_name}"
-		fi
-
-		echo "[🍺] Attempting to validated the signature on Sublime Text.app"
-		if pkgutil --check-signature "${pkg_download_path}" ; then
-		# Check pkg is correctly signed
-			echo "[✅] Successfully validated the signature on ${pkg_name}"
-		else
-			echo "[❌] Failed to validate the signature on ${pkg_name}"
-			exit 1
-		fi
-
-		echo "[⚠️ ] Password required for installer"
-		if sudo installer -pkg "${pkg_download_path}" -target "/" ; then
-		# Install
-			echo "[✅] Successfully installed Go"
-		else
-			echo "[❌] Failed to install Go"
-			exit 1
-		fi
-
-		## Cleanup 
-		echo "[🍺] Deleting ${pkg_download_path}"
-		rm "${pkg_download_path}"
-		# Delete the pkg
-	else
-		echo "[🍺] $(go version) already installed"
-	fi
-}
-
-
 function change_vmware_home {
 
 	# Create new directory $HOME/Virtual Machines
@@ -508,9 +464,6 @@ function main {
 
 	elif [[ "${cmd}" == "tower" ]]; then
 		install_tower
-	
-	elif [[ "${cmd}" == "go" ]]; then
-		install_go
 
 	elif [[ "${cmd}" == "vmware" ]]; then
 		change_vmware_home
@@ -533,7 +486,6 @@ function main {
 		write_defaults
 		install_gpgtools
 		install_sublime_text
-		install_go
 		change_vmware_home
 		install_brew
 		install_brewfile "${homebrew_brewfile}"
