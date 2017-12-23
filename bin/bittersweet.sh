@@ -486,9 +486,11 @@ function main {
 		# TODO: Manually adding new functions sucks 
 		echo -e "[🍺] \033[0;31mHailmary\033[0m engaged"
 
+		check_efi_integrity
 		write_defaults
 		install_gpgtools
 		install_sublime_text
+		install_tower
 		change_vmware_home
 		install_brew
 		install_brewfile "${homebrew_brewfile}"
