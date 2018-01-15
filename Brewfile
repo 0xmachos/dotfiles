@@ -4,8 +4,10 @@
 tap homebrew/core
 brew gdbm
 brew mas
+brew nmap
 brew openssl
 brew pkg-config
+brew python
 brew python3
 brew readline
 brew shellcheck
