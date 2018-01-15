@@ -47,7 +47,7 @@ function write_defaults {
 	# Menu Bar: Show battery percentage
 	# Default: com.apple.menuextra.battery ShowPercent -string "NO"
 
-	defaults write -g NSNavPanelExpandedStateForSaveMode -bool true && \
+	defaults write -g NSNavPanelExpandedStateForSaveMode -bool true
 	defaults write -g NSNavPanelExpandedStateForSaveMode2 -bool true
 	# Save Panel: Show expanded version 
 	# Default: defaults write -g NSNavPanelExpandedStateForSaveMode -bool false && \
@@ -314,7 +314,7 @@ function install_tower {
 			exit 1
 		fi	
 
-		echo "[🍺] Attempting to validated the signature on Sublime Text.app"
+		echo "[🍺] Attempting to validated the signature on Tower.app"
 		if pkgutil --check-signature "${HOME}/Downloads/Tower.app" ; then
 		# Check Tower.app is correctly sogned
 			echo "[✅] Successfully validated the signature on Tower.app"
