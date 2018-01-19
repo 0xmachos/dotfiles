@@ -159,10 +159,10 @@ function install_dotfiles {
 			if [ -d "${dir_name}" ] ; then
 			 	dir_name_base=$(basename "${dir_name}");
 				
-				if mkdir -p "${HOME}/{$dir_name_base}" ; then
-					echo "[✅] Successfully created ${HOME}/{$dir_name_base}"
+				if mkdir -p "${HOME}/${dir_name_base}" ; then
+					echo "[✅] Successfully created ${HOME}/${dir_name_base}"
 				else
-					echo "[❌] Failed to create ${HOME}/{$dir_name_base}"
+					echo "[❌] Failed to create ${HOME}/${dir_name_base}"
 				fi
 			else
 				echo "[❌] ${dir_name} does not exists"
