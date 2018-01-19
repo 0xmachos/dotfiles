@@ -147,6 +147,8 @@ function install_dotfiles {
 	local dir_name_base
 	local dot_file
 	local dot_file_base
+	local bin_file
+	local bin_file_base
 
 	# Create required directories 
 	# ~/.ssh and ~/.gnupg
@@ -167,6 +169,14 @@ function install_dotfiles {
 			fi
 
 		done
+
+	echo "[⚠️ ] Password required to interact with /usr/local/bin/"
+	if sudo mkdir -p "/usr/local/bin/" ; then
+		# !! SUDO !! 
+		echo "[✅] Successfully created /usr/local/bin/"
+	else
+		echo "[❌] Failed to create /usr/local/bin/"
+	fi
 		
 	# Symlink general dotfiles into ~/
 	# .bash_profile
@@ -227,6 +237,26 @@ function install_dotfiles {
 				echo "[❌] ${dot_file} does not exists"
 			fi
 
+		done
+
+
+	# Symlink scripts into /usr/local/bin  
+	for bin_file in $(find "$(PWD)/bin" -name "*" \
+						-not -name "bin");
+
+		do 
+			if [ -e "${bin_file}" ] ; then
+				bin_file_base=$(basename "${bin_file}");
+
+				if sudo ln -sfn "${bin_file}" "/usr/local/bin/${bin_file_base}" ; then
+					# !! SUDO !!
+					echo "[✅] Successfully linked ${bin_file} to /usr/local/bin/${bin_file_base}"
+				else
+					echo "[❌] Failed to link ${bin_file} to /usr/local/bin/${bin_file_base}"
+				fi
+			else
+				echo "[❌] ${bin_file} does not exists"
+			fi
 		done
 }
 
