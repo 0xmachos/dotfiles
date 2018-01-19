@@ -10,6 +10,7 @@
 #  	Sections:
 #  	0.  Environment Configuration
 #  	1.  Make Terminal Better (remapping defaults and adding functionality)
+#	2.	Setup aliases for scripts/binaries in /usr/local/bin
 #
 #  ---------------------------------------------------------------------------
 
@@ -50,3 +51,11 @@ alias ll='ls -aFGhl'
 		# -G enable colorized output
 		# -h show sizes in human readable form
 		# -l display in long format 
+
+
+#   -----------------------------
+#   2. MAP CUSTOM COMMANDS
+#   -----------------------------
+
+alias phs='pihole_stats.sh'
+# Display some pi-hole stats
