@@ -150,8 +150,10 @@ function install_dotfiles {
 	local bin_file
 	local bin_file_base
 
+
 	# Create required directories 
 	# ~/.ssh and ~/.gnupg
+	# shellcheck disable=SC2044
 	for dir_name in $(find "$(PWD)" -type d -maxdepth 1 -name ".*" \
 					-not -name '.git'); 
 
@@ -178,9 +180,11 @@ function install_dotfiles {
 		echo "[❌] Failed to create /usr/local/bin/"
 	fi
 		
+
 	# Symlink general dotfiles into ~/
 	# .bash_profile
 	# .bashrc
+	# shellcheck disable=SC2044
 	for dot_file in $(find "$(PWD)" -name ".*" \
 					-not -name '.gitignore' \
 					-not -name '.travis.yml' \
@@ -204,7 +208,9 @@ function install_dotfiles {
 
 		done
 		
+
 	# Symlink ssh config files in to ~/.ssh/
+	# shellcheck disable=SC2044
 	for dot_file in $(find "$(PWD)/.ssh" -name "*" \
 									-not -name ".ssh");
 		do
@@ -221,7 +227,9 @@ function install_dotfiles {
 		fi
 		done
 
+
 	# Symlink GPG config files in to ~/.gnupg/
+	# shellcheck disable=SC2044
 	for dot_file in $(find "$(PWD)/.gnupg" -name "*" \
 									-not -name ".gnupg");
 		do
@@ -240,7 +248,8 @@ function install_dotfiles {
 		done
 
 
-	# Symlink scripts into /usr/local/bin  
+	# Symlink scripts into /usr/local/bin
+	# shellcheck disable=SC2044  
 	for bin_file in $(find "$(PWD)/bin" -name "*" \
 						-not -name "bin");
 
