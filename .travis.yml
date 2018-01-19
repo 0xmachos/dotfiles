@@ -3,6 +3,6 @@
 language: bash
 sudo: enabled
 script:
-  - make test
+  - ./test.sh
 notifications:
   email: false
