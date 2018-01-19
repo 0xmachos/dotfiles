@@ -14,20 +14,32 @@ set -euo pipefail
 
 function usage {
 
-	echo -e "\nConfigures macOS just the way I like it 🤓\n"
+	echo -e "\\nConfigures macOS just the way I like it 🤓\\n"
 	echo "Usage:"
 	echo "	checkefi 		- Check integrity of the x86 flash chip firmware."
-	echo "	defaults		- Write new system and application default settings"
+	echo "	defaults 		- Write new system and application default settings"
 	echo "	vmware 			- Change VMWare defaultVMPath to '${HOME}/Virtual Machines'"
+	echo " 	dotfiles 		- Symlink various config files into ${HOME}"
 	echo "	gpgtools 		- Install GPGTools"
-	echo "	sublimetext 	- Install Sublime Text"
+	echo "	sublimetext 		- Install Sublime Text"
 	echo "	tower 			- Install Tower"
 	echo "	brew 			- Install Homebrew, Homebrew-file and export HOMEBREW_BREWFILE" 
 	echo "	brewfile {Brewfile}	- Install Homebrew packages from Brewfile"
 
-	echo -e "\n 	\033[0;31mhailmary\033[0m 	- Run every function in order listed above"
+	echo -e "\\n 	\\033[0;31mhailmary\\033[0m		- Run every function in order listed above"
 
 	exit 0
+}
+
+
+function check_efi_integrity {
+
+	if /usr/libexec/firmwarecheckers/eficheck/eficheck --integrity-check ; then 
+		echo "[✅] Successfully verified EFI firmware integrity"
+	else
+		echo "[❌] Failed to verify EFI firmware integrity"
+		exit 1
+	fi
 }
 
 
@@ -87,14 +99,135 @@ function write_defaults {
 }
 
 
-function check_efi_integrity {
+function change_vmware_home {
 
-	if /usr/libexec/firmwarecheckers/eficheck/eficheck --integrity-check ; then 
-		echo "[✅] Successfully verified EFI firmware integrity"
+	# Create new directory $HOME/Virtual Machines
+	# Set prefvmx.defaultVMPath to $HOME/Virtual Machines in ~/Library/Preferences/VMWare Fusion/preferences
+	# TODO: Allow user to pass their own path for prefvmx_defaultVMPath  
+
+	local vmware_preferences_file="${HOME}/Library/Preferences/VMware Fusion/preferences"
+	local vmware_preferences_directory="${HOME}/Library/Preferences/VMware Fusion"
+	local prefvmx_defaultVMPath="${HOME}/VMware Fusion"
+
+	if [ ! -d "${vmware_preferences_directory}" ]; then
+		# Check if VMWare Fusion is installed
+		echo "[❌] VMWare Fusion is not installed"
 	else
-		echo "[❌] Failed to verify EFI firmware integrity"
-		exit 1
-	fi
+		
+		if grep -q prefvmx.defaultVMPath "${vmware_preferences_file}" ; then
+			# Check if prefvmx.defaultVMPath is already set
+			echo "[❌] prefvmx.defaultVMPath is already set"
+			exit 1
+		else
+			echo "[🍺] Setting VMWare prefvmx.defaultVMPath to '${prefvmx_defaultVMPath}'"
+
+			if mkdir -p "${prefvmx_defaultVMPath}" ; then
+				# Attempt to create the directory for VM storage 
+				echo "[✅] Successfully created '${prefvmx_defaultVMPath}'"
+				
+				if echo "prefvmx.defaultVMPath = ${prefvmx_defaultVMPath}" >> "${vmware_preferences_file}" ; then
+					echo "[✅] Successfully set prefvmx.defaultVMPath"
+				else
+					echo "[❌] Failed to set prefvmx.defaultVMPath to '${prefvmx_defaultVMPath}'"
+					exit 1
+				fi
+
+			else
+				echo "[❌] Failed to create '${prefvmx_defaultVMPath}'"
+				exit 1
+			fi
+		fi
+	fi	
+}
+
+
+function install_dotfiles {
+
+	local dir_name
+	local dir_name_base
+	local dot_file
+	local dot_file_base
+
+	# Create required directories 
+	# ~/.ssh and ~/.gnupg
+	for dir_name in $(find "$(PWD)" -type d -maxdepth 1 -name ".*" \
+					-not -name '.git'); 
+
+		do 
+			if [ -d "${dir_name}" ] ; then
+			 	dir_name_base=$(basename "${dir_name}");
+				
+				if mkdir -p "${HOME}/{$dir_name_base}" ; then
+					echo "[✅] Successfully created ${HOME}/{$dir_name_base}"
+				else
+					echo "[❌] Failed to create ${HOME}/{$dir_name_base}"
+				fi
+			else
+				echo "[❌] ${dir_name} does not exists"
+			fi
+
+		done
+		
+	# Symlink general dotfiles into ~/
+	# .bash_profile
+	# .bashrc
+	for dot_file in $(find "$(PWD)" -name ".*" \
+					-not -name '.gitignore' \
+					-not -name '.travis.yml' \
+					-not -name '.git' \
+					-not -name '.ssh' \
+					-not -name '.gnupg' \
+					-not -name '.DS_Store'); 
+		
+		do
+			if [ -e "${dot_file}" ] ; then
+				dot_file_base=$(basename "${dot_file}");
+				
+				if ln -sfn "${dot_file}" "${HOME}/${dot_file_base}" ; then
+					echo "[✅] Successfully linked ${dot_file} to ${HOME}/${dot_file_base}"
+				else
+					echo "[❌] Failed to link ${dot_file} to ${HOME}/${dot_file_base}"
+				fi
+			else
+				echo "[❌] ${dot_file} does not exists"
+			fi
+
+		done
+		
+	# Symlink ssh config files in to ~/.ssh/
+	for dot_file in $(find "$(PWD)/.ssh" -name "*" \
+									-not -name ".ssh");
+		do
+			if [ -e "${dot_file}" ] ; then
+				dot_file_base=$(basename "${dot_file}");
+				
+				if ln -sfn "${dot_file}" "${HOME}/.ssh/${dot_file_base}" ; then
+					echo "[✅] Successfully linked ${dot_file} to ${HOME}/.ssh/${dot_file_base}"
+				else
+					echo "[❌] Failed to link ${dot_file} to ${HOME}/.ssh/${dot_file_base}"
+				fi
+			else
+				echo "[❌] ${dot_file} does not exists"
+		fi
+		done
+
+	# Symlink GPG config files in to ~/.gnupg/
+	for dot_file in $(find "$(PWD)/.gnupg" -name "*" \
+									-not -name ".gnupg");
+		do
+			if [ -e "${dot_file}" ] ; then
+				dot_file_base=$(basename "${dot_file}");
+
+				if ln -sfn "${dot_file}" "${HOME}/.gnupg/${dot_file_base}" ; then
+					echo "[✅] Successfully linked ${dot_file} to ${HOME}/.gnupg/${dot_file_base}"
+				else
+					echo "[❌] Failed to link ${dot_file} to ${HOME}/.gnupg/${dot_file_base}"
+				fi
+			else
+				echo "[❌] ${dot_file} does not exists"
+			fi
+
+		done
 }
 
 
@@ -277,6 +410,7 @@ function install_sublime_text {
 	fi
 }
 
+
 function install_tower {
 
 	if [ ! -d "/Applications/Tower.app" ]; then
@@ -344,48 +478,6 @@ function install_tower {
 }
 
 
-function change_vmware_home {
-
-	# Create new directory $HOME/Virtual Machines
-	# Set prefvmx.defaultVMPath to $HOME/Virtual Machines in ~/Library/Preferences/VMWare Fusion/preferences
-	# TODO: Allow user to pass their own path for prefvmx_defaultVMPath  
-
-	local vmware_preferences_file="${HOME}/Library/Preferences/VMware Fusion/preferences"
-	local vmware_preferences_directory="${HOME}/Library/Preferences/VMware Fusion"
-	local prefvmx_defaultVMPath="${HOME}/VMware Fusion"
-
-	if [ ! -d "${vmware_preferences_directory}" ]; then
-		# Check if VMWare Fusion is installed
-		echo "[❌] VMWare Fusion is not installed"
-	else
-		
-		if grep -q prefvmx.defaultVMPath "${vmware_preferences_file}" ; then
-			# Check if prefvmx.defaultVMPath is already set
-			echo "[❌] prefvmx.defaultVMPath is already set"
-			exit 1
-		else
-			echo "[🍺] Setting VMWare prefvmx.defaultVMPath to '${prefvmx_defaultVMPath}'"
-
-			if mkdir -p "${prefvmx_defaultVMPath}" ; then
-				# Attempt to create the directory for VM storage 
-				echo "[✅] Successfully created '${prefvmx_defaultVMPath}'"
-				
-				if echo "prefvmx.defaultVMPath = ${prefvmx_defaultVMPath}" >> "${vmware_preferences_file}" ; then
-					echo "[✅] Successfully set prefvmx.defaultVMPath"
-				else
-					echo "[❌] Failed to set prefvmx.defaultVMPath to '${prefvmx_defaultVMPath}'"
-					exit 1
-				fi
-
-			else
-				echo "[❌] Failed to create '${prefvmx_defaultVMPath}'"
-				exit 1
-			fi
-		fi
-	fi	
-}
-
-
 function install_brew {
 
 	# Install Homebrew and Homebrew-file
@@ -393,7 +485,7 @@ function install_brew {
 	if ! [ -x "$(command -v brew)" ]; then
 
 		echo "[🍺] Installing Homebrew"
-		echo -e "[⚠️ ] \033[0;31mStick around\033[0m - Requires you to press RETURN and input your password"
+		echo -e "[⚠️ ] \\033[0;31mStick around\\033[0m - Requires you to press RETURN and input your password"
 		sleep 5
 	   	
 	   	if /usr/bin/ruby -e "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install)" ; then
@@ -446,6 +538,11 @@ function install_brewfile {
 	fi
 }
 
+function run_test {
+
+	./test.sh
+}
+
 
 function main {
 
@@ -470,24 +567,35 @@ function main {
 	elif [[ "${cmd}" == "brew" ]]; then
 		install_brew
 
+	elif [[ "${cmd}" == "duet" ]]; then
+		install_duet
+
 	elif [[ "${cmd}" == "brewfile" ]]; then
 		install_brewfile "${homebrew_brewfile}"
 
 	elif [[ "${cmd}" == "eficheck" ]]; then
 		check_efi_integrity
 
+	elif [[ "${cmd}" == "dotfiles" ]]; then
+		install_dotfiles
+
+	elif [[ "${cmd}" == "test" ]]; then
+		run_test
+
 	elif [[ "${cmd}" == "hailmary" ]]; then
 		# Execute all the functions
 		# Order matters!
 		# TODO: Manually adding new functions sucks 
-		echo -e "[🍺] \033[0;31mHailmary\033[0m engaged"
+		echo -e "[🍺] \\033[0;31mHailmary\\033[0m engaged"
+		sleep 3
 
 		check_efi_integrity
 		write_defaults
+		change_vmware_home
+		install_dotfiles
 		install_gpgtools
 		install_sublime_text
 		install_tower
-		change_vmware_home
 		install_brew
 		install_brewfile "${homebrew_brewfile}"
 
