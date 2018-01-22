@@ -114,7 +114,7 @@ function change_vmware_home {
 		echo "[❌] VMWare Fusion is not installed"
 	else
 		
-		if grep -q prefvmx.defaultVMPath "${vmware_preferences_file}" ; then
+		if grep -q "prefvmx.defaultVMPath" "${vmware_preferences_file}" ; then
 			# Check if prefvmx.defaultVMPath is already set
 			echo "[❌] prefvmx.defaultVMPath is already set"
 			exit 1
