@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # dotfiles/bin/bittersweet.sh
 
 # bittersweet.sh
