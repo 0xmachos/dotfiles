@@ -577,6 +577,37 @@ function install_brewfile {
 	fi
 }
 
+
+function change_shell {
+
+	# Change default shell to bash as installed by Brew
+	# /usr/local/bin/bash instead of /bin/bash
+
+	local new_shell
+	new_shell="/usr/local/bin/bash"
+	
+	if [[ "$BASH" == "${new_shell}" ]]; then
+		echo "[✅] Current shell is already '${new_shell}'"
+	else
+		echo "[⚠️ ] Password required to change shell"
+
+		if [ -e "${new_shell}" ] ; then
+			sudo bash -c "echo ${new_shell} >> /etc/shells"
+			# Add new shell to list of allowed shells
+			# https://unix.stackexchange.com/a/4833/271903
+			if chsh -s "${new_shell}"; then
+			# Change $USER shell
+				echo "[✅] Successfully change default shell to ${new_shell}"
+			else	
+				echo "[❌] Failed to change default shell to ${new_shell}"
+			fi
+		else
+			echo "[❌] Failed to change shell as '${new_shell}' does not exist"
+		fi
+	fi	 
+}
+
+
 function run_test {
 
 	./test.sh
@@ -618,6 +649,9 @@ function main {
 	elif [[ "${cmd}" == "dotfiles" ]]; then
 		install_dotfiles
 
+	elif [[ "${cmd}" == "shell" ]]; then
+		change_shell
+
 	elif [[ "${cmd}" == "test" ]]; then
 		run_test
 
@@ -636,6 +670,7 @@ function main {
 		install_sublime_text
 		install_tower
 		install_brew
+		change_shell
 		install_brewfile "${homebrew_brewfile}"
 
 	else
