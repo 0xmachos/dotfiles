@@ -96,6 +96,9 @@ function write_defaults {
 	# Firewall: Enable
 	# Default: sudo defaults write /Library/Preferences/com.apple.alf globalstate -bool falee
 
+	defaults write com.apple.mail-shared DisableURLLoading -bool true
+	# Mail: Disable "Load remote content in messages"
+	# Default: defaults write com.apple.mail-shared DisableURLLoading -bool false
 }
 
 
