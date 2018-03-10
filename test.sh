@@ -10,6 +10,9 @@ set -euo pipefail
 
 ERRORS=()
 
+FAIL="\\033[1;31mFAIL\\033[0m"
+PASS="\\033[1;32mPASS\\033[0m"
+
 for f in $(find . -type f -not -iwholename '*.git*' | sort -u); do
 	# Find all regular files in source directory
 	# Ignore any git related files
@@ -17,7 +20,7 @@ for f in $(find . -type f -not -iwholename '*.git*' | sort -u); do
 	if file "${f}" | grep --quiet shell; then
 		# If file type is shell script
 		{
-			shellcheck "${f}" && echo "[OK] Sucessfully linted ${f}"
+			shellcheck "${f}" && echo -e "[${PASS}] Sucessfully linted ${f}"
 			# Run shellcheck 
 		} || {
 			# If shellcheck finds errors add them tp errors array
@@ -28,8 +31,8 @@ done
 
 
 if [ ${#ERRORS[@]} -eq 0 ]; then
-	echo "No errors, hooray"
+	echo -e "[${PASS}] No errors, hooray"
 else
-	echo "These files failed shellcheck: ${ERRORS[*]}"
+	echo -e "[${FAIL}] These files failed shellcheck: ${ERRORS[*]}"
 	exit 1
 fi
