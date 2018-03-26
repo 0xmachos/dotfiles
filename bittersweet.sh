@@ -23,6 +23,7 @@ function usage {
 	echo "	gpgtools 		- Install GPGTools"
 	echo "	sublimetext 		- Install Sublime Text"
 	echo "	tower 			- Install Tower"
+	echo "	rocket 			- Install Rocket 🚀"
 	echo "	brew 			- Install Homebrew, Homebrew-file and export HOMEBREW_BREWFILE" 
 	echo "	brewfile {Brewfile}	- Install Homebrew packages from Brewfile"
 
@@ -520,6 +521,60 @@ function install_tower {
 }
 
 
+install_rocket () {
+
+	echo "[🍺] Installing Rocket 🚀"
+
+	local url
+	local dmg_name
+	local dmg_download_path
+	local dmg_mount_point
+
+	url="$(curl -s http://matthewpalmer.net/rocket/ | grep "Download" | awk -F '"' '{print $4}')"
+	dmg_name="Rocket.dmg"
+	dmg_download_path="${HOME}/Downloads/${dmg_name}"
+	local dmg_mount_point="/Volumes/Rocket" 
+
+	if curl -L -o "${dmg_download_path}" "${url}" ; then 
+		# Download 
+		echo "[✅] Successfully downloaded ${dmg_name}"
+	else
+		echo "[❌] Failed to download ${dmg_name}"
+		exit 1
+	fi
+
+	echo "[🍺] Attempting to mount ${dmg_download_path}"
+	if hdiutil attach -quiet "${dmg_download_path}" ; then
+	# Attempt to mount the DMG 
+		echo "[✅] Successfully mounted ${dmg_name}"
+	else
+		echo "[❌] Failed to mount ${dmg_name}"
+		exit 1
+	fi	
+
+	echo "[🍺] Attempting to validated the signature on Rocket.app"
+	if pkgutil --check-signature "${dmg_mount_point}/Rocket.app" ; then
+	# Check Rocket.app is correctly sogned
+		echo "[✅] Successfully validated the signature on Rocket.app"
+	else
+		echo "[❌] Failed to validate the signature on Rocket.app"
+		exit 1
+	fi
+
+	echo "[🍺] Attempting to copy Rocket.app into /Applications"
+	if cp -Ri "${dmg_mount_point}/Rocket.app" "/Applications" ; then
+	# Attempt to copy Rocket.app into /Applications 
+		echo "[✅] Successfully installed Rocket 🚀"
+	else
+		echo "[❌] Failed to install Rocket 🚀"
+		exit 1
+	fi
+	
+
+
+}
+
+
 function install_brew {
 
 	# Install Homebrew and Homebrew-file
@@ -642,6 +697,9 @@ function main {
 
 	elif [[ "${cmd}" == "duet" ]]; then
 		install_duet
+	
+	elif [[ "${cmd}" == "rocket" ]]; then
+		install_rocket
 
 	elif [[ "${cmd}" == "brewfile" ]]; then
 		install_brewfile "${homebrew_brewfile}"
@@ -672,6 +730,7 @@ function main {
 		install_gpgtools
 		install_sublime_text
 		install_tower
+		install_rocket
 		install_brew
 		change_shell
 		install_brewfile "${homebrew_brewfile}"
