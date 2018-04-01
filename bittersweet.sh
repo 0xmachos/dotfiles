@@ -569,9 +569,6 @@ install_rocket () {
 		echo "[❌] Failed to install Rocket 🚀"
 		exit 1
 	fi
-	
-
-
 }
 
 
