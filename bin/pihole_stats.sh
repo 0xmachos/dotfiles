@@ -4,8 +4,8 @@
 # pihole_stats.sh
 	# Display some stats from local pi-hole server
 	# Format: dns_queries_today | ads_blocked_today (ads_percentage_today)
-	# Symlink to /usr/local/pihole_stats.sh
-	# Alias = phs
+	# Symlink to /usr/local/bin/pihole_stats.sh
+	# alias phs='pihole_stats.sh'
 
 set -euo pipefail
 
