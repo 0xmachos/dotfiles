@@ -59,3 +59,4 @@ alias ll='ls -aFGhl'
 
 alias phs='pihole_stats.sh'
 # Display some pi-hole stats
+alias dns='dns.sh'
