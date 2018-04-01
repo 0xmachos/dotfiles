@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# dotfiles/bin/dns.sh
+
+# dns.sh
+	# Get the IP address of a domain using DNS over HTTPS
+	# https://developers.cloudflare.com/1.1.1.1/dns-over-https/json-format/
+	# Symlink to /usr/local/bin/dns.sh
+	# alias dns='dns.sh'
+
+
+usage () {
+
+	echo -e "Usage: ./dns.sh {domain} [record_type] "
+	echo -e "Record Type: A (default) or AAAA"
+	exit 0
+}
+
+
+get_ip () {
+
+	if ! [[ "${record_type}" =~ ^(A|AAAA)$ ]]; then
+		echo -e "\\033[1;31m[FATAL]\\033[0m Record Type must be 'A' for IPv4 or 'AAAA' for IPv6"
+		exit 1
+	fi
+	
+	ip=$(curl -s "https://cloudflare-dns.com/dns-query?ct=application/dns-json&name=${domain}&type=${record_type}"\
+		| awk -F '"' '{print $34}') 
+}
+
+
+main () {
+
+	domain=${1:-""}
+	record_type=${2:-"A"}
+
+	if [ -z "${domain}" ]; then
+		usage
+	fi
+
+	get_ip
+
+	echo -e "\\033[1;32mDomain:\\033[0m ${domain}\
+	\\n    \\033[1;33mIP:\\033[0m ${ip}"
+}
+
+main "$@"
