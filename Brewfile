@@ -9,7 +9,6 @@ brew nmap
 brew openssl
 brew pkg-config
 brew python
-brew python3
 brew readline
 brew shellcheck
 brew sqlite
