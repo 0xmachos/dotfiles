@@ -21,7 +21,7 @@
 #   0. ENVIRONMENT CONFIGURATION
 #   -----------------------------
 
-cd /Users/$USER/Documents/Projects
+cd "/Users/$USER/Documents/Projects" || exit 
 # Start each terminal session in this directory
 
 export PATH=/usr/local/bin:/usr/local/sbin:$PATH
