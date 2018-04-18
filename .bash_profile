@@ -36,6 +36,7 @@ export GOPATH=$HOME/Documents/Projects/Go
 
 # brew-file wrapper for brew
 if [ -f "$(brew --prefix)/etc/brew-wrap" ];then
+	# shellcheck disable=SC1090
 	source "$(brew --prefix)/etc/brew-wrap"
 fi
 
