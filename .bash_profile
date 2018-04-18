@@ -35,8 +35,8 @@ export PATH=$PATH:/usr/local/go/bin
 export GOPATH=$HOME/Documents/Projects/Go
 
 # brew-file wrapper for brew
-if [ -f $(brew --prefix)/etc/brew-wrap ];then
-  source $(brew --prefix)/etc/brew-wrap
+if [ -f "$(brew --prefix)/etc/brew-wrap" ];then
+	source "$(brew --prefix)/etc/brew-wrap"
 fi
 
 
