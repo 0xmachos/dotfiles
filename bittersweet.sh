@@ -159,26 +159,26 @@ function install_dotfiles {
 	# ~/.ssh and ~/.gnupg
 	# shellcheck disable=SC2044
 	for dir_name in $(find "$(PWD)" -type d -maxdepth 1 -name ".*" \
-					-not -name '.git'); 
+									-not -name '.git'); do
+		
+		if [ -d "${dir_name}" ] ; then
+			dir_name_base=$(basename "${dir_name}");
 
-		do 
-			if [ -d "${dir_name}" ] ; then
-			 	dir_name_base=$(basename "${dir_name}");
-				
-				if mkdir -p "${HOME}/${dir_name_base}" ; then
-					echo "[✅] Successfully created ${HOME}/${dir_name_base}"
-				else
-					echo "[❌] Failed to create ${HOME}/${dir_name_base}"
-				fi
+			if mkdir -p "${HOME}/${dir_name_base}" ; then
+				echo "[✅] Successfully created ${HOME}/${dir_name_base}"
 			else
-				echo "[❌] ${dir_name} does not exists"
+				echo "[❌] Failed to create ${HOME}/${dir_name_base}"
 			fi
+		else
+			echo "[❌] ${dir_name} does not exists"
+		fi
 
-		done
+	done
 
 	echo "[⚠️ ] Password required to interact with /usr/local/bin/"
+
 	if sudo mkdir -p "/usr/local/bin/" ; then
-		# !! SUDO !! 
+	# !! SUDO !!
 		echo "[✅] Successfully created /usr/local/bin/"
 	else
 		echo "[❌] Failed to create /usr/local/bin/"
@@ -190,12 +190,12 @@ function install_dotfiles {
 	# .bashrc
 	# shellcheck disable=SC2044
 	for dot_file in $(find "$(PWD)" -name ".*" \
-					-not -name '.gitignore' \
-					-not -name '.travis.yml' \
-					-not -name '.git' \
-					-not -name '.ssh' \
-					-not -name '.gnupg' \
-					-not -name '.DS_Store'); do
+									-not -name '.gitignore' \
+									-not -name '.travis.yml' \
+									-not -name '.git' \
+									-not -name '.ssh' \
+									-not -name '.gnupg' \
+									-not -name '.DS_Store'); do
 
 		if [ -e "${dot_file}" ] ; then
 			dot_file_base=$(basename "${dot_file}");
@@ -208,8 +208,8 @@ function install_dotfiles {
 		else
 			echo "[❌] ${dot_file} does not exists"
 		fi
+
 	done
-		
 
 	# Symlink ssh config files in to ~/.ssh/
 	# shellcheck disable=SC2044
@@ -227,6 +227,7 @@ function install_dotfiles {
 		else
 			echo "[❌] ${dot_file} does not exists"
 		fi
+
 	done
 
 
@@ -246,13 +247,14 @@ function install_dotfiles {
 		else
 			echo "[❌] ${dot_file} does not exists"
 		fi
+	
 	done
 
 
 	# Symlink scripts into /usr/local/bin
 	# shellcheck disable=SC2044  
 	for bin_file in $(find "$(PWD)/bin" -name "*" \
-						-not -name "bin"); do
+									-not -name "bin"); do
 
 		if [ -e "${bin_file}" ] ; then
 			bin_file_base=$(basename "${bin_file}");
@@ -266,7 +268,8 @@ function install_dotfiles {
 		else
 			echo "[❌] ${bin_file} does not exists"
 		fi
-	done
+
+	done		
 }
 
 
