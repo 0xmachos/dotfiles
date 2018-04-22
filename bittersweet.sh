@@ -195,82 +195,78 @@ function install_dotfiles {
 					-not -name '.git' \
 					-not -name '.ssh' \
 					-not -name '.gnupg' \
-					-not -name '.DS_Store'); 
-		
-		do
-			if [ -e "${dot_file}" ] ; then
-				dot_file_base=$(basename "${dot_file}");
-				
-				if ln -sfn "${dot_file}" "${HOME}/${dot_file_base}" ; then
-					echo "[✅] Successfully linked ${dot_file} to ${HOME}/${dot_file_base}"
-				else
-					echo "[❌] Failed to link ${dot_file} to ${HOME}/${dot_file_base}"
-				fi
-			else
-				echo "[❌] ${dot_file} does not exists"
-			fi
+					-not -name '.DS_Store'); do
 
-		done
+		if [ -e "${dot_file}" ] ; then
+			dot_file_base=$(basename "${dot_file}");
+
+			if ln -sfn "${dot_file}" "${HOME}/${dot_file_base}" ; then
+				echo "[✅] Successfully linked ${dot_file} to ${HOME}/${dot_file_base}"
+			else
+				echo "[❌] Failed to link ${dot_file} to ${HOME}/${dot_file_base}"
+			fi
+		else
+			echo "[❌] ${dot_file} does not exists"
+		fi
+	done
 		
 
 	# Symlink ssh config files in to ~/.ssh/
 	# shellcheck disable=SC2044
 	for dot_file in $(find "$(PWD)/.ssh" -name "*" \
-									-not -name ".ssh");
-		do
-			if [ -e "${dot_file}" ] ; then
-				dot_file_base=$(basename "${dot_file}");
-				
-				if ln -sfn "${dot_file}" "${HOME}/.ssh/${dot_file_base}" ; then
-					echo "[✅] Successfully linked ${dot_file} to ${HOME}/.ssh/${dot_file_base}"
-				else
-					echo "[❌] Failed to link ${dot_file} to ${HOME}/.ssh/${dot_file_base}"
-				fi
+									-not -name ".ssh"); do
+
+		if [ -e "${dot_file}" ] ; then
+			dot_file_base=$(basename "${dot_file}");
+
+			if ln -sfn "${dot_file}" "${HOME}/.ssh/${dot_file_base}" ; then
+				echo "[✅] Successfully linked ${dot_file} to ${HOME}/.ssh/${dot_file_base}"
 			else
-				echo "[❌] ${dot_file} does not exists"
+				echo "[❌] Failed to link ${dot_file} to ${HOME}/.ssh/${dot_file_base}"
+			fi
+		else
+			echo "[❌] ${dot_file} does not exists"
 		fi
-		done
+	done
 
 
 	# Symlink GPG config files in to ~/.gnupg/
 	# shellcheck disable=SC2044
 	for dot_file in $(find "$(PWD)/.gnupg" -name "*" \
-									-not -name ".gnupg");
-		do
-			if [ -e "${dot_file}" ] ; then
-				dot_file_base=$(basename "${dot_file}");
+									-not -name ".gnupg"); do
 
-				if ln -sfn "${dot_file}" "${HOME}/.gnupg/${dot_file_base}" ; then
-					echo "[✅] Successfully linked ${dot_file} to ${HOME}/.gnupg/${dot_file_base}"
-				else
-					echo "[❌] Failed to link ${dot_file} to ${HOME}/.gnupg/${dot_file_base}"
-				fi
+		if [ -e "${dot_file}" ] ; then
+			dot_file_base=$(basename "${dot_file}");
+
+			if ln -sfn "${dot_file}" "${HOME}/.gnupg/${dot_file_base}" ; then
+				echo "[✅] Successfully linked ${dot_file} to ${HOME}/.gnupg/${dot_file_base}"
 			else
-				echo "[❌] ${dot_file} does not exists"
+				echo "[❌] Failed to link ${dot_file} to ${HOME}/.gnupg/${dot_file_base}"
 			fi
-
-		done
+		else
+			echo "[❌] ${dot_file} does not exists"
+		fi
+	done
 
 
 	# Symlink scripts into /usr/local/bin
 	# shellcheck disable=SC2044  
 	for bin_file in $(find "$(PWD)/bin" -name "*" \
-						-not -name "bin");
+						-not -name "bin"); do
 
-		do 
-			if [ -e "${bin_file}" ] ; then
-				bin_file_base=$(basename "${bin_file}");
+		if [ -e "${bin_file}" ] ; then
+			bin_file_base=$(basename "${bin_file}");
 
-				if sudo ln -sfn "${bin_file}" "/usr/local/bin/${bin_file_base}" ; then
-					# !! SUDO !!
-					echo "[✅] Successfully linked ${bin_file} to /usr/local/bin/${bin_file_base}"
-				else
-					echo "[❌] Failed to link ${bin_file} to /usr/local/bin/${bin_file_base}"
-				fi
+			if sudo ln -sfn "${bin_file}" "/usr/local/bin/${bin_file_base}" ; then
+			# !! SUDO !!
+				echo "[✅] Successfully linked ${bin_file} to /usr/local/bin/${bin_file_base}"
 			else
-				echo "[❌] ${bin_file} does not exists"
+				echo "[❌] Failed to link ${bin_file} to /usr/local/bin/${bin_file_base}"
 			fi
-		done
+		else
+			echo "[❌] ${bin_file} does not exists"
+		fi
+	done
 }
 
 
