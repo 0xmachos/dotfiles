@@ -1,5 +1,5 @@
 #!/bin/bash
-# dotfiles/bin/test.sh
+# dotfiles/bin/test
 
 # test.sh
 # 	Find shell scripts then run shellcheck 

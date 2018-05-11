@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# dotfiles/bin/pihole_stats.sh
+# dotfiles/bin/pihole_stats
 
 # pihole_stats.sh
 	# Display some stats from local pi-hole server
 	# Format: dns_queries_today | ads_blocked_today (ads_percentage_today)
-	# Symlink to /usr/local/bin/pihole_stats.sh
-	# alias phs='pihole_stats.sh'
+	# Symlink to /usr/local/bin/pihole_stats
+	# alias phs='pihole_stats'
 
 set -euo pipefail
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# dotfiles/bin/bittersweet.sh
+# dotfiles/bin/bittersweet
 
-# bittersweet.sh
 # Configures macOS just the way I like it
+# bittersweet
 # Tested on:
 # 10.13.x
 
@@ -664,7 +664,7 @@ function change_shell {
 
 function run_test {
 
-  ./test.sh
+  ./test
 }
 
 

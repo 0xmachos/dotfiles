@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# dotfiles/bin/dns.sh
+# dotfiles/bin/dns
 
 # dns.sh
   # Get the IP address of a domain using DNS over HTTPS
   # https://developers.cloudflare.com/1.1.1.1/dns-over-https/json-format/
-  # Symlink to /usr/local/bin/dns.sh
-  # alias dns='dns.sh'
+  # Symlink to /usr/local/bin/dns
+  # alias dns='dns'
 
 
 usage () {
