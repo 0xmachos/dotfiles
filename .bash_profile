@@ -3,15 +3,15 @@
 
 #  ---------------------------------------------------------------------------
 #
-#	Description: My BASH configurations and aliases
+# Description: My BASH configurations and aliases
 #
-#	Based on:
-#	https://gist.github.com/natelandau/10654137
-#	
-#  	Sections:
-#  	0.  Environment Configuration
-#  	1.  Make Terminal Better (remapping defaults and adding functionality)
-#	2.	Setup aliases for scripts/binaries in /usr/local/bin
+# Based on:
+# https://gist.github.com/natelandau/10654137
+# 
+#   Sections:
+#   0.  Environment Configuration
+#   1.  Make Terminal Better (remapping defaults and adding functionality)
+# 2.  Setup aliases for scripts/binaries in /usr/local/bin
 #
 #  ---------------------------------------------------------------------------
 
@@ -36,9 +36,10 @@ export GOPATH=$HOME/Documents/Projects/Go
 
 # brew-file wrapper for brew
 if [ -f "$(brew --prefix)/etc/brew-wrap" ];then
-	# shellcheck disable=SC1090
-	source "$(brew --prefix)/etc/brew-wrap"
+  # shellcheck disable=SC1090
+  source "$(brew --prefix)/etc/brew-wrap"
 fi
+
 
 
 #   -----------------------------
@@ -53,11 +54,12 @@ alias c='clear'
 # Clear terminal window
 alias ll='ls -aFGhl'
 # Preferred ls behaviour
-		# -a show files and dirs starting with .
-		# -F write `/' after directories, '*' after executables and '@' after symlinks
-		# -G enable colorized output
-		# -h show sizes in human readable form
-		# -l display in long format 
+    # -a show files and dirs starting with .
+    # -F write `/' after directories, '*' after executables and '@' after symlinks
+    # -G enable colorized output
+    # -h show sizes in human readable form
+    # -l display in long format 
+
 
 
 #   -----------------------------
@@ -67,4 +69,6 @@ alias ll='ls -aFGhl'
 alias phs='pihole_stats.sh'
 # Display some pi-hole stats
 alias dns='dns.sh'
+alias hayden='ssh -i /Users/mikey/.ssh/algo.pem root@178.62.54.86'
+
 /usr/local/bin/pihole_stats.sh
