@@ -66,9 +66,9 @@ alias ll='ls -aFGhl'
 #   2. MAP CUSTOM COMMANDS
 #   -----------------------------
 
-alias phs='pihole_stats.sh'
+alias phs='pihole_stats'
 # Display some pi-hole stats
-alias dns='dns.sh'
+alias dns='dns'
 alias hayden='ssh -i /Users/mikey/.ssh/algo.pem root@178.62.54.86'
 
-/usr/local/bin/pihole_stats.sh
+/usr/local/bin/pihole_stats
