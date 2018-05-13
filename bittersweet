@@ -80,6 +80,7 @@ function write_defaults {
   # Default: defaults write com.apple.AppleMultitouchTrackpad Clicking -bool false
 
   sudo defaults write /Library/Preferences/com.apple.AppleFileServer guestAccess -bool false
+  # !! SUDO !!
   # Guest User: Disable
   # Default: sudo defaults write /Library/Preferences/com.apple.AppleFileServer guestAccess -bool true
 
@@ -95,6 +96,7 @@ function write_defaults {
   # Deafult: defaults write com.apple.Terminal SecureKeyboardEntry -bool false
 
   sudo defaults write /Library/Preferences/com.apple.alf globalstate -bool true
+  # !! SUDO !!
   # Firewall: Enable
   # Default: sudo defaults write /Library/Preferences/com.apple.alf globalstate -bool falee
 
@@ -451,8 +453,9 @@ function install_gpgtools {
     fi
     
     echo "[⚠️ ] Password required for installer"
-    # Install
     if sudo installer -pkg "${dmg_mount_point}/Install.pkg" -target "/"; then
+      # !! SUDO !!
+      # Install
       echo "[✅] Successfully installed GPGTools"
     else
       echo "[❌] Failed to install GPGTools"
@@ -674,6 +677,7 @@ function change_shell {
 
     if [ -e "${new_shell}" ]; then
       sudo bash -c "echo ${new_shell} >> /etc/shells"
+      # !! SUDO !!
       # Add new shell to list of allowed shells
       # https://unix.stackexchange.com/a/4833/271903
       if chsh -s "${new_shell}"; then
