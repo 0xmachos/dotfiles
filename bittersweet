@@ -35,7 +35,7 @@ function usage {
 
 function check_efi_integrity {
 
-  if /usr/libexec/firmwarecheckers/eficheck/eficheck --integrity-check ; then 
+  if /usr/libexec/firmwarecheckers/eficheck/eficheck --integrity-check; then 
     echo "[✅] Successfully verified EFI firmware integrity"
   else
     echo "[❌] Failed to verify EFI firmware integrity"
@@ -118,18 +118,18 @@ function change_vmware_home {
     echo "[❌] VMWare Fusion is not installed"
   else
     
-    if grep -q "prefvmx.defaultVMPath" "${vmware_preferences_file}" ; then
+    if grep -q "prefvmx.defaultVMPath" "${vmware_preferences_file}"; then
       # Check if prefvmx.defaultVMPath is already set
       echo "[❌] prefvmx.defaultVMPath is already set"
       exit 1
     else
       echo "[🍺] Setting VMWare prefvmx.defaultVMPath to '${prefvmx_defaultVMPath}'"
 
-      if mkdir -p "${prefvmx_defaultVMPath}" ; then
+      if mkdir -p "${prefvmx_defaultVMPath}"; then
         # Attempt to create the directory for VM storage 
         echo "[✅] Successfully created '${prefvmx_defaultVMPath}'"
         
-        if echo "prefvmx.defaultVMPath = ${prefvmx_defaultVMPath}" >> "${vmware_preferences_file}" ; then
+        if echo "prefvmx.defaultVMPath = ${prefvmx_defaultVMPath}" >> "${vmware_preferences_file}"; then
           echo "[✅] Successfully set prefvmx.defaultVMPath"
         else
           echo "[❌] Failed to set prefvmx.defaultVMPath to '${prefvmx_defaultVMPath}'"
@@ -177,7 +177,7 @@ function install_dotfiles {
 
   echo "[⚠️ ] Password required to interact with /usr/local/bin/"
 
-  if sudo mkdir -p "/usr/local/bin/" ; then
+  if sudo mkdir -p "/usr/local/bin/"; then
   # !! SUDO !!
     echo "[✅] Successfully created /usr/local/bin/"
   else
@@ -200,7 +200,7 @@ function install_dotfiles {
     if [ -e "${dot_file}" ] ; then
       dot_file_base=$(basename "${dot_file}");
 
-      if ln -sfn "${dot_file}" "${HOME}/${dot_file_base}" ; then
+      if ln -sfn "${dot_file}" "${HOME}/${dot_file_base}"; then
         echo "[✅] Successfully linked ${dot_file} to ${HOME}/${dot_file_base}"
       else
         echo "[❌] Failed to link ${dot_file} to ${HOME}/${dot_file_base}"
@@ -219,7 +219,7 @@ function install_dotfiles {
     if [ -e "${dot_file}" ] ; then
       dot_file_base=$(basename "${dot_file}");
 
-      if ln -sfn "${dot_file}" "${HOME}/.ssh/${dot_file_base}" ; then
+      if ln -sfn "${dot_file}" "${HOME}/.ssh/${dot_file_base}"; then
         echo "[✅] Successfully linked ${dot_file} to ${HOME}/.ssh/${dot_file_base}"
       else
         echo "[❌] Failed to link ${dot_file} to ${HOME}/.ssh/${dot_file_base}"
@@ -239,7 +239,7 @@ function install_dotfiles {
     if [ -e "${dot_file}" ] ; then
       dot_file_base=$(basename "${dot_file}");
 
-      if ln -sfn "${dot_file}" "${HOME}/.gnupg/${dot_file_base}" ; then
+      if ln -sfn "${dot_file}" "${HOME}/.gnupg/${dot_file_base}"; then
         echo "[✅] Successfully linked ${dot_file} to ${HOME}/.gnupg/${dot_file_base}"
       else
         echo "[❌] Failed to link ${dot_file} to ${HOME}/.gnupg/${dot_file_base}"
@@ -256,10 +256,10 @@ function install_dotfiles {
   for bin_file in $(find "$(PWD)/bin" -name "*" \
                   -not -name "bin"); do
 
-    if [ -e "${bin_file}" ] ; then
+    if [ -e "${bin_file}" ]; then
       bin_file_base=$(basename "${bin_file}");
 
-      if sudo ln -sfn "${bin_file}" "/usr/local/bin/${bin_file_base}" ; then
+      if sudo ln -sfn "${bin_file}" "/usr/local/bin/${bin_file_base}"; then
       # !! SUDO !!
         echo "[✅] Successfully linked ${bin_file} to /usr/local/bin/${bin_file_base}"
       else
@@ -405,7 +405,7 @@ function install_gpgtools {
     local dmg_mount_point="/Volumes/GPG Suite/" 
 
     echo "[🍺] Downloading ${dmg_name}"
-    if curl -o "${dmg_download_path}" "https://releases.gpgtools.org/${dmg_name}" ; then 
+    if curl -o "${dmg_download_path}" "https://releases.gpgtools.org/${dmg_name}"; then 
     # Download 
       echo "[✅] Successfully downloaded ${dmg_name}"
     else
@@ -421,7 +421,7 @@ function install_gpgtools {
       # Execute in a subshell so the working directory is not permanantly changed
       cd "${HOME}/Downloads"
 
-      if shasum -a 256 -c "${dmg_download_path}.sha256" ; then 
+      if shasum -a 256 -c "${dmg_download_path}.sha256"; then 
       # Attempt to validate the DMGs SHA256 hash
         echo "[✅] Successfully validated ${dmg_name} SHA256 hash"
       else
@@ -432,7 +432,7 @@ function install_gpgtools {
     )
 
     echo "[🍺] Attempting to mount ${dmg_download_path}"
-    if hdiutil attach -quiet "${dmg_download_path}" ; then
+    if hdiutil attach -quiet "${dmg_download_path}"; then
     # Attempt to mount the DMG 
       echo "[✅] Successfully mounted ${dmg_name}"
     else
@@ -441,7 +441,7 @@ function install_gpgtools {
     fi  
 
     echo "[🍺] Attempting to validate the signature on the package"
-    if pkgutil --check-signature "${dmg_mount_point}/Install.pkg" ; then
+    if pkgutil --check-signature "${dmg_mount_point}/Install.pkg"; then
     # Check PKG is correctly sogned
       echo "[✅] Successfully validated the signature on the package"
     else
@@ -450,8 +450,8 @@ function install_gpgtools {
     fi
     
     echo "[⚠️ ] Password required for installer"
-    if sudo installer -pkg "${dmg_mount_point}/Install.pkg" -target "/" ; then
     # Install
+    if sudo installer -pkg "${dmg_mount_point}/Install.pkg" -target "/"; then
       echo "[✅] Successfully installed GPGTools"
     else
       echo "[❌] Failed to install GPGTools"
@@ -497,7 +497,7 @@ function install_sublime_text {
     local dmg_mount_point="/Volumes/Sublime Text" 
 
     echo "[🍺] Downloading ${dmg_name}"
-    if curl -o "${dmg_download_path}" "https://download.sublimetext.com/Sublime%20Text%20Build%20${latest_build}.dmg" ; then 
+    if curl -o "${dmg_download_path}" "https://download.sublimetext.com/Sublime%20Text%20Build%20${latest_build}.dmg"; then 
     # Download 
       echo "[✅] Successfully downloaded ${dmg_name}"
     else
@@ -509,14 +509,14 @@ function install_sublime_text {
 
     ## Install config files
     echo "[🍺] Installing Sublime Text config files"
-    if mkdir -p "$HOME/Library/Application Support/Sublime Text 3/Packages/" ; then
+    if mkdir -p "$HOME/Library/Application Support/Sublime Text 3/Packages/"; then
       echo "[✅] Successfully created ~/Library/Application Support/Sublime Text 3/Packages/"
     else
       echo "[❌] Failed to create ~/Library/Application Support/Sublime Text 3/Packages/"
       exit 1
     fi 
 
-    if cp -r "../Sublime Text 3/Packages/User" "$HOME/Library/Application Support/Sublime Text 3/Packages" ; then
+    if cp -r "../Sublime Text 3/Packages/User" "$HOME/Library/Application Support/Sublime Text 3/Packages"; then
       echo "[✅] Successfully installed Sublime Text config files"
     else
       echo "[❌] Failed to install Sublime Text config files"
@@ -549,7 +549,7 @@ function install_tower {
     local zip_download_path="${HOME}/Downloads/${zip_name}" 
 
     echo "[🍺] Downloading ${zip_name}"
-    if curl -L -o "${zip_download_path}" "${url}" ; then 
+    if curl -L -o "${zip_download_path}" "${url}"; then 
     # Download 
       echo "[✅] Successfully downloaded ${zip_name}"
     else
@@ -607,7 +607,7 @@ function install_brew {
     echo -e "[⚠️ ] \\033[0;31mStick around\\033[0m - Requires you to press RETURN and input your password"
     sleep 5
       
-      if /usr/bin/ruby -e "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install)" ; then
+      if /usr/bin/ruby -e "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install)"; then
         echo "[✅] Successfully installed Homebrew 🍻"
       else
         echo "[❌] Failed to install Homebrew 😢"
@@ -625,7 +625,7 @@ function install_brew {
 
     if ! [ -x "$(command -v brew-file)" ]; then
 
-      if brew install rcmdnk/file/brew-file ; then
+      if brew install rcmdnk/file/brew-file; then
         echo "[✅] Successfully installed Homebrew-file"
       else
         echo "[❌] Failed to install Homebrew-file"
@@ -649,7 +649,7 @@ function install_brewfile {
     echo "[🍺] Installing Homebrew packages from Brewfile"
     echo "[⚠️ ] Password required for brew file install"
 
-    if brew file install ; then 
+    if brew file install; then 
       echo "[✅] Successfully installed packages from Brewfile"
   else
     echo "[❌] Failed to install packages from Brewfile"
@@ -671,7 +671,7 @@ function change_shell {
   else
     echo "[⚠️ ] Password required to change shell"
 
-    if [ -e "${new_shell}" ] ; then
+    if [ -e "${new_shell}" ]; then
       sudo bash -c "echo ${new_shell} >> /etc/shells"
       # Add new shell to list of allowed shells
       # https://unix.stackexchange.com/a/4833/271903
