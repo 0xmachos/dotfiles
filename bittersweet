@@ -273,6 +273,116 @@ function install_dotfiles {
 }
 
 
+function install_application {
+
+    local application_name=${1:-"unset"}
+    local downloaded_file_path=${2:-"unset"}
+    local downloaded_file_name
+    downloaded_file_name="$(echo ${downloaded_file_path} | awk -F '/' '{print $NF}')"
+
+
+    if [[ "${downloaded_file_name}" == "unset" ]]; then
+      echo "[❌] 'downloaded_file_name' var not set"
+      exit 1
+    
+    elif [[ "${application_name}" == "unset" ]]; then 
+      echo "[❌] 'application_name' var not set"
+      exit 1
+    
+    elif [ ! -f "${downloaded_file_path}" ]; then
+      echo "[❌] ${downloaded_file_path} does not exist"
+      exit 1
+    fi 
+
+
+    if file "${downloaded_file_path}" | grep --quiet 'Zip'; then
+      # IF file is a Zip 
+
+      echo "[🍺] Attempting to unzip ${downloaded_file_name}"
+      if unzip -qa "${downloaded_file_path}" -d "${HOME}/Downloads"; then
+        # Attempt to unzip
+        echo "[✅] Successfully unzipped ${downloaded_file_name}"
+      else
+        echo "[❌] Failed to unzip ${downloaded_file_name}"
+        exit 1
+      fi
+
+      echo "[🍺] Attempting to validated the signature on .app"
+      if pkgutil --check-signature "${HOME}/Downloads/${application_name}.app"; then
+        # Check the .app is correctly signed
+        echo "[✅] Successfully validated the signature on ${application_name}.app"
+      else
+        echo "[❌] Failed to validate the signature on ${application_name}.app"
+        exit 1
+      fi
+
+      echo "[🍺] Attempting to copy ${application_name}.app into /Applications"
+      if cp -Ri "${HOME}/Downloads/${application_name}.app" "/Applications"; then
+        # Attempt to copy .app into /Applications 
+        echo "[✅] Successfully installed ${application_name}"
+      else
+        echo "[❌] Failed to install ${application_name}"
+        exit 1
+      fi
+
+      ## Cleanup
+      echo "[🍺] Deleting ${downloaded_file_path}"
+      # Delete the ZIP
+      rm "${downloaded_file_path}"
+
+      echo "[🍺] Deleting ${HOME}/Downloads/${application_name}.app"
+      # Delete the .app
+      rm -r "${HOME}/Downloads/${application_name}.app"
+
+
+    elif file "${downloaded_file_path}" | grep --quiet 'dmg'; then
+      # IF file is a dmg
+
+      local dmg_mount_name
+      local dmg_mount_path
+      
+      echo "[🍺] Attempting to mount ${downloaded_file_path}"
+      if hdiutil attach -quiet "${downloaded_file_path}"; then
+        # Attempt to mount the DMG 
+        echo "[✅] Successfully mounted ${downloaded_file_name}"
+        dmg_mount_name="$(ls /Volumes/ | grep "${application_name}")"
+        dmg_mount_path="/Volumes/${dmg_mount_name}"
+      else
+        echo "[❌] Failed to mount ${downloaded_file_path}"
+        exit 1
+      fi
+
+      echo "[🍺] Attempting to validated the signature on ${application_name}.app"
+      if pkgutil --check-signature "${dmg_mount_path}/${application_name}.app"; then
+        # Check the .app is correctly signed
+        echo "[✅] Successfully validated the signature on ${application_name}.app"
+      else
+        echo "[❌] Failed to validate the signature on ${application_name}.app"
+        exit 1
+      fi
+
+      echo "[🍺] Attempting to copy ${application_name}.app into /Applications"
+      if cp -Ri "${dmg_mount_path}/${application_name}.app" "/Applications"; then
+        # Attempt to copy .app into /Applications 
+        echo "[✅] Successfully installed ${application_name}"
+      else
+        echo "[❌] Failed to install ${application_name}"
+        exit 1
+      fi
+
+      ## Cleanup 
+      echo "[🍺] Unmounting ${dmg_mount_path}"
+      # Unmount the DMG
+      hdiutil detach -quiet "${dmg_mount_path}"
+      
+      echo "[🍺] Deleting ${downloaded_file_path}"
+      # Delete the DMG
+      rm "${downloaded_file_path}"
+
+    fi  
+}
+
+
 function install_gpgtools {
   
   if ! [ -x "$(command -v gpg2)" ]; then
@@ -395,32 +505,7 @@ function install_sublime_text {
       exit 1
     fi
 
-    echo "[🍺] Attempting to mount ${dmg_download_path}"
-    if hdiutil attach -quiet "${dmg_download_path}" ; then
-    # Attempt to mount the DMG 
-      echo "[✅] Successfully mounted ${dmg_name}"
-    else
-      echo "[❌] Failed to mount ${dmg_name}"
-      exit 1
-    fi  
-
-    echo "[🍺] Attempting to validated the signature on Sublime Text.app"
-    if pkgutil --check-signature "${dmg_mount_point}/Sublime Text.app" ; then
-    # Check Sublime Text.app is correctly sogned
-      echo "[✅] Successfully validated the signature on Sublime Text.app"
-    else
-      echo "[❌] Failed to validate the signature on Sublime Text.app"
-      exit 1
-    fi
-
-    echo "[🍺] Attempting to copy Sublime Text.app into /Applications"
-    if cp -Ri "${dmg_mount_point}/Sublime Text.app" "/Applications" ; then
-    # Attempt to copy Sublime Text.app into /Applications 
-      echo "[✅] Successfully installed Sublime Text"
-    else
-      echo "[❌] Failed to install Sublime Text"
-      exit 1
-    fi
+    install_application "Sublime Text" "${dmg_download_path}"
 
     ## Install config files
     echo "[🍺] Installing Sublime Text config files"
@@ -437,15 +522,6 @@ function install_sublime_text {
       echo "[❌] Failed to install Sublime Text config files"
       exit 1
     fi
-
-    ## Cleanup 
-    echo "[🍺] Unmounting ${dmg_mount_point}"
-    hdiutil detach -quiet "${dmg_mount_point}"
-    # Unmount the DMG
-  
-    echo "[🍺] Deleting ${dmg_download_path}"
-    rm "${dmg_download_path}"
-    # Delete the DMG
 
   else 
     echo "[🍺] Sublime Text already installed"
@@ -481,39 +557,8 @@ function install_tower {
       exit 1
     fi
 
-    echo "[🍺] Attempting to unzip ${zip_name}"
-    if unzip -qa "${zip_download_path}" -d "${HOME}/Downloads"; then
-    # Attempt to unzip the download
-      echo "[✅] Successfully unzipped ${zip_name}"
-    else
-      echo "[❌] Failed to unzip ${zip_name}"
-      exit 1
-    fi  
-
-    echo "[🍺] Attempting to validated the signature on Tower.app"
-    if pkgutil --check-signature "${HOME}/Downloads/Tower.app" ; then
-    # Check Tower.app is correctly sogned
-      echo "[✅] Successfully validated the signature on Tower.app"
-    else
-      echo "[❌] Failed to validate the signature on Tower.app"
-      exit 1
-    fi
-
-    echo "[🍺] Attempting to copy Tower.app into /Applications"
-    if mv -i "${HOME}/Downloads/Tower.app" "/Applications" ; then
-    # Attempt to copy Tower.app into /Applications 
-      echo "[✅] Successfully installed Tower"
-    else
-      echo "[❌] Failed to install Tower"
-      exit 1
-    fi
-
-    # Cleanup 
-    echo "[🍺] Deleting ${zip_download_path}"
-    rm -r "${zip_download_path}"
-    echo "[🍺] Deleting ${HOME}/Downloads/__MACOSX"
-    rm -r "${HOME}/Downloads/__MACOSX"
-    # Delete the downloaded ZIP file, the reosurce fork file
+    install_application "Tower" "${zip_download_path}"
+  
   else 
     echo "[🍺] Tower already installed"
   fi
