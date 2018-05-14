@@ -350,15 +350,17 @@ function install_application {
     elif file "${downloaded_file_path}" | grep --quiet 'dmg'; then
       # IF file is a dmg
 
-      local dmg_mount_name
       local dmg_mount_path
       
       echo "[🍺] Attempting to mount ${downloaded_file_path}"
       if hdiutil attach -quiet "${downloaded_file_path}"; then
         # Attempt to mount the DMG 
         echo "[✅] Successfully mounted ${downloaded_file_name}"
-        dmg_mount_name="$(ls /Volumes/ | grep "${application_name}")"
-        dmg_mount_path="/Volumes/${dmg_mount_name}"
+
+        # shellcheck disable=SC2086
+        # Globbing is desired here, using it to avoid SC2010
+        dmg_mount_path="$(echo /Volumes/${application_name}*)"
+
       else
         echo "[❌] Failed to mount ${downloaded_file_path}"
         exit 1
