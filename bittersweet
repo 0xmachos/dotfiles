@@ -290,7 +290,7 @@ function install_application {
     local application_name=${1:-"unset"}
     local downloaded_file_path=${2:-"unset"}
     local downloaded_file_name
-    downloaded_file_name="$(echo ${downloaded_file_path} | awk -F '/' '{print $NF}')"
+    downloaded_file_name="$(echo "${downloaded_file_path}" | awk -F '/' '{print $NF}')"
 
 
     if [[ "${downloaded_file_name}" == "unset" ]]; then
