@@ -225,6 +225,7 @@ function install_dotfiles {
   done
 
   # Symlink ssh config files in to ~/.ssh/
+  # config
   # shellcheck disable=SC2044
   for dot_file in $(find "$(PWD)/.ssh" -name "*" \
                   -not -name ".ssh"); do
