@@ -53,6 +53,7 @@ function check_efi_integrity {
 function write_defaults {
 
   echo "[🍺] Writing system & application defaults"
+  echo "[⚠️ ] Password required to invoke defaults with sudo"
 
   defaults write com.apple.TextEdit RichText -int 0
   # TextEdit: Use Plain Text Mode as Default
