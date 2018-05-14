@@ -108,6 +108,10 @@ function write_defaults {
   defaults write com.apple.mail-shared DisableURLLoading -bool true
   # Mail: Disable "Load remote content in messages"
   # Default: defaults write com.apple.mail-shared DisableURLLoading -bool false
+
+  defaults write com.apple.mail PreferPlainText -bool true
+  # Mail: Force emails to be opened in plain text
+  # Default: defaults write com.apple.mail PreferPlainText -bool false
 }
 
 
