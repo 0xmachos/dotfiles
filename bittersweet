@@ -625,7 +625,7 @@ function install_splashy {
     local dmg_download_path
 
     url="$(curl -s https://splashy.art/ | grep 'macOS' | awk -F '"' '{print $4}')"
-    dmg_name="$(echo ${url} | awk -F '/' '{print $4}')"
+    dmg_name="$(echo "${url}" | awk -F '/' '{print $4}')"
     dmg_download_path="${HOME}/Downloads/${dmg_name}"
 
     echo "[🍺] Downloading ${dmg_name}"
