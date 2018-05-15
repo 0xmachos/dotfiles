@@ -614,6 +614,38 @@ install_rocket () {
 }
 
 
+function install_splashy {
+
+  if [ ! -d "/Applications/Splashy.app" ]; then
+
+    echo "[🍺] Installing Splashy 📷"
+
+    local url
+    local dmg_name 
+    local dmg_download_path
+
+    url="$(curl -s https://splashy.art/ | grep 'macOS' | awk -F '"' '{print $4}')"
+    dmg_name="$(echo ${url} | awk -F '/' '{print $4}')"
+    dmg_download_path="${HOME}/Downloads/${dmg_name}"
+
+    echo "[🍺] Downloading ${dmg_name}"
+
+    if curl -o "${dmg_download_path}" "${url}"; then 
+      # Download 
+      echo "[✅] Successfully downloaded ${dmg_name}"
+    else
+      echo "[❌] Failed to download ${dmg_name}"
+      exit 1
+    fi
+
+    install_application "Splashy" "${dmg_download_path}"
+
+  else 
+    echo "[🍺] Splashy already installed"
+  fi
+}
+
+
 function install_brew {
 
   # Install Homebrew and Homebrew-file
@@ -737,6 +769,9 @@ function main {
   
   elif [[ "${cmd}" == "rocket" ]]; then
     install_rocket
+  
+  elif [[ "${cmd}" == "splashy" ]]; then
+    install_splashy
 
   elif [[ "${cmd}" == "brewfile" ]]; then
     install_brewfile "${homebrew_brewfile}"
