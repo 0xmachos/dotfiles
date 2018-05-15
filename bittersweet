@@ -734,9 +734,6 @@ function main {
 
   elif [[ "${cmd}" == "brew" ]]; then
     install_brew
-
-  elif [[ "${cmd}" == "duet" ]]; then
-    install_duet
   
   elif [[ "${cmd}" == "rocket" ]]; then
     install_rocket
