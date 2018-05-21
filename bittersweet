@@ -29,6 +29,7 @@ function usage {
   echo "  sublimetext         - Install Sublime Text"
   echo "  tower               - Install Tower"
   echo "  rocket              - Install Rocket 🚀"
+  echo "  blockblock          - Install BlockBlock"
   echo "  brew                - Install Homebrew, Homebrew-file and export HOMEBREW_BREWFILE" 
   echo "  brewfile {Brewfile} - Install Homebrew packages from Brewfile"
   echo "  shell               - Change shell to bash as installed by Brew"
@@ -706,6 +707,60 @@ function install_splashy {
 }
 
 
+function install_blockblock {
+
+  # Install BlockBlock
+
+  if [ ! -d "/Applications/Splashy.app" ]; then
+    
+    echo "[🍺] Installing BlockBlock"
+  
+    local url
+    local zip_name
+    local zip_download_path
+    local zip_sha1
+
+    url="$(curl -s --compressed https://objective-see.com/products/blockblock.html \
+           | grep -m 1 'downloads/BlockBlock' \
+           | awk -F '"' '{print $2}')"
+    zip_sha1="$(curl -s --compressed https://objective-see.com/products/blockblock.html \
+                  | grep 'sha-1' \
+                  | awk '{print $3}')"
+    zip_name="$(echo "${url}" | awk -F '/' '{print $NF}')"
+    zip_download_path="${HOME}/Downloads/${zip_name}"
+
+    download_application "${zip_download_path}" "${url}"
+
+    echo "${zip_sha1}  ${zip_name}" > "${zip_download_path}.sha1"
+    # Construct a correctly formatted SHA256 checksum line
+
+    (
+      # Execute in a subshell so the working directory is not permanantly changed
+
+      cd "${HOME}/Downloads" || exit
+
+      if shasum -a 1 -c "${zip_download_path}.sha1"; then 
+      # Attempt to validate the ZIPs SHA256 hash
+        echo "[✅] Successfully validated ${zip_name} SHA1 hash"
+      else
+        echo "[❌] Failed to validate ${zip_name} SHA1 hash"
+        exit 1
+      fi
+
+    )
+    
+    objective_see_install "BlockBlock" "${zip_download_path}"
+
+    # Enable headless mode
+    defaults write com.objectiveSee.BlockBlock headlessMode -int 1
+
+  else
+    echo "[🍺] BlockBlock already installed"
+  fi
+
+}
+
+
 function install_brew {
 
   # Install Homebrew and Homebrew-file
@@ -832,6 +887,9 @@ function main {
   
   elif [[ "${cmd}" == "splashy" ]]; then
     install_splashy
+
+  elif [[ "${cmd}" == "blockblock" ]]; then
+    install_blockblock
 
   elif [[ "${cmd}" == "brewfile" ]]; then
     install_brewfile "${homebrew_brewfile}"
