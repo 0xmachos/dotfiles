@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# dotfiles/bin/sublime_backup
+
+# sublime_backup
+#  Backup certain files in 
+#  $HOME/Library/Application Support/Sublime Text 3/Packages/User
+
+
+set -euo pipefail
+# -e exit if any command returns non-zero status code
+# -u prevent using undefined variables
+# -o pipefail force pipelines to fail on first non-zero status code
+
+
+IFS=$'\n\t'
+# Set Internal Field Separator to newlines and tabs
+# This makes bash consider newlines and tabs as separating words
+# See: http://redsymbol.net/articles/unofficial-bash-strict-mode/
+
+
+file_names=("Bash.sublime-settings" "Package Control.sublime-settings" \
+          "Preferences.sublime-settings" "SublimeLinter.sublime-settings")
+# Bash.sublime-settings:            Bash specific settings 
+# Package Control.sublime-settings: List of installed packages
+# Preferences.sublime-settings    : General settings
+# SublimeLinter.sublime-settings  : SublimeLinter settings
+
+for file in "${file_names[@]}"
+do
+
+  if cp "$HOME/Library/Application Support/Sublime Text 3/Packages/User/${file}" \
+        "$HOME/Documents/Projects/dotfiles/Sublime Text 3/Packages/User/${file}"; then
+    
+    echo "[✅] Successfully copied ${file}"
+  else
+    echo "[❌] Failed to copy ${file}"
+  fi 
+
+done
+
