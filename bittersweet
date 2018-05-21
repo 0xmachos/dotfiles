@@ -399,6 +399,38 @@ function install_application {
 }
 
 
+function download_application {
+
+  # Download file using curl
+  # download application "path_to_save_file_to" "url_to_download_from"
+
+  local download_path=${1:-"unset"}
+  local url=${2:-"unset"}
+  local file_name
+  file_name=$(echo "${download_path}" | awk -F '/' '{print $(NF)}')
+
+  if [[ "${download_path}" == "unset" ]]; then
+    echo "[❌] 'file_name' var not set"
+    exit 1
+
+  elif [[ "${url}" == "unset" ]]; then
+    echo "[❌] 'url' var not set"
+    exit 1
+  fi
+
+  echo "[🍺] Downloading ${file_name}"
+  
+  if curl -o "${download_path}" "${url}"; then 
+  # Download 
+    echo "[✅] Successfully downloaded ${file_name}"
+  else
+    echo "[❌] Failed to download ${file_name}"
+    exit 1
+  fi
+
+}
+
+
 function install_gpgtools {
   
   if ! [ -x "$(command -v gpg2)" ]; then
