@@ -1,7 +1,9 @@
 {
-	"color_scheme": "Packages/User/SublimeLinter/Monokai (SL).tmTheme",
-	"font_size": 13,
+	"color_scheme": "Packages/Color Scheme - Default/Monokai.sublime-color-scheme",
+	"font_size": 14,
 	"ignored_packages":
 	[
-	]
+		"Vintage"
+	],
+	"theme": "Default.sublime-theme"
 }

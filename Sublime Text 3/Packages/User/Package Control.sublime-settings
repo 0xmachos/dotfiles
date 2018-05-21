@@ -6,8 +6,10 @@
 	"installed_packages":
 	[
 		"A File Icon",
+		"MarkdownLivePreview",
 		"Package Control",
 		"SublimeLinter",
-		"SublimeLinter-annotations"
+		"SublimeLinter-annotations",
+		"SublimeLinter-shellcheck"
 	]
 }
