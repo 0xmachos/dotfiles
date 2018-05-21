@@ -289,6 +289,11 @@ function install_dotfiles {
 
 function install_application {
 
+    # Install Applications packaged as .dmg or .zip
+    # Does not work for application which require an installer (.pkg)
+    # Checks if .dmg or .zip then act accordingly
+    # Checks signature on .app before installing
+
     local application_name=${1:-"unset"}
     local downloaded_file_path=${2:-"unset"}
     local downloaded_file_name
