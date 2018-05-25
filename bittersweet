@@ -711,7 +711,7 @@ function install_blockblock {
 
   # Install BlockBlock
 
-  if [ ! -d "/Applications/Splashy.app" ]; then
+  if [ ! -f "$HOME/Library/Preferences/com.objectiveSee.BlockBlock.plist" ]; then
     
     echo "[🍺] Installing BlockBlock"
   
