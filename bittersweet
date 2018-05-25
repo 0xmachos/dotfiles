@@ -716,7 +716,9 @@ install_rocket () {
     local dmg_download_path
     local dmg_mount_point
 
-    url="$(curl -s https://matthewpalmer.net/rocket/ | grep "Download" | awk -F '"' '{print $4}')"
+    url="$(curl -s https://matthewpalmer.net/rocket/ \
+          | grep "Download" \
+          | awk -F '"' '{print $4}')"
     dmg_name="Rocket.dmg"
     dmg_download_path="${HOME}/Downloads/${dmg_name}"
     dmg_mount_point="/Volumes/Rocket" 
