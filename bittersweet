@@ -773,11 +773,11 @@ function install_blockblock {
     url="$(curl -s --compressed https://objective-see.com/products/blockblock.html \
            | grep -m 1 'downloads/BlockBlock' \
            | awk -F '"' '{print $2}')"
+    zip_name="$(echo "${url}" | awk -F '/' '{print $NF}')"
+    zip_download_path="${HOME}/Downloads/${zip_name}"
     zip_sha1="$(curl -s --compressed https://objective-see.com/products/blockblock.html \
                   | grep 'sha-1' \
                   | awk '{print $3}')"
-    zip_name="$(echo "${url}" | awk -F '/' '{print $NF}')"
-    zip_download_path="${HOME}/Downloads/${zip_name}"
 
     download_application "${zip_download_path}" "${url}"
 
@@ -791,7 +791,6 @@ function install_blockblock {
   else
     echo "[🍺] BlockBlock already installed"
   fi
-
 }
 
 
