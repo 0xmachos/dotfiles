@@ -29,6 +29,7 @@ function usage {
   echo "  sublimetext         - Install Sublime Text"
   echo "  tower               - Install Tower"
   echo "  rocket              - Install Rocket 🚀"
+  echo "  splashy             - Install Splashy 🌄"
   echo "  blockblock          - Install BlockBlock"
   echo "  brew                - Install Homebrew, Homebrew-file and export HOMEBREW_BREWFILE" 
   echo "  brewfile {Brewfile} - Install Homebrew packages from Brewfile"
@@ -38,6 +39,211 @@ function usage {
 
   exit 0
 }
+
+### Utility Functions ###
+# download_application
+# install_application
+# objective_see_install
+
+function download_application {
+
+  # Download file using curl
+  # download application "path_to_save_file_to" "url_to_download_from"
+
+  local download_path=${1:-"unset"}
+  local url=${2:-"unset"}
+  local file_name
+  file_name=$(echo "${download_path}" | awk -F '/' '{print $(NF)}')
+
+  if [[ "${download_path}" == "unset" ]]; then
+    echo "[❌] 'file_name' var not set"
+    exit 1
+
+  elif [[ "${url}" == "unset" ]]; then
+    echo "[❌] 'url' var not set"
+    exit 1
+  fi
+
+  echo "[🍺] Downloading ${file_name}"
+  
+  if curl -L -o "${download_path}" "${url}"; then 
+  # Download 
+    echo "[✅] Successfully downloaded ${file_name}"
+  else
+    echo "[❌] Failed to download ${file_name}"
+    exit 1
+  fi
+}
+
+
+function install_application {
+
+    # Install Applications packaged as .dmg or .zip
+    # Does not work for application which require an installer (.pkg)
+    # Checks if .dmg or .zip then act accordingly
+    # Checks signature on .app before installing
+
+    local application_name=${1:-"unset"}
+    local downloaded_file_path=${2:-"unset"}
+    local downloaded_file_name
+    downloaded_file_name="$(echo "${downloaded_file_path}" | awk -F '/' '{print $NF}')"
+
+
+    if [[ "${downloaded_file_name}" == "unset" ]]; then
+      echo "[❌] 'downloaded_file_name' var not set"
+      exit 1
+    
+    elif [[ "${application_name}" == "unset" ]]; then 
+      echo "[❌] 'application_name' var not set"
+      exit 1
+    
+    elif [ ! -f "${downloaded_file_path}" ]; then
+      echo "[❌] ${downloaded_file_path} does not exist"
+      exit 1
+    fi 
+
+
+    if file "${downloaded_file_path}" | grep --quiet 'Zip'; then
+      # IF file is a Zip 
+
+      echo "[🍺] Attempting to unzip ${downloaded_file_name}"
+      if unzip -qa "${downloaded_file_path}" -d "${HOME}/Downloads"; then
+        # Attempt to unzip
+        echo "[✅] Successfully unzipped ${downloaded_file_name}"
+      else
+        echo "[❌] Failed to unzip ${downloaded_file_name}"
+        exit 1
+      fi
+
+      echo "[🍺] Attempting to validated the signature on .app"
+      if pkgutil --check-signature "${HOME}/Downloads/${application_name}.app"; then
+        # Check the .app is correctly signed
+        echo "[✅] Successfully validated the signature on ${application_name}.app"
+      else
+        echo "[❌] Failed to validate the signature on ${application_name}.app"
+        exit 1
+      fi
+
+      echo "[🍺] Attempting to copy ${application_name}.app into /Applications"
+      if cp -Ri "${HOME}/Downloads/${application_name}.app" "/Applications"; then
+        # Attempt to copy .app into /Applications 
+        echo "[✅] Successfully installed ${application_name}"
+      else
+        echo "[❌] Failed to install ${application_name}"
+        exit 1
+      fi
+
+      ## Cleanup
+      echo "[🍺] Deleting ${downloaded_file_path}"
+      # Delete the ZIP
+      rm "${downloaded_file_path}"
+
+      echo "[🍺] Deleting ${HOME}/Downloads/${application_name}.app"
+      # Delete the .app
+      rm -r "${HOME}/Downloads/${application_name}.app"
+
+
+    elif file "${downloaded_file_path}" | grep --quiet 'dmg'; then
+      # IF file is a dmg
+
+      local dmg_mount_path
+      
+      echo "[🍺] Attempting to mount ${downloaded_file_path}"
+      if hdiutil attach -quiet "${downloaded_file_path}"; then
+        # Attempt to mount the DMG 
+        echo "[✅] Successfully mounted ${downloaded_file_name}"
+
+        # shellcheck disable=SC2086
+        # Globbing is desired here, using it to avoid SC2010
+        dmg_mount_path="$(echo /Volumes/${application_name}*)"
+
+      else
+        echo "[❌] Failed to mount ${downloaded_file_path}"
+        exit 1
+      fi
+
+      echo "[🍺] Attempting to validated the signature on ${application_name}.app"
+      if pkgutil --check-signature "${dmg_mount_path}/${application_name}.app"; then
+        # Check the .app is correctly signed
+        echo "[✅] Successfully validated the signature on ${application_name}.app"
+      else
+        echo "[❌] Failed to validate the signature on ${application_name}.app"
+        exit 1
+      fi
+
+      echo "[🍺] Attempting to copy ${application_name}.app into /Applications"
+      if cp -Ri "${dmg_mount_path}/${application_name}.app" "/Applications"; then
+        # Attempt to copy .app into /Applications 
+        echo "[✅] Successfully installed ${application_name}"
+      else
+        echo "[❌] Failed to install ${application_name}"
+        exit 1
+      fi
+
+      ## Cleanup 
+      echo "[🍺] Unmounting ${dmg_mount_path}"
+      # Unmount the DMG
+      hdiutil detach -quiet "${dmg_mount_path}"
+      
+      echo "[🍺] Deleting ${downloaded_file_path}"
+      # Delete the DMG
+      rm "${downloaded_file_path}"
+
+    fi  
+}
+
+
+function objective_see_install {
+
+  local application_name=${1:-"unset"}
+  local downloaded_file_path=${2:-"unset"}
+  local downloaded_file_name
+  file_name=$(echo "${downloaded_file_path}" | awk -F '/' '{print $(NF)}')
+
+
+  if [[ "${application_name}" == "unset" ]]; then 
+    echo "[❌] 'application_name' var not set"
+    exit 1
+
+  elif [[ "${downloaded_file_path}" == "unset" ]]; then
+    echo "[❌] 'downloaded_file_path' var not set"
+    exit 1
+  fi 
+
+  echo "[🍺] Attempting to unzip ${downloaded_file_path}"
+  if unzip -qa "${downloaded_file_path}" -d "${HOME}/Downloads"; then
+    # Attempt to unzip
+    echo "[✅] Successfully unzipped ${downloaded_file_name}"
+  else
+    echo "[❌] Failed to unzip ${downloaded_file_name}"
+    exit 1
+  fi
+
+  echo "[🍺] Attempting to validated the signature on ${application_name}_Installer.app"
+  if pkgutil --check-signature "${HOME}/Downloads/${application_name}_Installer.app"; then
+    # Check the .app is correctly signed
+    echo "[✅] Successfully validated the signature on ${application_name}_Installer.app"
+  else
+    echo "[❌] Failed to validate the signature on ${application_name}_Installer.app"
+    exit 1
+  fi
+
+  (
+    # Execute in a subshell so the working directory is not permanantly changed
+    cd "${HOME}/Downloads" || exit
+
+    echo "[⚠️ ] Password required to install ${application_name}"
+
+    if sudo bash -c "./${application_name}_Installer.app/Contents/MacOS/${application_name} -install"; then 
+      echo "[✅] Successfully installed ${application_name}"
+    else
+      echo "[❌] Failed to install ${application_name}"
+      exit 1
+    fi
+  )
+}
+
+### END Utility Functions ###
 
 
 function check_efi_integrity {
@@ -289,207 +495,6 @@ function install_dotfiles {
     fi
 
   done    
-}
-
-
-function download_application {
-
-  # Download file using curl
-  # download application "path_to_save_file_to" "url_to_download_from"
-
-  local download_path=${1:-"unset"}
-  local url=${2:-"unset"}
-  local file_name
-  file_name=$(echo "${download_path}" | awk -F '/' '{print $(NF)}')
-
-  if [[ "${download_path}" == "unset" ]]; then
-    echo "[❌] 'file_name' var not set"
-    exit 1
-
-  elif [[ "${url}" == "unset" ]]; then
-    echo "[❌] 'url' var not set"
-    exit 1
-  fi
-
-  echo "[🍺] Downloading ${file_name}"
-  
-  if curl -L -o "${download_path}" "${url}"; then 
-  # Download 
-    echo "[✅] Successfully downloaded ${file_name}"
-  else
-    echo "[❌] Failed to download ${file_name}"
-    exit 1
-  fi
-
-}
-
-
-function install_application {
-
-    # Install Applications packaged as .dmg or .zip
-    # Does not work for application which require an installer (.pkg)
-    # Checks if .dmg or .zip then act accordingly
-    # Checks signature on .app before installing
-
-    local application_name=${1:-"unset"}
-    local downloaded_file_path=${2:-"unset"}
-    local downloaded_file_name
-    downloaded_file_name="$(echo "${downloaded_file_path}" | awk -F '/' '{print $NF}')"
-
-
-    if [[ "${downloaded_file_name}" == "unset" ]]; then
-      echo "[❌] 'downloaded_file_name' var not set"
-      exit 1
-    
-    elif [[ "${application_name}" == "unset" ]]; then 
-      echo "[❌] 'application_name' var not set"
-      exit 1
-    
-    elif [ ! -f "${downloaded_file_path}" ]; then
-      echo "[❌] ${downloaded_file_path} does not exist"
-      exit 1
-    fi 
-
-
-    if file "${downloaded_file_path}" | grep --quiet 'Zip'; then
-      # IF file is a Zip 
-
-      echo "[🍺] Attempting to unzip ${downloaded_file_name}"
-      if unzip -qa "${downloaded_file_path}" -d "${HOME}/Downloads"; then
-        # Attempt to unzip
-        echo "[✅] Successfully unzipped ${downloaded_file_name}"
-      else
-        echo "[❌] Failed to unzip ${downloaded_file_name}"
-        exit 1
-      fi
-
-      echo "[🍺] Attempting to validated the signature on .app"
-      if pkgutil --check-signature "${HOME}/Downloads/${application_name}.app"; then
-        # Check the .app is correctly signed
-        echo "[✅] Successfully validated the signature on ${application_name}.app"
-      else
-        echo "[❌] Failed to validate the signature on ${application_name}.app"
-        exit 1
-      fi
-
-      echo "[🍺] Attempting to copy ${application_name}.app into /Applications"
-      if cp -Ri "${HOME}/Downloads/${application_name}.app" "/Applications"; then
-        # Attempt to copy .app into /Applications 
-        echo "[✅] Successfully installed ${application_name}"
-      else
-        echo "[❌] Failed to install ${application_name}"
-        exit 1
-      fi
-
-      ## Cleanup
-      echo "[🍺] Deleting ${downloaded_file_path}"
-      # Delete the ZIP
-      rm "${downloaded_file_path}"
-
-      echo "[🍺] Deleting ${HOME}/Downloads/${application_name}.app"
-      # Delete the .app
-      rm -r "${HOME}/Downloads/${application_name}.app"
-
-
-    elif file "${downloaded_file_path}" | grep --quiet 'dmg'; then
-      # IF file is a dmg
-
-      local dmg_mount_path
-      
-      echo "[🍺] Attempting to mount ${downloaded_file_path}"
-      if hdiutil attach -quiet "${downloaded_file_path}"; then
-        # Attempt to mount the DMG 
-        echo "[✅] Successfully mounted ${downloaded_file_name}"
-
-        # shellcheck disable=SC2086
-        # Globbing is desired here, using it to avoid SC2010
-        dmg_mount_path="$(echo /Volumes/${application_name}*)"
-
-      else
-        echo "[❌] Failed to mount ${downloaded_file_path}"
-        exit 1
-      fi
-
-      echo "[🍺] Attempting to validated the signature on ${application_name}.app"
-      if pkgutil --check-signature "${dmg_mount_path}/${application_name}.app"; then
-        # Check the .app is correctly signed
-        echo "[✅] Successfully validated the signature on ${application_name}.app"
-      else
-        echo "[❌] Failed to validate the signature on ${application_name}.app"
-        exit 1
-      fi
-
-      echo "[🍺] Attempting to copy ${application_name}.app into /Applications"
-      if cp -Ri "${dmg_mount_path}/${application_name}.app" "/Applications"; then
-        # Attempt to copy .app into /Applications 
-        echo "[✅] Successfully installed ${application_name}"
-      else
-        echo "[❌] Failed to install ${application_name}"
-        exit 1
-      fi
-
-      ## Cleanup 
-      echo "[🍺] Unmounting ${dmg_mount_path}"
-      # Unmount the DMG
-      hdiutil detach -quiet "${dmg_mount_path}"
-      
-      echo "[🍺] Deleting ${downloaded_file_path}"
-      # Delete the DMG
-      rm "${downloaded_file_path}"
-
-    fi  
-}
-
-
-function objective_see_install {
-
-  local application_name=${1:-"unset"}
-  local downloaded_file_path=${2:-"unset"}
-  local downloaded_file_name
-  file_name=$(echo "${downloaded_file_path}" | awk -F '/' '{print $(NF)}')
-
-
-  if [[ "${application_name}" == "unset" ]]; then 
-    echo "[❌] 'application_name' var not set"
-    exit 1
-
-  elif [[ "${downloaded_file_path}" == "unset" ]]; then
-    echo "[❌] 'downloaded_file_path' var not set"
-    exit 1
-  fi 
-
-  echo "[🍺] Attempting to unzip ${downloaded_file_path}"
-  if unzip -qa "${downloaded_file_path}" -d "${HOME}/Downloads"; then
-    # Attempt to unzip
-    echo "[✅] Successfully unzipped ${downloaded_file_name}"
-  else
-    echo "[❌] Failed to unzip ${downloaded_file_name}"
-    exit 1
-  fi
-
-  echo "[🍺] Attempting to validated the signature on ${application_name}_Installer.app"
-  if pkgutil --check-signature "${HOME}/Downloads/${application_name}_Installer.app"; then
-    # Check the .app is correctly signed
-    echo "[✅] Successfully validated the signature on ${application_name}_Installer.app"
-  else
-    echo "[❌] Failed to validate the signature on ${application_name}_Installer.app"
-    exit 1
-  fi
-
-  (
-    # Execute in a subshell so the working directory is not permanantly changed
-    cd "${HOME}/Downloads" || exit
-
-    echo "[⚠️ ] Password required to install ${application_name}"
-
-    if sudo bash -c "./${application_name}_Installer.app/Contents/MacOS/${application_name} -install"; then 
-      echo "[✅] Successfully installed ${application_name}"
-    else
-      echo "[❌] Failed to install ${application_name}"
-      exit 1
-    fi
-  )
-
 }
 
 
@@ -864,8 +869,17 @@ function main {
   local cmd=${1:-"usage"}
   local homebrew_brewfile=${2:-${HOME}/Documents/Projects/dotfiles/Brewfile}
 
-  if [[ "${cmd}" == "defaults" ]]; then
+  if [[ "${cmd}" == "eficheck" ]]; then
+    check_efi_integrity
+
+  elif [[ "${cmd}" == "defaults" ]]; then
     write_defaults
+
+  elif [[ "${cmd}" == "vmware" ]]; then
+    change_vmware_home
+
+  elif [[ "${cmd}" == "dotfiles" ]]; then
+    install_dotfiles
 
   elif [[ "${cmd}" == "gpgtools" ]]; then 
     install_gpgtools
@@ -875,12 +889,6 @@ function main {
 
   elif [[ "${cmd}" == "tower" ]]; then
     install_tower
-
-  elif [[ "${cmd}" == "vmware" ]]; then
-    change_vmware_home
-
-  elif [[ "${cmd}" == "brew" ]]; then
-    install_brew
   
   elif [[ "${cmd}" == "rocket" ]]; then
     install_rocket
@@ -891,14 +899,11 @@ function main {
   elif [[ "${cmd}" == "blockblock" ]]; then
     install_blockblock
 
+  elif [[ "${cmd}" == "brew" ]]; then
+    install_brew
+
   elif [[ "${cmd}" == "brewfile" ]]; then
     install_brewfile "${homebrew_brewfile}"
-
-  elif [[ "${cmd}" == "eficheck" ]]; then
-    check_efi_integrity
-
-  elif [[ "${cmd}" == "dotfiles" ]]; then
-    install_dotfiles
 
   elif [[ "${cmd}" == "shell" ]]; then
     change_shell
@@ -922,8 +927,8 @@ function main {
     install_tower
     install_rocket
     install_brew
-    change_shell
     install_brewfile "${homebrew_brewfile}"
+    change_shell
 
   else
     usage
