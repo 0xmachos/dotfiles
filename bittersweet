@@ -870,7 +870,6 @@ function install_brew {
     else
       echo "[🍺] Homebrew-file already installed"
     fi 
-
 }
 
 
