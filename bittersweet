@@ -234,8 +234,28 @@ function objective_see_install {
 
     echo "[⚠️ ] Password required to install ${application_name}"
 
-    if sudo bash -c "./${application_name}_Installer.app/Contents/MacOS/${application_name} -install"; then 
-      echo "[✅] Successfully installed ${application_name}"
+    if [[ "${application_name}" == "OverSight" ]]; then
+
+      if sudo bash -c "./${application_name}_Installer.app/Contents/MacOS/${application_name}_Installer -install"; then
+      # OverSight's binary is named differently than other OBJSEE apps 
+        echo "[✅] Successfully installed ${application_name}"
+      else
+        echo "[❌] Failed to install ${application_name}"
+        exit 1
+      fi
+
+    else 
+
+      if sudo bash -c "./${application_name}_Installer.app/Contents/MacOS/${application_name} -install"; then 
+        echo "[✅] Successfully installed ${application_name}"
+      else
+        echo "[❌] Failed to install ${application_name}"
+        exit 1
+      fi
+
+    fi
+  )
+}
     else
       echo "[❌] Failed to install ${application_name}"
       exit 1
