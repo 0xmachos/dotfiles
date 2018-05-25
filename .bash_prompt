@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# ~/.bash_prompt
+
+# Based on: https://github.com/jessfraz/dotfiles/blob/master/.bash_prompt
+
+prompt_git() {
+  local s='';
+  local branchName='';
+
+  # Check if the current directory is in a Git repository.
+  if [ "$(git rev-parse --is-inside-work-tree &>/dev/null; echo "${?}")" == '0' ]; then
+
+    # check if the current directory is in .git before running git checks
+    if [ "$(git rev-parse --is-inside-git-dir 2> /dev/null)" == 'false' ]; then
+
+      if [[ -O "$(git rev-parse --show-toplevel)/.git/index" ]]; then
+        git update-index --really-refresh -q &> /dev/null;
+      fi;
+
+      # Check for uncommitted changes in the index.
+      if ! git diff-index HEAD --quiet; then
+        s+='+';
+      fi;
+
+      # Check for untracked files.
+      if [ -n "$(git ls-files --others --exclude-standard)" ]; then
+        s+='?';
+      fi;
+
+    fi;
+
+    # Get the short symbolic ref.
+    # If HEAD isn’t a symbolic ref, get the short SHA for the latest commit
+    # Otherwise, just give up.
+    branchName="$(git symbolic-ref --quiet --short HEAD 2> /dev/null || \
+      git rev-parse --short HEAD 2> /dev/null || \
+      echo '(unknown)')";
+
+    [ -n "${s}" ] && s=" [${s}]";
+
+    echo -e "${1}${branchName}${blue}${s}";
+  else
+    return;
+  fi;
+}
+
+
+
+
+
+
+
+# Solarized colors, taken from http://git.io/solarized-colors.
+tput sgr0; # reset colors
+bold=$(tput bold);
+reset=$(tput sgr0);
+blue=$(tput setaf 33);
+green=$(tput setaf 64);
+white=$(tput setaf 15);
+yellow=$(tput setaf 136);
+violet=$(tput setaf 61);
+
+# build the prompt
+
+userStyle="${blue}";
+
+PS1="\\[\\033]0;\\007\\]"; 
+# Fuck knows
+PS1+="\\[${bold}${userStyle}\\]\\u${reset}"; 
+# Username
+PS1+="\\[${white}\\] in ";
+# "in"
+PS1+="\\[${bold}${green}\\]\\w${reset}"; 
+# Working directory
+PS1+="\$(prompt_git \"${white} on ${violet}\")"; 
+# Git repository details
+PS1+="\\n";
+# New line
+PS1+="\\[${white}\\]\\$ \\[${reset}\\]"; 
+# "$" (and reset color)
+export PS1;
+
+PS2="\\[${yellow}\\]→ \\[${reset}\\]";
+export PS2;
+
