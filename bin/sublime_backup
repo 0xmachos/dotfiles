@@ -25,16 +25,22 @@ file_names=("Bash.sublime-settings" "Package Control.sublime-settings" \
 # Preferences.sublime-settings    : General settings
 # SublimeLinter.sublime-settings  : SublimeLinter settings
 
-for file in "${file_names[@]}"
-do
+if [ -d "$HOME/Library/Application Support/Sublime Text 3/Packages/User" ]; then
+  
+  for file in "${file_names[@]}"
+  do
 
-  if cp "$HOME/Library/Application Support/Sublime Text 3/Packages/User/${file}" \
-        "$HOME/Documents/Projects/dotfiles/Sublime Text 3/Packages/User/${file}"; then
-    
-    echo "[✅] Successfully copied ${file}"
-  else
-    echo "[❌] Failed to copy ${file}"
-  fi 
+    if cp "$HOME/Library/Application Support/Sublime Text 3/Packages/User/${file}" \
+          "$HOME/Documents/Projects/dotfiles/Sublime Text 3/Packages/User/${file}"; then
+      
+      echo "[✅] Successfully copied ${file}"
+    else
+      echo "[❌] Failed to copy ${file}"
+    fi 
 
-done
+  done
+
+else
+  echo "[❌] Sublime Text not installed"
+fi
 
