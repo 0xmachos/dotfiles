@@ -41,10 +41,13 @@ function usage {
   exit 0
 }
 
+
 ### Utility Functions ###
 # download_application
+# verify_sha
 # install_application
 # objective_see_install
+
 
 function download_application {
 
@@ -74,6 +77,53 @@ function download_application {
     echo "[❌] Failed to download ${file_name}"
     exit 1
   fi
+}
+
+
+function verify_sha {
+
+  local file_name=${1:-"unset"}
+  local file_download_path=${2:-"unset"}
+  local file_sha_length=${3:-"unset"}
+  local file_sha=${4:-"unset"}
+
+  if [[ "${file_name}" == "unset" ]]; then
+    echo "[❌] 'file_name' var not set"
+    exit 1
+
+  elif [[ "${file_download_path}" == "unset" ]]; then 
+    echo "[❌] 'file_download_path' var not set"
+    exit 1
+
+  elif [[ ! "${file_sha_length}" =~ ^(1|256)$ ]]; then
+    echo "[❌] ${file_sha_length} muct be 1 or 256"
+    exit 1
+
+  elif [[ "${file_sha}" == "unset" ]]; then
+    echo "[❌] ${file_sha} does not exist"
+    exit 1
+  fi 
+
+  echo "[🍺] Attempting to validate ${file_name} SHA${file_sha_length} hash"
+
+  echo "${file_sha}  ${file_name}" > "${file_download_path}.sha${file_sha_length}"
+
+  (
+    # Execute in a subshell so the working directory is not permanantly changed
+
+    cd "${HOME}/Downloads" || exit
+
+    if shasum -a "${file_sha_length}" -c "${file_download_path}.sha${file_sha_length}"; then 
+    # Attempt to validate the ZIPs SHA256 hash
+      echo "[✅] Successfully validated ${file_name} SHA${file_sha_length} hash"
+    else
+      echo "[❌] Failed to validate ${file_name} SHA${file_sha_length} hash"
+      exit 1
+    fi
+
+  )
+
+  rm "${file_download_path:?}.sha${file_sha_length}"
 }
 
 
@@ -256,53 +306,6 @@ function objective_see_install {
 
     fi
   )
-}
-
-
-function verify_sha {
-
-  local file_name=${1:-"unset"}
-  local file_download_path=${2:-"unset"}
-  local file_sha_length=${3:-"unset"}
-  local file_sha=${4:-"unset"}
-
-  if [[ "${file_name}" == "unset" ]]; then
-    echo "[❌] 'file_name' var not set"
-    exit 1
-
-  elif [[ "${file_download_path}" == "unset" ]]; then 
-    echo "[❌] 'file_download_path' var not set"
-    exit 1
-
-  elif [[ ! "${file_sha_length}" =~ ^(1|256)$ ]]; then
-    echo "[❌] ${file_sha_length} muct be 1 or 256"
-    exit 1
-
-  elif [[ "${file_sha}" == "unset" ]]; then
-    echo "[❌] ${file_sha} does not exist"
-    exit 1
-  fi 
-
-  echo "[🍺] Attempting to validate ${file_name} SHA${file_sha_length} hash"
-
-  echo "${file_sha}  ${file_name}" > "${file_download_path}.sha${file_sha_length}"
-
-  (
-    # Execute in a subshell so the working directory is not permanantly changed
-
-    cd "${HOME}/Downloads" || exit
-
-    if shasum -a "${file_sha_length}" -c "${file_download_path}.sha${file_sha_length}"; then 
-    # Attempt to validate the ZIPs SHA256 hash
-      echo "[✅] Successfully validated ${file_name} SHA${file_sha_length} hash"
-    else
-      echo "[❌] Failed to validate ${file_name} SHA${file_sha_length} hash"
-      exit 1
-    fi
-
-  )
-
-  rm "${file_download_path:?}.sha${file_sha_length}"
 }
 
 
