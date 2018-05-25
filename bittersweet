@@ -926,6 +926,8 @@ function main {
     install_sublime_text
     install_tower
     install_rocket
+    install_splashy
+    install_blockblock
     install_brew
     install_brewfile "${homebrew_brewfile}"
     change_shell
