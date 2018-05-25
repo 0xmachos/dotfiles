@@ -256,12 +256,54 @@ function objective_see_install {
     fi
   )
 }
+
+
+function verify_sha {
+
+  local file_name=${1:-"unset"}
+  local file_download_path=${2:-"unset"}
+  local file_sha_length=${3:-"unset"}
+  local file_sha=${4:-"unset"}
+
+  if [[ "${file_name}" == "unset" ]]; then
+    echo "[❌] 'file_name' var not set"
+    exit 1
+
+  elif [[ "${file_download_path}" == "unset" ]]; then 
+    echo "[❌] 'file_download_path' var not set"
+    exit 1
+
+  elif [[ ! "${file_sha_length}" =~ ^(1|256)$ ]]; then
+    echo "[❌] ${file_sha_length} muct be 1 or 256"
+    exit 1
+
+  elif [[ "${file_sha}" == "unset" ]]; then
+    echo "[❌] ${file_sha} does not exist"
+    exit 1
+  fi 
+
+  echo "[🍺] Attempting to validate ${file_name} SHA${file_sha_length} hash"
+
+  echo "${file_sha}  ${file_name}" > "${file_download_path}.sha${file_sha_length}"
+
+  (
+    # Execute in a subshell so the working directory is not permanantly changed
+
+    cd "${HOME}/Downloads" || exit
+
+    if shasum -a "${file_sha_length}" -c "${file_download_path}.sha${file_sha_length}"; then 
+    # Attempt to validate the ZIPs SHA256 hash
+      echo "[✅] Successfully validated ${file_name} SHA${file_sha_length} hash"
     else
-      echo "[❌] Failed to install ${application_name}"
+      echo "[❌] Failed to validate ${file_name} SHA${file_sha_length} hash"
       exit 1
     fi
+
   )
+
+  rm "${file_download_path:?}.sha${file_sha_length}"
 }
+
 
 ### END Utility Functions ###
 
@@ -548,23 +590,7 @@ function install_gpgtools {
       exit 1
     fi
 
-    echo "${dmg_sha256}  ${dmg_name}" > "${dmg_download_path}.sha256"
-    # Construct a correctly formatted SHA256 checksum line
-    # 01705da33b9dadaf5282d28f9ef58f2eb7cd8ff6f19b4ade78861bf87668a061  GPG_Suite-2017.1.dmg
-
-    (
-      # Execute in a subshell so the working directory is not permanantly changed
-      cd "${HOME}/Downloads"
-
-      if shasum -a 256 -c "${dmg_download_path}.sha256"; then 
-      # Attempt to validate the DMGs SHA256 hash
-        echo "[✅] Successfully validated ${dmg_name} SHA256 hash"
-      else
-        echo "[❌] Failed to validate ${dmg_name} SHA256 hash"
-        exit 1
-      fi
-
-    )
+    verify_sha "${dmg_name}" "${dmg_download_path}" "256" "${dmg_sha256}"
 
     echo "[🍺] Attempting to mount ${dmg_download_path}"
     if hdiutil attach -quiet "${dmg_download_path}"; then
@@ -602,10 +628,6 @@ function install_gpgtools {
     echo "[🍺] Deleting ${dmg_download_path}"
     rm "${dmg_download_path:?}"
     # Delete the DMG
-    
-    echo "[🍺] Deleting ${dmg_download_path}.sha256"
-    rm "${dmg_download_path:?}.sha256"
-    # Delete the SHA256 file 
 
   else
     echo "[🍺] $(gpg2 --version | head -n 1) already installed"
@@ -756,24 +778,8 @@ function install_blockblock {
 
     download_application "${zip_download_path}" "${url}"
 
-    echo "${zip_sha1}  ${zip_name}" > "${zip_download_path}.sha1"
-    # Construct a correctly formatted SHA256 checksum line
+    verify_sha "${zip_name}" "${zip_download_path}" "1" "${zip_sha1}"
 
-    (
-      # Execute in a subshell so the working directory is not permanantly changed
-
-      cd "${HOME}/Downloads" || exit
-
-      if shasum -a 1 -c "${zip_download_path}.sha1"; then 
-      # Attempt to validate the ZIPs SHA256 hash
-        echo "[✅] Successfully validated ${zip_name} SHA1 hash"
-      else
-        echo "[❌] Failed to validate ${zip_name} SHA1 hash"
-        exit 1
-      fi
-
-    )
-    
     objective_see_install "BlockBlock" "${zip_download_path}"
 
     # Enable headless mode
