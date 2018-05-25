@@ -136,11 +136,11 @@ function install_application {
       ## Cleanup
       echo "[🍺] Deleting ${downloaded_file_path}"
       # Delete the ZIP
-      rm "${downloaded_file_path}"
+      rm "${downloaded_file_path:?}"
 
       echo "[🍺] Deleting ${HOME}/Downloads/${application_name}.app"
       # Delete the .app
-      rm -r "${HOME}/Downloads/${application_name}.app"
+      rm -r "${HOME:?}/Downloads/${application_name:?}.app"
 
 
     elif file "${downloaded_file_path}" | grep --quiet 'dmg'; then
@@ -187,7 +187,7 @@ function install_application {
       
       echo "[🍺] Deleting ${downloaded_file_path}"
       # Delete the DMG
-      rm "${downloaded_file_path}"
+      rm "${downloaded_file_path:?}"
 
     fi  
 }
@@ -580,11 +580,11 @@ function install_gpgtools {
     # Unmount the DMG
     
     echo "[🍺] Deleting ${dmg_download_path}"
-    rm "${dmg_download_path}"
+    rm "${dmg_download_path:?}"
     # Delete the DMG
     
     echo "[🍺] Deleting ${dmg_download_path}.sha256"
-    rm "${dmg_download_path}.sha256"
+    rm "${dmg_download_path:?}.sha256"
     # Delete the SHA256 file 
 
   else
