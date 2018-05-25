@@ -48,7 +48,7 @@ fi
 
 alias ..='cd ..' 
 # Go up one directory level
-alias ...='cd ...' 
+alias ...='cd ../..' 
 # Go up two directory levels
 alias c='clear'
 # Clear terminal window
