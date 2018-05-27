@@ -26,7 +26,7 @@ fi
 #   LOAD DOTFILES 
 #   ---------------------------
 
-for file in ~/.{bash_prompt,aliases}; do
+for file in ~/.{bash_prompt,aliases,extra}; do
   
   if [[ -r "$file" ]] && [[ -f "$file" ]]; then
     # shellcheck disable=SC1090
