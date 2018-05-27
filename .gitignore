@@ -1,3 +1,5 @@
+# ~/.gitignore
+
 .DS_Store
 
 # Sublime Text
@@ -8,3 +10,6 @@ Package Control.user-ca-bundle
 oscrypto-ca-bundle.crt
 *.sublime-workspace
 .SublimeREPLHistory
+
+# extra file for sensitive info 
+.extra
