@@ -671,7 +671,7 @@ function install_sublime_text {
       exit 1
     fi 
 
-    if cp -r "../Sublime Text 3/Packages/User" "$HOME/Library/Application Support/Sublime Text 3/Packages"; then
+    if cp -r "Sublime Text 3/Packages/User" "$HOME/Library/Application Support/Sublime Text 3/Packages"; then
       echo "[✅] Successfully installed Sublime Text config files"
     else
       echo "[❌] Failed to install Sublime Text config files"
