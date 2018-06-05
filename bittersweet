@@ -845,34 +845,35 @@ function install_brew {
     echo "[🍺] Installing Homebrew"
     echo -e "[⚠️ ] \\033[0;31mStick around\\033[0m - Requires you to press RETURN and input your password"
     sleep 5
-      
-      if /usr/bin/ruby -e "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install)"; then
-        echo "[✅] Successfully installed Homebrew 🍻"
-      else
-        echo "[❌] Failed to install Homebrew 😢"
-        exit 1
-      fi    
 
+    if /usr/bin/ruby -e "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install)"; then
+      echo "[✅] Successfully installed Homebrew 🍻"
     else
-      
-      brew update
-      brew upgrade
-      brew cleanup
+      echo "[❌] Failed to install Homebrew 😢"
+      exit 1
+    fi    
+
+  else
+
+    brew update
+    brew upgrade
+    brew cleanup
+  fi
+
+  echo "[🍺] Installing Homebrew-file"
+
+  if ! [ -x "$(command -v brew-file)" ]; then
+
+    if brew install rcmdnk/file/brew-file; then
+      echo "[✅] Successfully installed Homebrew-file"
+    else
+      echo "[❌] Failed to install Homebrew-file"
+      exit 1
     fi
 
-    echo "[🍺] Installing Homebrew-file"
-
-    if ! [ -x "$(command -v brew-file)" ]; then
-
-      if brew install rcmdnk/file/brew-file; then
-        echo "[✅] Successfully installed Homebrew-file"
-      else
-        echo "[❌] Failed to install Homebrew-file"
-        exit 1
-      fi
-    else
-      echo "[🍺] Homebrew-file already installed"
-    fi 
+  else
+    echo "[🍺] Homebrew-file already installed"
+  fi 
 }
 
 
