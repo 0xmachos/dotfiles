@@ -1000,6 +1000,7 @@ function main {
     install_rocket
     install_splashy
     install_blockblock
+    install_oversight
     install_brew
     install_brewfile "${homebrew_brewfile}"
     change_shell
