@@ -249,7 +249,7 @@ function objective_see_install {
   local application_name=${1:-"unset"}
   local downloaded_file_path=${2:-"unset"}
   local downloaded_file_name
-  file_name=$(echo "${downloaded_file_path}" | awk -F '/' '{print $(NF)}')
+  downloaded_file_name=$(echo "${downloaded_file_path}" | awk -F '/' '{print $(NF)}')
 
 
   if [[ "${application_name}" == "unset" ]]; then 
