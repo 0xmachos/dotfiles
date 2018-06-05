@@ -3,6 +3,20 @@
 
 # Based on: https://github.com/jessfraz/dotfiles/blob/master/.bash_prompt
 
+# Define colours
+# Solarized colors, taken from http://git.io/solarized-colors
+tput sgr0; 
+# reset colors
+
+bold=$(tput bold);
+reset=$(tput sgr0);
+blue=$(tput setaf 33);
+green=$(tput setaf 64);
+white=$(tput setaf 15);
+yellow=$(tput setaf 136);
+violet=$(tput setaf 61);
+
+
 prompt_git() {
   local s='';
   local branchName='';
@@ -45,21 +59,6 @@ prompt_git() {
 }
 
 
-
-
-
-
-
-# Solarized colors, taken from http://git.io/solarized-colors.
-tput sgr0; # reset colors
-bold=$(tput bold);
-reset=$(tput sgr0);
-blue=$(tput setaf 33);
-green=$(tput setaf 64);
-white=$(tput setaf 15);
-yellow=$(tput setaf 136);
-violet=$(tput setaf 61);
-
 # build the prompt
 
 userStyle="${blue}";
@@ -82,4 +81,3 @@ export PS1;
 
 PS2="\\[${yellow}\\]→ \\[${reset}\\]";
 export PS2;
-
