@@ -43,3 +43,7 @@ alias dk='cd ~/Desktop'
 # cd into HOME/Desktop directory
 alias pj='cd ~/Documents/Projects'
 # cd into HOME/Documents/Projects directory
+
+alias restart='sudo launchctl reboot userspace'
+# Tear down and rebuild userspace login sessions
+# https://applehelpwriter.com/2018/05/25/fastest-way-to-reboot-your-mac/
