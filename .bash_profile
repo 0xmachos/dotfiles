@@ -28,9 +28,9 @@ fi
 
 for file in ~/.{bash_prompt,aliases,extra,exports}; do
   
-  if [[ -r "$file" ]] && [[ -f "$file" ]]; then
+  if [[ -r "${file}" ]] && [[ -f "${file}" ]]; then
     # shellcheck disable=SC1090
-    source "$file"
+    source "${file}"
   fi
 
 done
