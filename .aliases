@@ -36,6 +36,8 @@ alias phs='pihole_stats'
 # Display some pi-hole stats
 alias dns='dns'
 # Resolve ip addresses using bin/dns
+alias cta='ct-abuse'
+# Get subdomains by checking CT logs
 
 alias dl='cd ~/Downloads'
 # cd into HOME/Downloads directory
