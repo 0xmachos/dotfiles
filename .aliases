@@ -27,6 +27,9 @@ alias ls='ls -FG'
 alias grep='grep --color=auto '
 # Highlight match with colour
 
+alias cc='cc -Wall'
+# Enable all warnings
+
 
 #   -----------------------------
 #   2. MAP CUSTOM COMMANDS
