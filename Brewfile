@@ -6,7 +6,6 @@ brew bash
 brew gdbm
 brew mas
 brew nmap
-brew openssh
 brew openssl
 brew pkg-config
 brew python
