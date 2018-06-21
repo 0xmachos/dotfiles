@@ -7,18 +7,21 @@
 #   https://github.com/jessfraz/dotfiles/blob/master/.bash_profile
 #  ---------------------------------------------------------------------------
 
+OS=$(uname -s)
 
 #   ---------------------------
 #   ENVIRONMENT CONFIGURATION
 #   ---------------------------
 
-cd "/Users/$USER/Documents/Projects" || exit 
+cd "${HOME}/Documents/Projects" || exit 
 # Start each terminal session in this directory
 
-# brew-file wrapper for brew
-if [ -f "$(brew --prefix)/etc/brew-wrap" ];then
-  # shellcheck disable=SC1090
-  source "$(brew --prefix)/etc/brew-wrap"
+if [[ "${OS}" == "Darwin" ]]; then
+  # brew-file wrapper for brew
+  if [ -f "$(brew --prefix)/etc/brew-wrap" ];then
+    # shellcheck disable=SC1090
+    source "$(brew --prefix)/etc/brew-wrap"
+  fi
 fi
 
 
