@@ -67,6 +67,12 @@ PS1="\\[\\033]0;\\007\\]";
 # Fuck knows
 PS1+="\\[${bold}${userStyle}\\]\\u${reset}"; 
 # Username
+
+if [[ "${OS}" == "Darwin" ]]; then
+  PS1+="\\[${white}\\] on 🍎";
+  # "on 🍎"
+fi
+
 PS1+="\\[${white}\\] in ";
 # "in"
 PS1+="\\[${bold}${green}\\]\\w${reset}"; 
