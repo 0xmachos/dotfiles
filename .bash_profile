@@ -13,8 +13,12 @@ OS=$(uname -s)
 #   ENVIRONMENT CONFIGURATION
 #   ---------------------------
 
-cd "${HOME}/Documents/Projects" || exit 
-# Start each terminal session in this directory
+if [[ -d "${HOME}/Documents/Projects" ]]; then
+  # shellcheck disable=SC2164
+  cd "${HOME}/Documents/Projects"
+  # Start each terminal session in this directory
+fi  
+
 
 if [[ "${OS}" == "Darwin" ]]; then
   # brew-file wrapper for brew
@@ -43,4 +47,6 @@ done
 #   SCRIPTS TO RUN 
 #   ---------------------------
 
-/usr/local/bin/pihole_stats
+if [[ -x "/usr/local/bin/pihole_stats" ]]; then 
+  /usr/local/bin/pihole_stats
+fi
