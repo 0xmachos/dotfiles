@@ -60,6 +60,7 @@ prompt_git() {
 }
 
 userStyle=""
+hostStyle=""
 
 if [[ "${USER}" == "root" ]]; then
   userStyle="${red}";
@@ -67,11 +68,16 @@ else
   userStyle="${blue}";
 fi
 
-
-
 if [[ "${OS}" == "Darwin" ]]; then
-  PS1+="\\[${white}\\] on 🍎";
-  # "on 🍎"
+  hostStyle="🍎"
+
+elif [[ "${OS}" == "Linux" ]]; then
+  hostStyle="🐧"
+fi 
+
+if [[ "${SSH_TTY}" ]]; then
+  hostStyle+="☁️ "
+  # Add a cloud when connected via SSH.
 fi
 
 # build the prompt
@@ -80,6 +86,8 @@ PS1="\\[\\033]0;\\007\\]";
 # Fuck knows
 PS1+="\\[${userStyle}\\]\\u${reset}"; 
 # Username
+PS1+="\\[${white}\\] on ${hostStyle}";
+# "on "
 PS1+="\\[${white}\\] in ";
 # "in"
 PS1+="\\[${bold}${green}\\]\\w${reset}"; 
