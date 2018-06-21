@@ -15,6 +15,7 @@ green=$(tput setaf 64);
 white=$(tput setaf 15);
 yellow=$(tput setaf 136);
 violet=$(tput setaf 61);
+red=$(tput setaf 1);
 
 
 prompt_git() {
@@ -58,21 +59,27 @@ prompt_git() {
   fi;
 }
 
+userStyle=""
 
-# build the prompt
+if [[ "${USER}" == "root" ]]; then
+  userStyle="${red}";
+else
+  userStyle="${blue}";
+fi
 
-userStyle="${blue}";
 
-PS1="\\[\\033]0;\\007\\]"; 
-# Fuck knows
-PS1+="\\[${bold}${userStyle}\\]\\u${reset}"; 
-# Username
 
 if [[ "${OS}" == "Darwin" ]]; then
   PS1+="\\[${white}\\] on 🍎";
   # "on 🍎"
 fi
 
+# build the prompt
+
+PS1="\\[\\033]0;\\007\\]"; 
+# Fuck knows
+PS1+="\\[${userStyle}\\]\\u${reset}"; 
+# Username
 PS1+="\\[${white}\\] in ";
 # "in"
 PS1+="\\[${bold}${green}\\]\\w${reset}"; 
