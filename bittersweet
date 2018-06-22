@@ -48,6 +48,7 @@ function usage {
 # verify_sha
 # install_application
 # objective_see_install
+# mas_helper
 
 
 function check_os_compatibility {
@@ -329,6 +330,21 @@ function objective_see_install {
 
     fi
   )
+}
+
+
+function mas_helper {
+
+if ! brew install mas 2>/dev/null; then
+  echo "[❌] Failed to install mas"
+  return 1
+fi
+
+if ! mas account >/dev/null; then
+  echo "[❌] Not signed into the App Store"
+  echo "[🍺] Sign in then rerun './bittersweet brewfile'"
+  return 1
+fi 
 }
 
 
@@ -1002,6 +1018,7 @@ function main {
     install_brew
 
   elif [[ "${cmd}" == "brewfile" ]]; then
+    mas_helper
     install_brewfile "${homebrew_brewfile}"
 
   elif [[ "${cmd}" == "shell" ]]; then
@@ -1029,6 +1046,7 @@ function main {
     install_blockblock
     install_oversight
     install_brew
+    mas_helper
     install_brewfile "${homebrew_brewfile}"
     change_shell
 
