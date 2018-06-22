@@ -422,9 +422,9 @@ function change_vmware_home {
   # Set prefvmx.defaultVMPath to $HOME/Virtual Machines in ~/Library/Preferences/VMWare Fusion/preferences
   # TODO: Allow user to pass their own path for prefvmx_defaultVMPath  
 
+  local prefvmx_defaultVMPath=${1:-"${HOME}/VMware Fusion"}
   local vmware_preferences_file="${HOME}/Library/Preferences/VMware Fusion/preferences"
   local vmware_preferences_directory="${HOME}/Library/Preferences/VMware Fusion"
-  local prefvmx_defaultVMPath="${HOME}/VMware Fusion"
 
   if [ ! -d "${vmware_preferences_directory}" ]; then
     # Check if VMWare Fusion is installed
@@ -963,6 +963,7 @@ function main {
 
   local cmd=${1:-"usage"}
   local homebrew_brewfile=${2:-${HOME}/Documents/Projects/dotfiles/Brewfile}
+  local prefvmx_defaultVMPath=${2:-"${HOME}/VMware Fusion"}
 
   if [[ "${cmd}" == "eficheck" ]]; then
     check_efi_integrity
@@ -971,7 +972,7 @@ function main {
     write_defaults
 
   elif [[ "${cmd}" == "vmware" ]]; then
-    change_vmware_home
+    change_vmware_home "${prefvmx_defaultVMPath}"
 
   elif [[ "${cmd}" == "dotfiles" ]]; then
     install_dotfiles
