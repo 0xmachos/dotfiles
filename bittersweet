@@ -908,11 +908,11 @@ function install_brewfile {
   export HOMEBREW_BREWFILE="${homebrew_brewfile}"
   echo "[🍺] Exported HOMEBREW_BREWFILE=${homebrew_brewfile}"
 
-    echo "[🍺] Installing Homebrew packages from Brewfile"
-    echo "[⚠️ ] Password required for brew file install"
+  echo "[🍺] Installing Homebrew packages from Brewfile"
+  echo "[⚠️ ] Password required for brew file install"
 
-    if brew file install; then 
-      echo "[✅] Successfully installed packages from Brewfile"
+  if brew file install; then 
+    echo "[✅] Successfully installed packages from Brewfile"
   else
     echo "[❌] Failed to install packages from Brewfile"
     exit 1
