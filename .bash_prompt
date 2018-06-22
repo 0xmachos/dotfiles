@@ -75,6 +75,13 @@ elif [[ "${OS}" == "Linux" ]]; then
   hostStyle="🐧"
 fi 
 
+if [[ -x "$(command -v systemd-detect-virt)" ]]; then 
+  if [[ "$(systemd-detect-virtz)" == "vmware" ]]; then 
+  hostStyle+="📦 "
+  # Add a box when running on VMWare
+  fi
+fi
+
 if [[ "${SSH_TTY}" ]]; then
   hostStyle+="☁️ "
   # Add a cloud when connected via SSH.
