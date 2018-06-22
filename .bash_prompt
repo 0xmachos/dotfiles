@@ -62,6 +62,7 @@ prompt_git() {
 
 user_style=""
 host_style="${orange}"
+enviroment_style=""
 
 if [[ "${USER}" == "root" ]]; then
   user_style="${red}";
@@ -77,14 +78,13 @@ elif [[ "${OS}" == "Linux" ]]; then
 fi 
 
 if [[ -x "$(command -v systemd-detect-virt)" ]]; then 
-  hostStyle+="📦 "
   if [[ "$(systemd-detect-virt)" == "vmware" ]]; then 
+  enviroment_style+="📦 "
   # Add a box when running on VMWare
   fi
-fi
 
-if [[ "${SSH_TTY}" ]]; then
-  hostStyle+="☁️ "
+elif [[ "${SSH_TTY}" ]]; then
+  enviroment_style+="☁️ "
   # Add a cloud when connected via SSH.
 fi
 
