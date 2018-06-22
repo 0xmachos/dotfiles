@@ -77,8 +77,8 @@ elif [[ "${OS}" == "Linux" ]]; then
 fi 
 
 if [[ -x "$(command -v systemd-detect-virt)" ]]; then 
-  if [[ "$(systemd-detect-virtz)" == "vmware" ]]; then 
   hostStyle+="📦 "
+  if [[ "$(systemd-detect-virt)" == "vmware" ]]; then 
   # Add a box when running on VMWare
   fi
 fi
