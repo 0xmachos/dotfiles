@@ -60,13 +60,13 @@ prompt_git() {
   fi;
 }
 
-userStyle=""
 hostStyle=""
+user_style=""
 
 if [[ "${USER}" == "root" ]]; then
-  userStyle="${red}";
+  user_style="${red}";
 else
-  userStyle="${blue}";
+  user_style="${blue}";
 fi
 
 if [[ "${OS}" == "Darwin" ]]; then
@@ -92,7 +92,7 @@ fi
 
 PS1="\\[\\033]0;\\007\\]"; 
 # Fuck knows
-PS1+="\\[${userStyle}\\]\\u${reset}"; 
+PS1+="\\[${user_style}\\]\\u${reset}"; 
 # Username
 PS1+="\\[${white}\\] on ${hostStyle}";
 # "on "
