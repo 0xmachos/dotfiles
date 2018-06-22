@@ -43,11 +43,34 @@ function usage {
 
 
 ### Utility Functions ###
+# check_os_compatibility
 # download_application
 # verify_sha
 # install_application
 # objective_see_install
 
+
+function check_os_compatibility {
+  
+  local OS
+  local current_macos_version
+  local supported_macos_version
+  local supported_macos_name
+  OS="$(uname -s)"
+  current_macos_version="$(sw_vers -productVersion | awk -F '.' '{print $1 "." $2}')";
+  supported_macos_name="High Sierra"
+  supported_macos_version="10.13"
+
+  if [[ "${OS}" != "Darwin" ]]; then 
+    echo "[❌] This script was written for macOS"
+    exit 1
+  fi
+
+  if [[ "${current_macos_version}" != "${supported_macos_version}" ]]; then
+    echo "[⚠️ ] This scipt was written for macOS ${supported_macos_name} (${supported_macos_version})"
+    sleep 3
+  fi 
+}
 
 function download_application {
 
@@ -935,6 +958,8 @@ function run_test {
 
 
 function main {
+
+  check_os_compatibility
 
   local cmd=${1:-"usage"}
   local homebrew_brewfile=${2:-${HOME}/Documents/Projects/dotfiles/Brewfile}
