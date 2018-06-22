@@ -60,8 +60,8 @@ prompt_git() {
   fi;
 }
 
-hostStyle=""
 user_style=""
+host_style="${orange}"
 
 if [[ "${USER}" == "root" ]]; then
   user_style="${red}";
@@ -70,10 +70,10 @@ else
 fi
 
 if [[ "${OS}" == "Darwin" ]]; then
-  hostStyle="🍎"
+  host_style+="🍎 "
 
 elif [[ "${OS}" == "Linux" ]]; then
-  hostStyle="🐧"
+  host_style+="🐧 "
 fi 
 
 if [[ -x "$(command -v systemd-detect-virt)" ]]; then 
@@ -94,7 +94,7 @@ PS1="\\[\\033]0;\\007\\]";
 # Fuck knows
 PS1+="\\[${user_style}\\]\\u${reset}"; 
 # Username
-PS1+="\\[${white}\\] on ${hostStyle}";
+PS1+="\\[${white}\\] on ${host_style}\\h ${enviroment_style}";
 # "on "
 PS1+="\\[${white}\\] in ";
 # "in"
