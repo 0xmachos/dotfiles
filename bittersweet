@@ -436,7 +436,6 @@ function change_vmware_home {
 
   # Create new directory $HOME/Virtual Machines
   # Set prefvmx.defaultVMPath to $HOME/Virtual Machines in ~/Library/Preferences/VMWare Fusion/preferences
-  # TODO: Allow user to pass their own path for prefvmx_defaultVMPath  
 
   local prefvmx_defaultVMPath=${1:-"${HOME}/VMware Fusion"}
   local vmware_preferences_file="${HOME}/Library/Preferences/VMware Fusion/preferences"
