@@ -13,6 +13,7 @@ reset=$(tput sgr0);
 blue=$(tput setaf 33);
 green=$(tput setaf 64);
 white=$(tput setaf 15);
+orange=$(tput setaf 166);
 yellow=$(tput setaf 136);
 violet=$(tput setaf 61);
 red=$(tput setaf 1);
