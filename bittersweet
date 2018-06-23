@@ -294,13 +294,30 @@ function objective_see_install {
     exit 1
   fi
 
-  echo "[🍺] Attempting to validated the signature on ${application_name}_Installer.app"
-  if pkgutil --check-signature "${HOME}/Downloads/${application_name}_Installer.app"; then
-    # Check the .app is correctly signed
-    echo "[✅] Successfully validated the signature on ${application_name}_Installer.app"
+  if [[ "${application_name}" == "BlockBlock" ]]; then
+    # The BlockBlock installer binary name differs from every other ObjSee installer
+    # This is a really shitty work around 
+    echo "[🍺] Attempting to validated the signature on ${application_name} Installer.app"
+
+    if pkgutil --check-signature "${HOME}/Downloads/${application_name} Installer.app"; then
+      # Check the .app is correctly signed
+      echo "[✅] Successfully validated the signature on ${application_name} Installer.app"
+    else
+      echo "[❌] Failed to validate the signature on ${application_name} Installer.app"
+      exit 1
+    fi
+
   else
-    echo "[❌] Failed to validate the signature on ${application_name}_Installer.app"
-    exit 1
+
+    echo "[🍺] Attempting to validated the signature on ${application_name}_Installer.app"
+
+    if pkgutil --check-signature "${HOME}/Downloads/${application_name}_Installer.app"; then
+      # Check the .app is correctly signed
+      echo "[✅] Successfully validated the signature on ${application_name}_Installer.app"
+    else
+      echo "[❌] Failed to validate the signature on ${application_name}_Installer.app"
+      exit 1
+    fi
   fi
 
   (
@@ -312,6 +329,16 @@ function objective_see_install {
     if [[ "${application_name}" == "OverSight" ]]; then
 
       if sudo bash -c "./${application_name}_Installer.app/Contents/MacOS/${application_name}_Installer -install"; then
+      # OverSight's binary is named differently than other OBJSEE apps 
+        echo "[✅] Successfully installed ${application_name}"
+      else
+        echo "[❌] Failed to install ${application_name}"
+        exit 1
+      fi
+    
+    elif [[ "${application_name}" == "BlockBlock" ]]; then
+
+      if sudo bash -c "./${application_name}\\ Installer.app/Contents/MacOS/${application_name} -install"; then
       # OverSight's binary is named differently than other OBJSEE apps 
         echo "[✅] Successfully installed ${application_name}"
       else
