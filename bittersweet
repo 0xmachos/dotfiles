@@ -932,6 +932,9 @@ function install_brew {
 
   else
 
+    echo "[🍺] Updating Homebrew"
+    sleep 2
+    
     brew update
     brew upgrade
     brew cleanup
