@@ -671,7 +671,7 @@ function install_gpgtools {
     verify_signature "${dmg_mount_point}/Install.pkg" "Install.pkg"
     
     echo "[⚠️ ] Password required for installer"
-    if sudo installer -pkg "${dmg_mount_point}/Install.pkg" -target "/"; then
+    if sudo installer -pkg "${dmg_mount_point}/Install.pkg" -target "/" >/dev/null; then
       # !! SUDO !!
       # Install
       echo "[✅] Successfully installed GPGTools"
