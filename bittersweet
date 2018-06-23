@@ -165,118 +165,118 @@ function verify_sha {
 
 function install_application {
 
-    # Install Applications packaged as .dmg or .zip
-    # Does not work for application which require an installer (.pkg)
-    # Checks if .dmg or .zip then act accordingly
-    # Checks signature on .app before installing
+  # Install Applications packaged as .dmg or .zip
+  # Does not work for application which require an installer (.pkg)
+  # Checks if .dmg or .zip then act accordingly
+  # Checks signature on .app before installing
 
-    local application_name=${1:-"unset"}
-    local downloaded_file_path=${2:-"unset"}
-    local downloaded_file_name
-    downloaded_file_name="$(echo "${downloaded_file_path}" | awk -F '/' '{print $NF}')"
+  local application_name=${1:-"unset"}
+  local downloaded_file_path=${2:-"unset"}
+  local downloaded_file_name
+  downloaded_file_name="$(echo "${downloaded_file_path}" | awk -F '/' '{print $NF}')"
 
 
-    if [[ "${downloaded_file_name}" == "unset" ]]; then
-      echo "[❌] 'downloaded_file_name' var not set"
+  if [[ "${downloaded_file_name}" == "unset" ]]; then
+    echo "[❌] 'downloaded_file_name' var not set"
+    exit 1
+  
+  elif [[ "${application_name}" == "unset" ]]; then 
+    echo "[❌] 'application_name' var not set"
+    exit 1
+  
+  elif [ ! -f "${downloaded_file_path}" ]; then
+    echo "[❌] ${downloaded_file_path} does not exist"
+    exit 1
+  fi 
+
+
+  if file "${downloaded_file_path}" | grep --quiet 'Zip'; then
+    # IF file is a Zip 
+
+    echo "[🍺] Attempting to unzip ${downloaded_file_name}"
+    if unzip -qa "${downloaded_file_path}" -d "${HOME}/Downloads"; then
+      # Attempt to unzip
+      echo "[✅] Successfully unzipped ${downloaded_file_name}"
+    else
+      echo "[❌] Failed to unzip ${downloaded_file_name}"
       exit 1
+    fi
+
+    echo "[🍺] Attempting to validated the signature on .app"
+    if pkgutil --check-signature "${HOME}/Downloads/${application_name}.app"; then
+      # Check the .app is correctly signed
+      echo "[✅] Successfully validated the signature on ${application_name}.app"
+    else
+      echo "[❌] Failed to validate the signature on ${application_name}.app"
+      exit 1
+    fi
+
+    echo "[🍺] Attempting to copy ${application_name}.app into /Applications"
+    if cp -Ri "${HOME}/Downloads/${application_name}.app" "/Applications"; then
+      # Attempt to copy .app into /Applications 
+      echo "[✅] Successfully installed ${application_name}"
+    else
+      echo "[❌] Failed to install ${application_name}"
+      exit 1
+    fi
+
+    ## Cleanup
+    echo "[🍺] Deleting ${downloaded_file_path}"
+    # Delete the ZIP
+    rm "${downloaded_file_path:?}"
+
+    echo "[🍺] Deleting ${HOME}/Downloads/${application_name}.app"
+    # Delete the .app
+    rm -r "${HOME:?}/Downloads/${application_name:?}.app"
+
+
+  elif file "${downloaded_file_path}" | grep --quiet 'dmg'; then
+    # IF file is a dmg
+
+    local dmg_mount_path
     
-    elif [[ "${application_name}" == "unset" ]]; then 
-      echo "[❌] 'application_name' var not set"
+    echo "[🍺] Attempting to mount ${downloaded_file_path}"
+    if hdiutil attach -quiet "${downloaded_file_path}"; then
+      # Attempt to mount the DMG 
+      echo "[✅] Successfully mounted ${downloaded_file_name}"
+
+      # shellcheck disable=SC2086
+      # Globbing is desired here, using it to avoid SC2010
+      dmg_mount_path="$(echo /Volumes/${application_name}*)"
+
+    else
+      echo "[❌] Failed to mount ${downloaded_file_path}"
       exit 1
+    fi
+
+    echo "[🍺] Attempting to validated the signature on ${application_name}.app"
+    if pkgutil --check-signature "${dmg_mount_path}/${application_name}.app"; then
+      # Check the .app is correctly signed
+      echo "[✅] Successfully validated the signature on ${application_name}.app"
+    else
+      echo "[❌] Failed to validate the signature on ${application_name}.app"
+      exit 1
+    fi
+
+    echo "[🍺] Attempting to copy ${application_name}.app into /Applications"
+    if cp -Ri "${dmg_mount_path}/${application_name}.app" "/Applications"; then
+      # Attempt to copy .app into /Applications 
+      echo "[✅] Successfully installed ${application_name}"
+    else
+      echo "[❌] Failed to install ${application_name}"
+      exit 1
+    fi
+
+    ## Cleanup 
+    echo "[🍺] Unmounting ${dmg_mount_path}"
+    # Unmount the DMG
+    hdiutil detach -quiet "${dmg_mount_path}"
     
-    elif [ ! -f "${downloaded_file_path}" ]; then
-      echo "[❌] ${downloaded_file_path} does not exist"
-      exit 1
-    fi 
+    echo "[🍺] Deleting ${downloaded_file_path}"
+    # Delete the DMG
+    rm "${downloaded_file_path:?}"
 
-
-    if file "${downloaded_file_path}" | grep --quiet 'Zip'; then
-      # IF file is a Zip 
-
-      echo "[🍺] Attempting to unzip ${downloaded_file_name}"
-      if unzip -qa "${downloaded_file_path}" -d "${HOME}/Downloads"; then
-        # Attempt to unzip
-        echo "[✅] Successfully unzipped ${downloaded_file_name}"
-      else
-        echo "[❌] Failed to unzip ${downloaded_file_name}"
-        exit 1
-      fi
-
-      echo "[🍺] Attempting to validated the signature on .app"
-      if pkgutil --check-signature "${HOME}/Downloads/${application_name}.app"; then
-        # Check the .app is correctly signed
-        echo "[✅] Successfully validated the signature on ${application_name}.app"
-      else
-        echo "[❌] Failed to validate the signature on ${application_name}.app"
-        exit 1
-      fi
-
-      echo "[🍺] Attempting to copy ${application_name}.app into /Applications"
-      if cp -Ri "${HOME}/Downloads/${application_name}.app" "/Applications"; then
-        # Attempt to copy .app into /Applications 
-        echo "[✅] Successfully installed ${application_name}"
-      else
-        echo "[❌] Failed to install ${application_name}"
-        exit 1
-      fi
-
-      ## Cleanup
-      echo "[🍺] Deleting ${downloaded_file_path}"
-      # Delete the ZIP
-      rm "${downloaded_file_path:?}"
-
-      echo "[🍺] Deleting ${HOME}/Downloads/${application_name}.app"
-      # Delete the .app
-      rm -r "${HOME:?}/Downloads/${application_name:?}.app"
-
-
-    elif file "${downloaded_file_path}" | grep --quiet 'dmg'; then
-      # IF file is a dmg
-
-      local dmg_mount_path
-      
-      echo "[🍺] Attempting to mount ${downloaded_file_path}"
-      if hdiutil attach -quiet "${downloaded_file_path}"; then
-        # Attempt to mount the DMG 
-        echo "[✅] Successfully mounted ${downloaded_file_name}"
-
-        # shellcheck disable=SC2086
-        # Globbing is desired here, using it to avoid SC2010
-        dmg_mount_path="$(echo /Volumes/${application_name}*)"
-
-      else
-        echo "[❌] Failed to mount ${downloaded_file_path}"
-        exit 1
-      fi
-
-      echo "[🍺] Attempting to validated the signature on ${application_name}.app"
-      if pkgutil --check-signature "${dmg_mount_path}/${application_name}.app"; then
-        # Check the .app is correctly signed
-        echo "[✅] Successfully validated the signature on ${application_name}.app"
-      else
-        echo "[❌] Failed to validate the signature on ${application_name}.app"
-        exit 1
-      fi
-
-      echo "[🍺] Attempting to copy ${application_name}.app into /Applications"
-      if cp -Ri "${dmg_mount_path}/${application_name}.app" "/Applications"; then
-        # Attempt to copy .app into /Applications 
-        echo "[✅] Successfully installed ${application_name}"
-      else
-        echo "[❌] Failed to install ${application_name}"
-        exit 1
-      fi
-
-      ## Cleanup 
-      echo "[🍺] Unmounting ${dmg_mount_path}"
-      # Unmount the DMG
-      hdiutil detach -quiet "${dmg_mount_path}"
-      
-      echo "[🍺] Deleting ${downloaded_file_path}"
-      # Delete the DMG
-      rm "${downloaded_file_path:?}"
-
-    fi  
+  fi  
 }
 
 
