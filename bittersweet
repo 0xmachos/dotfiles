@@ -191,6 +191,7 @@ function install_application {
   local application_name=${1:-"unset"}
   local downloaded_file_path=${2:-"unset"}
   local downloaded_file_name
+  local dmg_mount_path
   downloaded_file_name="$(echo "${downloaded_file_path}" | awk -F '/' '{print $NF}')"
 
 
@@ -243,8 +244,6 @@ function install_application {
 
   elif file "${downloaded_file_path}" | grep --quiet 'dmg'; then
     # IF file is a dmg
-
-    local dmg_mount_path
     
     echo "[🍺] Attempting to mount ${downloaded_file_path}"
     if hdiutil attach -quiet "${downloaded_file_path}"; then
