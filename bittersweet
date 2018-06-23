@@ -150,7 +150,7 @@ function verify_sha {
 
     cd "${HOME}/Downloads" || exit
 
-    if shasum -a "${file_sha_length}" -c "${file_download_path}.sha${file_sha_length}"; then 
+    if shasum -a "${file_sha_length}" -c "${file_download_path}.sha${file_sha_length}" >/dev/null; then 
     # Attempt to validate the ZIPs SHA256 hash
       echo "[✅] Successfully validated ${file_name} SHA${file_sha_length} hash"
     else
