@@ -470,7 +470,7 @@ function change_vmware_home {
 
   if [ ! -d "${vmware_preferences_directory}" ]; then
     # Check if VMWare Fusion is installed
-    echo "[❌] VMWare Fusion is not installed"
+    echo "[⚠️ ] VMWare Fusion is not installed"
   else
     
     if grep -q "prefvmx.defaultVMPath" "${vmware_preferences_file}"; then
