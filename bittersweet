@@ -59,6 +59,7 @@ function usage {
 # check_os_compatibility
 # download_application
 # verify_sha
+# verify_signature
 # install_application
 # objective_see_install
 # mas_helper
@@ -163,6 +164,23 @@ function verify_sha {
 }
 
 
+function verify_signature {
+
+  local application_path=${1:-?}
+  local application_name=${2:-?}
+
+  echo "[🍺] Attempting to validated the signature on ${application_name}"
+
+  if pkgutil --check-signature "${application_path}" >/dev/null; then
+    # Check the .app is correctly signed
+    echo "[✅] Successfully validated the signature on ${application_name}"
+  else
+    echo "[❌] Failed to validate the signature on ${application_name}"
+    exit 1
+  fi
+}
+
+
 function install_application {
 
   # Install Applications packaged as .dmg or .zip
@@ -202,14 +220,7 @@ function install_application {
       exit 1
     fi
 
-    echo "[🍺] Attempting to validated the signature on .app"
-    if pkgutil --check-signature "${HOME}/Downloads/${application_name}.app"; then
-      # Check the .app is correctly signed
-      echo "[✅] Successfully validated the signature on ${application_name}.app"
-    else
-      echo "[❌] Failed to validate the signature on ${application_name}.app"
-      exit 1
-    fi
+    verify_signature "${HOME}/Downloads/${application_name}.app" "${application_name}.app"
 
     echo "[🍺] Attempting to copy ${application_name}.app into /Applications"
     if cp -Ri "${HOME}/Downloads/${application_name}.app" "/Applications"; then
@@ -249,14 +260,7 @@ function install_application {
       exit 1
     fi
 
-    echo "[🍺] Attempting to validated the signature on ${application_name}.app"
-    if pkgutil --check-signature "${dmg_mount_path}/${application_name}.app"; then
-      # Check the .app is correctly signed
-      echo "[✅] Successfully validated the signature on ${application_name}.app"
-    else
-      echo "[❌] Failed to validate the signature on ${application_name}.app"
-      exit 1
-    fi
+    verify_signature "${HOME}/Downloads/${application_name}.app" "${application_name}.app"
 
     echo "[🍺] Attempting to copy ${application_name}.app into /Applications"
     if cp -Ri "${dmg_mount_path}/${application_name}.app" "/Applications"; then
@@ -309,27 +313,10 @@ function objective_see_install {
   if [[ "${application_name}" == "BlockBlock" ]]; then
     # The BlockBlock installer binary name differs from every other ObjSee installer
     # This is a really shitty work around 
-    echo "[🍺] Attempting to validated the signature on ${application_name} Installer.app"
-
-    if pkgutil --check-signature "${HOME}/Downloads/${application_name} Installer.app"; then
-      # Check the .app is correctly signed
-      echo "[✅] Successfully validated the signature on ${application_name} Installer.app"
-    else
-      echo "[❌] Failed to validate the signature on ${application_name} Installer.app"
-      exit 1
-    fi
-
+    verify_signature "${HOME}/Downloads/${application_name} Installer.app" "${application_name}"
   else
 
-    echo "[🍺] Attempting to validated the signature on ${application_name}_Installer.app"
-
-    if pkgutil --check-signature "${HOME}/Downloads/${application_name}_Installer.app"; then
-      # Check the .app is correctly signed
-      echo "[✅] Successfully validated the signature on ${application_name}_Installer.app"
-    else
-      echo "[❌] Failed to validate the signature on ${application_name}_Installer.app"
-      exit 1
-    fi
+    verify_signature "${HOME}/Downloads/${application_name}_Installer.app" "${application_name}"
   fi
 
   (
@@ -682,14 +669,7 @@ function install_gpgtools {
       exit 1
     fi  
 
-    echo "[🍺] Attempting to validate the signature on the package"
-    if pkgutil --check-signature "${dmg_mount_point}/Install.pkg"; then
-    # Check PKG is correctly sogned
-      echo "[✅] Successfully validated the signature on the package"
-    else
-      echo "[❌] Failed to validate the signature on the package"
-      exit 1
-    fi
+    verify_signature "${dmg_mount_point}/Install.pkg" "Install.pkg"
     
     echo "[⚠️ ] Password required for installer"
     if sudo installer -pkg "${dmg_mount_point}/Install.pkg" -target "/"; then
