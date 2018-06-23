@@ -720,6 +720,7 @@ function install_sublime_text {
 
     ## Install config files
     echo "[🍺] Installing Sublime Text config files"
+
     if mkdir -p "$HOME/Library/Application Support/Sublime Text 3/Packages/"; then
       echo "[✅] Successfully created ~/Library/Application Support/Sublime Text 3/Packages/"
     else
