@@ -17,6 +17,18 @@ IFS=$'\n\t'
 # See: http://redsymbol.net/articles/unofficial-bash-strict-mode/
 
 
+### Define Colours ###
+
+tput sgr0; 
+# reset colors
+RESET=$(tput sgr0);
+BOLD=$(tput bold);
+
+RED=$(tput setaf 1);
+
+### END Colours ###
+
+
 function usage {
 
   echo -e "\\nConfigures macOS just the way I like it 🤓\\n"
@@ -36,7 +48,7 @@ function usage {
   echo "  brewfile {Brewfile} - Install Homebrew packages from Brewfile"
   echo "  shell               - Change shell to bash as installed by Brew"
 
-  echo -e "\\n  \\033[0;31mhailmary\\033[0m   - Run every function in order listed above"
+  echo -e "\\n  ${RED}hailmary${RESET}            - ${BOLD}Run every function${RESET} in order listed above"
 
   exit 0
 }
@@ -1057,7 +1069,7 @@ function main {
     # Execute all the functions
     # Order matters!
     # TODO: Manually adding new functions sucks 
-    echo -e "[🍺] \\033[0;31mHailmary\\033[0m engaged"
+    echo -e "[🍺] ${RED}Hailmary${RESET} engaged"
     sleep 3
 
     check_efi_integrity
