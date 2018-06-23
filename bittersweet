@@ -21,10 +21,11 @@ IFS=$'\n\t'
 
 tput sgr0; 
 # reset colors
-RESET=$(tput sgr0);
-BOLD=$(tput bold);
 
-RED=$(tput setaf 1);
+readonly RESET=$(tput sgr0);
+readonly BOLD=$(tput bold);
+
+readonly RED=$(tput setaf 1);
 
 ### END Colours ###
 
@@ -67,12 +68,11 @@ function check_os_compatibility {
   
   local OS
   local current_macos_version
-  local supported_macos_version
-  local supported_macos_name
+  local -r supported_macos_version="10.13"
+  local -r supported_macos_name="High Sierra"
+  
   OS="$(uname -s)"
   current_macos_version="$(sw_vers -productVersion | awk -F '.' '{print $1 "." $2}')";
-  supported_macos_name="High Sierra"
-  supported_macos_version="10.13"
 
   if [[ "${OS}" != "Darwin" ]]; then 
     echo "[❌] This script was written for macOS"
@@ -653,14 +653,14 @@ function install_gpgtools {
                 | awk -F '"' '{print $(NF-1)}')"
     # Get the latest version string
     # Query the id field from the latest div class="version"
-    local dmg_name="GPG_Suite-${latest_version}.dmg"
-    local dmg_download_path="${HOME}/Downloads/${dmg_name}" 
+    local -r dmg_name="GPG_Suite-${latest_version}.dmg"
+    local -r dmg_download_path="${HOME}/Downloads/${dmg_name}" 
     # shellcheck disable=SC2155
-    local dmg_sha256="$(curl -s "https://gpgtools.org" \
+    local dmg_sha256="$(curl -s "https://gpgtools.org" 2>/dev/null \
               | grep -m 1 "SHA256" \
               | perl -nle "print $& if m{(?<=class='tooltiptext'>).*(?=</span></span>)}")"
     # Get the SHA256 hash of the latest DMG
-    local dmg_mount_point="/Volumes/GPG Suite/" 
+    local -r dmg_mount_point="/Volumes/GPG Suite/" 
 
     echo "[🍺] Downloading ${dmg_name}"
     if curl -o "${dmg_download_path}" "https://releases.gpgtools.org/${dmg_name}"; then 
@@ -982,8 +982,7 @@ function change_shell {
   # Change default shell to bash as installed by Brew
   # /usr/local/bin/bash instead of /bin/bash
 
-  local new_shell
-  new_shell="/usr/local/bin/bash"
+  local -r new_shell="/usr/local/bin/bash"
   
   if [[ "$BASH" == "${new_shell}" ]]; then
     echo "[✅] Current shell is already '${new_shell}'"
