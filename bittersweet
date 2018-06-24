@@ -553,17 +553,6 @@ function install_dotfiles {
             -not -name "." \
             -print0)
 
-  if check_sudo; then
-    echo "[⚠️ ] Password required to interact with /usr/local/bin/"
-  fi
-
-  if sudo mkdir -p "/usr/local/bin/"; then
-  # !! SUDO !!
-    echo "[✅] Successfully created /usr/local/bin/"
-  else
-    echo "[❌] Failed to create /usr/local/bin/"
-  fi
-    
 
   # Symlink general dotfiles into ~/
   # .bash_profile
@@ -632,7 +621,23 @@ function install_dotfiles {
   done
 
 
-  # Symlink scripts into /usr/local/bin
+  # Symlink bin/ scripts into /usr/local/bin
+  # Check if /usr/local/bin exists, if not create it
+  # Requires sudo to interact with /usr/local/bin
+
+  if ! [[ -d "/usr/local/bin/" ]]; then 
+    if check_sudo; then
+      echo "[⚠️ ] Password required to create /usr/local/bin/"
+    fi
+
+    if sudo mkdir -p "/usr/local/bin/"; then
+    # !! SUDO !!
+      echo "[✅] Successfully created /usr/local/bin/"
+    else
+      echo "[❌] Failed to create /usr/local/bin/"
+    fi
+  fi
+
   # shellcheck disable=SC2044  
   for bin_file in $(find "$(PWD)/bin" -name "*" \
                   -not -name "bin"\
@@ -640,6 +645,10 @@ function install_dotfiles {
 
     if [ -e "${bin_file}" ]; then
       bin_file_base=$(basename "${bin_file}");
+
+      if check_sudo; then
+        echo "[⚠️ ] Password required to symlink scripts into /usr/local/bin/"
+      fi
 
       if sudo ln -sfn "${bin_file}" "/usr/local/bin/${bin_file_base}"; then
       # !! SUDO !!
