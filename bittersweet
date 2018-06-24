@@ -415,7 +415,8 @@ function write_defaults {
     echo "[⚠️ ] Password required to invoke defaults with sudo"
   fi
 
-  defaults write com.apple.TextEdit RichText -int 0
+  
+  defaults write com.apple.TextEdit RichText -bool false
   # TextEdit: Use Plain Text Mode as Default
   # Default: com.apple.TextEdit RichText -int 1
 
@@ -423,7 +424,7 @@ function write_defaults {
   # Mail: If attatchment is over 5MB ask to send via Mail Drop
   # Default: com.apple.mail minSizeKB 20000
 
-  defaults write com.apple.menuextra.battery ShowPercent -string "YES"
+  defaults write com.apple.menuextra.battery ShowPercent -bool true
   # Menu Bar: Show battery percentage
   # Default: com.apple.menuextra.battery ShowPercent -string "NO"
 
