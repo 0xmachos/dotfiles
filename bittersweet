@@ -63,6 +63,7 @@ function usage {
 # install_application
 # objective_see_install
 # mas_helper
+# check_sudo
 
 
 function check_os_compatibility {
@@ -322,7 +323,9 @@ function objective_see_install {
     # Execute in a subshell so the working directory is not permanantly changed
     cd "${HOME}/Downloads" || exit
 
-    echo "[⚠️ ] Password required to install ${application_name}"
+    if check_sudo; then
+      echo "[⚠️ ] Password required to install ${application_name}"
+    fi
 
     if [[ "${application_name}" == "OverSight" ]]; then
 
@@ -373,6 +376,23 @@ fi
 }
 
 
+function check_sudo {
+
+  # Check if the users password is needed to invoke sudo
+  # If the password is required return 0
+  # Example: 
+  # if check_sudo; then 
+  #   echo "Password required"
+  # fi
+
+  if ! sudo -n "echo" >/dev/null 2>&1; then
+    return 0
+  else 
+    return 1
+  fi
+}
+
+
 ### END Utility Functions ###
 
 
@@ -390,7 +410,10 @@ function check_efi_integrity {
 function write_defaults {
 
   echo "[🍺] Writing system & application defaults"
-  echo "[⚠️ ] Password required to invoke defaults with sudo"
+  
+  if check_sudo; then 
+    echo "[⚠️ ] Password required to invoke defaults with sudo"
+  fi
 
   defaults write com.apple.TextEdit RichText -int 0
   # TextEdit: Use Plain Text Mode as Default
@@ -530,7 +553,9 @@ function install_dotfiles {
             -not -name "." \
             -print0)
 
-  echo "[⚠️ ] Password required to interact with /usr/local/bin/"
+  if check_sudo; then
+    echo "[⚠️ ] Password required to interact with /usr/local/bin/"
+  fi
 
   if sudo mkdir -p "/usr/local/bin/"; then
   # !! SUDO !!
@@ -673,7 +698,10 @@ function install_gpgtools {
 
     verify_signature "${dmg_mount_point}/Install.pkg" "Install.pkg"
     
-    echo "[⚠️ ] Password required for installer"
+    if check_sudo; then
+      echo "[⚠️ ] Password required for installer"
+    fi
+
     if sudo installer -pkg "${dmg_mount_point}/Install.pkg" -target "/" >/dev/null; then
       # !! SUDO !!
       # Install
@@ -949,7 +977,10 @@ function install_brewfile {
   echo "[🍺] Exported HOMEBREW_BREWFILE=${homebrew_brewfile}"
 
   echo "[🍺] Installing Homebrew packages from Brewfile"
-  echo "[⚠️ ] Password required for brew file install"
+  
+  if check_sudo; then 
+    echo "[⚠️ ] Password required for brew file install"
+  fi
 
   if brew file install; then 
     echo "[✅] Successfully installed packages from Brewfile"
@@ -970,8 +1001,10 @@ function change_shell {
   if [[ "$BASH" == "${new_shell}" ]]; then
     echo "[✅] Current shell is already '${new_shell}'"
   else
-    echo "[⚠️ ] Password required to change shell"
-
+    if check_sudo; then 
+      echo "[⚠️ ] Password required to change shell"
+    fi
+    
     if [ -e "${new_shell}" ]; then
       sudo bash -c "echo ${new_shell} >> /etc/shells"
       # !! SUDO !!
