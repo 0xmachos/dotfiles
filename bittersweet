@@ -586,9 +586,8 @@ function install_dotfiles {
 
   # Symlink ssh config files in to ~/.ssh/
   # config
-  # shellcheck disable=SC2044
-  for dot_file in $(find "$(PWD)/.ssh" -name "*" \
-                  -not -name ".ssh"); do
+
+  while read -r dot_file; do
 
     if [ -e "${dot_file}" ] ; then
       dot_file_base=$(basename "${dot_file}");
@@ -602,13 +601,13 @@ function install_dotfiles {
       echo "[❌] ${dot_file} does not exists"
     fi
 
-  done
+  done <   <(find "$(PWD)/.ssh" -name "*" -not -name ".ssh")
 
 
   # Symlink GPG config files in to ~/.gnupg/
-  # shellcheck disable=SC2044
-  for dot_file in $(find "$(PWD)/.gnupg" -name "*" \
-                  -not -name ".gnupg"); do
+  # gpg-agent.conf, gpg.conf
+
+  while read -r dot_file; do
 
     if [ -e "${dot_file}" ] ; then
       dot_file_base=$(basename "${dot_file}");
@@ -622,7 +621,7 @@ function install_dotfiles {
       echo "[❌] ${dot_file} does not exists"
     fi
   
-  done
+  done <   <(find "$(PWD)/.gnupg" -name "*" -not -name ".gnupg")
 
 
   # Symlink bin/ scripts into /usr/local/bin
@@ -641,11 +640,8 @@ function install_dotfiles {
       echo "[❌] Failed to create /usr/local/bin/"
     fi
   fi
-
-  # shellcheck disable=SC2044  
-  for bin_file in $(find "$(PWD)/bin" -name "*" \
-                  -not -name "bin"\
-                  -not -name ".DS_Store"); do
+ 
+  while read -r bin_file; do
 
     if [ -e "${bin_file}" ]; then
       bin_file_base=$(basename "${bin_file}");
@@ -664,7 +660,7 @@ function install_dotfiles {
       echo "[❌] ${bin_file} does not exists"
     fi
 
-  done    
+  done <   <(find "$(PWD)/bin" -name "*" -not -name "bin" -not -name ".DS_Store")    
 }
 
 
