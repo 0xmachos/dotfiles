@@ -510,9 +510,7 @@ function install_dotfiles {
 
   # Create required directories 
   # ~/.ssh and ~/.gnupg
-  # shellcheck disable=SC2044
-  for dir_name in $(find "$(PWD)" -type d -maxdepth 1 -name ".*" \
-                  -not -name '.git'); do
+  while IFS= read -r -d '' dir_name; do
     
     if [ -d "${dir_name}" ] ; then
       dir_name_base=$(basename "${dir_name}");
@@ -526,7 +524,11 @@ function install_dotfiles {
       echo "[❌] ${dir_name} does not exists"
     fi
 
-  done
+  done <   <(find . -type d -maxdepth 1 \
+            -name ".*" \
+            -not -name ".git" \
+            -not -name "." \
+            -print0)
 
   echo "[⚠️ ] Password required to interact with /usr/local/bin/"
 
