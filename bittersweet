@@ -415,7 +415,7 @@ function write_defaults {
     echo "[⚠️ ] Password required to invoke defaults with sudo"
   fi
 
-  
+
   defaults write com.apple.TextEdit RichText -bool false
   # TextEdit: Use Plain Text Mode as Default
   # Default: com.apple.TextEdit RichText -int 1
@@ -668,7 +668,7 @@ function install_dotfiles {
 function install_gpgtools {
   
   if ! [ -x "$(command -v gpg2)" ]; then
-    
+
     echo "[🍺] Installing GPGTools (GPG Suite)"
 
     # shellcheck disable=SC2155
@@ -1014,7 +1014,7 @@ function change_shell {
     if check_sudo; then 
       echo "[⚠️ ] Password required to change shell"
     fi
-    
+
     if [ -e "${new_shell}" ]; then
       sudo bash -c "echo ${new_shell} >> /etc/shells"
       # !! SUDO !!
