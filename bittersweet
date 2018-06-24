@@ -529,6 +529,8 @@ function install_dotfiles {
   local dot_file_base
   local bin_file
   local bin_file_base
+  local dir
+  dir=$(pwd)
 
 
   # Create required directories 
@@ -555,30 +557,32 @@ function install_dotfiles {
 
 
   # Symlink general dotfiles into ~/
-  # .bash_profile
-  # .bashrc
-  # shellcheck disable=SC2044
-  for dot_file in $(find "$(PWD)" -name ".*" \
-                  -not -name '.gitignore' \
-                  -not -name '.travis.yml' \
-                  -not -name '.git' \
-                  -not -name '.ssh' \
-                  -not -name '.gnupg' \
-                  -not -name '.DS_Store'); do
+  # .bashrc, .extra, .bash_prompt
+  # .exports, .bash_profile, .gitconfig
+  # .aliases
+
+  while read -r dot_file; do
 
     if [ -e "${dot_file}" ] ; then
       dot_file_base=$(basename "${dot_file}");
 
-      if ln -sfn "${dot_file}" "${HOME}/${dot_file_base}"; then
-        echo "[✅] Successfully linked ${dot_file} to ${HOME}/${dot_file_base}"
+      if ln -sfn "${dir}/${dot_file_base}" "${HOME}/${dot_file_base}"; then
+        echo "[✅] Successfully linked ${dir}/${dot_file_base} to ${HOME}/${dot_file_base}"
       else
-        echo "[❌] Failed to link ${dot_file} to ${HOME}/${dot_file_base}"
+        echo "[❌] Failed to link ${dir}/${dot_file_base} to ${HOME}/${dot_file_base}"
       fi
     else
       echo "[❌] ${dot_file} does not exists"
     fi
 
-  done
+  done <   <(find . -type f -name ".*" \
+                  -not -name '.gitignore' \
+                  -not -name '.travis.yml' \
+                  -not -name '.git' \
+                  -not -name '.ssh' \
+                  -not -name '.gnupg' \
+                  -not -name '.DS_Store')
+
 
   # Symlink ssh config files in to ~/.ssh/
   # config
