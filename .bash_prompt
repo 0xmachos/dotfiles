@@ -102,9 +102,9 @@ PS1="\\[\\033]0;\\007\\]";
 # Fuck knows
 PS1+="\\[${user_style}\\]\\u${reset}"; 
 # Username
-PS1+="\\[${white}\\] on ${host_style} \\h ${enviroment_style}";
+PS1+="\\[${white}\\] on ${host_style}\\h${enviroment_style} ";
 # "on "
-PS1+="\\[${white}\\]  in ";
+PS1+="\\[${white}\\] in ";
 # "in"
 PS1+="\\[${bold}${green}\\]\\w${reset}"; 
 # Working directory
