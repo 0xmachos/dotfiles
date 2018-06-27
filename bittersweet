@@ -137,7 +137,7 @@ function verify_sha {
 
   )
 
-  rm "${file_download_path:?}.sha${file_sha_length}"
+  rm "${file_download_path:?}.sha${file_sha_length:?}"
 }
 
 
