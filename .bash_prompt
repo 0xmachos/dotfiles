@@ -77,11 +77,24 @@ elif [[ "${OS}" == "Linux" ]]; then
   host_style+="🐧"
 fi 
 
-if [[ -x "$(command -v systemd-detect-virt)" ]]; then
-  # Linux vm check 
-  if [[ "$(systemd-detect-virt)" == "vmware" ]]; then 
-  enviroment_style+="📦"
-  # Add a box when running on VMWare
+
+if [[ "${OS}" == "Linux" ]]; then
+  # If Linux try some stuff
+
+  if [[ -x "$(command -v systemd-detect-virt)" ]]; then
+    # Linux vm check 
+    if [[ "$(systemd-detect-virt)" == "vmware" ]]; then 
+    enviroment_style+="📦"
+    # Add a box when running on VMWare
+    fi
+  fi
+
+  if [[ -f "/proc/device-tree/model" ]]; then
+    # Check if host is a Raspberry Pi
+    if grep -q 'Raspberry Pi' "/proc/device-tree/model"; then
+    enviroment_style+="🥧"
+    # Add a pi when running on a Raspberry Pi
+    fi
   fi
 fi
 
