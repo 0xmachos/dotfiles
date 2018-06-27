@@ -71,20 +71,20 @@ else
 fi
 
 if [[ "${OS}" == "Darwin" ]]; then
-  host_style+="🍎 "
+  host_style+="🍎"
 
 elif [[ "${OS}" == "Linux" ]]; then
-  host_style+="🐧 "
+  host_style+="🐧"
 fi 
 
 if [[ -x "$(command -v systemd-detect-virt)" ]]; then 
   if [[ "$(systemd-detect-virt)" == "vmware" ]]; then 
-  enviroment_style+="📦 "
+  enviroment_style+="📦"
   # Add a box when running on VMWare
   fi
 
 elif [[ "${SSH_TTY}" ]]; then
-  enviroment_style+="☁️ "
+  enviroment_style+="☁️"
   # Add a cloud when connected via SSH.
 fi
 
@@ -94,9 +94,9 @@ PS1="\\[\\033]0;\\007\\]";
 # Fuck knows
 PS1+="\\[${user_style}\\]\\u${reset}"; 
 # Username
-PS1+="\\[${white}\\] on ${host_style}\\h ${enviroment_style}";
+PS1+="\\[${white}\\] on ${host_style} \\h ${enviroment_style}";
 # "on "
-PS1+="\\[${white}\\] in ";
+PS1+="\\[${white}\\]  in ";
 # "in"
 PS1+="\\[${bold}${green}\\]\\w${reset}"; 
 # Working directory
