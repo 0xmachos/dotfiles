@@ -98,11 +98,19 @@ if [[ "${OS}" == "Linux" ]]; then
   fi
 fi
 
-if kextstat | grep -q 'com.vmware.kext.VMwareGfx' || kextstat | grep -q 'com.vmware.kext.vmhgfs'; then 
-  # macOS vmware check
-  enviroment_style+="📦"
-  # Add a box when running on VMWare
+
+if [[ "${OS}" == "Darwin" ]]; then
+  # If macOS try some stuff
+
+  if [[ -x "$(command -v kextstat)" ]]; then
+    if kextstat | grep -q 'com.vmware.kext.VMwareGfx' || kextstat | grep -q 'com.vmware.kext.vmhgfs'; then 
+      # macOS vmware check
+      enviroment_style+="📦"
+      # Add a box when running on VMWare
+    fi
+  fi
 fi
+
 
 if [[ "${SSH_TTY}" ]]; then
   enviroment_style+="☁️"
