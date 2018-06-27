@@ -87,6 +87,7 @@ function check_os_compatibility {
   fi 
 }
 
+
 function download_application {
 
   # Download file using curl
@@ -309,7 +310,6 @@ function objective_see_install {
         echo "[❌] Failed to install ${application_name}"
         exit 1
       fi
-
     fi
   )
 }
