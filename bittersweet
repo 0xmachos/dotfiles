@@ -340,6 +340,7 @@ function check_sudo {
   # fi
 
   if ! sudo -n "echo" >/dev/null 2>&1; then
+    # !! SUDO !!
     return 0
   else 
     return 1
