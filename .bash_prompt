@@ -113,7 +113,7 @@ fi
 
 
 if [[ "${SSH_TTY}" ]]; then
-  enviroment_style+="☁️"
+  enviroment_style+="☁️ "
   # Add a cloud when connected via SSH.
 fi
 
@@ -123,7 +123,7 @@ PS1="\\[\\033]0;\\007\\]";
 # Fuck knows
 PS1+="\\[${user_style}\\]\\u${reset}"; 
 # Username
-PS1+="\\[${white}\\] on ${host_style}\\h${enviroment_style} ";
+PS1+="\\[${white}\\] on ${host_style}\\h${enviroment_style}";
 # "on "
 PS1+="\\[${white}\\] in ";
 # "in"
