@@ -8,15 +8,15 @@
 tput sgr0; 
 # reset colors
 
-bold=$(tput bold);
-reset=$(tput sgr0);
-blue=$(tput setaf 33);
-green=$(tput setaf 64);
-white=$(tput setaf 15);
-orange=$(tput setaf 166);
-yellow=$(tput setaf 136);
-violet=$(tput setaf 61);
-red=$(tput setaf 1);
+BOLD=$(tput bold)
+RESET=$(tput sgr0)
+BLUE=$(tput setaf 33)
+GREEN=$(tput setaf 64)
+WHITE=$(tput setaf 15)
+ORANGE=$(tput setaf 166)
+YELLOW=$(tput setaf 136)
+VIOLET=$(tput setaf 61)
+RED=$(tput setaf 1)
 
 
 prompt_git() {
@@ -54,20 +54,20 @@ prompt_git() {
 
     [ -n "${s}" ] && s=" [${s}]";
 
-    echo -e "${1}${branchName}${blue}${s}";
+    echo -e "${1}${branchName}${BLUE}${s}";
   else
     return;
   fi;
 }
 
 user_style=""
-host_style="${orange}"
+host_style="${ORANGE}"
 enviroment_style=""
 
 if [[ "${USER}" == "root" ]]; then
-  user_style="${red}";
+  user_style="${RED}";
 else
-  user_style="${blue}";
+  user_style="${BLUE}";
 fi
 
 if [[ "${OS}" == "Darwin" ]]; then
@@ -121,21 +121,21 @@ fi
 
 PS1="\\[\\033]0;\\007\\]"; 
 # Fuck knows
-PS1+="\\[${user_style}\\]\\u${reset}"; 
+PS1+="\\[${user_style}\\]\\u${RESET}"; 
 # Username
-PS1+="\\[${white}\\] on ${host_style}\\h${enviroment_style}";
+PS1+="\\[${WHITE}\\] on ${host_style}\\h${enviroment_style}";
 # "on "
-PS1+="\\[${white}\\] in ";
+PS1+="\\[${WHITE}\\] in ";
 # "in"
-PS1+="\\[${bold}${green}\\]\\w${reset}"; 
+PS1+="\\[${BOLD}${GREEN}\\]\\w${RESET}"; 
 # Working directory
-PS1+="\$(prompt_git \"${white} on ${violet}\")"; 
+PS1+="\$(prompt_git \"${WHITE} on ${VIOLET}\")"; 
 # Git repository details
 PS1+="\\n";
 # New line
-PS1+="\\[${white}\\]\\$ \\[${reset}\\]"; 
+PS1+="\\[${WHITE}\\]\\$ \\[${RESET}\\]"; 
 # "$" (and reset color)
 export PS1;
 
-PS2="\\[${yellow}\\]→ \\[${reset}\\]";
+PS2="\\[${YELLOW}\\]→ \\[${RESET}\\]";
 export PS2;
