@@ -4,7 +4,9 @@
 tap homebrew/core
 brew bash
 brew gdbm
+brew libsodium
 brew mas
+brew minisign
 brew nmap
 brew openssl
 brew pkg-config
