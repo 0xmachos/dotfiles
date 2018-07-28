@@ -41,7 +41,6 @@ function usage {
   echo "  gpgtools            - Install GPGTools"
   echo "  sublimetext         - Install Sublime Text"
   echo "  tower               - Install Tower"
-  echo "  rocket              - Install Rocket 🚀"
   echo "  splashy             - Install Splashy 🌄"
   echo "  blockblock          - Install BlockBlock"
   echo "  oversight           - Install OverSight 📸🎤"
@@ -762,34 +761,6 @@ function install_tower {
 }
 
 
-install_rocket () {
-
-  if [ ! -d "/Applications/Rocket.app" ]; then
-
-    echo "[🍺] Installing Rocket 🚀"
-
-    local url
-    local dmg_name
-    local dmg_download_path
-    local dmg_mount_point
-
-    url="$(curl -s https://matthewpalmer.net/rocket/ \
-          | grep "Download" \
-          | awk -F '"' '{print $4}')"
-    dmg_name="Rocket.dmg"
-    dmg_download_path="${HOME}/Downloads/${dmg_name}"
-    dmg_mount_point="/Volumes/Rocket" 
-
-    download_application "${dmg_download_path}" "${url}"
-
-    install_application "Rocket" "${dmg_download_path}"
-
-  else 
-    echo "[🍺] Rocket already installed"
-  fi
-}
-
-
 function install_splashy {
 
   if [ ! -d "/Applications/Splashy.app" ]; then
@@ -1023,10 +994,7 @@ function main {
 
   elif [[ "${cmd}" == "tower" ]]; then
     install_tower
-  
-  elif [[ "${cmd}" == "rocket" ]]; then
-    install_rocket
-  
+
   elif [[ "${cmd}" == "splashy" ]]; then
     install_splashy
 
@@ -1063,7 +1031,6 @@ function main {
     install_gpgtools
     install_sublime_text
     install_tower
-    install_rocket
     install_splashy
     install_blockblock
     install_oversight
