@@ -74,13 +74,14 @@ function check_os_compatibility {
   local -r supported_macos_name="High Sierra"
   
   OS="$(uname -s)"
-  current_macos_version="$(sw_vers -productVersion | awk -F '.' '{print $1 "." $2}')";
 
   if [[ "${OS}" != "Darwin" ]]; then 
     echo "[❌] This script was written for macOS"
     exit 1
   fi
-
+  
+  current_macos_version="$(sw_vers -productVersion | awk -F '.' '{print $1 "." $2}')";
+  
   if [[ "${current_macos_version}" != "${supported_macos_version}" ]]; then
     echo "[⚠️ ] This scipt was written for macOS ${supported_macos_name} (${supported_macos_version})"
     sleep 3
