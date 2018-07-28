@@ -8,10 +8,3 @@ if [[ "${OS}" == "Darwin" ]]; then
   export HOMEBREW_BREWFILE=$HOME/Documents/Projects/dotfiles/Brewfile
   # Set location of Brewfile
 fi
-
-if [[ -n "$(command -v go)" ]]; then
-
-  export PATH=$PATH:/usr/local/go/bin
-  export GOPATH=$HOME/Documents/Projects/Go
-  # Go
-fi 
