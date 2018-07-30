@@ -452,8 +452,8 @@ function change_vmware_home {
     
     if grep -q "prefvmx.defaultVMPath" "${vmware_preferences_file}"; then
       # Check if prefvmx.defaultVMPath is already set
-      echo "[❌] prefvmx.defaultVMPath is already set"
-      exit 1
+      echo "[✅] prefvmx.defaultVMPath is already set"
+      return 0
     else
       echo "[🍺] Setting VMWare prefvmx.defaultVMPath to '${prefvmx_defaultVMPath}'"
 
