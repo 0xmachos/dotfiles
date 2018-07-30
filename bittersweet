@@ -67,14 +67,14 @@ function usage {
 
 function check_os_compatibility {
   
-  local OS
+  local os
   local current_macos_version
   local -r supported_macos_version="10.13"
   local -r supported_macos_name="High Sierra"
   
-  OS="$(uname -s)"
+  os="$(uname -s)"
 
-  if [[ "${OS}" != "Darwin" ]]; then 
+  if [[ "${os}" != "Darwin" ]]; then 
     echo "[❌] This script was written for macOS"
     exit 1
   fi
