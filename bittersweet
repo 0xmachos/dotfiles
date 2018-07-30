@@ -430,6 +430,10 @@ function write_defaults {
   # Mail: Force emails to be opened in plain text
   # Default: defaults write com.apple.mail PreferPlainText -bool false
 
+  defaults write com.apple.mail SendFormat -string Plain
+  # Mail: Force new emails to be composed as plain text
+  # Default: defaults write com.apple.mail SendFormat -string MIME
+
   defaults write com.apple.SoftwareUpdate ScheduleFrequency -int 1
   # App Store: Check for updates everyday instead of every 7
   # Default: defaults write com.apple.SoftwareUpdate ScheduleFrequency -int 7
