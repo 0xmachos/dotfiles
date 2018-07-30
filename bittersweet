@@ -375,10 +375,6 @@ function write_defaults {
   # TextEdit: Use Plain Text Mode as Default
   # Default: com.apple.TextEdit RichText -bool true
 
-  defaults write com.apple.mail minSizeKB 5000
-  # Mail: If attatchment is over 5MB ask to send via Mail Drop
-  # Default: com.apple.mail minSizeKB 20000
-
   defaults write com.apple.menuextra.battery ShowPercent -bool true
   # Menu Bar: Show battery percentage
   # Default: com.apple.menuextra.battery ShowPercent -bool false
@@ -437,6 +433,10 @@ function write_defaults {
   defaults write com.apple.SoftwareUpdate ScheduleFrequency -int 1
   # App Store: Check for updates everyday instead of every 7
   # Default: defaults write com.apple.SoftwareUpdate ScheduleFrequency -int 7
+
+  defaults write com.apple.mail minSizeKB 5000
+  # Mail: If attatchment is over 5MB ask to send via Mail Drop
+  # Default: com.apple.mail minSizeKB 20000
 }
 
 
