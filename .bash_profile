@@ -21,10 +21,14 @@ fi
 
 
 if [[ "${OS}" == "Darwin" ]]; then
-  # brew-file wrapper for brew
-  if [ -f "$(brew --prefix)/etc/brew-wrap" ];then
-    # shellcheck disable=SC1090
-    source "$(brew --prefix)/etc/brew-wrap"
+  if [ -x "$(command -v brew)" ]; then
+    
+    # brew-file wrapper for brew
+    if [ -f "$(brew --prefix)/etc/brew-wrap" ];then
+      # shellcheck disable=SC1090
+      source "$(brew --prefix)/etc/brew-wrap"
+    fi
+    
   fi
 fi
 
