@@ -47,6 +47,7 @@ function usage {
   echo "  brew                - Install Homebrew, Homebrew-file and export HOMEBREW_BREWFILE" 
   echo "  brewfile {Brewfile} - Install Homebrew packages from Brewfile"
   echo "  shell               - Change shell to bash as installed by Brew"
+  echo "  lockdown {list/audit} - Harden some security settings"
 
   echo -e "\\n  ${RED}hailmary${RESET}            - ${BOLD}Run every function${RESET} in order listed above"
 
@@ -953,6 +954,28 @@ function install_brewfile {
 }
 
 
+function lockdown {
+
+  local mode=${1:-"fix"}
+  local force=${2:-""}
+
+  echo "[🍺] Securing macOS via 0xmachos/mOSL/Lockdown"
+
+  if [ -x "$(command -v minisign)" ]; then
+
+    if ! minisign -Vm ./mOSL/Lockdown -P "RWTiYbJbLl7q6uQ70l1XCvGExizUgEBNDPH0m/1yMimcsfgh542+RDPU" >/dev/null; then 
+      echo "[❌] Failed to validate Lockdown signature with minisign"
+      return 1
+    else
+      echo "[🔏] Validated Lockdown signature with minisign"
+    fi
+  fi
+
+  ./mOSL/Lockdown "${mode}" "${force}"
+  # If minisin isn't present Lockdown will be executed without validation 
+}
+
+
 function change_shell {
 
   # Change default shell to bash as installed by Brew
@@ -1034,6 +1057,10 @@ function main {
   elif [[ "${cmd}" == "shell" ]]; then
     change_shell
 
+  elif [[ "${cmd}" == "lockdown" ]]; then
+    local mode=${2:-"fix"}
+    lockdown "${mode}"
+
   elif [[ "${cmd}" == "test" ]]; then
     run_test
 
@@ -1057,6 +1084,7 @@ function main {
     install_brew
     mas_helper
     install_brewfile "${HOMEBREW_BREWFILE}"
+    lockdown "fix" "force"
     change_shell
 
   else
