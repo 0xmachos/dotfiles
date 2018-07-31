@@ -934,9 +934,10 @@ function install_brewfile {
   # Install Homebrew packages from dotfiles/Brewfile
   # Will install programs from the Mac AppStore if user is logged in
   
-  export HOMEBREW_BREWFILE="${homebrew_brewfile}"
-  echo "[🍺] Exported HOMEBREW_BREWFILE=${homebrew_brewfile}"
+  local HOMEBREW_BREWFILE=${1:-"${HOME}/Documents/Projects/dotfiles/Brewfile"}
+  export HOMEBREW_BREWFILE="${HOMEBREW_BREWFILE}"
 
+  echo "[🍺] Exported HOMEBREW_BREWFILE=${HOMEBREW_BREWFILE}"
   echo "[🍺] Installing Homebrew packages from Brewfile"
   
   if check_sudo; then 
@@ -1028,7 +1029,7 @@ function main {
 
   elif [[ "${cmd}" == "brewfile" ]]; then
     mas_helper
-    install_brewfile "${homebrew_brewfile}"
+    install_brewfile "${HOMEBREW_BREWFILE}"
 
   elif [[ "${cmd}" == "shell" ]]; then
     change_shell
@@ -1055,7 +1056,7 @@ function main {
     install_oversight
     install_brew
     mas_helper
-    install_brewfile "${homebrew_brewfile}"
+    install_brewfile "${HOMEBREW_BREWFILE}"
     change_shell
 
   else
