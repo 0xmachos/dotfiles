@@ -991,8 +991,6 @@ function main {
   check_developer_tools
 
   local cmd=${1:-"usage"}
-  local homebrew_brewfile=${2:-${HOME}/Documents/Projects/dotfiles/Brewfile}
-  local prefvmx_defaultVMPath=${2:-"${HOME}/VMware Fusion"}
 
   if [[ "${cmd}" == "eficheck" ]]; then
     check_efi_integrity
@@ -1001,6 +999,7 @@ function main {
     write_defaults
 
   elif [[ "${cmd}" == "vmware" ]]; then
+    local prefvmx_defaultVMPath=${2:-"${HOME}/VMware Fusion"}
     change_vmware_home "${prefvmx_defaultVMPath}"
 
   elif [[ "${cmd}" == "dotfiles" ]]; then
@@ -1028,6 +1027,7 @@ function main {
     install_brew
 
   elif [[ "${cmd}" == "brewfile" ]]; then
+    local HOMEBREW_BREWFILE=${2:-"${HOME}/Documents/Projects/dotfiles/Brewfile"}
     mas_helper
     install_brewfile "${HOMEBREW_BREWFILE}"
 
