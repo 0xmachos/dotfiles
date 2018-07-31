@@ -56,6 +56,7 @@ function usage {
 
 ### Utility Functions ###
 # check_os_compatibility
+# check_developer_tools
 # download_application
 # verify_sha
 # verify_signature
@@ -86,6 +87,17 @@ function check_os_compatibility {
     echo "[⚠️ ] This scipt was written for macOS ${supported_macos_name} (${supported_macos_version})"
     sleep 3
   fi 
+}
+
+
+function check_developer_tools {
+
+  if ! xcode-select -p >/dev/null 2>&1; then 
+    echo "[❌] Command line developer tools required"
+    echo "[🍺] Install via: xcode-select --install"
+    exit 1
+  fi
+
 }
 
 
@@ -975,6 +987,7 @@ function change_shell {
 function main {
 
   check_os_compatibility
+  check_developer_tools
 
   local cmd=${1:-"usage"}
   local homebrew_brewfile=${2:-${HOME}/Documents/Projects/dotfiles/Brewfile}
