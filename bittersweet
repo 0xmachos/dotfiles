@@ -63,6 +63,7 @@ function usage {
 # objective_see_install
 # mas_helper
 # check_sudo
+# run_test
 
 
 function check_os_compatibility {
@@ -345,6 +346,12 @@ function check_sudo {
   else 
     return 1
   fi
+}
+
+
+function run_test {
+
+  ./test
 }
 
 
@@ -961,12 +968,6 @@ function change_shell {
       echo "[❌] Failed to change shell as '${new_shell}' does not exist"
     fi
   fi   
-}
-
-
-function run_test {
-
-  ./test
 }
 
 
