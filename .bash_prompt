@@ -129,8 +129,10 @@ PS1+="\\[${WHITE}\\] in ";
 # "in"
 PS1+="\\[${BOLD}${GREEN}\\]\\w${RESET}"; 
 # Working directory
-PS1+="\$(prompt_git \"${WHITE} on ${VIOLET}\")"; 
-# Git repository details
+if [ -x "$(command -v git)" ]; then
+  PS1+="\$(prompt_git \"${WHITE} on ${VIOLET}\")"; 
+  # Git repository details
+fi
 PS1+="\\n";
 # New line
 PS1+="\\[${WHITE}\\]\\$ \\[${RESET}\\]"; 
