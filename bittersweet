@@ -429,19 +429,6 @@ function write_defaults {
   # Spotlight: Disable suggestions in Lookup
   # Default: defaults write com.apple.lookup.shared LookupSuggestionsDisabled -bool false
 
-  defaults write com.apple.Terminal SecureKeyboardEntry -bool true
-  # Terminal: Enable Secure Keyboard Entry
-  # Deafult: defaults write com.apple.Terminal SecureKeyboardEntry -bool false
-
-  sudo defaults write /Library/Preferences/com.apple.alf globalstate -bool true
-  # !! SUDO !!
-  # Firewall: Enable
-  # Default: sudo defaults write /Library/Preferences/com.apple.alf globalstate -bool falee
-
-  defaults write com.apple.mail-shared DisableURLLoading -bool true
-  # Mail: Disable "Load remote content in messages"
-  # Default: defaults write com.apple.mail-shared DisableURLLoading -bool false
-
   defaults write com.apple.mail PreferPlainText -bool true
   # Mail: Force emails to be opened in plain text
   # Default: defaults write com.apple.mail PreferPlainText -bool false
@@ -449,10 +436,6 @@ function write_defaults {
   defaults write com.apple.mail SendFormat -string Plain
   # Mail: Force new emails to be composed as plain text
   # Default: defaults write com.apple.mail SendFormat -string MIME
-
-  defaults write com.apple.SoftwareUpdate ScheduleFrequency -int 1
-  # App Store: Check for updates everyday instead of every 7
-  # Default: defaults write com.apple.SoftwareUpdate ScheduleFrequency -int 7
 
   defaults write com.apple.mail minSizeKB 5000
   # Mail: If attatchment is over 5MB ask to send via Mail Drop
