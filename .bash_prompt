@@ -8,18 +8,79 @@
 tput sgr0; 
 # reset colors
 
-BOLD=$(tput bold)
-RESET=$(tput sgr0)
-BLUE=$(tput setaf 33)
-GREEN=$(tput setaf 64)
-WHITE=$(tput setaf 15)
-ORANGE=$(tput setaf 166)
-YELLOW=$(tput setaf 136)
-VIOLET=$(tput setaf 61)
-RED=$(tput setaf 1)
+readonly BOLD=$(tput bold)
+readonly RESET=$(tput sgr0)
+readonly BLUE=$(tput setaf 33)
+readonly GREEN=$(tput setaf 64)
+readonly WHITE=$(tput setaf 15)
+readonly ORANGE=$(tput setaf 166)
+readonly YELLOW=$(tput setaf 136)
+readonly VIOLET=$(tput setaf 61)
+readonly RED=$(tput setaf 1)
+
+### END Colours ###
 
 
-prompt_git() {
+function detect_user {
+
+  if [[ "${USER}" == "root" ]]; then
+    user_style="${RED}";
+  else
+    user_style="${BLUE}";
+  fi
+}
+
+
+function detect_enviroment {
+
+  if [[ "${OS}" == "Darwin" ]]; then
+    host_style+="🍎"
+
+  elif [[ "${OS}" == "Linux" ]]; then
+    host_style+="🐧"
+  fi 
+
+  if [[ "${OS}" == "Linux" ]]; then
+    # If Linux try some stuff
+
+    if [[ -x "$(command -v systemd-detect-virt)" ]]; then
+      # Linux vm check 
+      if [[ "$(systemd-detect-virt)" == "vmware" ]]; then 
+      enviroment_style+="📦"
+      # Add a box when running on VMWare
+      fi
+    fi
+
+    if [[ -f "/proc/device-tree/model" ]]; then
+      # Check if host is a Raspberry Pi
+      if grep -q 'Raspberry Pi' "/proc/device-tree/model"; then
+      enviroment_style+="🥧"
+      # Add a pi when running on a Raspberry Pi
+      fi
+    fi
+  fi
+
+
+  if [[ "${OS}" == "Darwin" ]]; then
+    # If macOS try some stuff
+
+    if [[ -x "$(command -v kextstat)" ]]; then
+      if kextstat | grep -q 'com.vmware.kext.VMwareGfx' || kextstat | grep -q 'com.vmware.kext.vmhgfs'; then 
+        # macOS vmware check
+        enviroment_style+="📦"
+        # Add a box when running on VMWare
+      fi
+    fi
+  fi
+
+  if [[ "${SSH_TTY}" ]]; then
+    enviroment_style+="☁️ "
+    # Add a cloud when connected via SSH.
+  fi
+}
+
+
+function prompt_git() {
   local s='';
   local branchName='';
 
@@ -60,84 +121,46 @@ prompt_git() {
   fi;
 }
 
-user_style=""
-host_style="${ORANGE}"
-enviroment_style=""
 
-if [[ "${USER}" == "root" ]]; then
-  user_style="${RED}";
-else
-  user_style="${BLUE}";
-fi
+function build_prompt {
+  # build the prompt
 
-if [[ "${OS}" == "Darwin" ]]; then
-  host_style+="🍎"
-
-elif [[ "${OS}" == "Linux" ]]; then
-  host_style+="🐧"
-fi 
-
-
-if [[ "${OS}" == "Linux" ]]; then
-  # If Linux try some stuff
-
-  if [[ -x "$(command -v systemd-detect-virt)" ]]; then
-    # Linux vm check 
-    if [[ "$(systemd-detect-virt)" == "vmware" ]]; then 
-    enviroment_style+="📦"
-    # Add a box when running on VMWare
-    fi
+  PS1="\\[\\033]0;\\007\\]"; 
+  # Fuck knows
+  PS1+="\\[${user_style}\\]\\u${RESET}"; 
+  # Username
+  PS1+="\\[${WHITE}\\] on ${host_style}\\h${enviroment_style}";
+  # "on "
+  PS1+="\\[${WHITE}\\] in ";
+  # "in"
+  PS1+="\\[${BOLD}${GREEN}\\]\\w${RESET}"; 
+  # Working directory
+  if [ -x "$(command -v git)" ]; then
+    PS1+="\$(prompt_git \"${WHITE} on ${VIOLET}\")"; 
+    # Git repository details
   fi
+  PS1+="\\n";
+  # New line
+  PS1+="\\[${WHITE}\\]\\$ \\[${RESET}\\]"; 
+  # "$" (and reset color)
+  export PS1;
 
-  if [[ -f "/proc/device-tree/model" ]]; then
-    # Check if host is a Raspberry Pi
-    if grep -q 'Raspberry Pi' "/proc/device-tree/model"; then
-    enviroment_style+="🥧"
-    # Add a pi when running on a Raspberry Pi
-    fi
-  fi
-fi
-
-
-if [[ "${OS}" == "Darwin" ]]; then
-  # If macOS try some stuff
-
-  if [[ -x "$(command -v kextstat)" ]]; then
-    if kextstat | grep -q 'com.vmware.kext.VMwareGfx' || kextstat | grep -q 'com.vmware.kext.vmhgfs'; then 
-      # macOS vmware check
-      enviroment_style+="📦"
-      # Add a box when running on VMWare
-    fi
-  fi
-fi
+  PS2="\\[${YELLOW}\\]→ \\[${RESET}\\]";
+  export PS2;
+}
 
 
-if [[ "${SSH_TTY}" ]]; then
-  enviroment_style+="☁️ "
-  # Add a cloud when connected via SSH.
-fi
+function main {
 
-# build the prompt
+  user_style=""
+  host_style="${ORANGE}"
+  enviroment_style=""
 
-PS1="\\[\\033]0;\\007\\]"; 
-# Fuck knows
-PS1+="\\[${user_style}\\]\\u${RESET}"; 
-# Username
-PS1+="\\[${WHITE}\\] on ${host_style}\\h${enviroment_style}";
-# "on "
-PS1+="\\[${WHITE}\\] in ";
-# "in"
-PS1+="\\[${BOLD}${GREEN}\\]\\w${RESET}"; 
-# Working directory
-if [ -x "$(command -v git)" ]; then
-  PS1+="\$(prompt_git \"${WHITE} on ${VIOLET}\")"; 
-  # Git repository details
-fi
-PS1+="\\n";
-# New line
-PS1+="\\[${WHITE}\\]\\$ \\[${RESET}\\]"; 
-# "$" (and reset color)
-export PS1;
+  detect_user
+  detect_enviroment
+  build_prompt
 
-PS2="\\[${YELLOW}\\]→ \\[${RESET}\\]";
-export PS2;
+}
+
+main "$@"
+
