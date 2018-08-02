@@ -395,6 +395,10 @@ function write_defaults {
   # TextEdit: Use Plain Text Mode as Default
   # Default: com.apple.TextEdit RichText -bool true
 
+  defaults write com.apple.TextEdit TabWidth -int 4
+  # TextEdit: Set tab width to 4 spaces
+  # Default: n/a
+
   defaults write com.apple.menuextra.battery ShowPercent -bool true
   # Menu Bar: Show battery percentage
   # Default: com.apple.menuextra.battery ShowPercent -bool false
