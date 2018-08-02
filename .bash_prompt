@@ -80,7 +80,7 @@ function detect_enviroment {
 }
 
 
-function prompt_git() {
+function prompt_git {
   local s='';
   local branchName='';
 
