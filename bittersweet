@@ -42,6 +42,7 @@ function usage {
   echo "  sublimetext           - Install Sublime Text"
   echo "  tower                 - Install Tower"
   echo "  splashy               - Install Splashy 🌄"
+  echo "  deckset                - Install Deckset"
   echo "  blockblock            - Install BlockBlock"
   echo "  oversight             - Install OverSight 📸🎤"
   echo "  brew                  - Install Homebrew, Homebrew-file and export HOMEBREW_BREWFILE" 
@@ -794,6 +795,25 @@ function install_splashy {
 }
 
 
+function  install_deckset {
+
+  echo "[🍺] Installing Deckset"
+  set -x
+  local -r url="https://www.decksetapp.com/download"
+  local dmg_name
+  local dmg_download_path
+
+  dmg_name="$(curl -sLI https://www.decksetapp.com/download \
+              | grep 'location: ' | tail -n 1 \
+              | awk -F '/' '{print $4}')"
+  dmg_download_path="${HOME}/Downloads/${dmg_name}"
+
+  download_application "${dmg_download_path}" "${url}"
+
+  install_application "Deckset" "${dmg_download_path}"
+}
+
+
 function install_blockblock {
 
   # Install BlockBlock
@@ -1022,6 +1042,9 @@ function main {
   elif [[ "${cmd}" == "splashy" ]]; then
     install_splashy
 
+  elif [[ "${cmd}" == "deckset" ]]; then
+    install_deckset
+
   elif [[ "${cmd}" == "blockblock" ]]; then
     install_blockblock
   
@@ -1061,6 +1084,7 @@ function main {
     install_sublime_text
     install_tower
     install_splashy
+    install_deckset
     install_blockblock
     install_oversight
     install_brew
