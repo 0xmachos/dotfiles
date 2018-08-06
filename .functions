@@ -1,2 +1,21 @@
 #!/usr/bin/env bash
 # dotfiles/.functions
+
+
+function update! {
+
+  # Update Homebrew, LaTeX packages and macOS
+
+  echo "[⚠️ ] Updating brew, LaTeX & macOS"
+  sudo -v
+
+  echo "[🍺] Updating brew"
+  brew update
+  brew upgrade
+
+  echo "[📝] Updating LaTeX"
+  sudo tlmgr update –all
+
+  echo "[🍎] Updating macOS "
+  softwareupdate -i -a
+}
