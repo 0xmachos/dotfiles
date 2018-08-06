@@ -6,7 +6,7 @@ before_script:
   - export scversion="latest"
   - wget "https://storage.googleapis.com/shellcheck/shellcheck-${scversion}.linux.x86_64.tar.xz"
   - tar --xz -xvf shellcheck-"${scversion}".linux.x86_64.tar.xz
-  - cp shellcheck-"${scversion}"/shellcheck /usr/bin/
+  - sudo cp shellcheck-"${scversion}"/shellcheck /usr/bin/
   - shellcheck --version
 script:
   - ./test
