@@ -7,7 +7,8 @@ before_script:
   - wget "https://storage.googleapis.com/shellcheck/shellcheck-${scversion}.linux.x86_64.tar.xz"
   - tar --xz -xvf shellcheck-"${scversion}".linux.x86_64.tar.xz
   - sudo cp shellcheck-"${scversion}"/shellcheck /usr/bin/
-  - shellcheck --version
+  - /usr/bin/shellcheck --version
+  - which shellcheck
 script:
   - ./test
 notifications:
