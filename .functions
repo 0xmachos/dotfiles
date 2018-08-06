@@ -16,6 +16,10 @@ function update! {
   echo "[📝] Updating LaTeX"
   sudo tlmgr update –all
 
+  echo "[🐍] Updating pip3"
+  pip3 install --upgrade pip
+
   echo "[🍎] Updating macOS "
   softwareupdate -i -a
 }
+
