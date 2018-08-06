@@ -28,6 +28,14 @@ if [[ "${OS}" == "Darwin" ]]; then
       # shellcheck disable=SC1090
       source "$(brew --prefix)/etc/brew-wrap"
     fi
+
+    # brew shell completion
+    # https://docs.brew.sh/Shell-Completion
+    # shellcheck disable=SC2231
+    for completion_file in $(brew --prefix)/etc/bash_completion.d/*; do
+      # shellcheck disable=SC1090
+      source "$completion_file"
+    done
     
   fi
 fi
