@@ -1,5 +1,6 @@
 # .travis.yml
 
+sudo: required
 language: bash
 before_script:
   - export scversion="latest"
