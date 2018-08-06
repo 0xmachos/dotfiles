@@ -2,6 +2,7 @@
 # tap repositories and their packages
 
 tap homebrew/core
+brew autoconf
 brew bash
 brew gdbm
 brew libsodium
@@ -9,7 +10,9 @@ brew mas
 brew minisign
 brew nmap
 brew openssl
+brew pipenv
 brew pkg-config
+brew pyenv
 brew python
 brew readline
 brew shellcheck
