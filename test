@@ -19,7 +19,7 @@ PASS="\\033[1;32mPASS\\033[0m"
 
 check_shellcheck () {
 
-  if ! [ -x "$(command -v shellcheck)" ]; then 
+  if ! [ -x "$(command -v "${shellcheck_binary}")" ]; then 
     echo -e "[${FAIL}] shellcheck not installed"
     echo -e "[${INFO}] macOS: brew install shellcheck"
     echo -e "[${INFO}] Linux: apt install shellcheck"
@@ -38,7 +38,7 @@ lint_shell_files () {
     if file "${f}" | grep --quiet "shell" ; then
       # Find shell files
       
-      if shellcheck "${f}" ; then
+      if "${shellcheck_binary}" "${f}" ; then
         # Run shellcheck on the file
         echo -e "[${PASS}] Sucessfully linted ${f}"
       else
@@ -53,7 +53,7 @@ lint_shell_files () {
       # "a /usr/bin/env bash script, ASCII text executable" rather than
       # "Bourne-Again shell script, ASCII text executable"
       
-      if shellcheck "${f}" ; then
+      if "${shellcheck_binary}" "${f}" ; then
         # Run shellcheck on the file
         echo -e "[${PASS}] Sucessfully linted ${f}"
       else
@@ -69,6 +69,14 @@ lint_shell_files () {
 main () {
 
   ERRORS=()
+
+  set +u
+  if [[ "${TRAVIS}" == "true" ]]; then
+    shellcheck_binary="/usr/bin/shellcheck"
+  else
+    shellcheck_binary="shellcheck"
+  fi
+  set -u
 
   check_shellcheck
   lint_shell_files
