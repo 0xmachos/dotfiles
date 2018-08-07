@@ -8,12 +8,15 @@ brew gdbm
 brew libsodium
 brew mas
 brew minisign
+brew mosh
 brew nmap
 brew openssl
 brew pipenv
 brew pkg-config
+brew protobuf
 brew pyenv
 brew python
+brew python@2
 brew readline
 brew shellcheck
 brew sqlite
