@@ -551,7 +551,8 @@ function install_dotfiles {
                   -not -name '.gitignore' \
                   -not -name '.travis.yml' \
                   -not -name '.git' \
-                  -not -name '.ssh' \
+                  -not -path "./.ssh/*" \
+                  -not -path "./mOSL/*" \
                   -not -name '.gnupg' \
                   -not -name '.DS_Store')
 
