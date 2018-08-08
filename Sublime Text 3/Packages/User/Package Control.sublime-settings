@@ -6,6 +6,7 @@
 	"installed_packages":
 	[
 		"A File Icon",
+		"GitGutter",
 		"MarkdownLivePreview",
 		"Package Control",
 		"SublimeLinter",
