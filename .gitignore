@@ -12,4 +12,4 @@ oscrypto-ca-bundle.crt
 .SublimeREPLHistory
 
 # extra file for sensitive info 
-.extra
+.extra*
