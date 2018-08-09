@@ -6,7 +6,7 @@ function update! {
 
   # Update Homebrew, LaTeX packages and macOS
 
-  echo "[⚠️ ] Updating brew, LaTeX & macOS"
+  echo "[⚠️ ] Updating brew, LaTeX, pip3 & macOS"
   sudo -v
 
   echo "[🍺] Updating brew"
