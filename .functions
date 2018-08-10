@@ -12,6 +12,7 @@ function update! {
   echo "[🍺] Updating brew"
   brew update
   brew upgrade
+  brew cleanup
 
   echo "[📝] Updating LaTeX"
   sudo tlmgr update –all
