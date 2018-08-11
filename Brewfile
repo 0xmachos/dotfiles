@@ -23,6 +23,7 @@ brew sqlite
 brew xz
 
 tap homebrew/cask
+cask jtool
 
 tap rcmdnk/file
 brew brew-file
@@ -31,6 +32,8 @@ brew brew-file
 appstore 1333542190 1Password 7 (7.0.7)
 appstore 937984704 Amphetamine (3.0.2)
 appstore 768053424 Gapplin (1.3.1)
+appstore 1127487414 Install macOS Sierra (12.6.03)
+appstore 675248567 Install OS X Mavericks (1.3.46)
 appstore 409183694 Keynote (8.1)
 appstore 409203825 Numbers (5.1)
 appstore 409201541 Pages (7.1)
