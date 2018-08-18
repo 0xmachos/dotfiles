@@ -11,7 +11,6 @@ brew minisign
 brew mosh
 brew nmap
 brew openssl
-brew pipenv
 brew pkg-config
 brew protobuf
 brew pyenv
