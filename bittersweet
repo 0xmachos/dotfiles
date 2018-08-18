@@ -1014,7 +1014,7 @@ function main {
 
   local cmd=${1:-"usage"}
 
-  elif [[ "${cmd}" == "defaults" ]]; then
+  if [[ "${cmd}" == "defaults" ]]; then
     write_defaults
 
   elif [[ "${cmd}" == "vmware" ]]; then
