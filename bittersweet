@@ -34,7 +34,6 @@ function usage {
 
   echo -e "\\nConfigures macOS just the way I like it 🤓\\n"
   echo "Usage:"
-  echo "  checkefi              - Check integrity of the x86 flash chip firmware."
   echo "  defaults              - Write new system and application default settings"
   echo "  vmware                - Change VMWare defaultVMPath to '${HOME}/Virtual Machines'"
   echo "  dotfiles              - Symlink various config files into ${HOME}"
@@ -369,17 +368,6 @@ function run_test {
 
 
 ### END Utility Functions ###
-
-
-function check_efi_integrity {
-
-  if /usr/libexec/firmwarecheckers/eficheck/eficheck --integrity-check; then 
-    echo "[✅] Successfully verified EFI firmware integrity"
-  else
-    echo "[❌] Failed to verify EFI firmware integrity"
-    exit 1
-  fi
-}
 
 
 function write_defaults {
@@ -1026,9 +1014,6 @@ function main {
 
   local cmd=${1:-"usage"}
 
-  if [[ "${cmd}" == "eficheck" ]]; then
-    check_efi_integrity
-
   elif [[ "${cmd}" == "defaults" ]]; then
     write_defaults
 
@@ -1085,7 +1070,6 @@ function main {
     echo -e "[🍺] ${RED}Hailmary${RESET} engaged"
     sleep 3
 
-    check_efi_integrity
     write_defaults
     change_vmware_home
     install_dotfiles
