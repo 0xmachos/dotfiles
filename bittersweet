@@ -454,7 +454,7 @@ function change_vmware_home {
     return 0
   else
     
-    if grep -q "prefvmx.defaultVMPath" "${vmware_preferences_file}"; then
+    if grep -q "prefvmx.defaultVMPath = \"${HOME}/VMware Fusion\"" "${vmware_preferences_file}"; then
       # Check if prefvmx.defaultVMPath is already set
       echo "[✅] prefvmx.defaultVMPath is already set"
       return 0
@@ -465,7 +465,7 @@ function change_vmware_home {
         # Attempt to create the directory for VM storage 
         echo "[✅] Successfully created '${prefvmx_defaultVMPath}'"
         
-        if echo "prefvmx.defaultVMPath = ${prefvmx_defaultVMPath}" >> "${vmware_preferences_file}"; then
+        if echo "prefvmx.defaultVMPath = \"${prefvmx_defaultVMPath}\"" >> "${vmware_preferences_file}"; then
           echo "[✅] Successfully set prefvmx.defaultVMPath"
         else
           echo "[❌] Failed to set prefvmx.defaultVMPath to '${prefvmx_defaultVMPath}'"
