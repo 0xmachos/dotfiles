@@ -15,6 +15,7 @@ function update! {
   brew cleanup
 
   echo "[📝] Updating LaTeX"
+  sudo tlmgr update --self
   sudo tlmgr update –all
 
   echo "[🐍] Updating pip3"
