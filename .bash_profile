@@ -59,7 +59,3 @@ done
 #   SCRIPTS TO RUN 
 #   ---------------------------
 
-if [[ -x "/usr/local/bin/pihole_stats" ]]; then 
-  /usr/local/bin/pihole_stats
-fi
-
