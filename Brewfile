@@ -4,7 +4,9 @@
 tap homebrew/core
 brew autoconf
 brew bash
+brew bat
 brew gdbm
+brew libevent
 brew libsodium
 brew mas
 brew minisign
