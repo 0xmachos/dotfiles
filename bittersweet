@@ -64,6 +64,7 @@ function usage {
 # install_application
 # objective_see_install
 # check_sudo
+# ctrl_c
 # run_test
 
 
@@ -342,6 +343,12 @@ function check_sudo {
   else 
     return 1
   fi
+}
+
+
+function ctrl_c {
+        echo -e "\\n[❌] ${USER} has chosen to quit!"
+        exit 1
 }
 
 
@@ -1006,6 +1013,9 @@ function main {
   check_developer_tools
 
   local cmd=${1:-"usage"}
+
+  trap ctrl_c SIGINT
+  # Detect and react to the user hitting CTRL + C
 
   if [[ "${cmd}" == "defaults" ]]; then
     write_defaults
