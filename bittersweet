@@ -777,7 +777,7 @@ function install_splashy {
 function  install_deckset {
 
   echo "[🍺] Installing Deckset"
-  set -x
+  
   local -r url="https://www.decksetapp.com/download"
   local dmg_name
   local dmg_download_path
