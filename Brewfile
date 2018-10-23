@@ -8,6 +8,7 @@ brew bat
 brew gdbm
 brew libevent
 brew libsodium
+brew libyaml
 brew mas
 brew minisign
 brew mosh
@@ -19,6 +20,7 @@ brew pyenv
 brew python
 brew python@2
 brew readline
+brew ruby
 brew shellcheck
 brew sqlite
 brew xz
