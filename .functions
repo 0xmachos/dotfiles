@@ -14,19 +14,16 @@ function update! {
   brew upgrade
   brew cleanup
 
-  
   if ! [ -x "$(command -v tlmgr)" ]; then
     echo "[📝] Updating LaTeX"
     sudo tlmgr update --self
     sudo tlmgr update –all
   fi
 
-
   if ! [ -x "$(command -v pip3)" ]; then
     echo "[🐍] Updating pip3"
     pip3 install --upgrade pip
   fi
-
 
   if [ -x "$(command -v gem)" ]; then
     echo "[💎] Updating Ruby Gems"
