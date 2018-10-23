@@ -20,6 +20,11 @@ function update! {
 
   echo "[🐍] Updating pip3"
   pip3 install --upgrade pip
+  if [ -x "$(command -v gem)" ]; then
+    echo "[💎] Updating Ruby Gems"
+    gem update
+    gem cleanup
+  fi
 
   echo "[🍎] Updating macOS "
   softwareupdate -i -a
