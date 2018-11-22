@@ -62,3 +62,6 @@ if [[ "${OS}" == "Darwin" ]]; then
   # https://applehelpwriter.com/2018/05/25/fastest-way-to-reboot-your-mac/
 fi
 
+alias v!='. venv/bin/activate'
+# Activate python virtual enviroment
+
