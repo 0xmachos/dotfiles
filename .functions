@@ -9,10 +9,12 @@ function update! {
   echo "[⚠️ ] Updating brew, LaTeX, pip3, Ruby Gems & macOS"
   sudo -v
 
-  echo "[🍺] Updating brew"
-  brew update
-  brew upgrade
-  brew cleanup
+  if [ -x "$(which brew)" ]; then
+    echo "[🍺] Updating brew"
+    brew update
+    brew upgrade
+    brew cleanup
+  fi
 
   if [ -x "$(command -v tlmgr)" ]; then
     echo "[📝] Updating LaTeX"
