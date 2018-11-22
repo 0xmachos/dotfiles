@@ -38,3 +38,16 @@ function update! {
     softwareupdate -i -a
   fi
 
+  if [[ "${OS}" == "Linux" ]]; then
+    echo "[🐧] Updating Linux"
+    if [ -x "$(command -v apt-get)" ]; then
+      sudo apt-get update
+      sudo apt-get upgrade -y
+      sudo apt-get autoclean -y
+      sudo apt-get autoremove -y
+    
+    elif [ -x "$(command -v yum)" ]; then
+      sudo yum update
+    fi
+  fi
+}
