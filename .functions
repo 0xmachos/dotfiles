@@ -33,7 +33,8 @@ function update! {
     gem cleanup
   fi
 
-  echo "[🍎] Updating macOS "
-  softwareupdate -i -a
-}
+  if [[ "${OS}" == "Darwin" ]]; then
+    echo "[🍎] Updating macOS"
+    softwareupdate -i -a
+  fi
 
