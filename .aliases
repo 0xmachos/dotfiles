@@ -39,6 +39,13 @@ alias cc='cc -Wall'
 # Enable all warnings
 
 
+alias rmexif='exiftool -all='
+# Remove image EXIF data
+
+alias exif='exiftool -a'
+# Show image EXIF data
+
+
 #   -----------------------------
 #   2. MAP CUSTOM COMMANDS
 #   -----------------------------
