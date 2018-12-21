@@ -5,6 +5,7 @@ tap homebrew/core
 brew autoconf
 brew bash
 brew bat
+brew exiftool
 brew gdbm
 brew libevent
 brew libsodium
