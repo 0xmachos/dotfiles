@@ -24,6 +24,7 @@ brew readline
 brew ruby
 brew shellcheck
 brew sqlite
+brew tor
 brew xz
 
 tap homebrew/cask
