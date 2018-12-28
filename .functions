@@ -9,7 +9,7 @@ function update! {
   echo "[⚠️ ] Updating brew, LaTeX, pip3, Ruby Gems & macOS"
   sudo -v
 
-  if [ -x "$(which brew)" ]; then
+  if [ -x "/usr/local/bin/brew" ]; then
     echo "[🍺] Updating brew"
     brew update
     brew upgrade
