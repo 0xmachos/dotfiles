@@ -62,6 +62,7 @@ alias dk='cd ~/Desktop'
 # cd into HOME/Desktop directory
 alias pj='cd ~/Documents/Projects'
 # cd into HOME/Documents/Projects directory
+alias ap='cd /Applications/'
 
 if [[ "${OS}" == "Darwin" ]]; then 
   alias restart='sudo launchctl reboot userspace'
