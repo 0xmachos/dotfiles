@@ -1,6 +1,0 @@
-[submodule "mOSL"]
-	path = mOSL
-	url = https://0xmachos@github.com/0xmachos/mOSL
-	fetchrecursesubmodules = true
-	update = checkout
-	ignore = all
