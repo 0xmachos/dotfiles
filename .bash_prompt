@@ -135,10 +135,19 @@ function build_prompt {
   # "in"
   PS1+="\\[${BOLD}${GREEN}\\]\\w${RESET}"; 
   # Working directory
-  if [ -x "$(command -v git)" ]; then
-    PS1+="\$(prompt_git \"${WHITE} on ${VIOLET}\")"; 
-    # Git repository details
+
+  if [[ "${OS}" == Darwin ]]; then
+    if xcode-select -p >/dev/null 2>&1; then
+      PS1+="\$(prompt_git \"${WHITE} on ${VIOLET}\")"; 
+      # Git repository details
+    fi
+  else 
+    if [ -x "$(command -v git)" ]; then
+      PS1+="\$(prompt_git \"${WHITE} on ${VIOLET}\")"; 
+      # Git repository details
+    fi
   fi
+  
   PS1+="\\n";
   # New line
   PS1+="\\[${WHITE}\\]\\$ \\[${RESET}\\]"; 
