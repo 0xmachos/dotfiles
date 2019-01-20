@@ -27,10 +27,10 @@ function update! {
     pip3 install --upgrade pip
   fi
 
-  if [ -x "$(command -v gem)" ]; then
+  if [ -x "/usr/local/opt/ruby/bin/gem" ]; then
     echo "[💎] Updating Ruby Gems"
-    gem update
-    gem cleanup
+    /usr/local/opt/ruby/bin/gem update
+    /usr/local/opt/ruby/bin/gem cleanup
   fi
 
   if [[ "${OS}" == "Darwin" ]]; then
