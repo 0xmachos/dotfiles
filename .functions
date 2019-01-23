@@ -59,9 +59,9 @@ function git-clean {
 
   declare -a dirs
 
-  for dir in "/Users/${USER}/Documents/Projects/"*; do
+  while IFS=$'\n' read -r dir; do 
     dirs+=("${dir}"); 
-  done
+  done < <(find "$HOME" -type d -maxdepth 4)
 
   echo "[♻️] Garbage Collecting in Git Repos..."
   
