@@ -51,3 +51,28 @@ function update! {
     fi
   fi
 }
+
+
+function git-clean {
+
+  # Run git garbage collection in all my git repos
+
+  declare -a dirs
+
+  for dir in "/Users/${USER}/Documents/Projects/"*; do
+    dirs+=("${dir}"); 
+  done
+
+  echo "[♻️] Garbage Collecting in Git Repos..."
+  
+  for dir in "${dirs[@]}"; do
+    ( # SUBSHELL
+      cd "${dir}" || exit
+      if [ -d .git ]; then
+        echo "  Cleaning: ${BOLD}$(basename ${dir})${RESET}"
+        git gc --aggressive --quiet >/dev/null
+        # git fsck --full >/dev/null 2>&1
+      fi
+    )
+  done  
+}
