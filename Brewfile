@@ -34,10 +34,10 @@ tap rcmdnk/file
 brew brew-file
 
 # App Store applications
-appstore 1333542190 1Password 7 (7.2.2)
+appstore 1333542190 1Password 7 (7.2.4)
 appstore 1121192229 Better (2018.2)
 appstore 1055511498 Day One (2.9.2)
-appstore 768053424 Gapplin (1.5.4)
+appstore 768053424 Gapplin (1.6.0)
 appstore 409183694 Keynote (8.3)
 appstore 409203825 Numbers (5.3)
 appstore 1160374471 PiPifier (1.2.4)
