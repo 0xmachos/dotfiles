@@ -420,6 +420,10 @@ function write_defaults {
   defaults write com.apple.ActivityMonitor IconType -int 5
   # Activity Monitor: Set dock icon to "Show CPU Usage"
   # Default: n/a
+
+  defaults write com.apple.finder FXRemoveOldTrashItems -bool true
+  # Finder: Empty trash after 30 days
+  # Default: defaults write com.apple.finder FXRemoveOldTrashItems -bool false
 }
 
 
