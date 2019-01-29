@@ -8,6 +8,7 @@ brew bat
 brew exiftool
 brew gdbm
 brew libevent
+brew libscrypt
 brew libsodium
 brew libyaml
 brew mas
