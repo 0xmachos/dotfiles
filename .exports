@@ -8,6 +8,10 @@ if [[ "${OS}" == "Darwin" ]]; then
   export HOMEBREW_BREWFILE=$HOME/Documents/Projects/dotfiles/Brewfile
   # Set location of Brewfile
 
+  if [[ -x "/usr/local/opt/ruby/bin/ruby" ]]; then
+  	export PATH=/usr/local/opt/ruby/bin:$PATH
+  fi
+
   if [[ -x "$(command -v go)" ]]; then
     export GOPATH=$HOME/Documents/Projects/go
     export PATH=$PATH:$GOPATH/bin

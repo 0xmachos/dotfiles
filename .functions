@@ -29,8 +29,8 @@ function update! {
 
   if [ -x "/usr/local/opt/ruby/bin/gem" ]; then
     echo "[💎] Updating Ruby Gems"
-    /usr/local/opt/ruby/bin/gem update
-    /usr/local/opt/ruby/bin/gem cleanup
+    gem update
+    gem cleanup
   fi
 
   if [[ "${OS}" == "Darwin" ]]; then
