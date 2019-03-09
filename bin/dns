@@ -8,18 +8,31 @@
   # alias dns='dns'
 
 
-usage () {
+### Define Colours ###
+tput sgr0; 
+# reset colors
 
-  echo -e "Usage: ./dns.sh {domain} [record_type] "
-  echo -e "Record Type: A (default) or AAAA"
+readonly RESET=$(tput sgr0)
+readonly BOLD=$(tput bold)
+
+readonly RED=$(tput setaf 1)
+readonly ORANGE=$(tput setaf 3)
+readonly GREEN=$(tput setaf 64)
+### END Colours ###
+
+
+function usage {
+
+  echo "Usage: ./dns.sh {domain} [record_type]"
+  echo "Record Type: A (default) or AAAA"
   exit 0
 }
 
 
-get_ip () {
+function get_ip {
 
   if ! [[ "${record_type}" =~ ^(A|AAAA)$ ]]; then
-    echo -e "\\033[1;31m[FATAL]\\033[0m Record Type must be 'A' for IPv4 or 'AAAA' for IPv6"
+    echo "${RED}[FATAL]${RESET} Record Type must be 'A' for IPv4 or 'AAAA' for IPv6"
     exit 1
   fi
   
@@ -28,7 +41,7 @@ get_ip () {
 }
 
 
-main () {
+function main {
 
   domain=${1:-""}
   record_type=${2:-"A"}
@@ -39,8 +52,8 @@ main () {
 
   get_ip
 
-  echo -e "\\033[1;32mDomain:\\033[0m ${domain}\
-  \\n    \\033[1;33mIP:\\033[0m ${ip}"
+  echo "${GREEN}Domain:${RESET} ${domain}"
+  echo "${ORANGE}    IP:${RESET} ${ip}"
 }
 
 main "$@"
