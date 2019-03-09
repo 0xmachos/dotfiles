@@ -73,3 +73,6 @@ fi
 alias v!='. venv/bin/activate'
 # Activate python virtual enviroment
 
+alias jek='bundle exec jekyll serve'
+# Start local Jeklly instance
+
