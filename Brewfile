@@ -17,6 +17,7 @@ brew mosh
 brew nmap
 brew openssl
 brew pkg-config
+brew progress
 brew protobuf
 brew pyenv
 brew python
