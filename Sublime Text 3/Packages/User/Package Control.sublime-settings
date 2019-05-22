@@ -6,7 +6,9 @@
 	"installed_packages":
 	[
 		"A File Icon",
+		"BracketHighlighter",
 		"GitGutter",
+		"Jekyll",
 		"MarkdownLivePreview",
 		"Package Control",
 		"SublimeLinter",
