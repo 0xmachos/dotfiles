@@ -18,12 +18,17 @@ IFS=$'\n\t'
 # See: http://redsymbol.net/articles/unofficial-bash-strict-mode/
 
 
-file_names=("Bash.sublime-settings" "Package Control.sublime-settings" \
-          "Preferences.sublime-settings" "SublimeLinter.sublime-settings")
-# Bash.sublime-settings:            Bash specific settings 
+file_names=("Bash.sublime-settings" "Jekyll.sublime-settings" "Markdown.sublime-settings" \
+          "Package Control.sublime-settings" "Preferences.sublime-settings" \
+          "SublimeLinter.sublime-settings")
+# Bash.sublime-settings           : Bash specific settings
+# Jekyll.sublime-settings         : Jekyll specific settings
+# Markdown.sublime-settings       : Markdown specific settings      
 # Package Control.sublime-settings: List of installed packages
 # Preferences.sublime-settings    : General settings
 # SublimeLinter.sublime-settings  : SublimeLinter settings
+
+# TODO: Copy all files with the extension ".sublime-settings"
 
 if [ -d "$HOME/Library/Application Support/Sublime Text 3/Packages/User" ]; then
   
