@@ -1,0 +1,4 @@
+// These settings override both User and Default settings for the Markdown syntax
+{
+  "jekyll_auto_find_path": true 
+}
