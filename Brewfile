@@ -28,6 +28,7 @@ brew shellcheck
 brew sqlite
 brew tor
 brew xz
+brew zsh
 
 tap homebrew/cask
 cask jtool
