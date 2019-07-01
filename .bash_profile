@@ -2,7 +2,7 @@
 # ~/.bash_profile
 
 #  ---------------------------------------------------------------------------
-# Based on:
+#   Based on:
 #   https://gist.github.com/natelandau/10654137
 #   https://github.com/jessfraz/dotfiles/blob/master/.bash_profile
 #  ---------------------------------------------------------------------------
