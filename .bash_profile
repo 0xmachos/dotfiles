@@ -13,9 +13,11 @@ OS=$(uname -s)
 #   ENVIRONMENT CONFIGURATION
 #   ---------------------------
 
-if [[ -d "${HOME}/Documents/Projects" ]]; then
+readonly INITIAL_DIR="${HOME}/Documents/Projects"
+
+if [[ -d "${INITIAL_DIR}" ]]; then
   # shellcheck disable=SC2164
-  cd "${HOME}/Documents/Projects"
+  cd "${INITIAL_DIR}"
   # Start each terminal session in this directory
 fi  
 
