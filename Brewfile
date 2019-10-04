@@ -39,7 +39,6 @@ brew brew-file
 
 # App Store applications
 appstore 1333542190 1Password 7 (7.3.2)
-appstore 1037126344 Apple Configurator 2 (2.9)
 appstore 1121192229 Better (2018.2)
 appstore 1055511498 Day One (4.1.1)
 appstore 768053424 Gapplin (1.6.1)
