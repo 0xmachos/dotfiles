@@ -16,6 +16,7 @@ brew minisign
 brew mosh
 brew nmap
 brew openssl
+brew openssl@1.1
 brew pkg-config
 brew progress
 brew protobuf
