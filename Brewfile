@@ -27,6 +27,7 @@ brew ruby
 brew shellcheck
 brew sqlite
 brew tor
+brew tree
 brew xz
 brew zsh
 
