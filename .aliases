@@ -60,6 +60,7 @@ if [[ "${OS}" == "Darwin" ]]; then
   # https://applehelpwriter.com/2018/05/25/fastest-way-to-reboot-your-mac/
   alias csv='codesign --verify --deep --strict --verbose=4 '
   alias pkgcs='pkgutil --check-signature '
+  alias snap='tmutil localsnapshot'
 fi
 
 alias v!='. venv/bin/activate'
