@@ -35,7 +35,6 @@ function usage {
   echo -e "\\nConfigures macOS just the way I like it 🤓\\n"
   echo "Usage:"
   echo "  defaults              - Write new system and application default settings"
-  echo "  vmware                - Change VMWare defaultVMPath to '${HOME}/Virtual Machines'"
   echo "  dotfiles              - Symlink various config files into ${HOME}"
   echo "  gpgtools              - Install GPGTools"
   echo "  sublimetext           - Install Sublime Text"
@@ -424,48 +423,6 @@ function write_defaults {
   defaults write com.apple.finder FXRemoveOldTrashItems -bool true
   # Finder: Empty trash after 30 days
   # Default: defaults write com.apple.finder FXRemoveOldTrashItems -bool false
-}
-
-
-function change_vmware_home {
-
-  # Create new directory $HOME/Virtual Machines
-  # Set prefvmx.defaultVMPath to $HOME/Virtual Machines in ~/Library/Preferences/VMWare Fusion/preferences
-
-  local prefvmx_defaultVMPath=${1:-"${HOME}/VMware Fusion"}
-  local vmware_preferences_file="${HOME}/Library/Preferences/VMware Fusion/preferences"
-  local vmware_preferences_directory="${HOME}/Library/Preferences/VMware Fusion"
-
-  if [ ! -d "${vmware_preferences_directory}" ]; then
-    # Check if VMWare Fusion is installed
-    echo "[❌] VMWare Fusion is not installed"
-    return 0
-  else
-    
-    if grep -q "prefvmx.defaultVMPath = \"${HOME}/VMware Fusion\"" "${vmware_preferences_file}"; then
-      # Check if prefvmx.defaultVMPath is already set
-      echo "[✅] prefvmx.defaultVMPath is already set"
-      return 0
-    else
-      echo "[🍺] Setting VMWare prefvmx.defaultVMPath to '${prefvmx_defaultVMPath}'"
-
-      if mkdir -p "${prefvmx_defaultVMPath}"; then
-        # Attempt to create the directory for VM storage 
-        echo "[✅] Successfully created '${prefvmx_defaultVMPath}'"
-        
-        if echo "prefvmx.defaultVMPath = \"${prefvmx_defaultVMPath}\"" >> "${vmware_preferences_file}"; then
-          echo "[✅] Successfully set prefvmx.defaultVMPath"
-        else
-          echo "[❌] Failed to set prefvmx.defaultVMPath to '${prefvmx_defaultVMPath}'"
-          exit 1
-        fi
-
-      else
-        echo "[❌] Failed to create '${prefvmx_defaultVMPath}'"
-        exit 1
-      fi
-    fi
-  fi  
 }
 
 
@@ -989,10 +946,6 @@ function main {
   if [[ "${cmd}" == "defaults" ]]; then
     write_defaults
 
-  elif [[ "${cmd}" == "vmware" ]]; then
-    local prefvmx_defaultVMPath=${2:-"${HOME}/VMware Fusion"}
-    change_vmware_home "${prefvmx_defaultVMPath}"
-
   elif [[ "${cmd}" == "dotfiles" ]]; then
     install_dotfiles
 
@@ -1038,7 +991,6 @@ function main {
     sleep 3
 
     write_defaults
-    change_vmware_home
     install_dotfiles
     install_gpgtools
     install_sublime_text
