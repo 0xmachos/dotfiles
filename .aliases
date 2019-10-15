@@ -59,7 +59,7 @@ if [[ "${OS}" == "Darwin" ]]; then
   # Tear down and rebuild userspace login sessions
   # https://applehelpwriter.com/2018/05/25/fastest-way-to-reboot-your-mac/
   alias cs='codesign --verify --deep --strict --verbose=4 '
-  alias pkgcs='pkgutil --check-signature '
+  alias pcs='pkgutil --check-signature '
   alias snap='tmutil localsnapshot'
   alias unpack='pkgutil --expand-full'
 
