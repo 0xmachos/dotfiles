@@ -58,7 +58,7 @@ if [[ "${OS}" == "Darwin" ]]; then
   alias restart='sudo launchctl reboot userspace'
   # Tear down and rebuild userspace login sessions
   # https://applehelpwriter.com/2018/05/25/fastest-way-to-reboot-your-mac/
-  alias csv='codesign --verify --deep --strict --verbose=4 '
+  alias cs='codesign --verify --deep --strict --verbose=4 '
   alias pkgcs='pkgutil --check-signature '
   alias snap='tmutil localsnapshot'
   alias unpack='pkgutil --expand-full'
