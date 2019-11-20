@@ -3,7 +3,7 @@
 	# Full name recorded in newly created commits
 	email = 0xmachos@gmail.com
 	# Email address recorded in newly created commits
-	signingkey = 0xCE2EECA25627B507
+	signingkey = A4683E3B4AA8DB99829783FBCE2EECA25627B507
 	# Key to sign newly created commits
 	# Use long IDs or fingerprints
 	# http://www.asheesh.org/note/debian/short-key-ids-are-bad-news.html
