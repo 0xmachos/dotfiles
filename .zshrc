@@ -12,6 +12,13 @@ setopt autocd
 setopt glob_complete
 # ENABLE: Hitting tab twice lists possible completions 
 
+setopt correct
+setopt correct_all
+# ENABLE: Command correction
+
+SPROMPT="Correct %F{red}%R%f to %F{green}%r%f [nyae]?" 
+# SET_VAR: Custom command correction prompt 
+
 setopt +o case_glob
 # DISABLE: Case sensitive globbing
 
