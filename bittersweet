@@ -875,8 +875,7 @@ function install_brewfile {
 
   # Install Homebrew packages from dotfiles/Brewfile
   # Will install programs from the Mac AppStore if user is logged in
-  
-  local HOMEBREW_BREWFILE=${1:-"${HOME}/Documents/Projects/dotfiles/Brewfile"}
+
   export HOMEBREW_BREWFILE="${HOMEBREW_BREWFILE}"
 
   echo "[🍺] Installing mas"
@@ -974,7 +973,7 @@ function main {
     install_brew
 
   elif [[ "${cmd}" == "brewfile" ]]; then
-    local HOMEBREW_BREWFILE=${2:-"${HOME}/Documents/Projects/dotfiles/Brewfile"}
+    declare -g HOMEBREW_BREWFILE=${2:-"${HOME}/Documents/Projects/dotfiles/.extra/Brewfile"}
     install_brewfile "${HOMEBREW_BREWFILE}"
 
   elif [[ "${cmd}" == "shell" ]]; then

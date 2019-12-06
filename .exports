@@ -7,7 +7,7 @@ if [[ "${OS}" == "Darwin" ]]; then
 
   export PATH=/usr/local/bin:/usr/local/sbin:$PATH
   # Export path to include Homebrew binaries
-  export HOMEBREW_BREWFILE=$HOME/Documents/Projects/dotfiles/Brewfile
+  export HOMEBREW_BREWFILE=$HOME/Documents/Projects/dotfiles/.extra/Brewfile
   # Set location of Brewfile
 
   if [[ -x "/usr/local/opt/ruby/bin/ruby" ]]; then
