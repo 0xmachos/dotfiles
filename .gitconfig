@@ -16,3 +16,7 @@
 [gpg]
 	program = /usr/local/MacGPG2/bin/gpg2
 	# Use this instead of "gpg", found on $PATH when making or verifying a PGP signature
+
+[core]
+	excludesfile = ~/.gitignore
+
