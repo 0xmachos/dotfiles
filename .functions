@@ -14,6 +14,7 @@ function update! {
     brew update
     brew upgrade
     brew cleanup
+    brew file init -y 
   fi
 
   if [ -x "$(command -v tlmgr)" ]; then
