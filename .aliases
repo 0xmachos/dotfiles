@@ -73,6 +73,3 @@ alias v!='. venv/bin/activate'
 alias r!='pip install -r requirements.txt'
 # Install Python packages from requirements.txt
 
-alias jek='bundle exec jekyll serve'
-# Start local Jeklly instance
-

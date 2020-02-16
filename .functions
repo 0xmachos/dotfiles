@@ -78,3 +78,15 @@ function git-clean {
     )
   done  
 }
+
+
+function jek {
+
+  # Start local Jeklly instance
+
+  if ! bundle exec jekyll serve; then 
+    bundle install
+    bundle exec jekyll serve
+  fi
+}
+
