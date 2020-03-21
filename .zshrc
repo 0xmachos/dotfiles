@@ -58,7 +58,7 @@ setopt HIST_EXPIRE_DUPS_FIRST
 # Expire duplicates first
 setopt HIST_IGNORE_DUPS
 # Do not store duplications
-setop HIST_FIND_NO_DUPS
+setopt HIST_FIND_NO_DUPS
 # Ignore duplicates when searching
 setopt HIST_REDUCE_BLANKS
 # Remove blank lines
