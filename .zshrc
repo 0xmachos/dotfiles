@@ -47,6 +47,12 @@ HISTSIZE=50000
 SAVEHIST=100000
 # Lines stored in history file
 
+setopt EXTENDED_HISTORY
+# Save command start time and duration
+
+setopt SHARE_HISTORY
+# Use single shared history file for all sessions
+
 ## Reducing Clutter 
 setopt HIST_EXPIRE_DUPS_FIRST
 # Expire duplicates first
