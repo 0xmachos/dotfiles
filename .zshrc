@@ -1,10 +1,14 @@
 # ~/.zshrc
+# dotfiles/.zshrc
 
 #  ---------------------------------------------------------------------------
 #   Based on:
 #     https://scriptingosx.com/2019/11/new-book-release-day-moving-to-zsh/ 
 #  ---------------------------------------------------------------------------
 
+# Convention(s)
+# Enable:  setopt
+# Disable: unsetopt
 
 setopt autocd 
 # ENABLE: Changes directory to path without needing cd
