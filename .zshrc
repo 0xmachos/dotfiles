@@ -34,6 +34,27 @@ SPROMPT="Correct %F{red}%R%f to %F{green}%r%f [nyae]?"
 ### END Correction ###
 
 
+### Completion ###
+
+autoload -Uz compinit && compinit
+# Initialise zsh completion system 
+
+# Case insensitive path-completion
+zstyle ':completion:*' matcher-list 'm:
+  {[:lower:][:upper:]}={[:upper:]
+  [:lower:]}' 'm:{[:lower:][:upper:]}
+  ={[:upper:][:lower:]} l:|=* r:|=*' 'm:
+  {[:lower:][:upper:]}={[:upper:][:lower:]} 
+  l:|=* r:|=*' 'm:{[:lower:][:upper:]}
+  ={[:upper:][:lower:]} l:|=* r:|=*'
+
+# Partial completion suggestions
+zstyle ':completion:*' list-suffixes
+zstyle ':completion:*' expand prefix suffix
+
+### END Completion ###
+
+
 ### History ###
 
 HISTFILE=${ZDOTDIR:-HOME}/.zsh_history
