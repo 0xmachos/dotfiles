@@ -40,9 +40,11 @@ HISTFILE=${ZDOTDIR:-HOME}/.zsh_history
 # Location of history file
 # Use value of $ZDOTDIR if it has a value
 # otherwise use value of $HOME
+
 HISTSIZE=50000
 # Lines remembered per session
-SAVEHIST=50000
+
+SAVEHIST=100000
 # Lines stored in history file
 
 ## Reducing Clutter 
