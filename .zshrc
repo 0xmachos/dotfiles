@@ -114,3 +114,8 @@ setopt HIST_IGNORE_SPACE
 # Do not store command lines starting with a space
 
 
+
+if [ -d ~/Documents/Projects ]; then
+  cd ~/Documents/Projects
+fi
+
