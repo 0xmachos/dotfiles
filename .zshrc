@@ -35,7 +35,19 @@ PROMPT=$'%F{blue}% %n%f 🐶 %B%~%b\n%(?.%F{green}√%f.%F{red}%?)%f %(!.#.$) '
 # %(!.#.$)
 # If root print # else print $
 
-### END Prompt ###
+# Git Integration
+# https://git-scm.com/book/en/v2/Appendix-A:-Git-in-Other-Environments-Git-in-Zsh
+# Moving to Zsh p139
+
+setopt prompt_subst
+# ENABLE: parameter expansion and command substitution in prompts
+
+autoload -Uz vcs_info
+precmd_functions+=(vcs_info)
+zstyle ':vcs_info:*' enable git
+zstyle ':vcs_info:git:*' formats '(%b)'
+RPROMPT=\$vcs_info_msg_0_
+
 
 
 ### Command/ Path Correction ###
