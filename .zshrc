@@ -20,7 +20,20 @@ unsetopt case_glob
 # DISABLE: Case sensitive globbing
 
 ### Prompt ###
+
 PROMPT=$'%F{blue}% %n%f 🐶 %B%~%b\n%(?.%F{green}√%f.%F{red}%?)%f %(!.#.$) '
+# Example 
+# 0xmachos 🐶 /System/Library/CoreServices
+# √ $ 
+
+# Explanation
+# %F{blue}% %n%f
+## Print username (%n) in blue
+# %B%~%b
+## Print pwd relative to $HOME (%~) in bold (%B)
+## If last command exit 0 print √ in green else print exit code in red 
+# %(!.#.$)
+# If root print # else print $
 
 ### END Prompt ###
 
