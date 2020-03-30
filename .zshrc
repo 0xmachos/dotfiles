@@ -19,6 +19,11 @@ setopt glob_complete
 unsetopt case_glob
 # DISABLE: Case sensitive globbing
 
+### Prompt ###
+PROMPT=$'%F{blue}% %n%f 🐶 %B%~%b\n%(?.%F{green}√%f.%F{red}%?)%f %(!.#.$) '
+
+### END Prompt ###
+
 
 ### Command/ Path Correction ###
 
