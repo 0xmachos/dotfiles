@@ -20,7 +20,6 @@ unsetopt case_glob
 # DISABLE: Case sensitive globbing
 
 ### Prompt ###
-
 PROMPT=$'%F{blue}% %n%f 🐶 %B%~%b\n%(?.%F{green}√%f.%F{red}%?)%f %(!.#.$) '
 # Example 
 # 0xmachos 🐶 /System/Library/CoreServices
@@ -61,7 +60,6 @@ setopt correct_all
 SPROMPT="Correct %F{red}%R%f to %F{green}%r%f [nyae]?"
 # Correction prompt
 
-### END Correction ###
 
 
 ### Completion ###
@@ -82,7 +80,6 @@ zstyle ':completion:*' matcher-list 'm:
 zstyle ':completion:*' list-suffixes
 zstyle ':completion:*' expand prefix suffix
 
-### END Completion ###
 
 
 ### History ###
@@ -116,5 +113,4 @@ setopt HIST_REDUCE_BLANKS
 setopt HIST_IGNORE_SPACE
 # Do not store command lines starting with a space
 
-### END History ###
 
