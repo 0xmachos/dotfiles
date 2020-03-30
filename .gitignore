@@ -1,7 +1,5 @@
 # ~/.gitignore
 
-.DS_Store
-
 # Sublime Text
 Package Control.cache/
 Package Control.last-run
