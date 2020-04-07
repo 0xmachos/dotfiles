@@ -87,7 +87,8 @@ function jek {
 
   if ! bundle exec jekyll serve; then 
     if ! bundle install; then
-      gem install bundle
+      gem install bundler
+      bundle install
     fi
     bundle exec jekyll serve
   fi
