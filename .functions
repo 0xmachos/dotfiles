@@ -86,7 +86,9 @@ function jek {
   # Start local Jeklly instance
 
   if ! bundle exec jekyll serve; then 
-    bundle install
+    if ! bundle install; then
+      gem install bundle
+    fi
     bundle exec jekyll serve
   fi
 }
