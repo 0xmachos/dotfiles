@@ -40,7 +40,6 @@ function usage {
   echo "  gpgtools              - Install GPGTools"
   echo "  sublimetext           - Install Sublime Text"
   echo "  tower                 - Install Tower"
-  echo "  splashy               - Install Splashy 🌄"
   echo "  deckset               - Install Deckset"
   echo "  blockblock            - Install BlockBlock"
   echo "  oversight             - Install OverSight 📸🎤"
@@ -725,32 +724,6 @@ function install_tower {
 }
 
 
-function install_splashy {
-
-  if [ ! -d "/Applications/Splashy.app" ]; then
-
-    echo "[🍺] Installing Splashy 📷"
-
-    local url
-    local dmg_name 
-    local dmg_download_path
-
-    url="$(curl -s https://splashy.art/ \
-          | grep 'macOS' \
-          | awk -F '"' '{print $4}')"
-    dmg_name="$(echo "${url}" | awk -F '/' '{print $4}')"
-    dmg_download_path="${HOME}/Downloads/${dmg_name}"
-
-    download_application "${dmg_download_path}" "${url}"
-
-    install_application "Splashy" "${dmg_download_path}"
-
-  else 
-    echo "[🍺] Splashy already installed"
-  fi
-}
-
-
 function  install_deckset {
 
   echo "[🍺] Installing Deckset"
@@ -977,9 +950,6 @@ function main {
   elif [[ "${cmd}" == "tower" ]]; then
     install_tower
 
-  elif [[ "${cmd}" == "splashy" ]]; then
-    install_splashy
-
   elif [[ "${cmd}" == "deckset" ]]; then
     install_deckset
 
@@ -1015,7 +985,6 @@ function main {
     install_gpgtools
     install_sublime_text
     install_tower
-    install_splashy
     install_deckset
     install_blockblock
     install_oversight
