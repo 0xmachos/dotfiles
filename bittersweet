@@ -866,7 +866,7 @@ function install_brew {
 
 function install_brewfile {
 
-  # Install Homebrew packages from dotfiles/Brewfile
+  # Install Homebrew packages from dotfiles/.extra/Brewfile
   # Will install programs from the Mac AppStore if user is logged in
 
   export HOMEBREW_BREWFILE="${HOMEBREW_BREWFILE}"
