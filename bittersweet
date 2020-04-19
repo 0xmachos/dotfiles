@@ -899,7 +899,7 @@ function change_shell {
   # Change default shell to bash as installed by Brew
   # /usr/local/bin/bash instead of /bin/bash
 
-  local -r new_shell="/usr/local/bin/bash"
+  local -r new_shell="/usr/local/bin/zsh"
   
   if [[ "$BASH" == "${new_shell}" ]]; then
     echo "[✅] Current shell is already '${new_shell}'"
