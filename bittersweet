@@ -901,7 +901,7 @@ function change_shell {
 
   local -r new_shell="/usr/local/bin/zsh"
   
-  if [[ "$BASH" == "${new_shell}" ]]; then
+  if [[ "${SHELL}" == "${new_shell}" ]]; then
     echo "[✅] Current shell is already '${new_shell}'"
   else
 
