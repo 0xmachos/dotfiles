@@ -749,7 +749,10 @@ function install_blockblock {
 
   # Install BlockBlock
 
-  if [ ! -f "$HOME/Library/Preferences/com.objectiveSee.BlockBlock.plist" ]; then
+  if [ -f "$HOME/Library/Preferences/com.objectiveSee.BlockBlock.plist" ]; then
+    echo "[🍺] BlockBlock already installed"
+    return 0
+  fi
     
     echo "[🍺] Installing BlockBlock"
   
@@ -775,10 +778,6 @@ function install_blockblock {
 
     # Enable headless mode
     defaults write com.objectiveSee.BlockBlock headlessMode -int 1
-
-  else
-    echo "[🍺] BlockBlock already installed"
-  fi
 }
 
 
