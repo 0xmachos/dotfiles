@@ -281,7 +281,6 @@ function objective_see_install {
     # This is a really shitty work around 
     verify_signature "${HOME}/Downloads/${application_name} Installer.app" "${application_name}"
   else
-
     verify_signature "${HOME}/Downloads/${application_name}_Installer.app" "${application_name}"
   fi
 
