@@ -43,7 +43,7 @@ function usage {
   echo "  deckset               - Install Deckset"
   echo "  blockblock            - Install BlockBlock"
   echo "  oversight             - Install OverSight 📸🎤"
-  echo "  brew                  - Install Homebrew, Homebrew-file and export $HOMEBREW_BREWFILE" 
+  echo "  brew                  - Install Homebrew, Homebrew-file and export HOMEBREW_BREWFILE" 
   echo "  brewfile              - Install Homebrew packages from Brewfile"
   echo "  shell                 - Change shell to bash as installed by Brew"
 
