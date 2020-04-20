@@ -873,11 +873,11 @@ function install_brewfile {
 
   echo "[🍺] Installing mas"
 
-  if ! brew install mas 2>/dev/null; then
+  if brew install mas 2>/dev/null; then
+    echo "[✅] Installed mas"
+  else
     echo "[❌] Failed to install mas"
     return 1
-  else
-    echo "[✅] Installed mas"
   fi
 
   echo "[🍺] Exported HOMEBREW_BREWFILE=${HOMEBREW_BREWFILE}"
@@ -887,9 +887,10 @@ function install_brewfile {
 
   if brew file install; then 
     echo "[✅] Successfully installed packages from Brewfile"
+    return 0
   else
     echo "[❌] Failed to install packages from Brewfile"
-    exit 1
+    return 1
   fi
 }
 
