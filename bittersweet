@@ -3,8 +3,6 @@
 
 # bittersweet
 #   Configures macOS just the way I like it
-# Tested on:
-#   10.13.x
 
 set -euo pipefail
 # -e exit if any command returns non-zero status code
@@ -16,15 +14,12 @@ IFS=$'\n\t'
 # This makes bash consider newlines and tabs as separating words
 # See: http://redsymbol.net/articles/unofficial-bash-strict-mode/
 
-
 ### Define Colours ###
 
 tput sgr0; 
 # reset colors
-
 readonly RESET=$(tput sgr0);
 readonly BOLD=$(tput bold);
-
 readonly RED=$(tput setaf 1);
 
 ### END Colours ###
