@@ -118,6 +118,9 @@ function download_application {
 
 
 function verify_sha {
+  # verify_sha
+  #   Uses shasum to check hash of file is what
+  #   we expect it to be
 
   local file_name=${1:?file_name not passed to verify_sha}
   local file_download_path=${2:?file_download_path not passed to verify_sha}
