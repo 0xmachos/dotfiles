@@ -149,20 +149,39 @@ function verify_sha {
 
 
 function verify_signature {
+  # verify_signature
+  #   Check the crypographic signature of .app/ .pkg files
+  #   before installing them
+  # Paramters: 
+  #   $application_path REQUIRED
+  #     Path to .app or .pkg file
+  #   $application_name REQUIRED
+  #     Name of Application being installed
 
-  local application_path=${1:?application_path not passed}
-  local application_name=${2:?application_name not passed}
-
+  local application_path=${1:?application_path not passed to verify_signature}
+  local application_name=${2:?application_name not passed to verify_signature}
 
   echo "[🍺] Attempting to validated the signature on ${application_name}"
 
-  if pkgutil --check-signature "${application_path}" >/dev/null; then
+  if [[ "${application_path}" =~ .pkg ]]; then
+    
+    if pkgutil --check-signature "${application_path}" >/dev/null; then 
+      echo "[✅] Successfully validated the signaturee on ${application_name}.pkg"
+    else
+      echo "[❌] Failed to validate the signature on ${application_name}.pkg"
+      exit 1
+    fi
+
+  elif [[ "${application_path}" =~ .app ]]; then
+
+  if codesign --verify --deep --strict "${application_path}"; then
     # Check the .app is correctly signed
-    echo "[✅] Successfully validated the signature on ${application_name}"
+    echo "[✅] Successfully validated the signaturee on ${application_name}.app"
   else
-    echo "[❌] Failed to validate the signature on ${application_name}"
+    echo "[❌] Failed to validate the signature on ${application_name}.app"
     exit 1
   fi
+fi
 }
 
 
