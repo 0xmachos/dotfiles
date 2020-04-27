@@ -604,7 +604,7 @@ function install_gpgtools {
     local -r dmg_mount_point="/Volumes/GPG Suite/" 
 
     echo "[🍺] Downloading ${dmg_name}"
-    if curl -o "${dmg_download_path}" "https://releases.gpgtools.org/${dmg_name}"; then 
+    if curl --silent "https://releases.gpgtools.org/${dmg_name}" --output "${dmg_download_path}" ; then 
     # Download 
       echo "[✅] Successfully downloaded ${dmg_name}"
     else
