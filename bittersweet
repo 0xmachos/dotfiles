@@ -784,7 +784,10 @@ function install_oversight {
 
   # Install OverSight
 
-  if [ ! -f "$HOME/Library/Preferences/com.objective-see.OverSight.plist" ]; then
+  if [ -f "$HOME/Library/Preferences/com.objective-see.OverSight.plist" ]; then
+    echo "[🍺] OverSight already installed"
+    return 0
+  fi
 
     echo "[🍺] Installing OverSight 📸🎤"
 
@@ -810,10 +813,6 @@ function install_oversight {
 
     # Enable headless mode
     defaults write com.objective-see.OverSight runHeadless -int 1
-
-  else
-    echo "[🍺] OverSight already installed"
-  fi
 } 
 
 
