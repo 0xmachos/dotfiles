@@ -766,8 +766,8 @@ function install_blockblock {
     zip_name="$(echo "${url}" | awk -F '/' '{print $NF}')"
     zip_download_path="${HOME}/Downloads/${zip_name}"
     zip_sha1="$(curl -s --compressed https://objective-see.com/products/blockblock.html \
-                  | grep 'sha-1' \
-                  | awk '{print $3}')"
+                  | grep 'SHA-1' \
+                  | awk '{print $4}')"
 
     download_application "${zip_download_path}" "${url}"
 
