@@ -744,7 +744,7 @@ function install_blockblock {
 
   # Install BlockBlock
 
-  if [ -f "$HOME/Library/Preferences/com.objectiveSee.BlockBlock.plist" ]; then
+  if [ -d "/Library/Objective-See/BlockBlock/BlockBlock.app" ]; then
     echo "[🍺] BlockBlock already installed"
     return 0
   fi
