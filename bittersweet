@@ -119,10 +119,10 @@ function download_application {
 
 function verify_sha {
 
-  local file_name=${1:?file_name not passed}
-  local file_download_path=${2:?file_download_path not passed}
-  local file_sha_length=${3:?file_sha_length not passsed}
-  local file_sha=${4:?file_sha not passed}
+  local file_name=${1:?file_name not passed to verify_sha}
+  local file_download_path=${2:?file_download_path not passed to verify_sha}
+  local file_sha_length=${3:?file_sha_length not passsed to verify_sha}
+  local file_sha=${4:?file_sha not passed to verify_sha}
 
 
   echo "[🍺] Attempting to validate ${file_name} SHA${file_sha_length} hash"
