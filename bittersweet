@@ -176,13 +176,13 @@ function verify_signature {
 
     echo "[🍺] Attempting to validated the signature on ${application_name}.app"
 
-  if codesign --verify --deep --strict "${application_path}"; then
-    # Check the .app is correctly signed
-    echo "[✅] Successfully validated the signaturee on ${application_name}.app"
-  else
-    echo "[❌] Failed to validate the signature on ${application_name}.app"
-    exit 1
-  fi
+    if codesign --verify --deep --strict "${application_path}"; then
+      # Check the .app is correctly signed
+      echo "[✅] Successfully validated the signaturee on ${application_name}.app"
+    else
+      echo "[❌] Failed to validate the signature on ${application_name}.app"
+      exit 1
+    fi
 fi
 }
 
