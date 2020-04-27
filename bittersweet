@@ -789,30 +789,30 @@ function install_oversight {
     return 0
   fi
 
-    echo "[🍺] Installing OverSight 📸🎤"
+  echo "[🍺] Installing OverSight 📸🎤"
 
-    local url
-    local zip_name
-    local zip_download_path
-    local zip_sha1
+  local url
+  local zip_name
+  local zip_download_path
+  local zip_sha1
 
-    url="$(curl -s --compressed https://objective-see.com/products/oversight.html \
-          | grep -m 1 'downloads/OverSight' \
-          | awk -F '"' '{print $2}')"
-    zip_name="$(echo "${url}" | awk -F '/' '{print $NF}')"
-    zip_download_path="${HOME}/Downloads/${zip_name}"
-    zip_sha1="$(curl -s --compressed https://objective-see.com/products/oversight.html \
-              | grep 'sha-1' \
-              | awk '{print $3}')"
+  url="$(curl -s --compressed https://objective-see.com/products/oversight.html \
+        | grep -m 1 'downloads/OverSight' \
+        | awk -F '"' '{print $2}')"
+  zip_name="$(echo "${url}" | awk -F '/' '{print $NF}')"
+  zip_download_path="${HOME}/Downloads/${zip_name}"
+  zip_sha1="$(curl -s --compressed https://objective-see.com/products/oversight.html \
+            | grep 'sha-1' \
+            | awk '{print $3}')"
 
-    download_application "${zip_download_path}" "${url}"
+  download_application "${zip_download_path}" "${url}"
 
-    verify_sha "${zip_name}" "${zip_download_path}" "1" "${zip_sha1}"
+  verify_sha "${zip_name}" "${zip_download_path}" "1" "${zip_sha1}"
 
-    objective_see_install "OverSight" "${zip_download_path}"
+  objective_see_install "OverSight" "${zip_download_path}"
 
-    # Enable headless mode
-    defaults write com.objective-see.OverSight runHeadless -int 1
+  # Enable headless mode
+  defaults write com.objective-see.OverSight runHeadless -int 1
 } 
 
 
