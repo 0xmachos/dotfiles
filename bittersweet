@@ -100,24 +100,24 @@ function check_developer_tools {
 
 
 function download_application {
+  # download_application
+  #   download_application "download_path" "url"
+  #   Download file using curl
+  #   curl will follow redirects (--location)
 
-  # Download file using curl
-  # download application "path_to_save_file_to" "url_to_download_from"
-
-  local download_path=${1:?download_path not passed}
-  local url=${2:?url not passed}
+  local download_path=${1:?download_path not passed to download_application}
+  local url=${2:?url not passed to download_application}
   local file_name
   file_name=$(echo "${download_path}" | awk -F '/' '{print $(NF)}')
 
-
   echo "[🍺] Downloading ${file_name}"
   
-  if curl -L -o "${download_path}" "${url}"; then 
+  if curl --location --silent "${url}" --output "${download_path}"; then 
   # Download 
     echo "[✅] Successfully downloaded ${file_name}"
   else
     echo "[❌] Failed to download ${file_name}"
-    exit 1
+    return 1
   fi
 }
 
