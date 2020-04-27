@@ -211,7 +211,7 @@ function install_application {
       exit 1
     fi
 
-    verify_signature "${HOME}/Downloads/${application_name}.app" "${application_name}.app"
+    verify_signature "${HOME}/Downloads/${application_name}.app" "${application_name}"
 
     echo "[🍺] Attempting to copy ${application_name}.app into /Applications"
     if cp -Ri "${HOME}/Downloads/${application_name}.app" "/Applications"; then
@@ -249,7 +249,7 @@ function install_application {
       exit 1
     fi
 
-    verify_signature "${dmg_mount_path}/${application_name}.app" "${application_name}.app"
+    verify_signature "${dmg_mount_path}/${application_name}.app" "${application_name}"
 
     echo "[🍺] Attempting to copy ${application_name}.app into /Applications"
     if cp -Ri "${dmg_mount_path}/${application_name}.app" "/Applications"; then
@@ -637,7 +637,7 @@ function install_gpgtools {
       exit 1
     fi  
 
-    verify_signature "${dmg_mount_point}/Install.pkg" "Install.pkg"
+    verify_signature "${dmg_mount_point}/Install.pkg" "Install"
     
     get_sudo "to install GPGTools"
 
