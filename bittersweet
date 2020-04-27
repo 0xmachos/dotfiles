@@ -161,9 +161,9 @@ function verify_signature {
   local application_path=${1:?application_path not passed to verify_signature}
   local application_name=${2:?application_name not passed to verify_signature}
 
-  echo "[🍺] Attempting to validated the signature on ${application_name}"
-
   if [[ "${application_path}" =~ .pkg ]]; then
+
+    echo "[🍺] Attempting to validated the signature on ${application_name}.pkg"
     
     if pkgutil --check-signature "${application_path}" >/dev/null; then 
       echo "[✅] Successfully validated the signaturee on ${application_name}.pkg"
@@ -173,6 +173,8 @@ function verify_signature {
     fi
 
   elif [[ "${application_path}" =~ .app ]]; then
+
+    echo "[🍺] Attempting to validated the signature on ${application_name}.app"
 
   if codesign --verify --deep --strict "${application_path}"; then
     # Check the .app is correctly signed
