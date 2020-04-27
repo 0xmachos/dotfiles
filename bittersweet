@@ -741,8 +741,12 @@ function  install_deckset {
 
 
 function install_blockblock {
+  # install_blockblock
+  #   Installs BlockBlock via the usual helpers
+  #   as wel as objective_see_install
+  #   BB installer binary has a different name
+  #   to the other Obj-s tools
 
-  # Install BlockBlock
 
   if [ -d "/Library/Objective-See/BlockBlock/BlockBlock.app" ]; then
     echo "[🍺] BlockBlock already installed"
