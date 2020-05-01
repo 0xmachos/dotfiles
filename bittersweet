@@ -588,17 +588,18 @@ function install_dotfiles {
 
 
 function enable_touchid_sudo {
-  if ! grep -q 'pam_tid.so' /etc/pam.d/sudo; then
-    if sudo ex -s -c '2i|auth       sufficient     pam_tid.so' -c x! -c x! /etc/pam.d/sudo; then
-      # Invoke Vim in ex mode
-      # Select line 2, enter insert mode, insert that text write changes and exit
-      # Need to exit twice to get passed the read only file warning
-      echo "[✅] TouchID Sudo Enabled"
-    else
-      echo "[❌] Failed to enable TouchID Sudo"
-    fi
-  else
+  if grep -q 'pam_tid.so' /etc/pam.d/sudo; then
     echo "[✅] TouchID Sudo Already Enabled"
+    return 0
+  fi
+    
+  if sudo ex -s -c '2i|auth       sufficient     pam_tid.so' -c x! -c x! /etc/pam.d/sudo; then
+    # Invoke Vim in ex mode
+    # Select line 2, enter insert mode, insert that text write changes and exit
+    # Need to exit twice to get passed the read only file warning
+    echo "[✅] TouchID Sudo Enabled"
+  else
+    echo "[❌] Failed to enable TouchID Sudo"
   fi
 }
 
