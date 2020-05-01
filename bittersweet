@@ -588,6 +588,10 @@ function install_dotfiles {
 
 
 function enable_touchid_sudo {
+  # enable_touchid_sudo
+  #   Check if already enabled in /etc pam.d/sudo
+  #   Use vim to insert required text to sudo
+  
   if grep -q 'pam_tid.so' /etc/pam.d/sudo; then
     echo "[✅] TouchID Sudo Already Enabled"
     return 0
