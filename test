@@ -14,15 +14,15 @@ set -euo pipefail
 
 
 ### Define Colours ###
-tput sgr0; 
+/usr/bin/tput sgr0; 
 # reset colors
 
-readonly RESET=$(tput sgr0)
-readonly BOLD=$(tput bold)
+readonly RESET=$(/usr/bin/tput sgr0)
+readonly BOLD=$(/usr/bin/tput bold)
 
-readonly RED=$(tput setaf 1)
-readonly GREEN=$(tput setaf 64)
-readonly BLUE=$(tput setaf 4)
+readonly RED=$(/usr/bin/tput setaf 1)
+readonly GREEN=$(/usr/bin/tput setaf 64)
+readonly BLUE=$(/usr/bin/tput setaf 4)
 ### END Colours ###
 
 FAIL="${RED}FATAL${RESET}"
@@ -43,13 +43,14 @@ function check_shellcheck {
 
 function lint_shell_files {
 
-  for file in $(find . -type f -not -iwholename '*.git*' \
+  for file in $(/usr/bin/find . -maxdepth 1 -type f -not -iwholename '*.git*' \
                 -not -iwholename '*venv*' \
-                | sort -u); do
+                -not -iwholename '*.tar.xz' \
+                | /usr/bin/sort -u); do
             # Find all regular files in source directory
             # ignore any files in .git and venv directories 
     
-    if file "${file}" | grep --quiet "shell" || file "${file}" | grep --quiet "bash" ; then
+    if /usr/bin/file "${file}" | /usr/bin/grep --quiet "shell" || /usr/bin/file "${file}" | /usr/bin/grep --quiet "bash" ; then
       # Find bash scripts
       # Running file on a script with the shebang "#!/usr/bin/env bash" returns
       # "a /usr/bin/env bash script, ASCII text executable"
