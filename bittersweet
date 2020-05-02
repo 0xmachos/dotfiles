@@ -191,11 +191,11 @@ fi
 
 
 function install_application {
-
-  # Install Applications packaged as .dmg or .zip
-  # Does not work for application which require an installer (.pkg)
-  # Checks if .dmg or .zip then act accordingly
-  # Checks signature on .app before installing
+  # install_application
+  #   Install Applications packaged as .dmg or .zip
+  #   Does not work for application which require an installer (.pkg)
+  #   Checks if .dmg or .zip then act accordingly
+  #   Checks signature on .app before installing
 
   local application_name=${1:?application_name not passed}
   local downloaded_file_path=${2:?downloaded_file_path not passed}
