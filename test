@@ -6,7 +6,6 @@
 #   Adapted from jessfraz/dotfiles/bin/test.sh
 #   https://github.com/jessfraz/dotfiles/blob/master/test.sh
 
-
 set -euo pipefail
 # -e exit if any command returns non-zero status code
 # -u prevent using undefined variables
@@ -18,8 +17,6 @@ set -euo pipefail
 # reset colors
 
 readonly RESET=$(/usr/bin/tput sgr0)
-readonly BOLD=$(/usr/bin/tput bold)
-
 readonly RED=$(/usr/bin/tput setaf 1)
 readonly GREEN=$(/usr/bin/tput setaf 64)
 readonly BLUE=$(/usr/bin/tput setaf 4)
