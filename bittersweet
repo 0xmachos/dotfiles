@@ -16,11 +16,11 @@ IFS=$'\n\t'
 
 ### Define Colours ###
 
-tput sgr0; 
+/usr/bin/tput sgr0; 
 # reset colors
-readonly RESET=$(tput sgr0);
-readonly BOLD=$(tput bold);
-readonly RED=$(tput setaf 1);
+readonly RESET=$(/usr/bin/tput sgr0);
+readonly BOLD=$(/usr/bin/tput bold);
+readonly RED=$(/usr/bin/tput setaf 1);
 
 ### END Colours ###
 
