@@ -2,7 +2,7 @@
 # dotfiles/test
 
 # test
-#   Find bash scripts then run shellcheck
+#   Find shell and bash scripts and run shellcheck on them
 #   Adapted from jessfraz/dotfiles/bin/test.sh
 #   https://github.com/jessfraz/dotfiles/blob/master/test.sh
 
@@ -11,21 +11,20 @@ set -euo pipefail
 # -u prevent using undefined variables
 # -o pipefail force pipelines to fail on first non-zero status code
 
-
 ### Define Colours ###
 /usr/bin/tput sgr0; 
 # reset colors
-
 readonly RESET=$(/usr/bin/tput sgr0)
 readonly RED=$(/usr/bin/tput setaf 1)
 readonly GREEN=$(/usr/bin/tput setaf 64)
 readonly BLUE=$(/usr/bin/tput setaf 4)
 ### END Colours ###
 
+### Define Message Format
 FAIL="${RED}FATAL${RESET}"
 PASS="${GREEN}PASS${RESET}"
 INFO="${BLUE}INFO${RESET}"
-
+### END Message Format
 
 function check_shellcheck {
 
