@@ -362,7 +362,7 @@ function get_sudo {
 
 function ctrl_c {
   # ctrl_c
-  # If user hits CTRL + C exit 
+  #   If user hits CTRL + C exit 
   echo -e "\\n[❌] ${USER} has chosen to quit!"
   exit 1
 }
