@@ -921,9 +921,9 @@ function install_brewfile {
 
 
 function change_shell {
-
-  # Change default shell to bash as installed by Brew
-  # /usr/local/bin/bash instead of /bin/bash
+  # change_shell
+  #   Change default shell to zsh as installed by Brew
+  #   /usr/local/bin/zsh instead of /bin/zsh
 
   local -r new_shell="/usr/local/bin/zsh"
   
