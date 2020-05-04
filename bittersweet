@@ -62,7 +62,10 @@ function usage {
 
 
 function check_os_compatibility {
-  
+  # check_os_compatibility
+  #   Check if the host is darwin (i.e macOS)
+  #   Check if the host is ruuning macOS $supported_macos_version
+
   local os
   local current_macos_version
   local -r supported_macos_version="10.15"
