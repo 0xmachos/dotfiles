@@ -31,21 +31,21 @@ file_names=("Bash.sublime-settings" "Jekyll.sublime-settings" "Markdown.sublime-
 # TODO: Copy all files with the extension ".sublime-settings"
 
 if [ -d "$HOME/Library/Application Support/Sublime Text 3/Packages/User" ]; then
-  
-  for file in "${file_names[@]}"
-  do
-
-    if cp "$HOME/Library/Application Support/Sublime Text 3/Packages/User/${file}" \
-          "$HOME/Documents/Projects/dotfiles/Sublime Text 3/Packages/User/${file}"; then
-      
-      echo "[✅] Successfully copied ${file}"
-    else
-      echo "[❌] Failed to copy ${file}"
-    fi 
-
-  done
-
-else
   echo "[❌] Sublime Text not installed"
+  exit 1
 fi
+  
+for file in "${file_names[@]}"; do
+
+  if cp "$HOME/Library/Application Support/Sublime Text 3/Packages/User/${file}" \
+        "$HOME/Documents/Projects/dotfiles/Sublime Text 3/Packages/User/${file}"; then
+    
+    echo "[✅] Successfully copied ${file}"
+  else
+    echo "[❌] Failed to copy ${file}"
+  fi 
+
+done
+
+
 
