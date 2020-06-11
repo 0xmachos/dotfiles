@@ -31,6 +31,7 @@ function usage {
   echo "Usage:"
   echo "  defaults              - Write new system and application default settings"
   echo "  dotfiles              - Symlink various config files into ${HOME}"
+  echo "  scripts               - Symlink scripts in bin into /usr/local/bin"
   echo "  sudotouch             - Enable TouchID to sudo"
   echo "  gpgtools              - Install GPGTools"
   echo "  sublimetext           - Install Sublime Text"
@@ -503,6 +504,37 @@ function install_dotfiles {
 }
 
 
+function install_scripts {
+  # install_scripts
+  #   Symlink dotfiles/bin/ scripts into /usr/local/bin
+  #   Create /usr/local/bin
+  #   Symlink files in /usr/local/bin
+  
+  local -r dir=$(pwd)
+  local -ar bin_files=(dns pihole_stats sublime_backup) 
+  
+  # Create /usr/local/bin
+  if ! [[ -d "/usr/local/bin/" ]]; then 
+    get_sudo "to create /usr/local/bin/"
+    if sudo mkdir -p "/usr/local/bin/"; then
+      echo "[✅] Successfully created /usr/local/bin/"
+    else
+      echo "[❌] Failed to create /usr/local/bin/"
+    fi
+  fi
+
+  # Symlink files
+  get_sudo "to symlink scripts into /usr/local/bin/"
+  for bin_file in "${bin_files[@]}"; do
+    if sudo sudo ln -sfn "${dir}/bin/${bin_file}" "/usr/local/bin/${bin_file}"
+      echo "[✅] Successfully linked ${bin_file} to /usr/local/bin/${bin_file_base}"
+    else
+      echo "[❌] Failed to link ${bin_file} to /usr/local/bin/${bin_file_base}"
+    fi
+  done
+}
+
+
 function enable_touchid_sudo {
   # enable_touchid_sudo
   #   Check if already enabled in /etc pam.d/sudo
@@ -887,6 +919,9 @@ function main {
   elif [[ "${cmd}" == "dotfiles" ]]; then
     install_dotfiles
 
+  elif [[ "${cmd}" == "scripts" ]]; then
+    install_scripts
+
   elif [[ "${cmd}" == "sudotouch" ]]; then
     enable_touchid_sudo
 
@@ -929,6 +964,7 @@ function main {
 
     write_defaults
     install_dotfiles
+    install_scripts
     enable_touchid_sudo
     install_gpgtools
     install_sublime_text
