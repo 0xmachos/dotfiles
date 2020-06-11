@@ -526,8 +526,8 @@ function install_scripts {
   # Symlink files
   get_sudo "to symlink scripts into /usr/local/bin/"
   for bin_file in "${bin_files[@]}"; do
-    if sudo sudo ln -sfn "${dir}/bin/${bin_file}" "/usr/local/bin/${bin_file}"
       echo "[✅] Successfully linked ${bin_file} to /usr/local/bin/${bin_file_base}"
+    if sudo sudo ln -sfn "${dir}/bin/${bin_file}" "/usr/local/bin/${bin_file}"; then
     else
       echo "[❌] Failed to link ${bin_file} to /usr/local/bin/${bin_file_base}"
     fi
