@@ -448,145 +448,58 @@ function write_defaults {
 
 
 function install_dotfiles {
-
-  local dir_name
-  local dir_name_base
+  # install_dotfiles
+  #   Create directories in $HOME
+  #   Soft links config files from repo into $HOME
+  #   Config files for: zsh, git, ssh, gpg
+  
+  local -r dir=$(pwd)
+  local -ar dot_dirs=(.ssh .gnupg .extra)
+  local dot_dir
+  local -ar dot_files=(.zshrc .exports .functions \
+                      .gitignore_global .gitconfig \
+                      .aliases)
   local dot_file
-  local dot_file_base
-  local bin_file
-  local bin_file_base
-  local dir
-  dir=$(pwd)
-
+  local -ar ssh_configs=(config)
+  local ssh_config
+  local -ar gpg_files=(gpg-agent.conf gpg.conf)
+  local gpg_file
 
   # Create required directories 
-  # ~/.ssh and ~/.gnupg
-  while IFS= read -r -d '' dir_name; do
-    
-    if [ -d "${dir_name}" ] ; then
-      dir_name_base=$(basename "${dir_name}");
-
-      if ! [ -d "${HOME}/${dir_name_base}" ]; then
-        if mkdir -p "${HOME}/${dir_name_base}" ; then
-          echo "[✅] Successfully created ${HOME}/${dir_name_base}"
-        else
-          echo "[❌] Failed to create ${HOME}/${dir_name_base}"
-        fi
-      fi
+  for dot_dir in "${dot_dirs[@]}"; do
+    if mkdir -p "${HOME}/${dot_dir}"; then
+      echo "[✅] Successfully created ${HOME}/${dot_dir}"
     else
-      echo "[❌] ${dir_name} does not exists"
+      echo "[❌] Failed to create ${HOME}/${dot_dir}"
     fi
+  done
 
-  done <   <(find . -type d -maxdepth 1 \
-            -name ".*" \
-            -not -name ".git" \
-            -not -name "." \
-            -print0)
-
-
-  # Symlink general dotfiles into ~/
-  # .bashrc, .extra, .bash_prompt
-  # .exports, .bash_profile, .gitconfig
-  # .aliases
-
-  while read -r dot_file; do
-
-    if [ -e "${dot_file}" ] ; then
-      dot_file_base=$(basename "${dot_file}");
-
-      if ln -sfn "${dir}/${dot_file_base}" "${HOME}/${dot_file_base}"; then
-        echo "[✅] Successfully linked ${dir}/${dot_file_base} to ${HOME}/${dot_file_base}"
+  # Symlink general dotfiles into $HOME
+  for dot_file in "${dot_files[@]}"; do
+      if ln -sfn "${dir}/${dot_file}" "${HOME}/${dot_file}"; then
+        echo "[✅] Successfully linked ${dir}/${dot_file} to ${HOME}/${dot_file}"
       else
-        echo "[❌] Failed to link ${dir}/${dot_file_base} to ${HOME}/${dot_file_base}"
+        echo "[❌] Failed to link ${dir}/${dot_file} to ${HOME}/${dot_file}"
       fi
+  done
+
+  # Symlink ssh config in to $HOME/.ssh/
+  for ssh_config in "${ssh_configs[@]}"; do
+    if ln -sfn "${dir}/.ssh/${ssh_config}" "${HOME}/.ssh/${ssh_config}"; then
+      echo "[✅] Successfully linked ${ssh_config} to ${HOME}/.ssh/${ssh_config}"
     else
-      echo "[❌] ${dot_file} does not exists"
+      echo "[❌] Failed to link ${ssh_config} to ${HOME}/.ssh/${ssh_config}"
     fi
+  done
 
-  done <   <(find . -type f -name ".*" \
-                  -not -name '.gitignore' \
-                  -not -name '.travis.yml' \
-                  -not -name '.git' \
-                  -not -path "./.ssh/*" \
-                  -not -path "./mOSL/*" \
-                  -not -name '.gnupg' \
-                  -not -name '.DS_Store')
-
-
-  # Symlink ssh config files in to ~/.ssh/
-  # config
-
-  while read -r dot_file; do
-
-    if [ -e "${dot_file}" ] ; then
-      dot_file_base=$(basename "${dot_file}");
-
-      if ln -sfn "${dot_file}" "${HOME}/.ssh/${dot_file_base}"; then
-        echo "[✅] Successfully linked ${dot_file} to ${HOME}/.ssh/${dot_file_base}"
-      else
-        echo "[❌] Failed to link ${dot_file} to ${HOME}/.ssh/${dot_file_base}"
-      fi
+  # Symlink GPG config files in to $HOME/.gnupg/
+  for gpg_file in "${gpg_files[@]}"; do
+    if ln -sfn "${dir}/.gnupg/${gpg_file}" "${HOME}/.gnupg/${gpg_file}"; then
+      echo "[✅] Successfully linked ${gpg_file} to ${HOME}/.gnupg/${gpg_file}"
     else
-      echo "[❌] ${dot_file} does not exists"
+      echo "[❌] Failed to link ${gpg_file} to ${HOME}/.gnupg/${gpg_file}"
     fi
-
-  done <   <(find "$(PWD)/.ssh" -name "*" -not -name ".ssh")
-
-
-  # Symlink GPG config files in to ~/.gnupg/
-  # gpg-agent.conf, gpg.conf
-
-  while read -r dot_file; do
-
-    if [ -e "${dot_file}" ] ; then
-      dot_file_base=$(basename "${dot_file}");
-
-      if ln -sfn "${dot_file}" "${HOME}/.gnupg/${dot_file_base}"; then
-        echo "[✅] Successfully linked ${dot_file} to ${HOME}/.gnupg/${dot_file_base}"
-      else
-        echo "[❌] Failed to link ${dot_file} to ${HOME}/.gnupg/${dot_file_base}"
-      fi
-    else
-      echo "[❌] ${dot_file} does not exists"
-    fi
-  
-  done <   <(find "$(PWD)/.gnupg" -name "*" -not -name ".gnupg")
-
-
-  # Symlink bin/ scripts into /usr/local/bin
-  # Check if /usr/local/bin exists, if not create it
-  # Requires sudo to interact with /usr/local/bin
-
-  if ! [[ -d "/usr/local/bin/" ]]; then 
-    
-    get_sudo "to create /usr/local/bin/"
-
-    if sudo mkdir -p "/usr/local/bin/"; then
-    # !! SUDO !!
-      echo "[✅] Successfully created /usr/local/bin/"
-    else
-      echo "[❌] Failed to create /usr/local/bin/"
-    fi
-  fi
- 
-  while read -r bin_file; do
-
-    if [ -e "${bin_file}" ]; then
-      bin_file_base=$(basename "${bin_file}");
-
-      get_sudo "to symlink scripts into /usr/local/bin/"
-
-      if sudo ln -sfn "${bin_file}" "/usr/local/bin/${bin_file_base}"; then
-      # !! SUDO !!
-        echo "[✅] Successfully linked ${bin_file} to /usr/local/bin/${bin_file_base}"
-      else
-        echo "[❌] Failed to link ${bin_file} to /usr/local/bin/${bin_file_base}"
-      fi
-    else
-      echo "[❌] ${bin_file} does not exists"
-    fi
-
-  done <   <(find "$(PWD)/bin" -name "*" -not -name "bin" -not -name ".DS_Store")    
+  done 
 }
 
 
