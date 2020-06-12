@@ -31,6 +31,7 @@ function usage {
   echo "Usage:"
   echo "  defaults              - Write new system and application default settings"
   echo "  dotfiles              - Symlink various config files into ${HOME}"
+  echo "  nvram                 - Set nvram variables"
   echo "  scripts               - Symlink scripts in bin into /usr/local/bin"
   echo "  sudotouch             - Enable TouchID to sudo"
   echo "  gpgtools              - Install GPGTools"
@@ -503,6 +504,18 @@ function install_dotfiles {
   done 
 }
 
+function set_nvram_variables {
+
+  get_sudo "to set nvram variables"
+
+  if sudo nvram StartupMute=%00; then
+    # Enables macOS startup sound
+    echo "[✅] Enabled macOS startup sound"
+  else
+    echo "[❌] Failed to enable macOS startup sound"
+  fi
+}
+
 
 function install_scripts {
   # install_scripts
@@ -919,6 +932,9 @@ function main {
   elif [[ "${cmd}" == "dotfiles" ]]; then
     install_dotfiles
 
+  elif [[ "${cmd}" == "nvram" ]]; then
+      set_nvram_variables
+
   elif [[ "${cmd}" == "scripts" ]]; then
     install_scripts
 
@@ -964,6 +980,7 @@ function main {
 
     write_defaults
     install_dotfiles
+    set_nvram_variables
     install_scripts
     enable_touchid_sudo
     install_gpgtools
