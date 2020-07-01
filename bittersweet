@@ -44,7 +44,7 @@ function usage {
   echo "  brewfile              - Install Homebrew packages from Brewfile"
   echo "  shell                 - Change shell to bash as installed by Brew"
 
-  echo -e "\\n  ${RED}hailmary${RESET}            - ${BOLD}Run every function${RESET} in order listed above"
+  echo -e "\\n  ${RED}hailmary${RESET}              - ${BOLD}Run every function${RESET} in order listed above"
 
   exit 0
 }
