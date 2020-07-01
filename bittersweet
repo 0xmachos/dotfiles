@@ -921,76 +921,79 @@ function main {
   trap ctrl_c SIGINT
   # Detect and react to the user hitting CTRL + C
 
-  if [[ "${cmd}" == "defaults" ]]; then
-    write_defaults
+  case "${cmd}" in
 
-  elif [[ "${cmd}" == "dotfiles" ]]; then
-    install_dotfiles
-
-  elif [[ "${cmd}" == "nvram" ]]; then
+    defaults)
+      write_defaults
+      ;;
+    dotfiles)
+      install_dotfiles
+      ;;
+    nvram)
       set_nvram_variables
+      ;;
+    scripts)
+      install_scripts
+      ;;
+    sudotouch)
+      enable_touchid_sudo
+      ;;
+    gpgtools)
+      install_gpgtools
+      ;;
+    sublimetext)
+      install_sublime_text
+      ;;
+    tower)
+      install_tower
+      ;;
+    deckset)
+      install_deckset
+      ;;
+    blockblock)
+      install_blockblock
+      ;;
+    oversight)
+      install_oversight
+      ;;
+    brew)
+      install_brew
+      ;;
+    brewfile)
+      install_brewfile
+      ;;
+    shell)
+      change_shell
+      ;;
+    test)
+      run_test
+      ;;
+    hailmary)
+      # Execute all the functions
+      # Order matters!
+      echo -e "[🍺] ${RED}Hailmary${RESET} engaged"
+      sleep 3
 
-  elif [[ "${cmd}" == "scripts" ]]; then
-    install_scripts
+      write_defaults
+      install_dotfiles
+      set_nvram_variables
+      install_scripts
+      enable_touchid_sudo
+      install_gpgtools
+      install_sublime_text
+      install_tower
+      install_deckset
+      install_blockblock
+      install_oversight
+      install_brew
+      install_brewfile
+      change_shell
+      ;;
+    *)
+      usage
+      ;;
+  esac
 
-  elif [[ "${cmd}" == "sudotouch" ]]; then
-    enable_touchid_sudo
-
-  elif [[ "${cmd}" == "gpgtools" ]]; then 
-    install_gpgtools
-
-  elif [[ "${cmd}" == "sublimetext" ]]; then
-    install_sublime_text 
-
-  elif [[ "${cmd}" == "tower" ]]; then
-    install_tower
-
-  elif [[ "${cmd}" == "deckset" ]]; then
-    install_deckset
-
-  elif [[ "${cmd}" == "blockblock" ]]; then
-    install_blockblock
-  
-  elif [[ "${cmd}" == "oversight" ]]; then
-    install_oversight
-
-  elif [[ "${cmd}" == "brew" ]]; then
-    install_brew
-
-  elif [[ "${cmd}" == "brewfile" ]]; then
-    install_brewfile
-
-  elif [[ "${cmd}" == "shell" ]]; then
-    change_shell
-
-  elif [[ "${cmd}" == "test" ]]; then
-    run_test
-
-  elif [[ "${cmd}" == "hailmary" ]]; then
-    # Execute all the functions
-    # Order matters!
-    # TODO: Manually adding new functions sucks 
-    echo -e "[🍺] ${RED}Hailmary${RESET} engaged"
-    sleep 3
-
-    write_defaults
-    install_dotfiles
-    set_nvram_variables
-    install_scripts
-    enable_touchid_sudo
-    install_gpgtools
-    install_sublime_text
-    install_tower
-    install_deckset
-    install_blockblock
-    install_oversight
-    install_brew
-    install_brewfile
-    change_shell
-
-  else
-    usage
-  fi
 }
 
 main "$@"
