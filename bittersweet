@@ -415,11 +415,6 @@ function write_defaults {
   # Trackpad: Enable tap to click
   # Default: defaults write com.apple.AppleMultitouchTrackpad Clicking -bool false
 
-  sudo defaults write /Library/Preferences/com.apple.AppleFileServer guestAccess -bool false
-  # !! SUDO !!
-  # Guest User: Disable
-  # Default: sudo defaults write /Library/Preferences/com.apple.AppleFileServer guestAccess -bool true
-
   defaults write com.apple.menuextra.clock DateFormat -string "EEE d MMM  HH:mm"
   # Clock: Set format to Sun 26 Nov 16:00 
 
