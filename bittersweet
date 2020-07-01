@@ -847,7 +847,7 @@ function install_brewfile {
   # Install Homebrew packages from dotfiles/.extra/Brewfile
   # Will install programs from the Mac AppStore if user is logged in
 
-  declare -x HOMEBREW_BREWFILE="${HOME}/Documents/Projects/dotfiles/.extra/Brewfile"
+  declare -x HOMEBREW_BREWFILE="${dir}/.extra/Brewfile"
 
   echo "[🍺] Installing mas"
 
@@ -917,6 +917,8 @@ function main {
   check_developer_tools
 
   local cmd=${1:-"usage"}
+  declare dir
+  dir=$(pwd)
 
   trap ctrl_c SIGINT
   # Detect and react to the user hitting CTRL + C
