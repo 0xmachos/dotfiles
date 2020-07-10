@@ -18,5 +18,5 @@
 	# Use this instead of "gpg", found on $PATH when making or verifying a PGP signature
 
 [core]
-	excludesfile = ~/.gitignore
+	excludesfile = ~/.gitignore_global
 
