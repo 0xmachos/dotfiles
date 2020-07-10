@@ -382,8 +382,6 @@ function run_test {
 function write_defaults {
 
   echo "[🍺] Writing system & application defaults"
-  
-  get_sudo "to disable Guest User via defaults"
 
   defaults write com.apple.TextEdit RichText -bool false
   # TextEdit: Use Plain Text Mode as Default
