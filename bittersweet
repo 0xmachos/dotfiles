@@ -455,7 +455,7 @@ function install_dotfiles {
                       .gitignore_global .gitconfig \
                       .aliases)
   local dot_file
-  local -ar ssh_configs=(config)
+  local -ar ssh_configs=(config .extra_ssh)
   local ssh_config
   local -ar gpg_files=(gpg-agent.conf gpg.conf)
   local gpg_file
