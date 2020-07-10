@@ -439,6 +439,10 @@ function write_defaults {
   defaults write com.apple.finder FXRemoveOldTrashItems -bool true
   # Finder: Empty trash after 30 days
   # Default: defaults write com.apple.finder FXRemoveOldTrashItems -bool false
+
+  defaults write com.apple.desktopservices DSDontWriteNetworkStores -bool true
+  # SMB: Don't write .DS_Store files on SMB shares
+  # Default: defaults write com.apple.desktopservices DSDontWriteNetworkStores -bool false
 }
 
 
