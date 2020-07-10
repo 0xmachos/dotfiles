@@ -806,7 +806,7 @@ function install_brew {
     echo -e "[⚠️ ] \\033[0;31mStick around\\033[0m - Requires you to press RETURN and input your password"
     sleep 5
 
-    if /usr/bin/ruby -e "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install)"; then
+    if /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install.sh)"; then
       echo "[✅] Successfully installed Homebrew 🍻"
     else
       echo "[❌] Failed to install Homebrew 😢"
