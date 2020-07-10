@@ -61,7 +61,6 @@ SPROMPT="Correct %F{red}%R%f to %F{green}%r%f [nyae]?"
 # Correction prompt
 
 
-
 ### Completion ###
 
 autoload -Uz compinit && compinit
@@ -79,7 +78,6 @@ zstyle ':completion:*' matcher-list 'm:
 # Partial completion suggestions
 zstyle ':completion:*' list-suffixes
 zstyle ':completion:*' expand prefix suffix
-
 
 
 ### History ###
@@ -112,7 +110,6 @@ setopt HIST_REDUCE_BLANKS
 # Remove blank lines
 setopt HIST_IGNORE_SPACE
 # Do not store command lines starting with a space
-
 
 
 if [ -d ~/Documents/Projects ]; then
