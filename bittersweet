@@ -879,6 +879,32 @@ function install_brewfile {
 }
 
 
+function zsh_compinit_fix {
+  # zsh_compinit_fix
+  #   Secure permissions on zsh completion 
+  #     files at /usr/local/share/zsh
+  #   https://stackoverflow.com/a/43544733
+  #   Remove group/other write/execite permissions
+  #   Change ownership to $USER:staff
+
+  local -r completions_dir="/usr/local/share/zsh"
+  
+  echo "[🍺] Fixing zsh completions permissions"
+
+  if ! chmod -R go-wx "${completions_dir}"; then
+    echo "[❌] Failed to remove r/x for group & others on /usr/local/share/zsh"
+    return 1
+  fi
+  
+  if ! chown -R "${USER}:staff" "${completions_dir}"; then
+    echo "[❌] Failed to change owners of mikey:staff"
+    return 1
+  fi
+
+  echo "[✅] Fixed zsh completions permissions"
+}
+
+
 function change_shell {
   # change_shell
   #   Change default shell to zsh as installed by Brew
@@ -969,6 +995,7 @@ function main {
       ;;
     brewfile)
       install_brewfile
+      zsh_compinit_fix
       ;;
     shell)
       change_shell
@@ -995,6 +1022,7 @@ function main {
       install_oversight
       install_brew
       install_brewfile
+      zsh_compinit_fix
       change_shell
       ;;
     *)
