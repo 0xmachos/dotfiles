@@ -885,8 +885,8 @@ function install_brewfile {
   fi
 
   echo "[🍺] Exported HOMEBREW_BREWFILE=${HOMEBREW_BREWFILE}"
-  echo "[🍺] Installing Homebrew packages from Brewfile"
   
+  echo "[🍺] Installing Homebrew packages from Brewfile"
   get_sudo "to install software via Homebrew"
 
   if brew file install; then 
