@@ -799,8 +799,10 @@ function install_oversight {
 
   objective_see_install "OverSight" "${zip_download_path}"
 
-  # Enable headless mode
-  defaults write com.objective-see.OverSight runHeadless -int 1
+  # Enable headless mode, auto updtaes & start on login
+  defaults write com.objective-see.OverSight runHeadless   -bool true
+  defaults write com.objective-see.OverSight check4Updates -bool true
+  defaults write com.objective-see.OverSight startAtLogin  -bool true
 } 
 
 
