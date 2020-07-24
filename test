@@ -33,7 +33,7 @@ function find_files {
   #   Find all regular files in source directory
   
   while IFS=$'\n' read -r file; do 
-    files+=("${file}"); 
+    FILES+=("${file}"); 
   done < <(/usr/bin/find . -maxdepth 1 -type f \
             -not -iwholename '*.git*'   \
             -not -iwholename '*venv*'   \
@@ -48,7 +48,7 @@ function analyse_shell_scripts {
   #   Iterate over $FILES to find bash and zsh scripts
   #   Call shellcheck on them via analyse function
   
-  for file in "${files[@]}"; do
+  for file in "${FILES[@]}"; do
     if /usr/bin/file "${file}" | /usr/bin/grep --quiet "shell" || \
       /usr/bin/file "${file}" | /usr/bin/grep --quiet "bash" ; then
       # Find bash scripts
@@ -92,7 +92,7 @@ function analyse {
 function main {
 
   declare -a ERRORS
-  declare -a files
+  declare -a FILES
 
   check_shellcheck
   find_files
