@@ -764,7 +764,7 @@ function install_blockblock {
     objective_see_install "BlockBlock" "${zip_download_path}"
 
     # Enable headless mode
-    defaults write com.objectiveSee.BlockBlock headlessMode -int 1
+    defaults write com.objectiveSee.BlockBlock headlessMode -bool true
 }
 
 
