@@ -16,6 +16,8 @@ set -euo pipefail
 
 
 function check_shellcheck {
+  # check_shellcheck
+  #   Check if shellcheck is installed
 
   if ! [ -x "$(command -v shellcheck)" ]; then
     echo -e "[FAIL] shellcheck not installed"
@@ -42,6 +44,9 @@ function find_files {
 
 
 function analyse_shell_scripts { 
+  # analyse_shell_scripts
+  #   Iterate over $FILES to find bash and zsh scripts
+  #   Call shellcheck on them via analyse function
   
   for file in "${files[@]}"; do
     if /usr/bin/file "${file}" | /usr/bin/grep --quiet "shell" || \
@@ -64,12 +69,17 @@ function analyse_shell_scripts {
 
 
 function analyse {
+  # analyse
+  #   Wrapper for shellcheck to handle errors
+  #   Always invokes shellcheck in bash mode
+  #     as shellcheck doesn't support zsh
 
   local shell_file=${1:?shell_file not passed to lint_shell_file}
 
   if shellcheck --shell=bash "${shell_file}" ; then
       # Run shellcheck on the file
-      # bash is specified as bittersweet now has a zsh shebang
+      # Always uses bash mode as bittersweet now has a zsh shebang
+      # Shelllcheck doesn't support zsh.
       echo -e "[PASS] Sucessfully linted ${shell_file}"
     else
       echo -e "[FAIL] Failed to lint ${shell_file}"
