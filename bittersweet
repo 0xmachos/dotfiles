@@ -94,6 +94,8 @@ function check_os_compatibility {
 
 
 function check_developer_tools {
+  # check_developer_tools
+  #   Checks if xcode command line tools are installed
 
   if ! xcode-select -p >/dev/null 2>&1; then 
     echo "[❌] Command line developer tools required"
