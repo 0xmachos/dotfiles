@@ -758,30 +758,32 @@ function install_blockblock {
     return 0
   fi
     
-    echo "[🍺] Installing BlockBlock"
-  
-    local url
-    local zip_name
-    local zip_download_path
-    local zip_sha1
+  echo "[🍺] Installing BlockBlock"
 
-    url="$(curl -s --compressed https://objective-see.com/products/blockblock.html \
-           | grep -m 1 'downloads/BlockBlock' \
-           | awk -F '"' '{print $2}')"
-    zip_name="$(echo "${url}" | awk -F '/' '{print $NF}')"
-    zip_download_path="${HOME}/Downloads/${zip_name}"
-    zip_sha1="$(curl -s --compressed https://objective-see.com/products/blockblock.html \
-                  | grep 'SHA-1' \
-                  | awk '{print $4}')"
+  local url
+  local zip_name
+  local zip_download_path
+  local zip_sha1
 
-    download_application "${zip_download_path}" "${url}"
+  url="$(curl -s https://objective-see.com/products/blockblock.html \
+         | grep -m 1 'downloads/BlockBlock' \
+         | awk -F '"' '{print $2}')"
+  zip_name="$(echo "${url}" | awk -F '/' '{print $NF}')"
+  zip_download_path="${HOME}/Downloads/${zip_name}"
+  zip_sha1="$(curl -s https://objective-see.com/products/blockblock.html \
+                | grep 'SHA-1' \
+                | awk '{print $4}')"
 
-    verify_sha "${zip_name}" "${zip_download_path}" "1" "${zip_sha1}"
+  download_application "${zip_download_path}" "${url}"
 
-    objective_see_install "BlockBlock" "${zip_download_path}"
+  verify_sha "${zip_name}" "${zip_download_path}" "1" "${zip_sha1}"
 
-    # Enable headless mode
-    defaults write com.objectiveSee.BlockBlock headlessMode -bool true
+  objective_see_install "BlockBlock" "${zip_download_path}"
+
+  echo "[⚠️] Remember to enable Full Disk Access for BlockBlock"
+
+  # Enable headless mode
+  defaults write com.objectiveSee.BlockBlock headlessMode -bool true
 }
 
 
