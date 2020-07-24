@@ -731,7 +731,7 @@ function  install_deckset {
   version="$(echo -e "${location_header}" | awk -F '[+|+]' '{print $2}')"
   build="$(echo -e "${location_header}" | awk -F '[(|)]' '{print $2}')"
   url="https://dl.decksetapp.com/Deckset+${version}+(${build}).dmg"
-  dmg_name="$(basename ${url})"
+  dmg_name=$(basename "${url}")
   dmg_download_path="${HOME}/Downloads/${dmg_name}"
 
   download_application "${dmg_download_path}" "${url}"
