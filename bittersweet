@@ -869,6 +869,11 @@ function install_brewfile {
   # Will install programs from the Mac AppStore if user is logged in
 
   declare -x HOMEBREW_BREWFILE="${dir}/.extra/Brewfile"
+  if ! [[ -d "/Applications/Xcode.app" ]]; then
+    echo "[❌] Full installation of Xcode is required to compile mas"
+    echo "[⚠️ ] Install Xcode from the App Store"
+    return 1
+  fi
 
   echo "[🍺] Installing mas"
 
