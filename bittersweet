@@ -795,7 +795,7 @@ function install_oversight {
   local zip_download_path
   local zip_sha1
 
-  url="$(curl -s https://objective-see.com/products/oversight.html \
+  url="$(curl --silent https://objective-see.com/products/oversight.html \
         | grep -m 1 'downloads/OverSight' \
         | awk -F '\"' '{print $2}')"
   zip_name="$(echo "${url}" | awk -F '/' '{print $NF}')"
