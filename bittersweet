@@ -572,70 +572,69 @@ function enable_touchid_sudo {
 
 function install_gpgtools {
   
-  if ! [ -x "$(command -v gpg2)" ]; then
-
-    echo "[🍺] Installing GPGTools (GPG Suite)"
-
-    # shellcheck disable=SC2155
-    local latest_version="$(curl -s "https://gpgtools.org/releases/gpgsuite/release-notes.html" \
-                | grep -m 1 'class="version"' \
-                | awk -F '"' '{print $(NF-1)}')"
-    # Get the latest version string
-    # Query the id field from the latest div class="version"
-    local -r dmg_name="GPG_Suite-${latest_version}.dmg"
-    local -r dmg_download_path="${HOME}/Downloads/${dmg_name}" 
-    # shellcheck disable=SC2155
-    local dmg_sha256="$(curl -s "https://gpgtools.org" 2>/dev/null \
-              | grep -m 1 "SHA256" \
-              | perl -nle "print $& if m{(?<=class='tooltiptext'>).*(?=</span></span>)}")"
-    # Get the SHA256 hash of the latest DMG
-    local -r dmg_mount_point="/Volumes/GPG Suite/" 
-
-    echo "[🍺] Downloading ${dmg_name}"
-    if curl --silent "https://releases.gpgtools.org/${dmg_name}" --output "${dmg_download_path}" ; then 
-    # Download 
-      echo "[✅] Successfully downloaded ${dmg_name}"
-    else
-      echo "[❌] Failed to download ${dmg_name}"
-      exit 1
-    fi
-
-    verify_sha "${dmg_name}" "${dmg_download_path}" "256" "${dmg_sha256}"
-
-    echo "[🍺] Attempting to mount ${dmg_download_path}"
-    if hdiutil attach -quiet "${dmg_download_path}"; then
-    # Attempt to mount the DMG 
-      echo "[✅] Successfully mounted ${dmg_name}"
-    else
-      echo "[❌] Failed to mount ${dmg_name}"
-      exit 1
-    fi  
-
-    verify_signature "${dmg_mount_point}/Install.pkg" "Install"
-    
-    get_sudo "to install GPGTools"
-
-    if sudo installer -pkg "${dmg_mount_point}/Install.pkg" -target "/" >/dev/null; then
-      # !! SUDO !!
-      # Install
-      echo "[✅] Successfully installed GPGTools"
-    else
-      echo "[❌] Failed to install GPGTools"
-      exit 1
-    fi
-
-    # Cleanup 
-    echo "[🍺] Unmounting ${dmg_mount_point}"
-    hdiutil detach -quiet "${dmg_mount_point}"
-    # Unmount the DMG
-    
-    echo "[🍺] Deleting ${dmg_download_path}"
-    rm "${dmg_download_path:?}"
-    # Delete the DMG
-
-  else
+  if [[ -x "$(command -v gpg2)" ]]; then
     echo "[🍺] $(gpg2 --version | head -n 1) already installed"
+    return 0
   fi
+
+  echo "[🍺] Installing GPGTools (GPG Suite)"
+
+  # shellcheck disable=SC2155
+  local latest_version="$(curl -s "https://gpgtools.org/releases/gpgsuite/release-notes.html" \
+              | grep -m 1 'class="version"' \
+              | awk -F '"' '{print $(NF-1)}')"
+  # Get the latest version string
+  # Query the id field from the latest div class="version"
+  local -r dmg_name="GPG_Suite-${latest_version}.dmg"
+  local -r dmg_download_path="${HOME}/Downloads/${dmg_name}" 
+  # shellcheck disable=SC2155
+  local dmg_sha256="$(curl -s "https://gpgtools.org" 2>/dev/null \
+            | grep -m 1 "SHA256" \
+            | perl -nle "print $& if m{(?<=class='tooltiptext'>).*(?=</span></span>)}")"
+  # Get the SHA256 hash of the latest DMG
+  local -r dmg_mount_point="/Volumes/GPG Suite/" 
+
+  echo "[🍺] Downloading ${dmg_name}"
+  if curl --silent "https://releases.gpgtools.org/${dmg_name}" --output "${dmg_download_path}" ; then 
+  # Download 
+    echo "[✅] Successfully downloaded ${dmg_name}"
+  else
+    echo "[❌] Failed to download ${dmg_name}"
+    exit 1
+  fi
+
+  verify_sha "${dmg_name}" "${dmg_download_path}" "256" "${dmg_sha256}"
+
+  echo "[🍺] Attempting to mount ${dmg_download_path}"
+  if hdiutil attach -quiet "${dmg_download_path}"; then
+  # Attempt to mount the DMG 
+    echo "[✅] Successfully mounted ${dmg_name}"
+  else
+    echo "[❌] Failed to mount ${dmg_name}"
+    exit 1
+  fi  
+
+  verify_signature "${dmg_mount_point}/Install.pkg" "Install"
+  
+  get_sudo "to install GPGTools"
+
+  if sudo installer -pkg "${dmg_mount_point}/Install.pkg" -target "/" >/dev/null; then
+    # !! SUDO !!
+    # Install
+    echo "[✅] Successfully installed GPGTools"
+  else
+    echo "[❌] Failed to install GPGTools"
+    exit 1
+  fi
+
+  # Cleanup 
+  echo "[🍺] Unmounting ${dmg_mount_point}"
+  hdiutil detach -quiet "${dmg_mount_point}"
+  # Unmount the DMG
+  
+  echo "[🍺] Deleting ${dmg_download_path}"
+  rm "${dmg_download_path:?}"
+  # Delete the DMG
 }
 
 
