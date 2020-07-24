@@ -63,8 +63,15 @@ SPROMPT="Correct %F{red}%R%f to %F{green}%r%f [nyae]?"
 
 ### Completion ###
 
-autoload -Uz compinit && compinit
 # Initialise zsh completion system 
+#   https://github.com/zsh-users/zsh-completions
+#   Enables zsh-completions as installed by brew
+if type brew &>/dev/null; then
+    FPATH=$(brew --prefix)/share/zsh-completions:$FPATH
+
+    autoload -Uz compinit
+    compinit
+  fi
 
 # Case insensitive path-completion
 zstyle ':completion:*' matcher-list 'm:
