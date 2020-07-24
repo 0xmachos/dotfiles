@@ -687,25 +687,24 @@ function install_sublime_text {
 
 function install_tower {
 
-  if [ ! -d "/Applications/Tower.app" ]; then
-    
-    echo "[🍺] Installing Tower"
-
-    local url
-    local zip_name
-    local zip_download_path
-
-    url="$(curl -s https://updates.fournova.com/tower3-mac/stable/releases/latest/download | awk -F '"' '{print $2}')"
-    zip_name="$(echo "${url}" | awk -F '/' '{print $7}')"
-    zip_download_path="${HOME}/Downloads/${zip_name}" 
-
-    download_application "${zip_download_path}" "${url}"
-
-    install_application "Tower" "${zip_download_path}"
-  
-  else 
+  if [[ -d "/Applications/Tower.app" ]]; then
     echo "[🍺] Tower already installed"
+    return 0
   fi
+
+  echo "[🍺] Installing Tower"
+
+  local url
+  local zip_name
+  local zip_download_path
+
+  url="$(curl -s https://updates.fournova.com/tower3-mac/stable/releases/latest/download | awk -F '"' '{print $2}')"
+  zip_name="$(echo "${url}" | awk -F '/' '{print $7}')"
+  zip_download_path="${HOME}/Downloads/${zip_name}" 
+
+  download_application "${zip_download_path}" "${url}"
+
+  install_application "Tower" "${zip_download_path}"
 }
 
 
