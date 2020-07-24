@@ -288,14 +288,25 @@ function install_application {
 
 
 function objective_see_install {
+  # objective_see_install
+  #   Installs tools from objective-see.com
+  #   Currently used for BlockBlock & Oversight
 
   local application_name=${1:?application_name not passed to objective_see_install}
   local downloaded_file_path=${2:?downloaded_file_path not passed objective_see_install}
   local downloaded_file_name
+  local installer_file_name
   downloaded_file_name=$(echo "${downloaded_file_path}" | awk -F '/' '{print $(NF)}')
 
+  if [[ "${application_name}" == "BlockBlock" ]]; then
+    # The BlockBlock installer binary name differs from every other ObjSee installer
+    installer_file_name="${application_name} Installer"
+  else
+    installer_file_name="${application_name}_Installer"
+  fi
 
   echo "[🍺] Attempting to unzip ${downloaded_file_path}"
+  
   if unzip -qa "${downloaded_file_path}" -d "${HOME}/Downloads"; then
     # Attempt to unzip
     echo "[✅] Successfully unzipped ${downloaded_file_name}"
@@ -304,45 +315,27 @@ function objective_see_install {
     exit 1
   fi
 
-  if [[ "${application_name}" == "BlockBlock" ]]; then
-    # The BlockBlock installer binary name differs from every other ObjSee installer
-    # This is a really shitty work around 
-    verify_signature "${HOME}/Downloads/${application_name} Installer.app" "${application_name}"
+  verify_signature "${HOME}/Downloads/${installer_file_name}.app" "${application_name}"
+
+  get_sudo "to install ${application_name}"
+
+  if sudo bash -c "${HOME}/Downloads/${installer_file_name}.app/Contents/MacOS/${installer_file_name} -install >/dev/null"; then
+    echo "[✅] Successfully installed ${application_name}"
   else
-    verify_signature "${HOME}/Downloads/${application_name}_Installer.app" "${application_name}"
+    echo "[❌] Failed to install ${application_name}"
+    exit 1
   fi
 
-  (
-    # Execute in a subshell so the working directory is not permanantly changed
-    cd "${HOME}/Downloads" || exit
+  ## Cleanup
 
-    get_sudo "to install ${application_name}"
+  echo "[🍺] Deleting ${downloaded_file_path}"
+  # Delete the zip
+  rm "${downloaded_file_path:?}"
 
-    if [[ "${application_name}" == "OverSight" ]]; then
+  echo "[🍺] Deleting ${HOME}/Downloads/${installer_file_name}.app"
+  # Delete installer application bundle
+  rm -rf "${HOME:?}/Downloads/${installer_file_name:?}.app"
 
-      if sudo bash -c "./${application_name}_Installer.app/Contents/MacOS/${application_name}_Installer -install"; then
-      # OverSight's installer binary is name differently to other Obj-S installers
-      # filename has an underscore instead of a space before "Installer"
-        echo "[✅] Successfully installed ${application_name}"
-      else
-        echo "[❌] Failed to install ${application_name}"
-        exit 1
-      fi
-    
-    elif [[ "${application_name}" == "BlockBlock" || \
-            "${application_name}" == "ReiKey"     || \
-            "${application_name}" == "Do Not Disturb" ]]; then
-
-      if sudo bash -c "./${application_name}\\ Installer.app/Contents/MacOS/${application_name}\\ Installer -install"; then
-      # Normal filename format of of Obj-S installer binaries
-        echo "[✅] Successfully installed ${application_name}"
-      else
-        echo "[❌] Failed to install ${application_name}"
-        exit 1
-      fi
-    fi
-
-  )
 }
 
 
