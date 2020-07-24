@@ -707,16 +707,36 @@ function install_tower {
 
 
 function  install_deckset {
+  # install_deckset
+  #   Install decket presentation software
+  #   $url prebuilt, getting $version and $build from the http location header. 
+  #   Grabbing $url directly from curl output does not work.
+  #     curl -sLI https://www.decksetapp.com/download | grep 'location: ' | awk 'END{print}'
+  #     Produces: 'location: https://dl.decksetapp.com/Deckset+2.0.16+(2578).dmg\C-M'
+  #     The "\C-M" string at the end is erroneous. It does not appear when run from
+  #     the command line, only when run in the script with set -x. 
+  #     It's apprently an ascci carriage return. 
+  #     Failed to remove with: tr -d '\C-M', tr -d '\n', tr -d '\r' 
 
+  if [[ -d "/Applications/Deckset.app" ]]; then
+    echo "[🍺] Deckset already installed"
+    return 0
+  fi
+  
   echo "[🍺] Installing Deckset"
   
-  local -r url="https://www.decksetapp.com/download"
+  local location_header
+  local version
+  local build
+  local url
   local dmg_name
   local dmg_download_path
-
-  dmg_name="$(curl -sLI https://www.decksetapp.com/download \
-              | grep 'location: ' | tail -n 1 \
-              | awk -F '/' '{print $4}')"
+  
+  location_header="$(curl -sLI https://www.decksetapp.com/download | grep 'dl.decksetapp')"
+  version="$(echo -e "${location_header}" | awk -F '[+|+]' '{print $2}')"
+  build="$(echo -e "${location_header}" | awk -F '[(|)]' '{print $2}')"
+  url="https://dl.decksetapp.com/Deckset+${version}+(${build}).dmg"
+  dmg_name="$(basename ${url})"
   dmg_download_path="${HOME}/Downloads/${dmg_name}"
 
   download_application "${dmg_download_path}" "${url}"
