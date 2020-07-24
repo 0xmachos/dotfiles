@@ -751,8 +751,8 @@ function install_blockblock {
   #    BB installer binary has a different name to the other Obj-s tools
 
 
-  if [ -d "/Library/Objective-See/BlockBlock/BlockBlock.app" ]; then
-    echo "[🍺] BlockBlock already installed"
+  if [[ -d "/Applications/BlockBlock Helper.app" ]];
+    echo "[🍺] OverSight already installed"
     return 0
   fi
     
