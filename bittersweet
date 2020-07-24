@@ -501,6 +501,9 @@ function install_dotfiles {
 }
 
 function set_nvram_variables {
+  # set_nvram_variables
+  #   Set StartupMute to %00, enables startup chime
+  #   TODO: Remove in Big Sur, option now in Sound UI 
 
   get_sudo "to set nvram variables"
 
