@@ -355,7 +355,7 @@ function get_sudo {
   #  $purpose_string REQUIRED
   #   Descibe why sudo is needed 
 
-  local purpose_string=${1:?$purpose_string not passed to get_sudo}  
+  local purpose_string=${1:?$purpose_string not passed to get_sudo}
   
   if sudo --prompt="[⚠️ ] Password required ${purpose_string}: " -v; then
     # !! SUDO !!
