@@ -789,7 +789,7 @@ function install_oversight {
 
   # Install OverSight
 
-  if [ -f "$HOME/Library/Preferences/com.objective-see.OverSight.plist" ]; then
+  if [[ -d "/Applications/OverSight.app" ]];
     echo "[🍺] OverSight already installed"
     return 0
   fi
