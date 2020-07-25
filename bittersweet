@@ -872,7 +872,7 @@ function install_brewfile {
   # Install Homebrew packages from dotfiles/.extra/Brewfile
   # Will install programs from the Mac AppStore if user is logged in
 
-  if ! [[ -d "/Applications/Xcode.app" ]]; then
+  if [[ ! -d "/Applications/Xcode.app" ]] && [[ ! -d "/Applications/Xcode-beta.app" ]]; then
     echo "[❌] Full installation of Xcode is required to compile mas"
     echo "[⚠️ ] Install Xcode from the App Store"
     return 1
