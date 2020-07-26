@@ -752,7 +752,7 @@ function install_blockblock {
 
 
   if [[ -d "/Applications/BlockBlock Helper.app" ]]; then
-    echo "[🍺] OverSight already installed"
+    echo "[🍺] BlockBlock already installed"
     return 0
   fi
     
