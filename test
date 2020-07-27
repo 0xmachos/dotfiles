@@ -72,7 +72,7 @@ function analyse {
   # analyse
   #   Wrapper for shellcheck to handle errors
   #   Always invokes shellcheck in bash mode
-  #     as shellcheck doesn't support zsh
+  #     as shellcheck does not support zsh
 
   local shell_file=${1:?shell_file not passed to lint_shell_file}
 
