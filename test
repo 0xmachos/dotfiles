@@ -91,10 +91,11 @@ function analyse {
 
 function main {
 
+  check_shellcheck
+
   declare -a ERRORS
   declare -a FILES
 
-  check_shellcheck
   find_files
   analyse_shell_scripts
 
