@@ -19,7 +19,7 @@ function check_shellcheck {
   # check_shellcheck
   #   Check if shellcheck is installed
 
-  if ! [ -x "$(command -v shellcheck)" ]; then
+  if ! [[ -x "$(command -v shellcheck)" ]]; then
     echo "[FAIL] shellcheck not installed"
     echo "[INFO] macOS: brew install shellcheck"
     echo "[INFO] Linux: apt install shellcheck"
