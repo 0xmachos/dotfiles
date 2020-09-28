@@ -1,6 +1,5 @@
-#!/usr/bin/env bash
-# dotfiles/.functions
-
+#!/usr/bin/env zsh
+# dotfiles/.functions/update!
 
 function update! {
 
@@ -53,44 +52,5 @@ function update! {
   fi
 }
 
-
-function git-clean {
-
-  # Run git garbage collection in all my git repos
-
-  declare -a dirs
-  local repo_name
-
-  while IFS=$'\n' read -r dir; do 
-    dirs+=("${dir}"); 
-  done < <(find "$HOME" -type d -maxdepth 4)
-
-  echo "[♻️] Garbage Collecting in Git Repos..."
-  
-  for dir in "${dirs[@]}"; do
-    ( # SUBSHELL
-      cd "${dir}" || exit
-      if [ -d .git ]; then
-        repo_name=$(basename "${dir}")
-        echo "  Cleaning: ${BOLD}${repo_name}${RESET}"
-        git gc --aggressive --quiet >/dev/null
-        # git fsck --full >/dev/null 2>&1
-      fi
-    )
-  done  
-}
-
-
-function jek {
-
-  # Start local Jeklly instance
-
-  if ! bundle exec jekyll serve; then 
-    if ! bundle install; then
-      gem install bundler
-      bundle install
-    fi
-    bundle exec jekyll serve
-  fi
-}
+update!
 
