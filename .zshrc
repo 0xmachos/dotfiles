@@ -10,6 +10,7 @@
 # Enable:  setopt
 # Disable: unsetopt
 
+readonly OS=$(uname -s)
 
 ### Prompt ###
 PROMPT=$'%F{blue}% %n%f 🐶 %B%~%b\n%(?.%F{green}√%f.%F{red}%?)%f %(!.#.$) '
