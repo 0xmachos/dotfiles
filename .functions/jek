@@ -1,0 +1,18 @@
+#!/usr/bin/env zsh
+# dotfiles/.functions/jek
+
+function jek {
+
+  # Start local jekyll instance
+
+  if ! bundle exec jekyll serve; then 
+    if ! bundle install; then
+      gem install bundler
+      bundle install
+    fi
+    bundle exec jekyll serve
+  fi
+}
+
+jek
+
