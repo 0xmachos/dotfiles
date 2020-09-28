@@ -921,7 +921,7 @@ function zsh_compinit_fix {
   fi
   
   if ! chown -R "${USER}:staff" "${completions_dir}"; then
-    echo "[❌] Failed to change owners of mikey:staff"
+    echo "[❌] Failed to change owners of ${completions_dir} to mikey:staff"
     return 1
   fi
 
