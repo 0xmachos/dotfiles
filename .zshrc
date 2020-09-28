@@ -95,6 +95,10 @@ autoload -Uz $fpath[1]/*(.:t)
 # I've no idea what (.:t) does ¯\_(ツ)_/¯
 # https://unix.stackexchange.com/a/526429
 
+### Aliases ###
+
+source "$HOME/.aliases"
+
 ### History ###
 
 HISTFILE=${ZDOTDIR:-HOME}/.zsh_history
