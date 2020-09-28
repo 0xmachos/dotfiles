@@ -10,14 +10,6 @@
 # Enable:  setopt
 # Disable: unsetopt
 
-setopt autocd 
-# ENABLE: Changes directory to path without needing cd
-
-setopt glob_complete
-# ENABLE: Hitting tab twice lists possible completions 
-
-unsetopt case_glob
-# DISABLE: Case sensitive globbing
 
 ### Prompt ###
 PROMPT=$'%F{blue}% %n%f 🐶 %B%~%b\n%(?.%F{green}√%f.%F{red}%?)%f %(!.#.$) '
@@ -59,6 +51,17 @@ setopt correct_all
 
 SPROMPT="Correct %F{red}%R%f to %F{green}%r%f [nyae]?"
 # Correction prompt
+
+
+### Behaviour ###
+setopt autocd 
+# ENABLE: Changes directory to path without needing cd
+
+setopt glob_complete
+# ENABLE: Hitting tab twice lists possible completions 
+
+unsetopt case_glob
+# DISABLE: Case sensitive globbing
 
 
 ### Completion ###
