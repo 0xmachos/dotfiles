@@ -321,7 +321,7 @@ function objective_see_install {
 
   get_sudo "to install ${application_name}"
 
-  if sudo bash -c "${HOME}/Downloads/${installer_file_name}.app/Contents/MacOS/${installer_file_name} -install >/dev/null"; then
+  if sudo "${HOME}/Downloads/${installer_file_name}.app/Contents/MacOS/${installer_file_name}" -install >/dev/null; then
     echo "[✅] Successfully installed ${application_name}"
   else
     echo "[❌] Failed to install ${application_name}"
