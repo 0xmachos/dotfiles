@@ -252,7 +252,7 @@ function install_application {
     # IF file is a dmg
     
     echo "[🍺] Attempting to mount ${downloaded_file_path}"
-    if hdiutil attach -quiet "${downloaded_file_path}"; then
+    if hdiutil attach -nobrowse -quiet "${downloaded_file_path}"; then
       # Attempt to mount the DMG 
       echo "[✅] Successfully mounted ${downloaded_file_name}"
 
@@ -605,7 +605,7 @@ function install_gpgtools {
   verify_sha "${dmg_name}" "${dmg_download_path}" "256" "${dmg_sha256}"
 
   echo "[🍺] Attempting to mount ${dmg_download_path}"
-  if hdiutil attach -quiet "${dmg_download_path}"; then
+  if hdiutil attach -nobrowse -quiet "${dmg_download_path}"; then
   # Attempt to mount the DMG 
     echo "[✅] Successfully mounted ${dmg_name}"
   else
