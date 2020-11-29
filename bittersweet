@@ -411,10 +411,6 @@ function write_defaults {
   defaults write com.apple.menuextra.clock DateFormat -string "EEE d MMM  HH:mm"
   # Clock: Set format to Sun 26 Nov 16:00 
 
-  defaults write com.apple.lookup.shared LookupSuggestionsDisabled -bool true
-  # Spotlight: Disable suggestions in Lookup
-  # Default: defaults write com.apple.lookup.shared LookupSuggestionsDisabled -bool false
-
   defaults write com.apple.mail PreferPlainText -bool true
   # Mail: Force emails to be opened in plain text
   # Default: defaults write com.apple.mail PreferPlainText -bool false
