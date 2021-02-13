@@ -71,7 +71,7 @@ function check_os_compatibility {
 
   local os
   local current_macos_version
-  local -r supported_macos_version="11.0"
+  local -r supported_major_macos_version="11"
   local -r supported_macos_name="Big Sur"
   os="$(uname -s)"
 
@@ -80,10 +80,10 @@ function check_os_compatibility {
     exit 1
   fi
   
-  current_macos_version="$(sw_vers -productVersion | awk -F '.' '{print $1 "." $2}')";
+  current_macos_version="$(sw_vers -productVersion | awk -F '.' '{print $1}')";
   
-  if [[ "${current_macos_version}" != "${supported_macos_version}" ]]; then
-    echo "[⚠️ ] This scipt was written for macOS ${supported_macos_name} (${supported_macos_version})"
+  if [[ "${current_macos_version}" != "${supported_major_macos_version}" ]]; then
+    echo "[⚠️ ] This scipt was written for macOS ${supported_macos_name} (${supported_major_macos_version})"
     sleep 3
   fi 
 }
