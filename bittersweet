@@ -893,12 +893,12 @@ function install_brewfile {
 function zsh_compinit_fix {
   # zsh_compinit_fix
   #   Secure permissions on zsh completion 
-  #     files at /usr/local/share/zsh
+  #     files at /usr/local/share
   #   https://stackoverflow.com/a/43544733
   #   Remove group/other write/execite permissions
   #   Change ownership to $USER:staff
 
-  local -r completions_dir="/usr/local/share/zsh"
+  local -r completions_dir="/usr/local/share"
   
   echo "[🍺] Fixing zsh completions permissions"
 
