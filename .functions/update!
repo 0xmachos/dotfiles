@@ -34,6 +34,12 @@ function update! {
   fi
 
   if [[ "${OS}" == "Darwin" ]]; then
+    
+    if [ -x /usr/local/bin/mas ]; then
+      echo "[💻] App Store Apps..."
+      mas upgrade
+    fi
+
     echo "[🍎] macOS..."
     softwareupdate -i -a
   fi
