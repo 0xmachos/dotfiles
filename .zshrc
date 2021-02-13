@@ -97,6 +97,8 @@ zstyle ':completion:*' expand prefix suffix
 ### Functions ###
 
 FPATH="$HOME/.functions/:$FPATH"
+# Add $HOME/.functions/ to FPATH
+
 autoload -Uz $fpath[1]/*(.:t)
 # Lazy autoload every file in $HOME/.functions/*  as a function
 # I've no idea what (.:t) does ¯\_(ツ)_/¯
