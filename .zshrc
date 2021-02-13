@@ -101,8 +101,8 @@ FPATH="$HOME/.functions/:$FPATH"
 
 autoload -Uz $fpath[1]/*(.:t)
 # Lazy autoload every file in $HOME/.functions/*  as a function
-# I've no idea what (.:t) does ¯\_(ツ)_/¯
-# https://unix.stackexchange.com/a/526429
+#   I've no idea what (.:t) does ¯\_(ツ)_/¯
+#   https://unix.stackexchange.com/a/526429
 
 ### Aliases ###
 
