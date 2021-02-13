@@ -110,7 +110,7 @@ source "$HOME/.aliases"
 
 ### History ###
 
-HISTFILE=${ZDOTDIR:-HOME}/.zsh_history
+HISTFILE=${ZDOTDIR:-$HOME}/.zsh_history
 # Location of history file
 # Use value of $ZDOTDIR if it has a value
 # otherwise use value of $HOME
