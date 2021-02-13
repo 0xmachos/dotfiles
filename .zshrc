@@ -13,6 +13,7 @@
 ### Constants ####
 
 readonly OS=$(uname -s)
+readonly INITIAL_DIR="${HOME}/Documents/Projects"
 
 ### Prompt ###
 PROMPT=$'%F{blue}% %n%f 🐶 %B%~%b\n%(?.%F{green}√%f.%F{red}%?)%f %(!.#.$) '
