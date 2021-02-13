@@ -5,11 +5,11 @@ function update! {
 
   # Update Homebrew, LaTeX packages and macOS
 
-  echo "[⚠️ ] Updating brew, LaTeX, pip3, Ruby Gems & macOS"
+  echo "[⚠️ ] Updating Stuff..."
   sudo -v
 
   if [ -x "/usr/local/bin/brew" ]; then
-    echo "[🍺] Updating brew"
+    echo "[🍺] brew..."
     brew update
     brew upgrade
     brew cleanup
@@ -17,29 +17,29 @@ function update! {
   fi
 
   if [ -x "$(command -v tlmgr)" ]; then
-    echo "[📝] Updating LaTeX"
+    echo "[📝] LaTeX..."
     sudo tlmgr update --self
     sudo tlmgr update –all
   fi
 
   if [ -x "$(command -v pip3)" ]; then
-    echo "[🐍] Updating pip3"
+    echo "[🐍] pip3..."
     pip3 install --upgrade pip
   fi
 
   if [ -x "/usr/local/opt/ruby/bin/gem" ]; then
-    echo "[💎] Updating Ruby Gems"
+    echo "[💎] Ruby Gems...🥲"
     gem update
     gem cleanup
   fi
 
   if [[ "${OS}" == "Darwin" ]]; then
-    echo "[🍎] Updating macOS"
+    echo "[🍎] macOS..."
     softwareupdate -i -a
   fi
 
   if [[ "${OS}" == "Linux" ]]; then
-    echo "[🐧] Updating Linux"
+    echo "[🐧] Linux..."
     if [ -x "$(command -v apt-get)" ]; then
       sudo apt-get update
       sudo apt-get upgrade -y
