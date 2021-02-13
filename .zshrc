@@ -10,6 +10,8 @@
 # Enable:  setopt
 # Disable: unsetopt
 
+### Constants ####
+
 readonly OS=$(uname -s)
 
 ### Prompt ###
