@@ -594,8 +594,6 @@ function symlink_secretive_ssh_public_keys {
   # See: https://github.com/maxgoedjen/secretive/issues/117
   #   for why we need to symlink public key files for use
   #   as IdentityFile for SSH 
-
-  local -r key_files=(.ssh/.extra_secretive_pub_keys/*)
   
   while IFS=$'\n' read -r pub_key_file; do
     pub_key_file_basename=$(basename "${pub_key_file}")
