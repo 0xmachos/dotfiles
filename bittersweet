@@ -577,8 +577,9 @@ function install_secretive {
                   | grep 'location:' \
                   | awk -F '/' '{print $NF}' \
                   | sed 's/\r//')"
-  local download_url
+  local zip_download_url
   zip_download_url="https://github.com/maxgoedjen/secretive/releases/download/${latest_version}/${zip_name}"
+  local zip_download_path
   zip_download_path="${HOME}/Downloads/${zip_name}" 
 
   download_application "${zip_download_path}" "${zip_download_url}"
