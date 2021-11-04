@@ -143,6 +143,17 @@ setopt HIST_IGNORE_SPACE
 # Do not store command lines starting with a space
 
 
+### Enviroment Variable Exports ###
+
+if [[ -x "/usr/local/bin/brew" ]]; then
+  export HOMEBREW_BREWFILE=$HOME/Documents/Projects/dotfiles/.extra/Brewfile
+  # Set location of Brewfile
+fi
+
+if [[ -d "/Applications/Secretive.app" ]]; then
+  export SSH_AUTH_SOCK="$HOME/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh"
+fi
+
 if [ -d "${INITIAL_DIR}" ]; then
   cd "${INITIAL_DIR}"
 fi
