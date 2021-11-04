@@ -34,6 +34,7 @@ function usage {
   echo "  nvram                 - Set nvram variables"
   echo "  scripts               - Symlink scripts in bin into /usr/local/bin"
   echo "  sudotouch             - Enable TouchID to sudo"
+  echo "  secretive             - Install Secretive 🔑"
   echo "  gpgtools              - Install GPGTools"
   echo "  sublimetext           - Install Sublime Text"
   echo "  tower                 - Install Tower"
@@ -557,6 +558,34 @@ function enable_touchid_sudo {
 }
 
 
+function install_secretive {
+
+  # https://github.com/maxgoedjen/secretive/issues/117
+
+  if [[ -d "/Applications/Secretive.app" ]]; then
+    echo "[🍺] Secretive already installed"
+    return 0
+  fi
+
+  echo "Installing Secretive"
+
+  local zip_name
+  zip_name="Secretive.zip" 
+  local latest_version
+  latest_version="$(curl -I https://github.com/maxgoedjen/secretive/releases/latest \
+                  | grep 'location:' \
+                  | awk -F '/' '{print $NF}' \
+                  | sed 's/\r//')"
+  local download_url
+  zip_download_url="https://github.com/maxgoedjen/secretive/releases/download/${latest_version}/${zip_name}"
+  zip_download_path="${HOME}/Downloads/${zip_name}" 
+
+  download_application "${zip_download_path}" "${zip_download_url}"
+
+  install_application "Secretive" "${zip_download_path}"
+}
+
+
 function install_gpgtools {
   
   if [[ -x "$(command -v gpg2)" ]]; then
@@ -978,6 +1007,9 @@ function main {
     sudotouch)
       enable_touchid_sudo
       ;;
+    secretive)
+      install_secretive
+      ;;
     gpgtools)
       install_gpgtools
       ;;
@@ -1029,6 +1061,7 @@ function main {
       install_deckset
       install_blockblock
       install_oversight
+      # install_secretive
       install_brew
       install_brewfile
       zsh_compinit_fix
