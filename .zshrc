@@ -154,7 +154,11 @@ if [[ -d "/Applications/Secretive.app" ]]; then
   export SSH_AUTH_SOCK="$HOME/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh"
 fi
 
+
+### Change into Inital Directory ###
+
 if [ -d "${INITIAL_DIR}" ]; then
+  # shellcheck disable=SC2164
   cd "${INITIAL_DIR}"
 fi
 
