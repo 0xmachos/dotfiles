@@ -597,9 +597,9 @@ function symlink_secretive_ssh_public_keys {
   #   as IdentityFile for SSH 
   
   while IFS=$'\n' read -r pub_key_file; do
-    pub_key_file_basename=$(basename "${pub_key_file}")
+    pub_key_file_basename=$(basename "${pub_key_file:?}")
     
-    if ln -sfn "${dir}/.ssh/.extra_secretive_pub_keys/${pub_key_file_basename}" "${HOME}/.ssh"; then
+    if ln -sfn "${dir}/.ssh/.extra_secretive_pub_keys/${pub_key_file_basename:?}" "${HOME:?}/.ssh"; then
       echo "[✅] Successfully linked ${pub_key_file_basename} to ${HOME}/.ssh/${pub_key_file_basename}"
     else
       echo "[❌] Failed to link ${pub_key_file_basename} to ${HOME}/.ssh/${pub_key_file_basename}"
