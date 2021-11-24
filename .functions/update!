@@ -48,15 +48,10 @@ function update! {
     gem cleanup
   fi
 
-  if [[ "${OS}" == "Darwin" ]]; then
-    
-    if [ -x /usr/local/bin/mas ]; then
-      echo "[💻] App Store Apps..."
-      mas upgrade
-    fi
 
-    echo "[🍎] macOS..."
-    softwareupdate -i -a
+  if [ -x /usr/local/bin/mas ]; then
+    echo "[💻] App Store Apps..."
+    mas upgrade
   fi
 
   fi
