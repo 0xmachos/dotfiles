@@ -2,8 +2,12 @@
 # dotfiles/.functions/update!
 
 function update! {
-
-  # Update Homebrew, LaTeX packages and macOS
+  # update! 
+  #   Update Homebrew, LaTeX packages and macOS 
+  #   Preferred way to check if a bianry exsists and is exectuable is
+  #     if [ -x "$(command -v $BINARY)" ]; then
+  #     See: https://stackoverflow.com/a/677212
+  #     See also: https://unix.stackexchange.com/a/85250
 
   echo "[⚠️ ] Updating Stuff..."
   sudo -v
