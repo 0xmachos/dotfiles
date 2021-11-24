@@ -54,6 +54,10 @@ function update! {
     mas upgrade
   fi
 
+
+  if [ -x "$(command -v softwareupdate)" ]; then
+    echo "[🍎] macOS..."
+    softwareupdate -i -a
   fi
 }
 
