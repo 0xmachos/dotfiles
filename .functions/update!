@@ -31,16 +31,19 @@ function update! {
     # brew file init -y
   fi
 
+
   if [ -x "$(command -v tlmgr)" ]; then
     echo "[📝] LaTeX..."
     sudo tlmgr update --self
     sudo tlmgr update –all
   fi
 
+
   if [ -x "$(command -v pip3)" ]; then
     echo "[🐍] pip3..."
     pip3 install --upgrade pip
   fi
+
 
   if [ -x "/usr/local/opt/ruby/bin/gem" ]; then
     echo "[💎] Ruby Gems...🥲"
