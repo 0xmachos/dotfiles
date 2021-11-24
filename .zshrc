@@ -73,7 +73,10 @@ unsetopt case_glob
 
 # Initialise zsh completion system 
 #   https://github.com/zsh-users/zsh-completions
+#   https://docs.brew.sh/Shell-Completion#configuring-completions-in-zsh
 #   Enables zsh-completions as installed by brew
+#   If “zsh compinit: insecure directories” run 
+#     chmod -R go-w "$(brew --prefix)/share"
 if type brew &>/dev/null; then
     FPATH=$(brew --prefix)/share/zsh-completions:$FPATH
 
