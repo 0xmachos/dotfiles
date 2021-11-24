@@ -1,0 +1,12 @@
+mobileconfig-UUIDs.txt
+
+Profile
+com.machos.dotfiles = C5C2BC3F-B8BD-49A2-AF7F-FEECBFFC6411
+
+
+Payloads
+
+com.machos.dotfiles.SoftwareUpdate = 20AC0536-250F-460B-9264-108CDAE2D296
+
+com.machos.dotfiles.security.firewall = A5A7D166-FBD4-4D6F-88A9-6538F9BE79E3
+
