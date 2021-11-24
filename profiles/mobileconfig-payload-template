@@ -1,0 +1,23 @@
+    <!-- PAYLOAD NAME -->
+    <!-- https://developer.apple.com/documentation/devicemanagement/$$$$$$$$$ -->
+      <dict>
+        <key>PayloadUUID</key>
+          <string>  </string>
+        <key>PayloadType</key>
+          <string>com.apple.</string>
+        <key>PayloadOrganization</key>
+          <string>0xmachos</string>
+        <key>PayloadIdentifier</key>
+          <string>com.machos.dotfiles.</string>
+        <key>PayloadDisplayName</key>
+          <!-- This is what actually populates the Description field -->
+          <string>  </string>
+        
+        <key>PayloadVersion</key>
+          <integer>1</integer>
+        
+        <key>PayloadEnabled</key>
+          <true/>
+
+        <key> </key>
+      </dict>
