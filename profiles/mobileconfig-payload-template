@@ -2,6 +2,7 @@
     <!-- https://developer.apple.com/documentation/devicemanagement/$$$$$$$$$ -->
       <dict>
         <key>PayloadUUID</key>
+          <!-- UUID for the Payload. Content unimportant but needs to be globaly uniqiue-->
           <string>  </string>
         <key>PayloadType</key>
           <string>com.apple.</string>
