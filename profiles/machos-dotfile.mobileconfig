@@ -88,9 +88,9 @@
       </dict>
 
 
-    <!-- Firewall Configuration -->
-    <!-- https://developer.apple.com/documentation/devicemanagement/firewall -->
-    <!-- The "Automatically allow signed downloaded software" and "Automatically allow built-in software" options aren't supported, but both are forced ON when this payload is present. -->
+      <!-- Firewall Configuration -->
+      <!-- https://developer.apple.com/documentation/devicemanagement/firewall -->
+      <!-- The "Automatically allow signed downloaded software" and "Automatically allow built-in software" options aren't supported, but both are forced ON when this payload is present. -->
       <dict>
         <key>PayloadUUID</key>
           <!-- UUID for the Payload. Content unimportant but needs to be globaly uniqiue-->
