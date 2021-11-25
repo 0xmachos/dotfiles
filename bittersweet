@@ -1016,7 +1016,7 @@ function open_system_prefernces_mdm_profile {
   local -r profile_file_name="machos-dotfile.mobileconfig"
   local -r profile_display_name="0xmachos Dotfiles Profile"
 
-  if ! open /System/Library/PreferencePanes/Profiles.prefPane "profiles/${profile_file_name:?}"; then
+  if ! open "/System/Library/PreferencePanes/Profiles.prefPane" "profiles/${profile_file_name:?}"; then
     echo "[❌] Failed to open System Prefernces > Profiles with ${profile_display_name}"
     return 1
   fi
