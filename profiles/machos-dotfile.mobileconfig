@@ -9,16 +9,16 @@
     <!-- https://developer.apple.com/documentation/devicemanagement/toplevel -->
     <!-- DO NOT TRUST the Configuration Profile Reference PDF, it is wildy out of date!-->
     <key>PayloadUUID</key>
-      <string>C5C2BC3F-B8BD-49A2-AF7F-FEECBFFC6411</string>
       <!-- UUID for the Profile. Content unimportant but needs to be globaly uniqiue-->
+      <string>C5C2BC3F-B8BD-49A2-AF7F-FEECBFFC6411</string>
     <key>PayloadType</key>
-      <string>Configuration</string>
       <!-- Can only be "Configuration" -->
+      <string>Configuration</string>
     <key>PayloadOrganization</key>
       <string>0xmachos</string>
     <key>PayloadIdentifier</key>
-      <string>com.machos.dotfiles</string>
       <!-- Reverse-DNS style identifier -->
+      <string>com.machos.dotfiles</string>
     <key>PayloadDisplayName</key>
       <string>0xmachos Dotfiles Profile</string>
     <key>PayloadDescription</key>
@@ -44,6 +44,7 @@
       <!-- https://developer.apple.com/documentation/devicemanagement/softwareupdate -->
       <dict>
         <key>PayloadUUID</key>
+          <!-- UUID for the Payload. Content unimportant but needs to be globaly uniqiue-->
           <string>20AC0536-250F-460B-9264-108CDAE2D296</string>
         <key>PayloadType</key>
           <string>com.apple.SoftwareUpdate</string>
@@ -92,6 +93,7 @@
     <!-- The "Automatically allow signed downloaded software" and "Automatically allow built-in software" options aren't supported, but both are forced ON when this payload is present. -->
       <dict>
         <key>PayloadUUID</key>
+          <!-- UUID for the Payload. Content unimportant but needs to be globaly uniqiue-->
           <string>A5A7D166-FBD4-4D6F-88A9-6538F9BE79E3</string>
         <key>PayloadType</key>
           <string>com.apple.security.firewall</string>
