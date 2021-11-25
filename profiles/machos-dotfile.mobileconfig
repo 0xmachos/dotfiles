@@ -2,9 +2,12 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 
 <plist version="1">
-  
   <dict>
-    <!-- PROFILE METADATA -->
+    
+
+    <!-- Profile Metadata -->
+    <!-- https://developer.apple.com/documentation/devicemanagement/toplevel -->
+    <!-- DO NOT TRUST the Configuration Profile Reference PDF, it is wildy out of date!-->
     <key>PayloadUUID</key>
       <string>C5C2BC3F-B8BD-49A2-AF7F-FEECBFFC6411</string>
       <!-- UUID for the Profile. Content unimportant but needs to be globaly uniqiue-->
