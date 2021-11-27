@@ -154,6 +154,37 @@
       </dict>
 
 
+    <!-- Gatekeeper Configuration -->
+    <!-- https://developer.apple.com/documentation/devicemanagement/systempolicycontrol -->
+      <dict>
+        <key>PayloadUUID</key>
+          <!-- UUID for the Payload. Content unimportant but needs to be globaly uniqiue-->
+          <string>6F9FB9DA-E671-450F-957B-C84F94958377</string>
+        <key>PayloadType</key>
+          <string>com.apple.systempolicy.control</string>
+        <key>PayloadOrganization</key>
+          <string>0xmachos</string>
+        <key>PayloadIdentifier</key>
+          <string>com.machos.dotfiles.systempolicy.control</string>
+        <key>PayloadDisplayName</key>
+          <!-- This is what actually populates the Description field -->
+          <string>Enable Gatekeeper and allow apps from identified developers</string>
+        
+        <key>PayloadVersion</key>
+          <integer>1</integer>
+        
+        <key>PayloadEnabled</key>
+          <true/>
+
+        <key>AllowIdentifiedDevelopers</key>
+          <true/>
+
+        <key>EnableAssessment</key>
+          <true/>
+      
+      </dict>
+    
+    
     </array>
   
   </dict>
