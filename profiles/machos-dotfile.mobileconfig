@@ -123,6 +123,37 @@
       </dict>
 
 
+      <!-- Screensaver Configuration -->
+      <!-- https://developer.apple.com/documentation/devicemanagement/screensaver -->
+      <dict>
+        <key>PayloadUUID</key>
+          <!-- UUID for the Payload. Content unimportant but needs to be globaly uniqiue-->
+          <string>00DC23C4-27C1-47B2-A334-6BCD6C5E3748</string>
+        <key>PayloadType</key>
+          <string>com.apple.screensaver</string>
+        <key>PayloadOrganization</key>
+          <string>0xmachos</string>
+        <key>PayloadIdentifier</key>
+          <string>com.machos.dotfiles.screensaver</string>
+        <key>PayloadDisplayName</key>
+          <!-- This is what actually populates the Description field -->
+          <string>Enable ask for password after 5 seconds</string>
+        
+        <key>PayloadVersion</key>
+          <integer>1</integer>
+        
+        <key>PayloadEnabled</key>
+          <true/>
+
+        <key>askForPassword</key>
+          <true/>
+
+        <key>askForPasswordDelay</key>
+          <integer>5</integer>
+      
+      </dict>
+
+
     </array>
   
   </dict>
