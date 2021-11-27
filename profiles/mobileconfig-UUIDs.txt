@@ -10,3 +10,5 @@ com.machos.dotfiles.SoftwareUpdate = 20AC0536-250F-460B-9264-108CDAE2D296
 
 com.machos.dotfiles.security.firewall = A5A7D166-FBD4-4D6F-88A9-6538F9BE79E3
 
+com.machos.dotfiles.screensaver = 00DC23C4-27C1-47B2-A334-6BCD6C5E3748
+
