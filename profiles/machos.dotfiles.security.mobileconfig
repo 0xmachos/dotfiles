@@ -184,7 +184,29 @@
       
       </dict>
 
-      
+
+    <!-- Terminal Secure Keyboard Entry-->
+    <!-- https://developer.apple.com/documentation/devicemanagement/systempolicycontrol -->
+      <dict>
+        <key>PayloadUUID</key>
+          <string>6B4D24E0-6446-47B4-A4CC-C682DCAB6735</string>
+          <!-- UUID for the Payload. Content unimportant but needs to be globaly uniqiue-->
+        <key>PayloadType</key>
+          <string>com.apple.terminal</string>        
+        <key>PayloadOrganization</key>
+          <string>0xmachos</string>
+        <key>PayloadIdentifier</key>
+          <string>com.machos.dotfiles.terminal</string>
+        <key>PayloadDisplayName</key>
+          <!-- This is what actually populates the Description field -->
+          <string>Enables Terminal Secure Keyboard Entry</string>
+        <key>PayloadVersion</key>
+          <integer>1</integer>
+        
+        <key>SecureKeyboardEntry</key>
+          <true/>
+      </dict>   
+    
     </array>
   
   </dict>
