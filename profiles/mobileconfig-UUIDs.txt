@@ -1,10 +1,12 @@
 mobileconfig-UUIDs.txt
 
-Profile
-com.machos.dotfiles = C5C2BC3F-B8BD-49A2-AF7F-FEECBFFC6411
 
+# machos.dotfiles.security.mobileconfig
 
-Payloads
+## Profile 
+com.machos.dotfiles.security = C5C2BC3F-B8BD-49A2-AF7F-FEECBFFC6411
+
+## Payloads
 
 com.machos.dotfiles.SoftwareUpdate = 20AC0536-250F-460B-9264-108CDAE2D296
 
