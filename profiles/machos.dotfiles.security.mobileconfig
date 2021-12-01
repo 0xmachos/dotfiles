@@ -18,11 +18,11 @@
       <string>0xmachos</string>
     <key>PayloadIdentifier</key>
       <!-- Reverse-DNS style identifier -->
-      <string>com.machos.dotfiles</string>
+      <string>com.machos.dotfiles.security</string>
     <key>PayloadDisplayName</key>
-      <string>0xmachos Dotfiles Profile</string>
+      <string>0xmachos Dotfiles Security Profile</string>
     <key>PayloadDescription</key>
-      <string>Configures macOS just the way I like it</string>
+      <string>Configures macOS security settings just the way I like them</string>
     <key>PayloadVersion</key>
       <integer>1</integer>
     <key>PayloadEnabled</key>
@@ -183,8 +183,8 @@
           <true/>
       
       </dict>
-    
-    
+
+      
     </array>
   
   </dict>
