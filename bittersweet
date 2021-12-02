@@ -445,9 +445,8 @@ function install_dotfiles {
   local -r dir=$(pwd)
   local -ar dot_dirs=(.ssh .gnupg .extra)
   local dot_dir
-  local -ar dot_files=(.zshrc .exports .functions \
-                      .gitignore_global .gitconfig \
-                      .aliases)
+  local -ar dot_files=(.zshrc .functions .gitignore_global \
+                        .gitconfig .aliases)
   local dot_file
   local -ar ssh_configs=(config .extra_ssh)
   local ssh_config
