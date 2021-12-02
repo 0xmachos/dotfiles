@@ -17,4 +17,5 @@
 * `com.apple.security.firewall`
 * `com.apple.screensaver`
 * `com.apple.systempolicy.control`
+* `com.apple.terminal`
 
