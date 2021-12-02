@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+
+<plist version="1">
+  <dict>
+    
+
+    <!-- Profile Metadata -->
+    <!-- https://developer.apple.com/documentation/devicemanagement/toplevel -->
+    <!-- DO NOT TRUST the Configuration Profile Reference PDF, it is wildy out of date!-->
+    <key>PayloadUUID</key>
+      <!-- UUID for the Profile. Content unimportant but needs to be globaly uniqiue-->
+      <string>DF8655A4-9225-45B0-B07B-4916B8BDF16B</string>
+    <key>PayloadType</key>
+      <!-- Can only be "Configuration" -->
+      <string>Configuration</string>
+    <key>PayloadOrganization</key>
+      <string>0xmachos</string>
+    <key>PayloadIdentifier</key>
+      <!-- Reverse-DNS style identifier -->
+      <string>com.machos.dotfiles.behaviour</string>
+    <key>PayloadDisplayName</key>
+      <string>0xmachos Dotfiles Behaviour Profile</string>
+    <key>PayloadDescription</key>
+      <string>Configures macOS behaviour just the way I like it</string>
+    <key>PayloadVersion</key>
+      <integer>1</integer>
+    <key>PayloadEnabled</key>
+      <true/>
+    <key>PayloadRemovalDisallowed</key>
+      <true/>
+    <key>PayloadScope</key>
+      <string>System</string>
+    <key>TargetDeviceType</key>
+      <integer>5</integer>
+      <!-- 5 = Mac -->
+
+
+    <key>PayloadContent</key>
+    <array>
+
+
+      <!-- Trackpad Configuration -->
+      <!-- https://developer.apple.com/documentation/devicemanagement/softwareupdate -->
+      <!-- This currently does not work, no idea why -->
+      <!-- Have also tried the following to no avail https://community.jamf.com/t5/jamf-pro/enable-tap-to-click-with-custom-config-profile/m-p/62384#M51501 -->
+      <dict>
+        <key>PayloadUUID</key>
+          <!-- UUID for the Payload. Content unimportant but needs to be globaly uniqiue-->
+          <string>630869A9-64EA-4E4F-BF7A-4B8E5F14107E</string>
+        <key>PayloadType</key>
+          <string>com.apple.AppleMultitouchTrackpad</string>
+        <key>PayloadOrganization</key>
+          <string>0xmachos</string>
+        <key>PayloadIdentifier</key>
+          <string>com.machos.dotfiles.AppleMultitouchTrackpad</string>
+        <key>PayloadDisplayName</key>
+          <!-- This is what actually populates the Description field -->
+          <string>Enable Three Finger Drag and Tap to Click</string>
+        
+        <key>PayloadVersion</key>
+          <integer>1</integer>
+        
+        <key>PayloadEnabled</key>
+          <true/>
+
+        <key>TrackpadThreeFingerDrag</key>
+          <true/>
+
+        <key>Clicking</key>
+          <true/>
+
+      </dict>
+    
+
+    </array>
+  
+  </dict>
+</plist>
