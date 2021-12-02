@@ -6,6 +6,7 @@ mobileconfig-UUIDs.txt
 ## Profile 
 com.machos.dotfiles.security = C5C2BC3F-B8BD-49A2-AF7F-FEECBFFC6411
 
+
 ## Payloads
 
 com.machos.dotfiles.SoftwareUpdate = 20AC0536-250F-460B-9264-108CDAE2D296
@@ -17,4 +18,16 @@ com.machos.dotfiles.screensaver = 00DC23C4-27C1-47B2-A334-6BCD6C5E3748
 com.machos.dotfiles.systempolicy.control = 6F9FB9DA-E671-450F-957B-C84F94958377
 
 com.machos.dotfiles.terminal = 6B4D24E0-6446-47B4-A4CC-C682DCAB6735
+
+
+# machos.dotfiles.behaviour.mobileconfig
+
+## Profile
+
+com.machos.dotfiles.behaviour = DF8655A4-9225-45B0-B07B-4916B8BDF16B
+
+
+## Payloads
+
+com.machos.dotfiles.AppleMultitouchTrackpad = 630869A9-64EA-4E4F-BF7A-4B8E5F14107E
 
