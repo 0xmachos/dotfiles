@@ -15,7 +15,6 @@
 
 ### Constants ####
 
-readonly OS=$(uname -s)
 readonly INITIAL_DIR="${HOME}/Documents/Projects"
 
 
