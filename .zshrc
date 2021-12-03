@@ -160,7 +160,7 @@ fi
 
 ### Change into Inital Directory ###
 
-if [ -d "${INITIAL_DIR}" ]; then
+if [[ -d "${INITIAL_DIR}" ]]; then
   # shellcheck disable=SC2164
   cd "${INITIAL_DIR}"
 fi
