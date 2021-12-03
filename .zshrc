@@ -1,6 +1,7 @@
 #!/usr/bin/env zsh
 # ~/.zshrc
 # dotfiles/.zshrc
+# http://zsh.sourceforge.net/Intro/intro_3.html
 
 #  ---------------------------------------------------------------------------
 #   Based on:
