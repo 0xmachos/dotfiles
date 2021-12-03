@@ -1117,14 +1117,14 @@ function main {
       set_nvram_variables
       install_scripts
       enable_touchid_sudo
+      install_secretive
+      symlink_secretive_ssh_public_keys
       install_gpgtools
       install_sublime_text
       install_tower
       install_deckset
       install_blockblock
       install_oversight
-      install_secretive
-      symlink_secretive_ssh_public_keys
       install_brew
       install_brewfile
       zsh_compinit_fix
