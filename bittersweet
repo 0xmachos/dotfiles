@@ -31,7 +31,6 @@ function usage {
   echo "Usage:"
   echo "  defaults              - Write new system and application default settings"
   echo "  dotfiles              - Symlink various config files into ${HOME}"
-  echo "  nvram                 - Set nvram variables"
   echo "  scripts               - Symlink scripts in bin into /usr/local/bin"
   echo "  sudotouch             - Enable TouchID to sudo"
   echo "  secretive             - Install Secretive 🔑"
@@ -496,22 +495,6 @@ function install_dotfiles {
       echo "[❌] Failed to link ${gpg_file} to ${HOME}/.gnupg/${gpg_file}"
     fi
   done 
-}
-
-
-function set_nvram_variables {
-  # set_nvram_variables
-  #   Set StartupMute to %00, enables startup chime
-  #   TODO: Remove in Big Sur, option now in Sound UI 
-
-  get_sudo "to set nvram variables"
-
-  if sudo nvram StartupMute=%00; then
-    # Enables macOS startup sound
-    echo "[✅] Enabled macOS startup sound"
-  else
-    echo "[❌] Failed to enable macOS startup sound"
-  fi
 }
 
 
@@ -1053,9 +1036,6 @@ function main {
     dotfiles)
       install_dotfiles
       ;;
-    nvram)
-      set_nvram_variables
-      ;;
     scripts)
       install_scripts
       ;;
@@ -1114,7 +1094,6 @@ function main {
 
       write_defaults
       install_dotfiles
-      set_nvram_variables
       install_scripts
       enable_touchid_sudo
       install_secretive
