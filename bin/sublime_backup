@@ -30,7 +30,7 @@ file_names=("Bash.sublime-settings" "Jekyll.sublime-settings" "Markdown.sublime-
 
 # TODO: Copy all files with the extension ".sublime-settings"
 
-if [ -d "$HOME/Library/Application Support/Sublime Text 3/Packages/User" ]; then
+if [[ -d "$HOME/Library/Application Support/Sublime Text 3/Packages/User" ]]; then
   echo "[❌] Sublime Text not installed"
   exit 1
 fi
