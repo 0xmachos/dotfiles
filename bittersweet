@@ -863,7 +863,7 @@ function install_brew {
 
   # Install Homebrew and Homebrew-file
 
-  if ! [ -x "$(command -v brew)" ]; then
+  if ! [[ -x "$(command -v brew)" ]]; then
 
     echo "[🍺] Installing Homebrew"
     echo -e "[⚠️ ] \\033[0;31mStick around\\033[0m - Requires you to press RETURN and input your password"
@@ -888,7 +888,7 @@ function install_brew {
 
   echo "[🍺] Installing Homebrew-file"
 
-  if ! [ -x "$(command -v brew-file)" ]; then
+  if ! [[ -x "$(command -v brew-file)" ]]; then
 
     if brew install rcmdnk/file/brew-file; then
       echo "[✅] Successfully installed Homebrew-file"
