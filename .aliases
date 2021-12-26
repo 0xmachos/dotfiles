@@ -28,10 +28,6 @@ alias grep='grep --color=auto '
 # Highlight match with colour
 alias cc='cc -Wall'
 # Enable all warnings
-alias rmexif='exiftool -all='
-# Remove image EXIF data
-alias exif='exiftool -a'
-# Show image EXIF data
 
 
 #   -----------------------------
