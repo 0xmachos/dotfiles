@@ -45,8 +45,6 @@ alias ap='cd /Applications/'
 alias restart='sudo launchctl reboot userspace'
 # Tear down and rebuild userspace login sessions
 # https://applehelpwriter.com/2018/05/25/fastest-way-to-reboot-your-mac/
-alias cs='codesign --verify --deep --strict --verbose=4 '
-alias pcs='pkgutil --check-signature '
 alias snap='tmutil localsnapshot'
 alias unpack='pkgutil --expand-full'
 
