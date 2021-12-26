@@ -6,51 +6,70 @@
 #   1. REMAP DEFAULT COMMANDS
 #   -----------------------------
 
+# Go up 1-4 directory levels
 alias ..='cd ..' 
-# Go up one directory level
 alias ...='cd ../..' 
-# Go up two directory levels
-alias c='clear'
-# Clear terminal window
-alias ll='ls -aFGhl'
-# Preferred ls behaviour
-  # -a show files and dirs starting with .
-  # -F write `/' after directories, '*' after executables and '@' after symlinks
-  # -G enable colorized output
-  # -h show sizes in human readable form
-  # -l display in long format
-alias ls='ls -FG'
-# Better ls, don't always want long format
-  # -F write `/' after directories, '*' after executables and '@' after symlinks
-  # -G enable colorized output
+alias ....='cd ../../..'
+alias .....='cd ../../../..'
 
+# Clear terminal window
+alias c='clear'
+
+# Preferred ls behaviour
+alias ll='ls -aFGhl'
+# -a show files and dirs starting with .
+# -F write `/' after directories, '*' after executables and '@' after symlinks
+# -G enable colorised output
+# -h show sizes in human readable form
+# -l display in long format
+
+# Better ls, don't always want long format
+alias ls='ls -FG'
+# -F write `/' after directories, '*' after executables and '@' after symlinks
+# -G enable colorised output
+
+# Preferred grep behaviour
 alias grep='grep --color=auto '
 # Highlight match with colour
+
+# Enable all clang warnings
 alias cc='cc -Wall'
-# Enable all warnings
 
 
 #   -----------------------------
 #   2. MAP CUSTOM COMMANDS
 #   -----------------------------
 
-alias dl='cd ~/Downloads'
 # cd into HOME/Downloads directory
-alias dk='cd ~/Desktop'
+alias dl='cd ~/Downloads'
+
 # cd into HOME/Desktop directory
-alias pj='cd ~/Documents/Projects'
+alias dk='cd ~/Desktop'
+
 # cd into HOME/Documents/Projects directory
-alias ap='cd /Applications/'
+alias pj='cd ~/Documents/Projects'
+
 # cd in /Applications
-alias restart='sudo launchctl reboot userspace'
+alias ap='cd /Applications/'
+
 # Tear down and rebuild userspace login sessions
+alias restart='sudo launchctl reboot userspace'
 # https://applehelpwriter.com/2018/05/25/fastest-way-to-reboot-your-mac/
+# TODO: Investigate "reboot apps"
+
+# Create new local TM snapshots of all APFS volumes included in the TM backup
 alias snap='tmutil localsnapshot'
+
+# Completely unarchive a package
+# Undocumented command
 alias unpack='pkgutil --expand-full'
 
+# Kill the Dock, launchd will restart it automatically
+alias killdock='killall Dock'
 
+# Activate python virtual environment
 alias v!='. venv/bin/activate'
-# Activate python virtual enviroment
-alias r!='pip install -r requirements.txt'
+
 # Install Python packages from requirements.txt
+alias r!='pip install -r requirements.txt'
 
