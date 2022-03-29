@@ -205,7 +205,34 @@
         
         <key>SecureKeyboardEntry</key>
           <true/>
-      </dict>   
+      </dict>
+
+
+      <!-- Safari -->
+      <dict>
+        <key>PayloadUUID</key>
+          <!-- UUID for the Payload. Content unimportant but needs to be globaly uniqiue-->
+          <string>AB2760F1-7B50-4AF4-A8F3-D0F943488D8E</string>
+        <key>PayloadType</key>
+          <string>com.apple.Safari</string>
+        <key>PayloadOrganization</key>
+          <string>0xmachos</string>
+        <key>PayloadIdentifier</key>
+          <string>com.machos.dotfiles.Safari</string>
+        <key>PayloadDisplayName</key>
+          <!-- This is what actually populates the Description field -->
+          <string>Disable Safari Auto Open "Safe" Downloads</string>
+        
+        <key>PayloadVersion</key>
+          <integer>1</integer>
+        
+        <key>PayloadEnabled</key>
+          <true/>
+
+        <key>AutoOpenSafeDownloads</key>
+          <false/>
+
+      </dict>
     
     </array>
   
