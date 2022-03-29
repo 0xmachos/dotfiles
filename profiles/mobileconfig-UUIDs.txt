@@ -19,6 +19,8 @@ com.machos.dotfiles.systempolicy.control = 6F9FB9DA-E671-450F-957B-C84F94958377
 
 com.machos.dotfiles.terminal = 6B4D24E0-6446-47B4-A4CC-C682DCAB6735
 
+com.machos.dotfiles.Safari = AB2760F1-7B50-4AF4-A8F3-D0F943488D8E
+
 
 # machos.dotfiles.behaviour.mobileconfig
 
