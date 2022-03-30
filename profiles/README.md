@@ -30,6 +30,8 @@ Configures settings related to security.
   * Enable Gatekeeper and allow apps from Identified Developers 
 * `com.apple.terminal`
   * Enable Terminal Secure Keyboard Entry
+* `com.apple.Safari`
+  * Disable Safari Auto Open "Safe" Downloads 
 
 ## `machos.dotfiles.behaviour`
 
