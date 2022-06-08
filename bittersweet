@@ -1004,15 +1004,16 @@ function open_system_prefernces_mdm_profile {
   # However we can semi automate this process
   #   See: https://www.alansiu.net/2021/01/06/semi-automating-profile-installation-in-big-sur/
 
-  local -r profile_file_name="machos-dotfile.mobileconfig"
-  local -r profile_display_name="0xmachos Dotfiles Profile"
+  for profile in profiles/*.mobileconfig; do
+    if ! open "/System/Library/PreferencePanes/Profiles.prefPane" "${profile:?}"; then
+      echo "[❌] Failed to open System Prefernces > Profiles with ${profile:?}"
+      return 1
+    fi
 
-  if ! open "/System/Library/PreferencePanes/Profiles.prefPane" "profiles/${profile_file_name:?}"; then
-    echo "[❌] Failed to open System Prefernces > Profiles with ${profile_display_name}"
-    return 1
-  fi
+    profile_name=$(echo "${profile}" | awk -F '/' '{print $2}')
+    echo "[⚠️ ] Go to System Prefernces > Profiles and install ${profile_name}"
+  done
 
-  echo "[⚠️ ] Go to System Prefernces > Profiles and install ${profile_display_name}"
 }
 
 
