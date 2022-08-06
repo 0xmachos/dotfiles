@@ -155,7 +155,7 @@ if [[ -x "/usr/local/bin/brew" ]]; then
 fi
 
 if [[ -d "/Applications/Secretive.app" ]]; then
-  export SSH_AUTH_SOCK="$HOME/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh"
+  export SSH_AUTH_SOCK=$HOME/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh
 fi
 
 
