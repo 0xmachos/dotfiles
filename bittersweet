@@ -527,6 +527,13 @@ function install_scripts {
       echo "[❌] Failed to link ${bin_file} to /usr/local/bin/${bin_file}"
     fi
   done
+
+  # Symlink bittersweet into /usr/local/bin
+  if sudo ln -sfn "${dir}/bittersweet" "/usr/local/bin"; then
+    echo "[✅] Successfully linked bittersweet to /usr/local/bin/bittersweet"
+  else
+    echo "[❌] Failed to link bittersweet to /usr/local/bin/bittersweet"
+  fi
 }
 
 
