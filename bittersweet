@@ -73,8 +73,8 @@ function check_os_compatibility {
 
   local os
   local current_macos_version
-  local -r supported_major_macos_version="12"
-  local -r supported_macos_name="Monterey"
+  local -r supported_major_macos_version="13"
+  local -r supported_macos_name="Ventura"
   os="$(uname -s)"
 
   if [[ "${os}" != "Darwin" ]]; then 
