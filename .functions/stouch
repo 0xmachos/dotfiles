@@ -1,7 +1,7 @@
 #!/usr/bin/env zsh
-# dotfiles/.functions/sudotid
+# dotfiles/.functions/stouch
 
-function sudotid {
+function stouch {
 
 if [[ ! -x "$HOME/Documents/Projects/dotfiles/bitterswet" ]]; then
   echo "[❌] '~/Documents/Projects/dotfiles/bitterswet' NOT executable"
@@ -11,5 +11,5 @@ fi
 "$HOME/Documents/Projects/dotfiles/bittersweet" "sudotouch"
 }
 
-sudotid
+stouch
 
