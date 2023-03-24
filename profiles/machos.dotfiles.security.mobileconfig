@@ -150,6 +150,7 @@
 
         <key>askForPasswordDelay</key>
           <integer>5</integer>
+          <!-- Time in seconds -->
       
       </dict>
 
