@@ -3,8 +3,8 @@
 
 function stouch {
 
-if [[ ! -x "$HOME/Documents/Projects/dotfiles/bitterswet" ]]; then
-  echo "[❌] '~/Documents/Projects/dotfiles/bitterswet' NOT executable"
+if [[ ! -x "$HOME/Documents/Projects/dotfiles/bittersweet" ]]; then
+  echo "[❌] '~/Documents/Projects/dotfiles/bittersweet' NOT executable"
   return 1
 fi
 
