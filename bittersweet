@@ -543,18 +543,42 @@ function enable_touchid_sudo {
   #   Use vim to insert required text to sudo
   
   if grep -q 'pam_tid.so' /etc/pam.d/sudo; then
-    echo "[✅] TouchID sudo Already Enabled"
+
+    if [[ -n "${TERM}" ]]; then
+      # Check if $TERM is null
+      logger "TouchID sudo Already Enabled"
+    else
+      logger -s "TouchID sudo Already Enabled"
+    fi
+    
     return 0
+
   fi
     
   if sudo ex -s -c '2i|auth       sufficient     pam_tid.so' -c x! -c x! /etc/pam.d/sudo; then
     # Invoke Vim in ex mode
     # Select line 2, enter insert mode, insert that text write changes and exit
     # Need to exit twice to get passed the read only file warning
-    echo "[✅] TouchID sudo Enabled"
+    
+    echo $TERM
+    if [[ -n "${TERM}" ]]; then
+      # Check if $TERM is null
+      logger "TouchID sudo Enabled"
+    else
+      logger -s "TouchID sudo Enabled"
+    fi
+
     return 0
+  
   else
-    echo "[❌] Failed to enable TouchID sudo"
+
+    if [[ -n "${TERM}" ]]; then
+      # Check if $TERM is null
+      logger "Failed to enable TouchID sudo"
+    else
+      logger -s "Failed to enable TouchID sudo"
+    fi
+    
     return 1
   fi
 }
