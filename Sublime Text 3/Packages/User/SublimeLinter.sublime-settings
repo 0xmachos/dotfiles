@@ -1,10 +1,19 @@
 // SublimeLinter Settings - User
 {
-	"lint_mode": "background",
-	
+    "lint_mode": "background",
+    
         "styles": [
             {
                 "mark_style": "outline",
             }
-        ]
+        ],
+    
+    "linters": {
+        "shellcheck": {
+            // Disables the linter. The default here is 'not set'
+            "disable": false,
+            "args": ["--shell=bash"],
+        }
+    }
+
 }
