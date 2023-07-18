@@ -19,6 +19,7 @@ readonly INITIAL_DIR="${HOME}/Documents/Projects"
 
 
 ### Prompt ###
+# shellcheck disable=SC2034
 PROMPT=$'%F{blue}% %n%f 🐶 %B%~%b\n%(?.%F{green}√%f.%F{red}%?)%f %(!.#.$) '
 # Example 
 # 0xmachos 🐶 /System/Library/CoreServices
@@ -44,6 +45,7 @@ autoload -Uz vcs_info
 precmd_functions+=(vcs_info)
 zstyle ':vcs_info:*' enable git
 zstyle ':vcs_info:git:*' formats '(%b)'
+# shellcheck disable=SC2034
 RPROMPT=\$vcs_info_msg_0_
 
 
@@ -55,6 +57,7 @@ setopt correct
 setopt correct_all
 # ENABLE: Argument correction
 
+# shellcheck disable=SC2034
 SPROMPT="Correct %F{red}%R%f to %F{green}%r%f [nyae]?"
 # Correction prompt
 
@@ -104,6 +107,7 @@ zstyle ':completion:*' expand prefix suffix
 FPATH="$HOME/.functions/:$FPATH"
 # Add $HOME/.functions/ to FPATH
 
+# shellcheck disable=SC2086,SC2154,SC1087
 autoload -Uz $fpath[1]/*(.:t)
 # Lazy autoload every file in $HOME/.functions/*  as a function
 #   I've no idea what (.:t) does ¯\_(ツ)_/¯
@@ -112,6 +116,7 @@ autoload -Uz $fpath[1]/*(.:t)
 
 ### Aliases ###
 
+# shellcheck disable=SC1091
 source "$HOME/.aliases"
 
 
@@ -125,6 +130,7 @@ HISTFILE=${ZDOTDIR:-$HOME}/.zsh_history
 HISTSIZE=50000
 # Lines remembered per session
 
+# shellcheck disable=SC2034
 SAVEHIST=100000
 # Lines stored in history file
 
