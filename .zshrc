@@ -160,6 +160,31 @@ if [[ -x "/usr/local/bin/brew" ]]; then
   # Set location of Brewfile
 fi
 
+if [[ -x "/usr/local/opt/ruby/bin/ruby" ]]; then
+  export PATH="/usr/local/opt/ruby/bin:/usr/local/lib/ruby/gems/3.0.0/bin:$PATH"
+  # macOS ships with a version of Ruby at /usr/bin/ruby
+  #   /usr/bin also contains versions of gem and bundler
+  # We need these ruby paths at the front of $PATH to override the default installed ruby bianries
+  # At some point in the future Apple will remove scripting language runtimes so this will need revised
+  #   https://tidbits.com/2019/06/25/apple-to-deprecate-scripting-languages-in-future-versions-of-macos/
+fi
+
+if [[ -x "$(command -v go)" ]]; then
+  export GOPATH=$HOME/Documents/Projects/go
+  export PATH=$PATH:$GOPATH/bin
+  # Go
+fi
+
+if [[ -x "/usr/local/bin/python3" && -x "$HOME/Library/Python/3.9/bin/virtualenv" ]]; then
+  # Should the second check be "$HOME/Library/Python/*/bin/virtualenv" this will need manually 
+  #   changed when python moves to version 4.x
+  
+  export PATH=$PATH:$HOME/Library/Python/3.9/bin
+  # Required for virtualenv as installed by pip
+  # pip3 show virtualenv
+fi
+
+
 if [[ -d "/Applications/Secretive.app" ]]; then
   export SSH_AUTH_SOCK=$HOME/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh
 fi
