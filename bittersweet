@@ -15,21 +15,15 @@ IFS=$'\n\t'
 # See: http://redsymbol.net/articles/unofficial-bash-strict-mode/
 
 ### Define Colours ###
-TERM=""
 
-if [[ -n "${TERM}" ]]; then
-  # If $TERM is not null
-  # Check if we are in an interactive shell
-  /usr/bin/tput sgr0;
-  # reset colors
-  readonly RESET=$(/usr/bin/tput sgr0);
-  readonly BOLD=$(/usr/bin/tput bold);
-  readonly RED=$(/usr/bin/tput setaf 1);
-else
-  readonly RESET=""
-  readonly BOLD=""
-  readonly RED=""
-fi
+/usr/bin/tput sgr0;
+# reset colors
+RESET=$(/usr/bin/tput sgr0);
+readonly RESET
+BOLD=$(/usr/bin/tput bold);
+readonly BOLD
+RED=$(/usr/bin/tput setaf 1);
+readonly RED
 
 ### END Colours ###
 
