@@ -565,6 +565,9 @@ function enable_touchid_sudo {
     get_sudo "to create /etc/pam.d/sudo_local"
     
     if sudo install -m 444 -g "wheel" -o root "/dev/null" "/etc/pam.d/sudo_local"; then
+      # Use install to create the file /etc/pam.d/sudo_local
+      # Copies from /dev/null which creates an empty file
+      # Set permissions to read only, group to wheel and owner to root 
       logger -p user.info -s "Created /etc/pam.d/sudo_local"
     else
       logger -p user.error -s "Failed to create /etc/pam.d/sudo_local"
