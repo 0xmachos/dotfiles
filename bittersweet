@@ -553,7 +553,6 @@ function enable_touchid_sudo {
                               See https://support.apple.com/en-us/HT213893"
   fi
 
-
   if [[ -e "/etc/pam.d/sudo_local" ]]; then
     if grep -q 'pam_tid.so' "/etc/pam.d/sudo_local"; then
       logger -p user.info -s "TouchID for sudo already enabled"
