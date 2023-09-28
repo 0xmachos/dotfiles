@@ -768,7 +768,8 @@ function install_tower {
 
   url="$(curl -sI https://updates.fournova.com/tower3-mac/stable/releases/latest/download \
         | grep 'Location' \
-        | awk '{print $2}')"
+        | awk '{print $2}' \
+        | tr -d '\r')"
   zip_name="$(echo "${url}" | awk -F '/' '{print $7}')"
   zip_download_path="${HOME}/Downloads/${zip_name}" 
 
