@@ -544,7 +544,7 @@ function enable_touchid_sudo {
   # enable_touchid_sudo
   #   As of macOS Sonoma (14.0) this setting can persist OS updates when set in  
   #     /etc/pam.d/sudo_local. See: https://support.apple.com/en-us/HT213893
-  #   Check if already enabled in /etc pam.d/sudo and warn user
+  #   Check if already enabled in /etc/pam.d/sudo and warn user
   #   Check if /etc/pam.d/sudo_local exists, if not create it
   #   Use vim to insert required text to enable TouchID for sudo into sudo_local
   
