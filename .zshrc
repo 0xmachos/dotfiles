@@ -190,6 +190,12 @@ if [[ -d "/Applications/Secretive.app" ]]; then
 fi
 
 
+export IIOEnableOOP=YES
+# Enabled the undocumeted ImageIO sandbox
+# Tells ImageIO to parse images our of process in the ImageIOXPCService process instead 
+# https://rtx.meta.security/mitigation/2023/09/11/Sandboxing-ImageIO-in-macOS.html
+
+
 ### Change into Inital Directory ###
 
 if [[ -d "${INITIAL_DIR}" ]]; then
