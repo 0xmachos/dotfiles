@@ -37,7 +37,6 @@ function usage {
   echo "  scripts               - Symlink scripts in bin into /usr/local/bin"
   echo "  sudotouch             - Enable TouchID to sudo"
   echo "  secretive             - Install Secretive 🔑"
-  echo "  pubkeyln              - Symlink Secretive Public Key files"
   echo "  gpgtools              - Install GPGTools"
   echo "  sublimetext           - Install Sublime Text"
   echo "  tower                 - Install Tower"
@@ -614,29 +613,6 @@ function install_secretive {
   download_application "${zip_download_path}" "${zip_download_url}"
 
   install_application "Secretive" "${zip_download_path}"
-
-  symlink_secretive_ssh_public_keys
-}
-
-
-function symlink_secretive_ssh_public_keys {
-
-  # See: https://github.com/maxgoedjen/secretive/issues/117
-  #   for why we need to symlink public key files for use
-  #   as IdentityFile for SSH 
-  
-  while IFS=$'\n' read -r pub_key_file; do
-    pub_key_file_basename=$(basename "${pub_key_file:?}")
-    
-    if ln -sfn "${dir}/.ssh/.extra_secretive_pub_keys/${pub_key_file_basename:?}" "${HOME:?}/.ssh"; then
-      echo "[✅] Successfully linked ${pub_key_file_basename} to ${HOME}/.ssh/${pub_key_file_basename}"
-    else
-      echo "[❌] Failed to link ${pub_key_file_basename} to ${HOME}/.ssh/${pub_key_file_basename}"
-    fi
-
-  done < <(find ".ssh/.extra_secretive_pub_keys" \
-          -not -name '.DS_Store' \
-          -type f)
 }
 
 
@@ -1083,10 +1059,6 @@ function main {
       ;;
     secretive)
       install_secretive
-      symlink_secretive_ssh_public_keys
-      ;;
-    pubkeyln)
-      symlink_secretive_ssh_public_keys
       ;;
     gpgtools)
       install_gpgtools
@@ -1136,7 +1108,6 @@ function main {
       install_scripts
       enable_touchid_sudo
       install_secretive
-      symlink_secretive_ssh_public_keys
       install_gpgtools
       install_sublime_text
       install_tower
