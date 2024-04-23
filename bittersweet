@@ -694,21 +694,17 @@ function install_sublime_text {
   echo "[🍺] Installing Sublime Text"
 
   local latest_build  
-  latest_build="$(curl -s https://www.sublimetext.com/3 \
-              | grep "Version:" \
-              | awk '{print ($4+0)}')"
-  # Get the latest build string
-  # grep "Version:" \ : <p class="latest"><i>Version:</i> Build 3143</p>
-  # awk '{print $4}' : 3143</p>
-  # awk '{print ($4+0)}' : 3143
-  # ($4+0) converts captured string to numeric
-  local dmg_name="Sublime Text Build ${latest_build}.dmg"
-  local dmg_download_path="${HOME}/Downloads/${dmg_name}"
-  local dmg_mount_point="/Volumes/Sublime Text" 
-  
-  download_application "${dmg_download_path}" "https://download.sublimetext.com/Sublime%20Text%20Build%20${latest_build}.dmg"
+  latest_build="$(curl -s https://www.sublimetext.com/download \
+                  | awk -F 'Build ' 'BEGIN {found=0} /Build/ && !found {sub("</p>", "", $2); print $2; found=1}')"
+  # Get the latest build number
+  # TIL https://stackoverflow.com/a/28879552
 
-  install_application "Sublime Text" "${dmg_download_path}"
+  local zip_name="sublime_text_build_${latest_build}_mac.zip"
+  local zip_download_path="${HOME}/Downloads/${zip_name}"
+
+  download_application "${zip_download_path}" "https://download.sublimetext.com/sublime_text_build_${latest_build}_mac.zip"
+
+  install_application "Sublime Text" "${zip_download_path}"
 
   ## Install config files
   echo "[🍺] Installing Sublime Text config files"
