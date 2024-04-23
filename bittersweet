@@ -220,7 +220,7 @@ function install_application {
     # IF file is a Zip 
 
     echo "[🍺] Attempting to unzip ${downloaded_file_name}"
-    if unzip -qa "${downloaded_file_path}" -d "${HOME}/Downloads"; then
+    if ditto -x -k "${downloaded_file_path}" "${HOME}/Downloads"; then
       # Attempt to unzip
       echo "[✅] Successfully unzipped ${downloaded_file_name}"
     else
