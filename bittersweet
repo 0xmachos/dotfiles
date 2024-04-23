@@ -46,7 +46,7 @@ function usage {
   echo "  brew                  - Install Homebrew, Homebrew-file and export HOMEBREW_BREWFILE" 
   echo "  brewfile              - Install Homebrew packages from Brewfile"
   echo "  compinit              - Fix permissions on zsh completion directory /usr/local/share"
-  echo "  shell                 - Change shell to bash as installed by Brew"
+  echo "  shell                 - Change shell to zsh as installed by Brew"
   echo "  mdmprofile            - Open System Prefernces to install MDM Profile"
 
   echo -e "\\n  ${RED}hailmary${RESET}              - ${BOLD}Run every function${RESET} in order listed above"
