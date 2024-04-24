@@ -15,6 +15,7 @@
 
 [gpg]
 	program = /usr/local/MacGPG2/bin/gpg2
+	format = openpgp
 	# Use this instead of "gpg", found on $PATH when making or verifying a PGP signature
 
 [core]
