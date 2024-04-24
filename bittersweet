@@ -995,6 +995,9 @@ function change_shell {
   # change_shell
   #   Change default shell to zsh as installed by Brew
   #   /usr/local/bin/zsh instead of /bin/zsh
+  # This has been removed from Hailmary as zsh does not
+  #   get updated that much. It is safer to use the system 
+  #   version which is protected by SIP & SSV
 
   local -r new_shell="/opt/homebrew/bin/zsh"
   
@@ -1139,7 +1142,6 @@ function main {
       install_brew
       install_brewfile
       zsh_compinit_fix
-      change_shell
       open_system_prefernces_mdm_profile
       ;;
     *)
