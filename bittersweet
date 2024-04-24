@@ -946,13 +946,13 @@ function install_brewfile {
 
 function zsh_compinit_fix {
   # zsh_compinit_fix
-  #   Secure permissions on zsh completion 
-  #     files at /usr/local/share
+  #   Secure permissions on zsh completion files at /opt/homebrew/share
   #   https://stackoverflow.com/a/43544733
+  #   https://docs.brew.sh/Shell-Completion#configuring-completions-in-zsh
   #   Remove group/other write/execite permissions
   #   Change ownership to $USER:staff
 
-  local -r completions_dir="/usr/local/share"
+  local -r completions_dir="$(brew --prefix)/share"
   
   echo "[🍺] Fixing zsh completions permissions"
 
