@@ -153,6 +153,12 @@ setopt HIST_IGNORE_SPACE
 # Do not store command lines starting with a space
 
 
+### Homebrew ###
+
+eval "$(/opt/homebrew/bin/brew shellenv)"
+# Add Homebrew to PATH
+
+
 ### Enviroment Variable Exports ###
 
 if [[ -x "/usr/local/bin/brew" ]]; then
