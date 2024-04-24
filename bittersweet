@@ -975,7 +975,7 @@ function change_shell {
   #   Change default shell to zsh as installed by Brew
   #   /usr/local/bin/zsh instead of /bin/zsh
 
-  local -r new_shell="/usr/local/bin/zsh"
+  local -r new_shell="/opt/homebrew/bin/zsh"
   
   if [[ "${SHELL}" == "${new_shell}" ]]; then
     echo "[✅] Current shell is already '${new_shell}'"
