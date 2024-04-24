@@ -299,13 +299,8 @@ function objective_see_install {
   local downloaded_file_name
   local installer_file_name
   downloaded_file_name=$(echo "${downloaded_file_path}" | awk -F '/' '{print $(NF)}')
+  installer_file_name="${application_name} Installer"
 
-  if [[ "${application_name}" == "BlockBlock" ]]; then
-    # The BlockBlock installer binary name differs from every other ObjSee installer
-    installer_file_name="${application_name} Installer"
-  else
-    installer_file_name="${application_name}_Installer"
-  fi
 
   echo "[🍺] Attempting to unzip ${downloaded_file_path}"
   
