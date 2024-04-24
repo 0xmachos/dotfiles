@@ -912,14 +912,21 @@ function install_brewfile {
   # Install Homebrew packages from dotfiles/.extra/Brewfile
   # Will install programs from the Mac AppStore if user is logged in
 
-  echo "[🍺] Installing mas"
+ if ! [[ -x "$(command -v mas)" ]]; then
 
-  if brew install mas 2>/dev/null; then
-    echo "[✅] Installed mas"
+    echo "[🍺] Installing mas"
+
+    if brew install mas 2>/dev/null; then
+      echo "[✅] Installed mas"
+    else
+      echo "[❌] Failed to install mas"
+      return 1
+    fi
+
   else
-    echo "[❌] Failed to install mas"
-    return 1
-  fi
+    echo "[🍺] mas already installed"
+  fi 
+
 
   declare -x HOMEBREW_BREWFILE="${dir}/.extra/Brewfile"
   echo "[🍺] Exported HOMEBREW_BREWFILE=${HOMEBREW_BREWFILE}"
