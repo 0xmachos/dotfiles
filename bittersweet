@@ -842,14 +842,12 @@ function install_oversight {
   local zip_download_path
   local zip_sha1
 
-  url="$(curl --silent https://objective-see.com/products/oversight.html \
-        | grep -m 1 'downloads/OverSight' \
-        | awk -F '\"' '{print $2}')"
+  url="$(curl --silent https://objective-see.org/products/oversight.html \
+        | awk -F'"' 'BEGIN {found=0} /<a href="/ && !found {print $2; found=1}')"
   zip_name="$(echo "${url}" | awk -F '/' '{print $NF}')"
   zip_download_path="${HOME}/Downloads/${zip_name}"
-  zip_sha1="$(curl -s https://objective-see.com/products/oversight.html \
-            | grep 'sha-1' \
-            | awk '{print $3}')"
+  zip_sha1="$( curl -s https://objective-see.org/products/oversight.html \
+            | awk '{ if(match($0, /[A-F0-9]{40}/)) print substr($0, RSTART, RLENGTH)}')"
 
   download_application "${zip_download_path}" "${url}"
 
