@@ -524,7 +524,8 @@ function install_scripts {
   #   Symlink files in /usr/local/bin
   
   local -r dir=$(pwd)
-  local -ar bin_files=(dns pihole_stats sublime_backup) 
+  local -ar bin_files=(dns pihole_stats sublime_backup)
+  local -ar macos_script_bin_files=(c0design)
   
   # Create /usr/local/bin
   if ! [[ -d "/usr/local/bin/" ]]; then 
@@ -553,6 +554,15 @@ function install_scripts {
   else
     echo "[❌] Failed to link bittersweet to /usr/local/bin/bittersweet"
   fi
+
+  # Symlink some files in macos-scripts repo into /usr/local/bin
+  for macos_script in "${macos_script_bin_files[@]}"; do
+    if sudo ln -sfn "$HOME/Documents/Projects/macos-scripts/${macos_script}" "/usr/local/bin/${macos_script}"; then
+      echo "[✅] Successfully linked ${macos_script} to /usr/local/bin/${macos_script}"
+    else
+      echo "[❌] Failed to link ${macos_script} to /usr/local/bin/${macos_script}"
+    fi
+  done
 }
 
 
