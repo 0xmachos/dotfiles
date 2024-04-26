@@ -818,6 +818,13 @@ function  install_deckset {
 
 
 function install_maccy {
+  # install_maccy
+  #   Installs Maccy via usual helpers
+
+if [[ -d "/Applications/Maccy.app" ]]; then
+  echo "[🍺] Maccy already installed"
+  return 0
+fi
 
 local release_version
 local zip_download_url
