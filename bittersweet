@@ -44,6 +44,7 @@ function usage {
   echo "  maccy                 - Install Maccy"
   echo "  texpad                - Install Texpad (Texifier) & BasicTeX"
   echo "  basictex              - Install MacTeX BasicTeX Distribution"
+  echo "  latex                 - Install LaTeX packages via tlmgr"
   echo "  blockblock            - Install BlockBlock"
   echo "  oversight             - Install OverSight 📸🎤"
   echo "  brew                  - Install Homebrew, Homebrew-file and export HOMEBREW_BREWFILE" 
@@ -908,6 +909,45 @@ function install_basictex {
   # Delete the pkg
 }
 
+
+function install_latex_packages {
+  # install_latex_packages
+  #   Installs some LaTeX packages via tlmrg
+  #   Updates tlmgr and all currently installed packages first
+
+  echo "[🍺] Updating tlmgr, all installed packages and installing packages..."
+  sleep 2
+
+  get_sudo "to update tlmgr, update installed packages and install packages"
+  
+  # Update tlmgr 
+  if sudo tlmgr update --self >/dev/null; then
+    echo "[✅] Successfully updated tlmgr"
+  else
+    echo "[❌] Failed to update tlmgr"
+  fi
+
+  # Update packages installed via tlmgr 
+  if sudo tlmgr update --all >/dev/null; then
+    echo "[✅] Successfully updated LaTeX packages via tlmgr"
+  else
+    echo "[❌] Failed to update LaTeX packages via tlmgr"
+  fi
+
+  local -ar PACKAGES=(sectsty helvetic)
+  # sectsty: Required for the Custom sectioning
+  # helvetic: Installs the helvetica font (phv) for the custom sectioning
+
+  for PACKAGE in "${PACKAGES[@]}"; do
+    if sudo tlmgr install "${PACKAGE}"; then
+      echo "[✅] Successfully installed LaTeX package ${PACKAGE} via tlmgr"
+    else
+      echo "[❌] Failed to install LaTeX package ${PACKAGE} via tlmgr"
+    fi
+  done
+}
+
+
 function install_blockblock {
   # install_blockblock
   #   Installs BlockBlock (BB) via usual helpers
@@ -1201,8 +1241,15 @@ function main {
     texpad)
       install_texpad
       install_basictex
+      install_latex_packages
+      ;;
     basictex)
       install_basictex
+      install_latex_packages
+      ;;
+    latex)
+      install_latex_packages
+      ;;
     blockblock)
       install_blockblock
       ;;
@@ -1246,6 +1293,7 @@ function main {
       install_maccy
       install_texpad
       install_basictex
+      install_latex_packages
       install_blockblock
       install_oversight
       install_brew
