@@ -1,0 +1,24 @@
+#!/usr/bin/env zsh
+# dotfiles/.functions/layup
+
+function layup {
+
+  echo "[🍺] Updating tlmgr and all installed LaTeX packages"
+  sleep 2
+  
+  # Update tlmgr 
+  if sudo tlmgr update --self >/dev/null; then
+    echo "[✅] Successfully updated tlmgr"
+  else
+    echo "[❌] Failed to update tlmgr"
+  fi
+
+  # Update packages installed via tlmgr 
+  if sudo tlmgr update --all >/dev/null; then
+    echo "[✅] Successfully updated LaTeX packages via tlmgr"
+  else
+    echo "[❌] Failed to update LaTeX packages via tlmgr"
+  fi
+}
+
+layup
