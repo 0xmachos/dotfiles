@@ -43,6 +43,7 @@ function usage {
   echo "  deckset               - Install Deckset"
   echo "  maccy                 - Install Maccy"
   echo "  texpad                - Install Texpad (Texifier) & BasicTeX"
+  echo "  basictex              - Install MacTeX BasicTeX Distribution"
   echo "  blockblock            - Install BlockBlock"
   echo "  oversight             - Install OverSight 📸🎤"
   echo "  brew                  - Install Homebrew, Homebrew-file and export HOMEBREW_BREWFILE" 
@@ -868,6 +869,45 @@ download_application "${dmg_download_path}" "${dmg_download_url}"
 
 install_application "Texifier" "${dmg_download_path}"
 }
+
+function install_basictex {
+  # install_basictex
+  #   Installs the MacTeX BasicTeX distribution via usual helpers
+
+  if [[ -x "$(command -v tlmgr)" ]]; then
+    echo "[🍺] MacTeX already installed"
+    return 0
+  fi
+
+  local pkg_download_url
+  local pkg_name
+  local pkg_download_path
+
+  pkg_download_url="https://mirror.ctan.org/systems/mac/mactex/BasicTeX.pkg"
+  pkg_name="$(basename "${pkg_download_url}")"
+  pkg_download_path="$HOME/Downloads/${pkg_name}"
+
+  download_application "${pkg_download_path}" "${pkg_download_url}"
+
+  echo "[🍺] Attempting to install ${pkg_name}"
+
+  get_sudo "to install BasicTeX"
+
+  if sudo installer -pkg "${pkg_download_path}" -target "/" >/dev/null; then
+    # !! SUDO !!
+    # Install
+    echo "[✅] Successfully installed BasicTeX"
+  else
+    echo "[❌] Failed to install BasicTeX"
+    exit 1
+  fi
+
+  # Cleanup
+  echo "[🍺] Deleting ${pkg_download_path}"
+  rm "${pkg_download_path:?}"
+  # Delete the pkg
+}
+
 function install_blockblock {
   # install_blockblock
   #   Installs BlockBlock (BB) via usual helpers
@@ -1160,6 +1200,9 @@ function main {
       ;;
     texpad)
       install_texpad
+      install_basictex
+    basictex)
+      install_basictex
     blockblock)
       install_blockblock
       ;;
@@ -1202,6 +1245,7 @@ function main {
       install_deckset
       install_maccy
       install_texpad
+      install_basictex
       install_blockblock
       install_oversight
       install_brew
