@@ -42,6 +42,7 @@ function usage {
   echo "  tower                 - Install Tower"
   echo "  deckset               - Install Deckset"
   echo "  maccy                 - Install Maccy"
+  echo "  texpad                - Install Texpad (Texifier) & BasicTeX"
   echo "  blockblock            - Install BlockBlock"
   echo "  oversight             - Install OverSight 📸🎤"
   echo "  brew                  - Install Homebrew, Homebrew-file and export HOMEBREW_BREWFILE" 
@@ -844,6 +845,29 @@ install_application "Maccy" "${zip_download_path}"
 }
 
 
+function install_texpad {
+  # install_texpad
+  #   Installs Texpad via usual helpers
+
+if [[ -d "/Applications/Texifier.app" ]]; then
+  echo "[🍺] Texifier already installed"
+  return 0
+fi
+
+local dmg_download_url
+local dmg_name
+local dmg_download_path
+
+
+dmg_download_url="$(curl -s https://www.texifier.com/mac \
+                  | awk -F'href="' '{split($2, a, "\""); if(a[1] ~ /download\.texifier\.com/) print a[1]}')"
+dmg_name="$(basename "${dmg_download_url}")"
+dmg_download_path="${HOME}/Downloads/${dmg_name}"
+
+download_application "${dmg_download_path}" "${dmg_download_url}"
+
+install_application "Texifier" "${dmg_download_path}"
+}
 function install_blockblock {
   # install_blockblock
   #   Installs BlockBlock (BB) via usual helpers
@@ -1134,6 +1158,8 @@ function main {
     maccy)
       install_maccy
       ;;
+    texpad)
+      install_texpad
     blockblock)
       install_blockblock
       ;;
@@ -1175,6 +1201,7 @@ function main {
       install_tower
       install_deckset
       install_maccy
+      install_texpad
       install_blockblock
       install_oversight
       install_brew
