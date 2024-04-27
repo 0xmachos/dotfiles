@@ -10,7 +10,7 @@ function git-clean {
 
   while IFS=$'\n' read -r dir; do 
     dirs+=("${dir}"); 
-  done < <(find "$HOME" -type d -maxdepth 4)
+  done < <(find "$HOME/Documents/Projects" -type d -maxdepth 4)
 
   echo "[♻️] Garbage Collecting in Git Repos..."
   
@@ -19,9 +19,9 @@ function git-clean {
       cd "${dir}" || exit
       if [ -d .git ]; then
         repo_name=$(basename "${dir}")
-        echo "  Cleaning: ${BOLD}${repo_name}${RESET}"
-        git gc --aggressive --quiet >/dev/null
-        # git fsck --full >/dev/null 2>&1
+        echo "  Cleaning: ${repo_name}"
+        git gc --aggressive --quiet
+        git fsck --full --strict 2>/dev/null
       fi
     )
   done  
