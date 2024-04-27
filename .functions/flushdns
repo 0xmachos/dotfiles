@@ -1,0 +1,11 @@
+#!/usr/bin/env zsh
+# dotfiles/.functions/flushdns
+
+function flushdns {
+
+  echo "Flushing DNS Cache by killing mDNSResponder..."
+
+  sudo killall -HUP mDNSResponder
+}
+
+flushdns
