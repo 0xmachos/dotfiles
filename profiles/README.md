@@ -33,6 +33,37 @@ Configures settings related to security.
 * `com.apple.Safari`
   * Disable Safari Auto Open "Safe" Downloads 
 
+## `machos.dotfiles.menubar.clock`
+
+Configures settings related to the Menu Bar clock.
+
+### Payload
+
+This payload uses ManagedPreferences (`mcx_preference_settings`).
+
+* `com.apple.menuextra.clock`
+  * `IsAnalog`
+    * 
+  * `ShowDate`
+    * 
+  * `ShowDayOfWeek`
+    * 
+  * `ShowSeconds`
+    * 
+  * `FlashDateSeparators`
+    * 
+  * `ShowAMPM`
+    * 
+  * `DateFormat`
+    * `EEE d MMM  HH:mm`
+    * e.g. Sun 28 Apr 21:55
+
+### Research
+
+* `Show24Hour`
+  * Does not work when set in `com.apple.menuextra.clock` domain
+  * Where, if at all, can it be set?
+
 ## `machos.dotfiles.behaviour`
 
 Configures settings related to behaviour.
