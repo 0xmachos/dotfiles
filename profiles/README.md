@@ -4,12 +4,18 @@
 * Install logic based on "[Semi-automating profile installation in Big Sur](https://www.alansiu.net/2021/01/06/semi-automating-profile-installation-in-big-sur/)" by [aysiu](https://github.com/aysiu)
 	* See: function [`open_system_prefernces_mdm_profile`](https://github.com/0xmachos/dotfiles/blob/ad4adc5da7ec6b39af4d6d0ba8ba0356b1022946/bittersweet#L1009-L1025) in [`bittersweet`](https://github.com/0xmachos/dotfiles/blob/master/bittersweet)
 
+
 # Documentation
 * [TopLevel](https://developer.apple.com/documentation/devicemanagement/toplevel)
   * The top-level payload properties for configuring all profiles
 * [CommonPayloadKeys](https://developer.apple.com/documentation/devicemanagement/commonpayloadkeys)
   * The payload properties that are common across all profiles
 * [Profile-Specific Payload Keys](https://developer.apple.com/documentation/devicemanagement/profile-specific_payload_keys)
+
+## ManagedPreferences (`mcx_preference_settings`)
+
+* https://community.jamf.com/t5/jamf-pro/what-is-quot-the-key-to-include-is-forced-quot/m-p/287247#M257118
+
 
 # Current Profiles
 
