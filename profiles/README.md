@@ -79,3 +79,8 @@ Configures settings related to behaviour.
   * Enable Three Finger Drag
 
 
+# Linting
+
+```
+plutil -lint *.mobileconfig 
+```
