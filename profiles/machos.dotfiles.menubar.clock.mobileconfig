@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+
+<plist version="1">
+  <dict>
+    
+
+    <!-- Profile Metadata -->
+    <!-- https://developer.apple.com/documentation/devicemanagement/toplevel -->
+    <!-- DO NOT TRUST the Configuration Profile Reference PDF, it is wildy out of date!-->
+    <key>PayloadUUID</key>
+      <!-- UUID for the Profile. Content unimportant but needs to be globaly uniqiue-->
+      <string>F7383ADF-7B34-408F-BB0F-056A64AB7EC1</string>
+    <key>PayloadType</key>
+      <!-- Can only be "Configuration" -->
+      <string>Configuration</string>
+    <key>PayloadOrganization</key>
+      <string>0xmachos</string>
+    <key>PayloadIdentifier</key>
+      <!-- Reverse-DNS style identifier -->
+      <string>com.machos.dotfiles.menubar.clock</string>
+    <key>PayloadDisplayName</key>
+      <string>0xmachos Dotfiles Menu Bar Clock Profile</string>
+    <key>PayloadDescription</key>
+      <string>Configures macOS Menu Bar clock</string>
+    <key>PayloadVersion</key>
+      <integer>1</integer>
+    <key>PayloadEnabled</key>
+      <true/>
+    <key>PayloadRemovalDisallowed</key>
+      <true/>
+    <key>PayloadScope</key>
+      <string>System</string>
+    <key>TargetDeviceType</key>
+      <integer>5</integer>
+      <!-- 5 = Mac -->
+
+  <key>PayloadContent</key>
+  <array>
+    <dict>
+       <key>PayloadUUID</key>
+        <string>ED5C3DB5-4B9E-4611-9FFC-B58BEE7949A0</string>
+      <key>PayloadType</key>
+        <string>com.apple.ManagedClient.preferences</string>
+      <key>PayloadOrganization</key>
+        <string>0xmachos</string>
+      <key>PayloadIdentifier</key>
+        <string>com.machos.dotfiles.menubar.clock</string>
+      <key>PayloadDisplayName</key>
+        <!-- This is what actually populates the Description field -->
+        <string>Configures the Menu Bar clock the way I like it</string>
+
+      <key>PayloadEnabled</key>
+        <true/>
+     
+      <key>PayloadVersion</key>
+        <integer>1</integer>
+      
+      <key>PayloadContent</key>
+      <dict>
+        <key>com.apple.menuextra.clock</key>
+          <dict>
+            <key>Forced</key>
+            <array>
+              <dict>
+                <key>mcx_preference_settings</key>
+                <dict>
+                
+                <key>IsAnalog</key>
+                  <false/>
+                <key>ShowDate</key>
+                  <true/>
+                <key>ShowDayOfWeek</key>
+                  <true/>
+                <key>ShowSeconds</key>
+                  <false/>
+                <key>FlashDateSeparators</key>
+                  <false/>
+                <key>ShowAMPM</key>
+                  <false/>
+                <key>DateFormat</key>
+                  <string>EEE d MMM  HH:mm</string>
+                
+                </dict>
+              </dict>
+            </array>
+          </dict>
+        </dict>
+     </dict>
+    </array>
+</dict>
+</plist>
