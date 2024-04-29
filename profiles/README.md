@@ -74,6 +74,14 @@ This payload uses ManagedPreferences (`mcx_preference_settings`).
 
 Configures settings related to behaviour.
 
+### Research
+
+#### Trackpad
+
+* Domains
+  * `com.apple.AppleMultitouchTrackpad`
+  * `com.apple.driver.AppleBluetoothMultitouch.trackpad`
+
 ### Payloads
 * `com.apple.AppleMultitouchTrackpad`
   * Enable Three Finger Drag
