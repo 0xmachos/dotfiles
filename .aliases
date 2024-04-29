@@ -73,3 +73,7 @@ alias v!='. venv/bin/activate'
 # Install Python packages from requirements.txt
 alias r!='pip install -r requirements.txt'
 
+# Print bianry plist via PlistBuddy
+# See also /usr/bin/plutil -p
+alias ppl='/usr/libexec/PlistBuddy -c print '
+
