@@ -77,3 +77,6 @@ alias r!='pip install -r requirements.txt'
 # See also /usr/bin/plutil -p
 alias ppl='/usr/libexec/PlistBuddy -c print '
 
+# Lint given plst file for syntax errors
+alias plint='plutil -lint '
+
