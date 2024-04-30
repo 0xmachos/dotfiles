@@ -39,41 +39,45 @@
     <key>PayloadContent</key>
     <array>
 
-
-      <!-- Trackpad Configuration -->
-      <!-- https://developer.apple.com/documentation/devicemanagement/softwareupdate -->
-      <!-- This currently does not work, no idea why -->
-      <!-- Have also tried the following to no avail https://community.jamf.com/t5/jamf-pro/enable-tap-to-click-with-custom-config-profile/m-p/62384#M51501 -->
+     <!-- Finder Configuration -->
       <dict>
-        <key>PayloadUUID</key>
-          <!-- UUID for the Payload. Content unimportant but needs to be globaly uniqiue-->
-          <string>630869A9-64EA-4E4F-BF7A-4B8E5F14107E</string>
-        <key>PayloadType</key>
-          <string>com.apple.AppleMultitouchTrackpad</string>
-        <key>PayloadOrganization</key>
-          <string>0xmachos</string>
-        <key>PayloadIdentifier</key>
-          <string>com.machos.dotfiles.AppleMultitouchTrackpad</string>
-        <key>PayloadDisplayName</key>
-          <!-- This is what actually populates the Description field -->
-          <string>Enable Three Finger Drag and Tap to Click</string>
-        
-        <key>PayloadVersion</key>
-          <integer>1</integer>
-        
-        <key>PayloadEnabled</key>
-          <true/>
+       <key>PayloadUUID</key>
+        <string>630869A9-64EA-4E4F-BF7A-4B8E5F14107E</string>
+      <key>PayloadType</key>
+        <string>com.apple.ManagedClient.preferences</string>
+      <key>PayloadOrganization</key>
+        <string>0xmachos</string>
+      <key>PayloadIdentifier</key>
+        <string>com.machos.dotfiles.Finder</string>
+      <key>PayloadDisplayName</key>
+        <!-- This is what actually populates the Description field -->
+        <string>Configure Finder just the way I like it</string>
 
-        <key>TrackpadThreeFingerDrag</key>
-          <true/>
+      <key>PayloadEnabled</key>
+        <true/>
+     
+      <key>PayloadVersion</key>
+        <integer>1</integer>
+      
+      <key>PayloadContent</key>
+      <dict>
+        <key>com.apple.finder</key>
+          <dict>
+            <key>Forced</key>
+            <array>
+              <dict>
+                <key>mcx_preference_settings</key>
+                <dict>
 
-        <key>Clicking</key>
-          <true/>
-
-      </dict>
-    
-
+                   <key>FXRemoveOldTrashItems</key>
+                    <true/>
+                    
+                </dict>
+              </dict>
+            </array>
+          </dict>
+        </dict>
+     </dict>
     </array>
-  
   </dict>
 </plist>
