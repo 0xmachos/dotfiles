@@ -87,6 +87,31 @@ function analyse {
     fi
 }
 
+function lint_plist_mobileconfig {
+  
+  local os
+  os="$(uname -s)"
+  local -a FILES
+
+  if [[ "${os}" != "Darwin" ]]; then 
+    exit 1
+  fi
+
+  while IFS=$'\n' read -r file; do 
+   FILES+=("${file}"); 
+  done < <(/usr/bin/find . -maxdepth 4 \
+            -type f \
+            \( -name "*.plist" -o -name "*.mobileconfig" \))
+
+  for file in "${FILES[@]}"; do
+    if ! /usr/bin/plutil -lint "${file}" ; then
+      echo "[FAIL] $(/usr/bin/basename "${file}")"
+      ERRORS+=("${file}")
+    fi
+
+  done
+}
+
 
 function main {
 
@@ -98,6 +123,7 @@ function main {
   find_files
   analyse_shell_scripts
 
+  lint_plist_mobileconfig
 
   if [[ ${#ERRORS[@]} -eq 0 ]]; then
     # If ERRORS empty then 
