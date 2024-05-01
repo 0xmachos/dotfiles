@@ -89,13 +89,7 @@ function analyse {
 
 function lint_plist_mobileconfig {
   
-  local os
-  os="$(/usr/bin/uname -s)"
   local -a FILES
-
-  if [[ "${os}" != "Darwin" ]]; then 
-    exit 1
-  fi
 
   while IFS=$'\n' read -r file; do 
    FILES+=("${file}"); 
