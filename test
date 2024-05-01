@@ -90,7 +90,7 @@ function analyse {
 function lint_plist_mobileconfig {
   
   local os
-  os="$(uname -s)"
+  os="$(/usr/bin/uname -s)"
   local -a FILES
 
   if [[ "${os}" != "Darwin" ]]; then 
