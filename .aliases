@@ -83,3 +83,12 @@ alias ppl='/usr/libexec/PlistBuddy -c print '
 # Lint given plst file for syntax errors
 alias plint='plutil -lint '
 
+# Check code signature of a file
+alias cs='codesign --verify --deep --strict --verbose=4 '
+
+# Check notarisation status of a file
+alias gkchk='spctl --assess --type execute'
+
+# Check code signature of a packged
+alias pcs='pkgutil --check-signature '
+
