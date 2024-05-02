@@ -12,6 +12,9 @@ alias ...='cd ../..'
 alias ....='cd ../../..'
 alias .....='cd ../../../..'
 
+# cd into HOME/Documents/Projects directory
+alias xdd='cd ~/Library/Developer/Xcode/DerivedData'
+
 # Clear terminal window
 alias c='clear'
 
