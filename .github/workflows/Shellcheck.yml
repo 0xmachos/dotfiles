@@ -10,14 +10,14 @@ on:
 
 # A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
-  # This workflow contains a single job called "build"
-  analyse:
+  # This workflow contains a single job called "shellcheck"
+  shellcheck:
     # The type of runner that the job will run on
     runs-on: macos-latest
 
     # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
-    # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+    # Checks-out your repository under ${{ github.workspace }}, so your job can access it
     - uses: actions/checkout@v4
     
     - name: Download Shellcheck
@@ -33,7 +33,7 @@ jobs:
     
     - name: Print shellcheck version
       run: |
-        "${{ github.action_path }}/shellcheck" --version
+        "${{ github.workspace }}/shellcheck" --version
     
     - name: Execute test
       env:
