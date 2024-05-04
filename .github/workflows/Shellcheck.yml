@@ -35,5 +35,5 @@ jobs:
     - name: Execute test
       env:
         TERM: xterm-256color
-        PATH: $PATH:${{ github.workspace }}/shellcheck
+        PATH: "$PATH:${{ github.workspace }}/shellcheck"
       run: ./test
