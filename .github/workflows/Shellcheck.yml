@@ -22,8 +22,7 @@ jobs:
     
     - name: Download Shellcheck
       run: |
-        SHELLCEHCK_LATEST_VERSION="$(curl --head --silent "https://github.com/koalaman/shellcheck/releases/latest" \
-                                    | awk '/^location: / {split($2, array, "/"); version=array[length(array)]; sub(/^v/, "", version); print version}')"
+        SHELLCEHCK_LATEST_VERSION="0.10.0"
         
         curl --silent --location --output  "${{ github.workspace }}/shellcheck-v${SHELLCEHCK_LATEST_VERSION}.tar.xz" \
         "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCEHCK_LATEST_VERSION}/shellcheck-v${SHELLCEHCK_LATEST_VERSION}.darwin.x86_64.tar.xz"
