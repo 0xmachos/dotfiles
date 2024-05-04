@@ -46,7 +46,7 @@ jobs:
               /usr/bin/file "${file}" | /usr/bin/grep --quiet "bash" || \
               /usr/bin/file "${file}" | /usr/bin/grep --quiet "zsh"; then
 
-              if shellcheck --shell=bash "${shell_file}" ; then
+              if "${{ github.workspace }}/shellcheck" --shell=bash "${shell_file}" ; then
                 echo "[PASS] $(/usr/bin/basename "${shell_file}")"
               else
                 echo "[FAIL] $(/usr/bin/basename "${shell_file}")"
