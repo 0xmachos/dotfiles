@@ -30,8 +30,11 @@ jobs:
         tar -xf "${{ github.workspace }}/shellcheck-v${SHELLCEHCK_LATEST_VERSION}.tar.xz"
         mv "${{ github.workspace }}/shellcheck-v${SHELLCEHCK_LATEST_VERSION}/shellcheck" \
             "${{ github.workspace }}/shellcheck"
-
-    # Runs a set of commands using the runners shell
+    
+    - name: Print shellcheck version
+      run: |
+        "${{ github.action_path }}/shellcheck" --version
+    
     - name: Execute test
       env:
         TERM: xterm-256color
