@@ -21,8 +21,9 @@ jobs:
     - uses: actions/checkout@v4
     
     - name: Download Shellcheck
-      run: |
+      env:
         SHELLCEHCK_LATEST_VERSION="0.10.0"
+      run: |
         
         curl --silent --location --output  "${{ github.workspace }}/shellcheck-v${SHELLCEHCK_LATEST_VERSION}.tar.xz" \
         "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCEHCK_LATEST_VERSION}/shellcheck-v${SHELLCEHCK_LATEST_VERSION}.darwin.aarch64.tar.xz"
