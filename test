@@ -109,6 +109,7 @@ function lint_plist_mobileconfig {
 
 function main {
 
+  check_shellcheck
 
   declare -a ERRORS
   declare -a FILES
