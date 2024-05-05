@@ -54,11 +54,11 @@ jobs:
               /usr/bin/file "${file}" | /usr/bin/grep --quiet "bash" || \
               /usr/bin/file "${file}" | /usr/bin/grep --quiet "zsh"; then
 
-              if "${{ github.workspace }}/shellcheck" --shell=bash "${shell_file}" ; then
-                echo "[PASS] $(/usr/bin/basename "${shell_file}")"
+              if "${{ github.workspace }}/shellcheck" --shell=bash "${file}" ; then
+                echo "[PASS] $(/usr/bin/basename "${file}")"
               else
-                echo "[FAIL] $(/usr/bin/basename "${shell_file}")"
-                ERRORS+=("${shell_file}")
+                echo "[FAIL] $(/usr/bin/basename "${file}")"
+                ERRORS+=("${file}")
               fi
           fi
         done
