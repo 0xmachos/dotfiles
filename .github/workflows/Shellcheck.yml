@@ -37,11 +37,7 @@ jobs:
         "${{ github.workspace }}/shellcheck" --version
     
     - name: Execute test
-      env:
-        TERM: xterm-256color
-
       run: |
-        
         declare -a ERRORS
         declare -a FILES
 
