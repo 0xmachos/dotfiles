@@ -73,7 +73,7 @@ jobs:
           exit 1
         fi
   
-  Lint Plists:
+  lint-plists:
     runs-on: macos-latest
 
     steps:
