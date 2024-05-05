@@ -83,7 +83,7 @@ jobs:
 
         while IFS=$'\n' read -r file; do 
           FILES+=("${file}");
-        done < <(/usr/bin/find . -maxdepth 4 \
+        done < <(/usr/bin/find "${{ github.workspace }}" -maxdepth 4 \
                 -type f \
                 \( -name "*.plist" -o -name "*.mobileconfig" \))
 
