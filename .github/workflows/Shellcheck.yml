@@ -22,7 +22,7 @@ jobs:
     
     - name: Download Shellcheck
       env:
-        SHELLCEHCK_LATEST_VERSION="0.10.0"
+        SHELLCEHCK_LATEST_VERSION: "0.10.0"
       run: |
         
         curl --silent --location --output  "${{ github.workspace }}/shellcheck-v${SHELLCEHCK_LATEST_VERSION}.tar.xz" \
