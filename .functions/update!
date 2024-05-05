@@ -27,9 +27,9 @@ function update! {
     sudo tlmgr update –all
   fi
 
-  if [ -x "$(command -v softwareupdate)" ]; then
+  if [ -x "$(command -v "/usr/sbin/softwareupdate")" ]; then
     echo "[🍎] macOS..."
-    softwareupdate -i -a
+    /usr/sbin/softwareupdate --install --all --include-config-data
   fi
 }
 
