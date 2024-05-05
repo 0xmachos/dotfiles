@@ -93,3 +93,13 @@ jobs:
             ERRORS+=("${file}")
           fi
         done
+
+        if [[ ${#ERRORS[@]} -eq 0 ]]; then
+          # If ERRORS empty then 
+          echo "[PASS] No errors, hooray"
+          exit 0
+        else
+          # If ERRORS not empty, print the names of files which failed
+          echo "[FAIL] These files failed linting: ${ERRORS[*]}"
+          exit 1
+        fi
