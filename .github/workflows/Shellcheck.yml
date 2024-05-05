@@ -41,6 +41,14 @@ jobs:
         declare -a ERRORS
         declare -a FILES
 
+        while IFS=$'\n' read -r file; do 
+          FILES+=("${file}"); 
+        done < <(/usr/bin/find "${{ github.workspace }} -maxdepth 1 -type f \
+                  -not -iwholename '*.git*'   \
+                  -not -iwholename '*venv*'   \
+                  -not -iwholename '*.tar.xz' \
+                  | /usr/bin/sort -u)
+
         for file in "${FILES[@]}"; do
           if /usr/bin/file "${file}" | /usr/bin/grep --quiet "shell" || \
               /usr/bin/file "${file}" | /usr/bin/grep --quiet "bash" || \
