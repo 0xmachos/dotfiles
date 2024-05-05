@@ -89,7 +89,9 @@ jobs:
                 \( -name "*.plist" -o -name "*.mobileconfig" \))
 
         for file in "${FILES[@]}"; do
-          if ! /usr/bin/plutil -lint "${file}" ; then
+          if /usr/bin/plutil -lint "${file}" ; then
+            echo "[PASS] $(/usr/bin/basename "${file}")"
+          else
             echo "[FAIL] $(/usr/bin/basename "${file}")"
             ERRORS+=("${file}")
           fi
