@@ -47,6 +47,7 @@ jobs:
                   -not -iwholename '*.git*'   \
                   -not -iwholename '*venv*'   \
                   -not -iwholename '*.tar.xz' \
+                  -not -iwholename 'shellcheck' \
                   | /usr/bin/sort -u)
 
         for file in "${FILES[@]}"; do
