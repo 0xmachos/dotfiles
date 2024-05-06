@@ -14,17 +14,17 @@ function update! {
 
   if [ -x "$(command -v brew)" ]; then
     echo "[🍺] brew..."
-    brew update
-    brew upgrade
-    brew cleanup
-    brew autoremove
-    brew doctor
+    /opt/homebrew/bin/brew update
+    /opt/homebrew/bin/brew upgrade
+    /opt/homebrew/bin/brew cleanup
+    /opt/homebrew/bin/brew autoremove
+    /opt/homebrew/bin/brew doctor
   fi
 
-  if [ -x "$(command -v tlmgr)" ]; then
+  if [ -x "$(command -v "/Library/TeX/texbin/tlmgr")" ]; then
     echo "[📝] LaTeX..."
-    sudo tlmgr update --self
-    sudo tlmgr update –all
+    /usr/bin/sudo "/Library/TeX/texbin/tlmgr" update --self
+    /usr/bin/sudo "/Library/TeX/texbin/tlmgr" update –all
   fi
 
   if [ -x "$(command -v "/usr/sbin/softwareupdate")" ]; then
