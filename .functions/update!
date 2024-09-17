@@ -27,6 +27,11 @@ function update! {
     /usr/bin/sudo "/Library/TeX/texbin/tlmgr" update –all
   fi
 
+  if [ -x "$(command -v "/usr/bin/xprotect")" ]; then
+    echo "[🛡️] XProtect..."
+    sudo xprotect update
+  fi
+
   if [ -x "$(command -v "/usr/sbin/softwareupdate")" ]; then
     echo "[🍎] macOS..."
     /usr/sbin/softwareupdate --install --all --include-config-data
