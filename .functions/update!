@@ -9,34 +9,38 @@ function update! {
   #     See: https://stackoverflow.com/a/677212
   #     See also: https://unix.stackexchange.com/a/85250
 
-  echo "[⚠️ ] Updating brew, tlmgr & macOS..."
-  sudo -v
+  readonly SUDO_BINARY="/usr/bin/sudo"
+  readonly BREW_BINARY="/opt/homebrew/bin/brew"
+  readonly TLMGR_BINARY="/Library/TeX/texbin/tlmgr"
+  readonly XPROTECT_BINARY="/usr/bin/xprotect"
+  readonly SWUPDATE_BINARY="/usr/sbin/softwareupdate"
 
-  if [ -x "$(command -v brew)" ]; then
+  echo "[⚠️ ] Updating brew, tlmgr, XProtect & macOS..."
+
+  if [ -x "$(command -v ${BREW_BINARY})" ]; then
     echo "[🍺] brew..."
-    /opt/homebrew/bin/brew update
-    /opt/homebrew/bin/brew upgrade
-    /opt/homebrew/bin/brew cleanup
-    /opt/homebrew/bin/brew autoremove
-    /opt/homebrew/bin/brew doctor
+    "${BREW_BINARY}" update
+    "${BREW_BINARY}" upgrade
+    "${BREW_BINARY}" cleanup
+    "${BREW_BINARY}" autoremove
+    "${BREW_BINARY}" doctor
   fi
 
-  if [ -x "$(command -v "/Library/TeX/texbin/tlmgr")" ]; then
+  if [ -x "$(command -v ${TLMGR_BINARY})" ]; then
     echo "[📝] LaTeX..."
-    /usr/bin/sudo "/Library/TeX/texbin/tlmgr" update --self
-    /usr/bin/sudo "/Library/TeX/texbin/tlmgr" update –all
+    "${SUDO_BINARY}" "${TLMGR_BINARY}" update --self
+    "${SUDO_BINARY}" "${TLMGR_BINARY}" update –all
   fi
 
-  if [ -x "$(command -v "/usr/bin/xprotect")" ]; then
+  if [ -x "$(command -v ${XPROTECT_BINARY})" ]; then
     echo "[🛡️] XProtect..."
-    sudo xprotect update
+    "${SUDO_BINARY}" "${XPROTECT_BINARY}" update
   fi
 
-  if [ -x "$(command -v "/usr/sbin/softwareupdate")" ]; then
+  if [ -x "$(command -v "${SWUPDATE_BINARY}")" ]; then
     echo "[🍎] macOS..."
-    /usr/sbin/softwareupdate --install --all --include-config-data
+    "${SWUPDATE_BINARY}" --install --all --include-config-data
   fi
 }
 
 update!
-
