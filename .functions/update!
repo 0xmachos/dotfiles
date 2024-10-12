@@ -15,7 +15,7 @@ function update! {
   readonly XPROTECT_BINARY="/usr/bin/xprotect"
   readonly SWUPDATE_BINARY="/usr/sbin/softwareupdate"
 
-  echo "[⚠️ ] Updating brew, tlmgr, XProtect & macOS..."
+  echo "[⚠️ ] Updating brew, XProtect, macOS & tlmgr..."
 
   if [ -x "$(command -v ${BREW_BINARY})" ]; then
     echo "[🍺] brew..."
@@ -26,12 +26,6 @@ function update! {
     "${BREW_BINARY}" doctor
   fi
 
-  if [ -x "$(command -v ${TLMGR_BINARY})" ]; then
-    echo "[📝] LaTeX..."
-    "${SUDO_BINARY}" "${TLMGR_BINARY}" update --self
-    "${SUDO_BINARY}" "${TLMGR_BINARY}" update –all
-  fi
-
   if [ -x "$(command -v ${XPROTECT_BINARY})" ]; then
     echo "[🛡️] XProtect..."
     "${SUDO_BINARY}" "${XPROTECT_BINARY}" update
@@ -40,6 +34,12 @@ function update! {
   if [ -x "$(command -v "${SWUPDATE_BINARY}")" ]; then
     echo "[🍎] macOS..."
     "${SWUPDATE_BINARY}" --install --all --include-config-data
+  fi
+
+  if [ -x "$(command -v ${TLMGR_BINARY})" ]; then
+    echo "[📝] LaTeX..."
+    "${SUDO_BINARY}" "${TLMGR_BINARY}" update --self
+    "${SUDO_BINARY}" "${TLMGR_BINARY}" update –all
   fi
 }
 
