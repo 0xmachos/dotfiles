@@ -18,20 +18,16 @@
 INITIAL_DIR="${HOME}/Documents/Projects"
 
 
-### Homebrew ###
+# $PATH & ENV exports MUST be at the top of .zshrc
+# We need all of these to be exported first otherwise some commands will fail or behaviour unexpectedly
+# See: b79b7968166df0238df8aa61e975b9bcecbabf06
+
+### $PATH Exports ###
 
 eval "$(/opt/homebrew/bin/brew shellenv)"
 # Add Homebrew to PATH
 
-
-### Enviroment Variable Exports ###
-
-if [[ -x "/usr/local/bin/brew" ]]; then
-  export HOMEBREW_BREWFILE=$HOME/Documents/Projects/dotfiles/.extra/Brewfile
-  # Set location of Brewfile
-fi
-
-if [[ -x "/usr/local/opt/ruby/bin/ruby" ]]; then
+if [ -x "$(command -v /usr/local/opt/ruby/bin/ruby)" ]; then
   export PATH="/usr/local/opt/ruby/bin:/usr/local/lib/ruby/gems/3.0.0/bin:$PATH"
   # macOS ships with a version of Ruby at /usr/bin/ruby
   #   /usr/bin also contains versions of gem and bundler
@@ -41,12 +37,10 @@ if [[ -x "/usr/local/opt/ruby/bin/ruby" ]]; then
 fi
 
 if [[ -x "$(command -v go)" ]]; then
-  export GOPATH=$HOME/Documents/Projects/go
   export PATH=$PATH:$GOPATH/bin
-  # Go
 fi
 
-if [[ -x "/usr/local/bin/python3" && -x "$HOME/Library/Python/3.9/bin/virtualenv" ]]; then
+if [ -x "$(command -v "$HOME/Library/Python/3.9/bin/virtualenv")" ]; then
   # Should the second check be "$HOME/Library/Python/*/bin/virtualenv" this will need manually 
   #   changed when python moves to version 4.x
   
@@ -55,11 +49,20 @@ if [[ -x "/usr/local/bin/python3" && -x "$HOME/Library/Python/3.9/bin/virtualenv
   # pip3 show virtualenv
 fi
 
+### Enviroment Variable Exports ###
+
+if [ -x "$(command -v /usr/local/bin/brew)" ]; then
+  export HOMEBREW_BREWFILE=$HOME/Documents/Projects/dotfiles/.extra/Brewfile
+  # Set location of Brewfile
+fi
+
+if [[ -x "$(command -v go)" ]]; then
+  export GOPATH=$HOME/Documents/Projects/go
+fi
 
 if [[ -d "/Applications/Secretive.app" ]]; then
   export SSH_AUTH_SOCK=$HOME/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh
 fi
-
 
 export IIOEnableOOP=YES
 # Enabled the undocumeted ImageIO sandbox
