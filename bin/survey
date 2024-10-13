@@ -1,0 +1,117 @@
+#!/usr/bin/env zsh
+# macos-scripts/survey
+
+# survey
+#  
+
+set -euo pipefail
+# -e exit if any command returns non-zero status code
+# -u prevent using undefined variables
+# -o pipefail force pipelines to fail on first non-zero status code
+
+IFS=$'\n\t'
+# Set Internal Field Separator to newlines and tabs
+# This makes bash consider newlines and tabs as separating words
+# See: http://redsymbol.net/articles/unofficial-bash-strict-mode/
+
+### UTILITY FUNCTIONS ###
+# ctrl_c
+# usage
+
+function ctrl_c {
+  # shellcheck disable=SC2317
+  echo -e "\\n[❌] ${USER} has chosen to quit!"
+  # shellcheck disable=SC2317
+  exit 1
+}
+
+
+function usage {
+  echo -e "\\n  Survey..."
+
+  exit 0
+}
+
+### END UTILITY FUNCTIONS ###
+
+function check_internet_connection {
+
+	domains=("captive.apple.com" "google.com" "flightywifi.com")
+	all_domains_not_reachable=true
+
+	for domain in "${domains[@]}"; do
+		if ! /usr/sbin/scutil -r "${domain}" | grep '^Reachable$' >/dev/null; then
+			echo "[⚠️ ] ${domain} is NOT reachable"
+		else
+			all_domains_not_reachable=false
+		fi
+	done
+
+	if [[ "${all_domains_not_reachable}" = "true" ]]; then
+		echo "[❌] Likely NOT connected to the internet"
+		return 1
+	fi
+}
+
+function check_dns_servers {
+
+	dns_servers=()
+	while read -r dns_server; do
+		dns_servers+=("${dns_server}");
+	done < <(/usr/sbin/scutil --dns | grep 'nameserver\[[0-9]*\]' | awk '{print $3}' | sort -u)
+
+	if ! [[ "${#dns_servers[@]}" -eq 0 ]]; then
+		echo "DNS Server(s):"
+		for dns_server in "${dns_servers[@]}"; do
+			echo "  ${dns_server}"
+		done
+	else
+		echo "[⚠️ ] No DNS Servers listed by scutil"
+	fi
+}
+
+function check_dns_search_domain {
+
+	dns_search_domains=()
+
+	while read -r dns_search_domain; do
+		dns_search_domains+=("${dns_search_domain}")
+	done < <(scutil --dns | grep 'search domain' | awk '{print $4}' | sort -u)
+
+	if ! [[ "${#dns_search_domains[@]}" -eq 0 ]]; then
+		echo "DNS Search Domain(s):"
+		for dns_search_domain in "${dns_search_domains[@]}"; do
+			echo "  ${dns_search_domain}"
+		done
+	else
+		echo "[⚠️ ]No DNS Search Domains listed by scutil"
+	fi
+
+}
+
+
+function main {
+
+  trap ctrl_c SIGINT
+  # Detect and react to the user hitting CTRL + C
+
+  if ! check_internet_connection; then
+  	exit 1
+  fi
+
+  # Check DNS servers and search domain
+  check_dns_servers
+  check_dns_search_domain
+
+	# TODO: 
+	#   Run networkQuality, probbaly last
+	#   Check if VPN on
+	#   Check if iCloud provate relay is on/ network is compatible with it
+	#   Check Public IP and associated info like ASN, Geo location, etc
+	#   Check for censorship NDT lab??
+
+
+}
+
+main "$@"
+
