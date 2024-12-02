@@ -1,0 +1,46 @@
+#!/usr/bin/env zsh
+# dotfiles/.functions/sha
+
+function sha {
+
+  local -r FILE_PATH=${1:?sha requires a path to a file or .app bundle}
+
+  if [[ "${FILE_PATH}" =~ .app ]]; then
+
+    MACHO_FILE_NAME=$(/usr/bin/basename "${FILE_PATH}"\
+                      | awk -F '.' '{print $1}')
+    # basename Google\ Chrome.app | awk -F '.' '{print $1}'                                                                                (master)
+    # Google Chrome
+
+    if [[ -z "${MACHO_FILE_NAME}" ]]; then
+      echo "\$MACHO_FILE_NAME is empty, sorry 🥲"
+      # Check in case the awk above returns no data 
+      return 1
+    fi
+
+    MACHO_FILE_PATH="${FILE_PATH}/Contents/MacOS/${MACHO_FILE_NAME}"
+    # Apple documentation states that the name of the mach-o binary is the same 
+    #   as the application bunbdle name minus the .app extension.
+    #   https://developer.apple.com/library/archive/documentation/CoreFoundation/Conceptual/CFBundles/BundleTypes/BundleTypes.html
+
+    if ! [[ -f "${MACHO_FILE_PATH}" ]]; then
+      echo "${MACHO_FILE_PATH}: No such file"
+      # Check that the path is a file and actually exists
+      return 1
+    fi
+
+    if SHASUM_OUTPUT=$("/sbin/sha256sum" "${MACHO_FILE_PATH}"); then
+      echo "${SHASUM_OUTPUT}"
+      echo "${SHASUM_OUTPUT}" | awk '{print $1}' | pbcopy
+      # Copy the hash to the clipboard
+      return 0
+    fi
+
+  fi
+
+  SHASUM_OUTPUT=$(shasum -a 256 "${FILE_PATH}")
+  echo "${SHASUM_OUTPUT}"
+  echo "${SHASUM_OUTPUT}" | awk '{print $1}' | pbcopy
+}
+
+sha
