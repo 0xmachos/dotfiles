@@ -28,7 +28,7 @@ function update! {
 
   if [ -x "$(command -v ${XPROTECT_BINARY})" ]; then
     echo "[🛡️] XProtect..."
-    "${SUDO_BINARY}" "${XPROTECT_BINARY}" update
+    "${SUDO_BINARY}" "${XPROTECT_BINARY}" update --prerelease
   fi
 
   if [ -x "$(command -v "${SWUPDATE_BINARY}")" ]; then
