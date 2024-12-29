@@ -1,0 +1,15 @@
+# Configuration file for Ghostty
+# dotfiles/config
+# Symlinked into 
+#  $HOME/Library/Application\ Support/com.mitchellh.ghostty/config
+
+# Update 
+auto-update = download
+auto-update-channel = stable
+
+# macOS Specific Settings
+macos-auto-secure-input = true
+macos-secure-input-indication = false
+
+# Appearance
+theme = Solarized Dark Higher Contrast
