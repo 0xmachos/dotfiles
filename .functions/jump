@@ -1,0 +1,68 @@
+#!/usr/bin/env zsh
+# dotfiles/.functions/jump
+
+function jump {
+  # jump 
+  #   Update macOS, Homebrew, LaTeX packages & XProtect
+  #   Run XProtect scan 
+  #   Preferred way to check if a bianry exsists and is exectuable is
+  #     if [ -x "$(command -v $BINARY)" ]; then
+  #     See: https://stackoverflow.com/a/677212 & https://unix.stackexchange.com/a/85250
+
+  readonly SUDO_BINARY="/usr/bin/sudo"
+  readonly SWUPDATE_BINARY="/usr/sbin/softwareupdate"
+  readonly BREW_BINARY="/opt/homebrew/bin/brew"
+  readonly TLMGR_BINARY="/Library/TeX/texbin/tlmgr"
+  readonly XPROTECT_BINARY="/usr/bin/xprotect"
+  readonly XPROTECT_APP="/Library/Apple/System/Library/CoreServices/XProtect.app/Contents/MacOS/XProtect"
+
+
+  ## macOS ##
+  if ! [ -x "$(command -v ${SWUPDATE_BINARY})" ]; then
+    echo "Cannot execute /usr/sbin/softwareupdate"
+    return 1
+  fi
+
+  echo "[🍎] Updating macOS..."
+  "${SWUPDATE_BINARY}" --install --all --include-config-data
+
+
+  ## Homebrew ##
+  if [ -x "$(command -v ${BREW_BINARY})" ]; then
+    echo "[🍺] Updating Homebrew..."
+    "${BREW_BINARY}" update
+    "${BREW_BINARY}" upgrade
+    "${BREW_BINARY}" cleanup
+    "${BREW_BINARY}" autoremove
+    "${BREW_BINARY}" doctor
+  fi
+
+
+  ## LaTeX ## 
+  if [ -x "$(command -v ${TLMGR_BINARY})" ]; then
+    "${SUDO_BINARY}" --prompt="[⚠️ ] Password required to run tlmgr: " -v
+    echo "[📝] Updating LaTeX..."
+    "${SUDO_BINARY}" "${TLMGR_BINARY}" update --self
+    "${SUDO_BINARY}" "${TLMGR_BINARY}" update –all
+  fi
+
+
+  ## XProtect ##
+  if ! [ -x "$(command -v ${XPROTECT_BINARY})" ]; then
+    echo "Cannot execute ${XPROTECT_BINARY}"
+    return 1
+  fi
+
+  echo "[🛡️] Updating XProtect..."
+  "${SUDO_BINARY}" --prompt="[⚠️ ] Password required to update XProtect: " -v
+  "${SUDO_BINARY}" "${XPROTECT_BINARY}" update --prerelease
+
+  if ! [ -x "$(command -v ${XPROTECT_APP})" ]; then
+    echo "Cannot execute ${XPROTECT_APP}"
+  fi
+
+  echo "[🔍] Running XProtect scan in the background..."
+  "${XPROTECT_APP}" &
+}
+
+jump
