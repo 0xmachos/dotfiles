@@ -9,15 +9,18 @@
 
 
 ### Define Colours ###
-tput sgr0; 
-# reset colors
+# Reset colors
+tput sgr0
 
-readonly RESET=$(tput sgr0)
-readonly BOLD=$(tput bold)
+RESET=$(tput sgr0)
+readonly RESET
 
-readonly RED=$(tput setaf 1)
-readonly ORANGE=$(tput setaf 3)
-readonly GREEN=$(tput setaf 64)
+RED=$(tput setaf 1)
+readonly RED
+ORANGE=$(tput setaf 3)
+readonly ORANGE
+GREEN=$(tput setaf 64)
+readonly GREEN
 ### END Colours ###
 
 
