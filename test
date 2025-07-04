@@ -30,14 +30,15 @@ function check_shellcheck {
 
 function find_files {
   # find_files
-  #   Find all regular files in source directory
+  #   Find all regular files in source directory and subdirectories
+  #   such as bin/ so nested shell scripts are linted
   
   while IFS=$'\n' read -r file; do 
     FILES+=("${file}"); 
-  done < <(/usr/bin/find . -maxdepth 1 -type f \
-            -not -iwholename '*.git*'   \
-            -not -iwholename '*venv*'   \
-            -not -iwholename '*.tar.xz' \
+  done < <(/usr/bin/find . -type f \
+            -not -path '*/.git/*' \
+            -not -path '*/venv/*' \
+            -not -name '*.tar.xz' \
             | /usr/bin/sort -u)
 }
 
