@@ -103,12 +103,12 @@ function main {
   check_dns_servers
   check_dns_search_domain
 
-	# TODO: 
-	#   Run networkQuality, probbaly last
-	#   Check if VPN on
-	#   Check if iCloud provate relay is on/ network is compatible with it
-	#   Check Public IP and associated info like ASN, Geo location, etc
-	#   Check for censorship NDT lab??
+        # TODO:
+        #   Run networkQuality, probably last
+        #   Check if VPN on
+        #   Check if iCloud private relay is on/ network is compatible with it
+        #   Check Public IP and associated info like ASN, Geo location, etc
+        #   Check for censorship NDT lab??
 
 
 }
