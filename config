@@ -13,3 +13,6 @@ macos-secure-input-indication = false
 
 # Appearance
 theme = Solarized Dark Higher Contrast
+
+shell-integration = zsh
+
