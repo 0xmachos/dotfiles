@@ -76,7 +76,7 @@ function check_dns_search_domain {
 
 	while read -r dns_search_domain; do
 		dns_search_domains+=("${dns_search_domain}")
-	done < <(scutil --dns | grep 'search domain' | awk '{print $4}' | sort -u)
+	done < <(/usr/sbin/scutil --dns | grep 'search domain' | awk '{print $4}' | sort -u)
 
 	if ! [[ "${#dns_search_domains[@]}" -eq 0 ]]; then
 		echo "DNS Search Domain(s):"
