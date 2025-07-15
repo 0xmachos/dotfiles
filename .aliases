@@ -58,6 +58,9 @@ alias ap='cd /Applications/'
 # cd into $HOME/.tart
 alias ta='cd ~/.tart'
 
+# cd into HOME/Documents/Projects directory
+alias xdd='cd ~/Library/Developer/Xcode/DerivedData'
+
 # Tear down and rebuild userspace login sessions
 alias restart='sudo launchctl reboot userspace'
 # https://applehelpwriter.com/2018/05/25/fastest-way-to-reboot-your-mac/
