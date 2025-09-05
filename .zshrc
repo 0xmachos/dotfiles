@@ -56,6 +56,10 @@ if [ -x "$(command -v /usr/local/bin/brew)" ]; then
   # Set location of Brewfile
 fi
 
+export BREW_VERIFY_ATTESTATIONS=true
+# https://blog.trailofbits.com/2023/11/06/adding-build-provenance-to-homebrew/
+# https://blog.trailofbits.com/2024/05/14/a-peek-into-build-provenance-for-homebrew/
+
 if [[ -x "$(command -v go)" ]]; then
   export GOPATH=$HOME/Documents/Projects/go
 fi
