@@ -60,6 +60,8 @@ export BREW_VERIFY_ATTESTATIONS=true
 # https://blog.trailofbits.com/2023/11/06/adding-build-provenance-to-homebrew/
 # https://blog.trailofbits.com/2024/05/14/a-peek-into-build-provenance-for-homebrew/
 
+export HOMEBREW_DOWNLOAD_CONCURRENCY=auto
+
 if [[ -x "$(command -v go)" ]]; then
   export GOPATH=$HOME/Documents/Projects/go
 fi
