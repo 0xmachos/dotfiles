@@ -51,7 +51,7 @@ function usage {
   echo "  brewfile              - Install Homebrew packages from Brewfile"
   echo "  compinit              - Fix permissions on zsh completion directory /usr/local/share"
   echo "  shell                 - Change shell to zsh as installed by Brew"
-  echo "  mdmprofile            - Open System Prefernces to install MDM Profile"
+  echo "  mdmprofile            - Open System Preferences to install MDM Profile"
 
   echo -e "\\n  ${RED}hailmary${RESET}              - ${BOLD}Run every function${RESET} in order listed above"
 
@@ -368,7 +368,7 @@ function get_sudo {
   #   minutes to sudo timeout (-v)
   # Paramter: 
   #  $purpose_string REQUIRED
-  #   Descibe why sudo is needed 
+  #   Describe why sudo is needed 
 
   local purpose_string=${1:?$purpose_string not passed to get_sudo}
   
@@ -783,7 +783,7 @@ function install_tower {
 
 function  install_deckset {
   # install_deckset
-  #   Install decket presentation software
+  #   Install deckset presentation software
   #   $url prebuilt, getting $version and $build from the http location header. 
   #   Grabbing $url directly from curl output does not work.
   #     curl -sLI https://www.decksetapp.com/download | grep 'location: ' | awk 'END{print}'
@@ -1174,8 +1174,8 @@ function change_shell {
 }
 
 
-function open_system_prefernces_mdm_profile {
-  # open_system_prefernces_mdm_profile
+function open_system_preferences_mdm_profile {
+  # open_system_preferences_mdm_profile
   # As of macOS Big Sur (11) /usr/bin/profiles can no longer install .mobileconfig profiles
   # MDM Profiles must be installed via the GUI via System Preferences > Profiles
   # However we can semi automate this process
@@ -1183,12 +1183,12 @@ function open_system_prefernces_mdm_profile {
 
   for profile in profiles/*.mobileconfig; do
     if ! open "/System/Library/PreferencePanes/Profiles.prefPane" "${profile:?}"; then
-      echo "[❌] Failed to open System Prefernces > Profiles with ${profile:?}"
+      echo "[❌] Failed to open System Preferences > Profiles with ${profile:?}"
       return 1
     fi
 
     profile_name=$(echo "${profile}" | awk -F '/' '{print $2}')
-    echo "[⚠️ ] Go to System Prefernces > Profiles and install ${profile_name}"
+    echo "[⚠️ ] Go to System Preferences > Profiles and install ${profile_name}"
   done
 
 }
@@ -1270,7 +1270,7 @@ function main {
       change_shell
       ;;
     mdmprofile)
-      open_system_prefernces_mdm_profile
+      open_system_preferences_mdm_profile
       ;;
     test)
       run_test
@@ -1299,7 +1299,7 @@ function main {
       install_brew
       install_brewfile
       zsh_compinit_fix
-      open_system_prefernces_mdm_profile
+      open_system_preferences_mdm_profile
       ;;
     *)
       usage
