@@ -43,7 +43,7 @@ function jump {
     "${SUDO_BINARY}" --prompt="[⚠️ ] Password required to run tlmgr: " -v
     echo "[📝] Updating LaTeX..."
     "${SUDO_BINARY}" "${TLMGR_BINARY}" update --self
-    "${SUDO_BINARY}" "${TLMGR_BINARY}" update –all
+    "${SUDO_BINARY}" "${TLMGR_BINARY}" update --all
   fi
 
 
