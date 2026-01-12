@@ -12,9 +12,6 @@ alias ...='cd ../..'
 alias ....='cd ../../..'
 alias .....='cd ../../../..'
 
-# cd into HOME/Documents/Projects directory
-alias xdd='cd ~/Library/Developer/Xcode/DerivedData'
-
 # Clear terminal window
 alias c='clear'
 
@@ -43,28 +40,49 @@ alias cc='cc -Wall'
 #   2. MAP CUSTOM COMMANDS
 #   -----------------------------
 
+## Navigation
 # cd into HOME/Downloads directory
 alias dl='cd ~/Downloads'
-
 # cd into HOME/Desktop directory
 alias dk='cd ~/Desktop'
-
 # cd into HOME/Documents/Projects directory
 alias pj='cd ~/Documents/Projects'
-
 # cd in /Applications
 alias ap='cd /Applications/'
-
-# cd into $HOME/.tart
-alias ta='cd ~/.tart'
-
 # cd into HOME/Documents/Projects directory
 alias xdd='cd ~/Library/Developer/Xcode/DerivedData'
 
+## Restart/ Kill 
 # Tear down and rebuild userspace login sessions
 alias restart='sudo launchctl reboot userspace'
 # https://applehelpwriter.com/2018/05/25/fastest-way-to-reboot-your-mac/
 # TODO: Investigate "reboot apps"
+
+# Kill the Dock, launchd will restart it automatically
+alias killdock='killall Dock'
+
+## Code Signing
+# Check code signature of a file
+alias cs='codesign --verify --deep --strict --verbose=4 '
+# Check notarisation status of a file
+alias gkchk='spctl --assess --type execute'
+# Check code signature of a packged
+alias pcs='pkgutil --check-signature '
+
+## Python
+# Activate python virtual environment
+alias v!='. venv/bin/activate'
+# Install Python packages from requirements.txt
+alias r!='pip install -r requirements.txt'
+
+## Plist
+# Print bianry plist via PlistBuddy
+# See also /usr/bin/plutil -p
+alias ppl='/usr/libexec/PlistBuddy -c print '
+# Lint given plst file for syntax errors
+alias plint='plutil -lint '
+
+## Miscellaneous
 
 # Create new local TM snapshots of all APFS volumes included in the TM backup
 alias snap='tmutil localsnapshot'
@@ -73,28 +91,7 @@ alias snap='tmutil localsnapshot'
 # Undocumented command
 alias unpack='pkgutil --expand-full'
 
-# Kill the Dock, launchd will restart it automatically
-alias killdock='killall Dock'
-
-# Activate python virtual environment
-alias v!='. venv/bin/activate'
-
-# Install Python packages from requirements.txt
-alias r!='pip install -r requirements.txt'
-
-# Print bianry plist via PlistBuddy
-# See also /usr/bin/plutil -p
-alias ppl='/usr/libexec/PlistBuddy -c print '
-
-# Lint given plst file for syntax errors
-alias plint='plutil -lint '
-
-# Check code signature of a file
-alias cs='codesign --verify --deep --strict --verbose=4 '
-
-# Check notarisation status of a file
-alias gkchk='spctl --assess --type execute'
-
-# Check code signature of a packged
-alias pcs='pkgutil --check-signature '
+# Required to use the CLI since Tailscale is installed via App Store
+# https://tailscale.com/kb/1080/cli
+alias tailscale='/Applications/Tailscale.app/Contents/MacOS/Tailscale'
 
