@@ -36,9 +36,6 @@ if [ -x "$(command -v /usr/local/opt/ruby/bin/ruby)" ]; then
   #   https://tidbits.com/2019/06/25/apple-to-deprecate-scripting-languages-in-future-versions-of-macos/
 fi
 
-if [[ -x "$(command -v go)" ]]; then
-  export PATH=$PATH:$GOPATH/bin
-fi
 
 if [ -x "$(command -v "$HOME/Library/Python/3.9/bin/virtualenv")" ]; then
   # Should the second check be "$HOME/Library/Python/*/bin/virtualenv" this will need manually 
@@ -61,10 +58,6 @@ export BREW_VERIFY_ATTESTATIONS=true
 # https://blog.trailofbits.com/2024/05/14/a-peek-into-build-provenance-for-homebrew/
 
 export HOMEBREW_DOWNLOAD_CONCURRENCY=auto
-
-if [[ -x "$(command -v go)" ]]; then
-  export GOPATH=$HOME/Documents/Projects/go
-fi
 
 if [[ -d "/Applications/Secretive.app" ]]; then
   export SSH_AUTH_SOCK=$HOME/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh
