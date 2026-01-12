@@ -22,14 +22,14 @@ jobs:
     
     - name: Download Shellcheck
       env:
-        SHELLCEHCK_LATEST_VERSION: "0.10.0"
+        SHELLCHECK_LATEST_VERSION: "0.10.0"
       run: |
         
-        curl --silent --location --output  "${{ github.workspace }}/shellcheck-v${SHELLCEHCK_LATEST_VERSION}.tar.xz" \
-        "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCEHCK_LATEST_VERSION}/shellcheck-v${SHELLCEHCK_LATEST_VERSION}.darwin.aarch64.tar.xz"
+        curl --silent --location --output  "${{ github.workspace }}/shellcheck-v${SHELLCHECK_LATEST_VERSION}.tar.xz" \
+        "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_LATEST_VERSION}/shellcheck-v${SHELLCHECK_LATEST_VERSION}.darwin.aarch64.tar.xz"
 
-        tar -xf "${{ github.workspace }}/shellcheck-v${SHELLCEHCK_LATEST_VERSION}.tar.xz"
-        mv "${{ github.workspace }}/shellcheck-v${SHELLCEHCK_LATEST_VERSION}/shellcheck" \
+        tar -xf "${{ github.workspace }}/shellcheck-v${SHELLCHECK_LATEST_VERSION}.tar.xz"
+        mv "${{ github.workspace }}/shellcheck-v${SHELLCHECK_LATEST_VERSION}/shellcheck" \
             "${{ github.workspace }}/shellcheck"
     
     - name: Print shellcheck version
