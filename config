@@ -7,12 +7,21 @@
 auto-update = download
 auto-update-channel = stable
 
-# macOS Specific Settings
-macos-auto-secure-input = true
-macos-secure-input-indication = false
+# Shell
+shell-integration = zsh
 
 # Appearance
 theme = Solarized Dark Higher Contrast
 
-shell-integration = zsh
+# macOS Specific Settings
+macos-auto-secure-input = true
+macos-secure-input-indication = false
 
+# Keybinds
+keybind = super+l=jump_to_prompt:-1
+keybind = shift+enter=text:\x1b\r
+# Claude Code
+
+# Copy/ Paste
+selection-clear-on-copy = true
+copy-on-select = true
