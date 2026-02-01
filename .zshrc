@@ -39,18 +39,23 @@ if [ -x "$(command -v "$HOME/Library/Python/3.9/bin/virtualenv")" ]; then
   # pip3 show virtualenv
 fi
 
+if [ -x "$(command -v $HOME/.local/bin/claude)" ]; then
+  export PATH="$HOME/.local/bin:$PATH"
+fi
+
+
 ### Enviroment Variable Exports ###
 
 if [ -x "$(command -v /usr/local/bin/brew)" ]; then
   export HOMEBREW_BREWFILE=$HOME/Documents/Projects/dotfiles/.extra/Brewfile
   # Set location of Brewfile
+
+  export BREW_VERIFY_ATTESTATIONS=true
+  # https://blog.trailofbits.com/2023/11/06/adding-build-provenance-to-homebrew/
+  # https://blog.trailofbits.com/2024/05/14/a-peek-into-build-provenance-for-homebrew/
+
+  export HOMEBREW_DOWNLOAD_CONCURRENCY=auto
 fi
-
-export BREW_VERIFY_ATTESTATIONS=true
-# https://blog.trailofbits.com/2023/11/06/adding-build-provenance-to-homebrew/
-# https://blog.trailofbits.com/2024/05/14/a-peek-into-build-provenance-for-homebrew/
-
-export HOMEBREW_DOWNLOAD_CONCURRENCY=auto
 
 if [[ -d "/Applications/Secretive.app" ]]; then
   export SSH_AUTH_SOCK=$HOME/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh
