@@ -24,8 +24,10 @@ INITIAL_DIR="${HOME}/Documents/Projects"
 
 ### $PATH Exports ###
 
-eval "$(/opt/homebrew/bin/brew shellenv)"
-# Add Homebrew to PATH
+if [ -x "$(command -v /opt/homebrew/bin/brew)" ]; then
+  eval "$(/opt/homebrew/bin/brew shellenv)"
+  # Add Homebrew to PATH
+fi
 
 if [ -x "$(command -v /usr/local/opt/ruby/bin/ruby)" ]; then
   export PATH="/usr/local/opt/ruby/bin:/usr/local/lib/ruby/gems/3.0.0/bin:$PATH"
@@ -156,14 +158,17 @@ zstyle ':completion:*' expand prefix suffix
 
 ### Functions ###
 
-FPATH="$HOME/.functions/:$FPATH"
-# Add $HOME/.functions/ to FPATH
+if [[ -d "$HOME/.functions" ]]; then
+  
+  FPATH="$HOME/.functions/:$FPATH"
+  # Add $HOME/.functions/ to FPATH
 
-# shellcheck disable=SC2086,SC2154,SC1087
-autoload -Uz $fpath[1]/*(.:t)
-# Lazy autoload every file in $HOME/.functions/*  as a function
-#   I've no idea what (.:t) does ¯\_(ツ)_/¯
-#   https://unix.stackexchange.com/a/526429
+  # shellcheck disable=SC2086,SC2154,SC1087
+  autoload -Uz $fpath[1]/*(.:t)
+  # Lazy autoload every file in $HOME/.functions/*  as a function
+  #   I've no idea what (.:t) does ¯\_(ツ)_/¯
+  #   https://unix.stackexchange.com/a/526429
+fi
 
 
 ### Aliases ###
