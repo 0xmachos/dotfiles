@@ -24,13 +24,13 @@ INITIAL_DIR="${HOME}/Documents/Projects"
 
 ### $PATH Exports ###
 
-if [ -x "$(command -v /opt/homebrew/bin/brew)" ]; then
+if [[ -x "/opt/homebrew/bin/brew" ]]; then
   eval "$(/opt/homebrew/bin/brew shellenv)"
   # Add Homebrew to PATH
 fi
 
 
-if [ -x "$(command -v "$HOME/Library/Python/3.9/bin/virtualenv")" ]; then
+if [[ -x "$HOME/Library/Python/3.9/bin/virtualenv" ]]; then
   # Should the second check be "$HOME/Library/Python/*/bin/virtualenv" this will need manually 
   #   changed when python moves to version 4.x
   
@@ -39,14 +39,14 @@ if [ -x "$(command -v "$HOME/Library/Python/3.9/bin/virtualenv")" ]; then
   # pip3 show virtualenv
 fi
 
-if [ -x "$(command -v $HOME/.local/bin/claude)" ]; then
+if [[ -x "$HOME/.local/bin/claude" ]]; then
   export PATH="$HOME/.local/bin:$PATH"
 fi
 
 
 ### Enviroment Variable Exports ###
 
-if [ -x "$(command -v /usr/local/bin/brew)" ]; then
+if [[ -x "/usr/local/bin/brew" ]]; then
   export HOMEBREW_BREWFILE=$HOME/Documents/Projects/dotfiles/.extra/Brewfile
   # Set location of Brewfile
 

@@ -4,10 +4,7 @@
 function jump {
   # jump 
   #   Update macOS, Homebrew, LaTeX packages & XProtect
-  #   Run XProtect scan 
-  #   Preferred way to check if a bianry exsists and is exectuable is
-  #     if [ -x "$(command -v $BINARY)" ]; then
-  #     See: https://stackoverflow.com/a/677212 & https://unix.stackexchange.com/a/85250
+  #   Run XProtect scan
 
   readonly SUDO_BINARY="/usr/bin/sudo"
   readonly SWUPDATE_BINARY="/usr/sbin/softwareupdate"
@@ -18,7 +15,7 @@ function jump {
 
 
   ## macOS ##
-  if ! [ -x "$(command -v ${SWUPDATE_BINARY})" ]; then
+  if ! [[ -x "${SWUPDATE_BINARY}" ]]; then
     echo "Cannot execute /usr/sbin/softwareupdate"
     return 1
   fi
@@ -28,7 +25,7 @@ function jump {
 
 
   ## Homebrew ##
-  if [ -x "$(command -v ${BREW_BINARY})" ]; then
+  if [[ -x "${BREW_BINARY}" ]]; then
     echo "[🍺] Updating Homebrew..."
     "${BREW_BINARY}" update
     "${BREW_BINARY}" upgrade
@@ -39,7 +36,7 @@ function jump {
 
 
   ## LaTeX ## 
-  if [ -x "$(command -v ${TLMGR_BINARY})" ]; then
+  if [[ -x "${TLMGR_BINARY}" ]]; then
     "${SUDO_BINARY}" --prompt="[⚠️ ] Password required to run tlmgr: " -v
     echo "[📝] Updating LaTeX..."
     "${SUDO_BINARY}" "${TLMGR_BINARY}" update --self
