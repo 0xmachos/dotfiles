@@ -471,15 +471,16 @@ function install_dotfiles {
   #   Config files for: zsh, git, ssh
 
   local -r dir=$(pwd)
-  local -ar dot_dirs=(.ssh .extra)
+  local -ar dot_dirs=(.ssh .extra .config/git)
   local dot_dir
-  local -ar dot_files=(.zshrc .functions .gitignore_global \
-                        .gitconfig .aliases)
+  local -ar dot_files=(.zshrc .functions .aliases)
   local dot_file
   local -ar ssh_configs=(config .extra_ssh)
   local ssh_config
+  local -ar git_configs=(config ignore allowed_signers)
+  local git_config
 
-  # Create required directories 
+  # Create required directories
   for dot_dir in "${dot_dirs[@]}"; do
     if mkdir -p "${HOME}/${dot_dir}"; then
       echo "[✅] Successfully created ${HOME}/${dot_dir}"
@@ -503,6 +504,15 @@ function install_dotfiles {
       echo "[✅] Successfully linked ${ssh_config} to ${HOME}/.ssh/${ssh_config}"
     else
       echo "[❌] Failed to link ${ssh_config} to ${HOME}/.ssh/${ssh_config}"
+    fi
+  done
+
+  # Symlink git config files into $HOME/.config/git/
+  for git_config in "${git_configs[@]}"; do
+    if ln -sfn "${dir}/.config/git/${git_config}" "${HOME}/.config/git/${git_config}"; then
+      echo "[✅] Successfully linked ${git_config} to ${HOME}/.config/git/${git_config}"
+    else
+      echo "[❌] Failed to link ${git_config} to ${HOME}/.config/git/${git_config}"
     fi
   done
 }
