@@ -2,16 +2,16 @@
 # dotfiles/.functions/jump
 
 function jump {
-  # jump 
+  # jump
   #   Update macOS, Homebrew, LaTeX packages & XProtect
   #   Run XProtect scan
 
-  readonly SUDO_BINARY="/usr/bin/sudo"
-  readonly SWUPDATE_BINARY="/usr/sbin/softwareupdate"
-  readonly BREW_BINARY="/opt/homebrew/bin/brew"
-  readonly TLMGR_BINARY="/Library/TeX/texbin/tlmgr"
-  readonly XPROTECT_BINARY="/usr/bin/xprotect"
-  readonly XPROTECT_APP="/Library/Apple/System/Library/CoreServices/XProtect.app/Contents/MacOS/XProtect"
+  local -r SUDO_BINARY="/usr/bin/sudo"
+  local -r SWUPDATE_BINARY="/usr/sbin/softwareupdate"
+  local -r BREW_BINARY="/opt/homebrew/bin/brew"
+  local -r TLMGR_BINARY="/Library/TeX/texbin/tlmgr"
+  local -r XPROTECT_BINARY="/usr/bin/xprotect"
+  local -r XPROTECT_APP="/Library/Apple/System/Library/CoreServices/XProtect.app/Contents/MacOS/XProtect"
 
 
   ## macOS ##
