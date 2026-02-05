@@ -26,6 +26,3 @@ function git-clean {
     )
   done  
 }
-
-git-clean
-

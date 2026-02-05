@@ -64,5 +64,3 @@ function jump {
   echo "[🔍] Running XProtect scan in the background..."
   "${XPROTECT_APP}" &
 }
-
-jump

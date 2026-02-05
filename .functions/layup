@@ -20,5 +20,3 @@ function layup {
     echo "[❌] Failed to update LaTeX packages via tlmgr"
   fi
 }
-
-layup
