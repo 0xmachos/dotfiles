@@ -42,5 +42,3 @@ function sha {
   echo "${SHASUM_OUTPUT}"
   echo "${SHASUM_OUTPUT}" | awk '{print $1}' | pbcopy
 }
-
-sha "$@"
