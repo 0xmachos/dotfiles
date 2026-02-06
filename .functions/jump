@@ -27,15 +27,18 @@ function jump {
   ## Homebrew ##
   if [[ -x "${BREW_BINARY}" ]]; then
     echo "[🍺] Updating Homebrew..."
-    "${BREW_BINARY}" update
-    "${BREW_BINARY}" upgrade
-    "${BREW_BINARY}" cleanup
-    "${BREW_BINARY}" autoremove
-    "${BREW_BINARY}" doctor
+    if "${BREW_BINARY}" update; then
+      "${BREW_BINARY}" upgrade
+      "${BREW_BINARY}" cleanup
+      "${BREW_BINARY}" autoremove
+      "${BREW_BINARY}" doctor
+    else
+      echo "[❌] Failed to update Homebrew"
+    fi
   fi
 
 
-  ## LaTeX ## 
+  ## LaTeX ##
   if [[ -x "${TLMGR_BINARY}" ]]; then
     "${SUDO_BINARY}" --prompt="[⚠️ ] Password required to run tlmgr: " -v
     echo "[📝] Updating LaTeX..."
@@ -43,21 +46,15 @@ function jump {
     "${SUDO_BINARY}" "${TLMGR_BINARY}" update --all
   fi
 
-
   ## XProtect ##
-  if ! [ -x "$(command -v ${XPROTECT_BINARY})" ]; then
-    echo "Cannot execute ${XPROTECT_BINARY}"
-    return 1
+  if [[ -x "${XPROTECT_BINARY}" ]]; then
+    echo "[🛡️] Updating XProtect..."
+    "${SUDO_BINARY}" --prompt="[⚠️ ] Password required to update XProtect: " -v
+    "${SUDO_BINARY}" "${XPROTECT_BINARY}" update --prerelease
   fi
 
-  echo "[🛡️] Updating XProtect..."
-  "${SUDO_BINARY}" --prompt="[⚠️ ] Password required to update XProtect: " -v
-  "${SUDO_BINARY}" "${XPROTECT_BINARY}" update --prerelease
-
-  if ! [ -x "$(command -v ${XPROTECT_APP})" ]; then
-    echo "Cannot execute ${XPROTECT_APP}"
+  if [[ -x "${XPROTECT_APP}" ]]; then
+    echo "[🔍] Running XProtect scan in the background..."
+    "${XPROTECT_APP}" &
   fi
-
-  echo "[🔍] Running XProtect scan in the background..."
-  "${XPROTECT_APP}" &
 }
