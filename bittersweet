@@ -46,7 +46,7 @@ function usage {
   echo "  latex                 - Install LaTeX packages via tlmgr"
   echo "  blockblock            - Install BlockBlock"
   echo "  oversight             - Install OverSight 📸🎤"
-  echo "  brew                  - Install Homebrew, Homebrew-file and export HOMEBREW_BREWFILE" 
+  echo "  brew                  - Install Homebrew"
   echo "  brewfile              - Install Homebrew packages from Brewfile"
   echo "  compinit              - Fix permissions on zsh completion directory /usr/local/share"
   echo "  shell                 - Change shell to zsh as installed by Brew"
@@ -957,7 +957,7 @@ function install_oversight {
 
 function install_brew {
 
-  # Install Homebrew and Homebrew-file
+  # Install Homebrew
 
   if ! [[ -x "$(command -v brew)" ]]; then
 
@@ -981,22 +981,6 @@ function install_brew {
     brew upgrade
     brew cleanup
   fi
-
-
-  if ! [[ -x "$(command -v brew-file)" ]]; then
-
-      echo "[🍺] Installing Homebrew-file"
-
-    if brew install rcmdnk/file/brew-file; then
-      echo "[✅] Successfully installed Homebrew-file"
-    else
-      echo "[❌] Failed to install Homebrew-file"
-      exit 1
-    fi
-
-  else
-    echo "[🍺] Homebrew-file already installed"
-  fi 
 }
 
 
@@ -1021,13 +1005,10 @@ function install_brewfile {
   fi 
 
 
-  declare -x HOMEBREW_BREWFILE="${dir}/.extra/Brewfile"
-  echo "[🍺] Exported HOMEBREW_BREWFILE=${HOMEBREW_BREWFILE}"
-  
   echo "[🍺] Installing Homebrew packages from Brewfile"
   get_sudo "to install software via Homebrew"
 
-  if brew file install; then 
+  if brew bundle install --file="${dir}/.extra/Brewfile"; then
     echo "[✅] Successfully installed packages from Brewfile"
     return 0
   else
