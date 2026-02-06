@@ -21,6 +21,8 @@ function jump {
   fi
 
   echo "[🍎] Updating macOS..."
+  # Apple Silicon requires volume owner auth, not sudo
+  # https://support.apple.com/guide/deployment/dep24dbdcf9e/web
   "${SWUPDATE_BINARY}" --install --all --include-config-data
 
 
