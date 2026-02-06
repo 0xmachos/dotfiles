@@ -5,24 +5,18 @@ function git-clean {
 
   # Run git garbage collection in all my git repos
 
-  declare -a dirs
-  local repo_name
-
-  while IFS=$'\n' read -r dir; do 
-    dirs+=("${dir}"); 
-  done < <(find "$HOME/Documents/Projects" -type d -maxdepth 4)
-
   echo "[♻️] Garbage Collecting in Git Repos..."
-  
-  for dir in "${dirs[@]}"; do
-    ( # SUBSHELL
+
+  while IFS=$'\n' read -r dir; do
+    dir="${dir%/.git}"
+    (
       cd "${dir}" || exit
-      if [ -d .git ]; then
-        repo_name=$(basename "${dir}")
-        echo "  Cleaning: ${repo_name}"
-        git gc --aggressive --quiet
-        git fsck --full --strict 2>/dev/null
-      fi
+      local repo_name
+      repo_name=$(basename "${dir}")
+      echo "  Cleaning: ${repo_name}"
+      GIT_TERMINAL_PROMPT=0 git fetch --prune &>/dev/null
+      git gc --quiet
+      git fsck --full --strict &>/dev/null
     )
-  done  
+  done < <(find "$HOME/Documents/Projects" -type d -maxdepth 5 -name .git)
 }
