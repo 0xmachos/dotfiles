@@ -46,10 +46,7 @@ fi
 
 ### Enviroment Variable Exports ###
 
-if [[ -x "/usr/local/bin/brew" ]]; then
-  export HOMEBREW_BREWFILE=$HOME/Documents/Projects/dotfiles/.extra/Brewfile
-  # Set location of Brewfile
-
+if [[ -x "/opt/homebrew/bin/brew" ]]; then
   export BREW_VERIFY_ATTESTATIONS=true
   # https://blog.trailofbits.com/2023/11/06/adding-build-provenance-to-homebrew/
   # https://blog.trailofbits.com/2024/05/14/a-peek-into-build-provenance-for-homebrew/
