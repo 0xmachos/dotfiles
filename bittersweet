@@ -473,7 +473,7 @@ function install_dotfiles {
   #   Soft links config files from repo into $HOME
   #   Config files for: zsh, git, ssh
 
-  local -ar dot_dirs=(.ssh .extra .config/git)
+  local -ar dot_dirs=(.ssh .extra .config/git .claude)
   local dot_dir
   local -ar dot_files=(.zshrc .functions .aliases)
   local dot_file
@@ -517,6 +517,13 @@ function install_dotfiles {
       echo "[❌] Failed to link ${git_config} to ${HOME}/.config/git/${git_config}"
     fi
   done
+
+  # Symlink Claude Code settings into $HOME/.claude/
+  if ln -sfn "${SCRIPT_DIR}/settings.json" "${HOME}/.claude/settings.json"; then
+    echo "[✅] Successfully linked settings.json to ${HOME}/.claude/settings.json"
+  else
+    echo "[❌] Failed to link settings.json to ${HOME}/.claude/settings.json"
+  fi
 }
 
 
