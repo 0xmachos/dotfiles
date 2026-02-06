@@ -1062,12 +1062,14 @@ function change_shell {
     return 1
   fi
 
-  if ! sudo bash -c "echo ${new_shell} >> /etc/shells"; then
-    # !! SUDO !!
-    # Add new shell to list of allowed shells
-    # https://unix.stackexchange.com/a/4833/271903
-    echo "[❌] Failed to add ${new_shell} to /etc/shells"
-    return 1
+  if ! grep -qx "${new_shell}" /etc/shells; then
+    if ! sudo bash -c "echo ${new_shell} >> /etc/shells"; then
+      # !! SUDO !!
+      # Add new shell to list of allowed shells
+      # https://unix.stackexchange.com/a/4833/271903
+      echo "[❌] Failed to add ${new_shell} to /etc/shells"
+      return 1
+    fi
   fi
   
   if chsh -s "${new_shell}"; then
