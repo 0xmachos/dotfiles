@@ -221,7 +221,11 @@ function verify_signature {
     else
       echo "[❌] ${application_name}.app is NOT notarised"
     fi
-fi
+
+  else
+    echo "[❌] ${file_path} is not a .app or .pkg file"
+    exit 1
+  fi
 }
 
 
