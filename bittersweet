@@ -14,6 +14,13 @@ IFS=$'\n\t'
 # This makes bash consider newlines and tabs as separating words
 # See: http://redsymbol.net/articles/unofficial-bash-strict-mode/
 
+readonly SCRIPT_DIR="${0:A:h}"
+# Absolute path to the directory containing this script
+# $0  - path used to invoke the script (e.g. /usr/local/bin/bittersweet)
+# :A  - resolve symlinks to the real absolute path
+# :h  - take the head (parent directory), stripping the filename
+# This ensures paths resolve correctly regardless of $PWD
+
 ### Define Colours ###
 
 /usr/bin/tput sgr0;
@@ -394,7 +401,7 @@ function ctrl_c {
 
 function run_test {
 
-  ./test
+  "${SCRIPT_DIR}/test"
 }
 
 
@@ -466,7 +473,6 @@ function install_dotfiles {
   #   Soft links config files from repo into $HOME
   #   Config files for: zsh, git, ssh
 
-  local -r dir=$(pwd)
   local -ar dot_dirs=(.ssh .extra .config/git)
   local dot_dir
   local -ar dot_files=(.zshrc .functions .aliases)
@@ -487,16 +493,16 @@ function install_dotfiles {
 
   # Symlink general dotfiles into $HOME
   for dot_file in "${dot_files[@]}"; do
-      if ln -sfn "${dir}/${dot_file}" "${HOME}/${dot_file}"; then
-        echo "[✅] Successfully linked ${dir}/${dot_file} to ${HOME}/${dot_file}"
+      if ln -sfn "${SCRIPT_DIR}/${dot_file}" "${HOME}/${dot_file}"; then
+        echo "[✅] Successfully linked ${SCRIPT_DIR}/${dot_file} to ${HOME}/${dot_file}"
       else
-        echo "[❌] Failed to link ${dir}/${dot_file} to ${HOME}/${dot_file}"
+        echo "[❌] Failed to link ${SCRIPT_DIR}/${dot_file} to ${HOME}/${dot_file}"
       fi
   done
 
   # Symlink ssh config in to $HOME/.ssh/
   for ssh_config in "${ssh_configs[@]}"; do
-    if ln -sfn "${dir}/.ssh/${ssh_config}" "${HOME}/.ssh/${ssh_config}"; then
+    if ln -sfn "${SCRIPT_DIR}/.ssh/${ssh_config}" "${HOME}/.ssh/${ssh_config}"; then
       echo "[✅] Successfully linked ${ssh_config} to ${HOME}/.ssh/${ssh_config}"
     else
       echo "[❌] Failed to link ${ssh_config} to ${HOME}/.ssh/${ssh_config}"
@@ -505,7 +511,7 @@ function install_dotfiles {
 
   # Symlink git config files into $HOME/.config/git/
   for git_config in "${git_configs[@]}"; do
-    if ln -sfn "${dir}/.config/git/${git_config}" "${HOME}/.config/git/${git_config}"; then
+    if ln -sfn "${SCRIPT_DIR}/.config/git/${git_config}" "${HOME}/.config/git/${git_config}"; then
       echo "[✅] Successfully linked ${git_config} to ${HOME}/.config/git/${git_config}"
     else
       echo "[❌] Failed to link ${git_config} to ${HOME}/.config/git/${git_config}"
@@ -520,7 +526,6 @@ function install_scripts {
   #   Create /usr/local/bin
   #   Symlink files in /usr/local/bin
   
-  local -r dir=$(pwd)
   local -ar bin_files=(dns pihole_stats sublime_backup)
   local -ar macos_script_bin_files=(c0design)
   
@@ -538,7 +543,7 @@ function install_scripts {
   
   # Symlink files
   for bin_file in "${bin_files[@]}"; do
-    if sudo ln -sfn "${dir}/bin/${bin_file}" "/usr/local/bin/${bin_file}"; then
+    if sudo ln -sfn "${SCRIPT_DIR}/bin/${bin_file}" "/usr/local/bin/${bin_file}"; then
       echo "[✅] Successfully linked ${bin_file} to /usr/local/bin/${bin_file}"
     else
       echo "[❌] Failed to link ${bin_file} to /usr/local/bin/${bin_file}"
@@ -546,7 +551,7 @@ function install_scripts {
   done
 
   # Symlink bittersweet into /usr/local/bin
-  if sudo ln -sfn "${dir}/bittersweet" "/usr/local/bin"; then
+  if sudo ln -sfn "${SCRIPT_DIR}/bittersweet" "/usr/local/bin"; then
     echo "[✅] Successfully linked bittersweet to /usr/local/bin/bittersweet"
   else
     echo "[❌] Failed to link bittersweet to /usr/local/bin/bittersweet"
@@ -672,7 +677,7 @@ function install_sublime_text {
     exit 1
   fi 
 
-  if cp -r "Sublime Text 3/Packages/User" "$HOME/Library/Application Support/Sublime Text 3/Packages"; then
+  if cp -r "${SCRIPT_DIR}/Sublime Text 3/Packages/User" "$HOME/Library/Application Support/Sublime Text 3/Packages"; then
     echo "[✅] Successfully installed Sublime Text config files"
   else
     echo "[❌] Failed to install Sublime Text config files"
@@ -1004,7 +1009,7 @@ function install_brewfile {
   echo "[🍺] Installing Homebrew packages from Brewfile"
   get_sudo "to install software via Homebrew"
 
-  if brew bundle install --file="${dir}/.extra/Brewfile"; then
+  if brew bundle install --file="${SCRIPT_DIR}/.extra/Brewfile"; then
     echo "[✅] Successfully installed packages from Brewfile"
     return 0
   else
@@ -1090,7 +1095,7 @@ function open_system_preferences_mdm_profile {
   # However we can semi automate this process
   #   See: https://www.alansiu.net/2021/01/06/semi-automating-profile-installation-in-big-sur/
 
-  for profile in profiles/*.mobileconfig; do
+  for profile in "${SCRIPT_DIR}"/profiles/*.mobileconfig; do
     if ! open "/System/Library/PreferencePanes/Profiles.prefPane" "${profile:?}"; then
       echo "[❌] Failed to open System Preferences > Profiles with ${profile:?}"
       return 1
@@ -1109,8 +1114,6 @@ function main {
   check_developer_tools
 
   local cmd=${1:-"usage"}
-  declare dir
-  dir=$(pwd)
 
   trap ctrl_c SIGINT
   # Detect and react to the user hitting CTRL + C
