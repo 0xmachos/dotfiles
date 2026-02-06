@@ -442,14 +442,6 @@ function write_defaults {
   # Mail: Force emails to be opened in plain text
   # Default: defaults write com.apple.mail PreferPlainText -bool false
 
-  defaults write com.apple.mail SendFormat -string Plain
-  # Mail: Force new emails to be composed as plain text
-  # Default: defaults write com.apple.mail SendFormat -string MIME
-
-  defaults write com.apple.mail minSizeKB 5000
-  # Mail: If attatchment is over 5MB ask to send via Mail Drop
-  # Default: com.apple.mail minSizeKB 20000
-
   defaults write com.apple.ActivityMonitor IconType -int 5
   # Activity Monitor: Set dock icon to "Show CPU Usage"
   # Default: n/a
