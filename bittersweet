@@ -287,18 +287,15 @@ function install_application {
     # IF file is a dmg
     
     echo "[🍺] Attempting to mount ${downloaded_file_path}"
-    if hdiutil attach -nobrowse -quiet "${downloaded_file_path}"; then
-      # Attempt to mount the DMG 
-      echo "[✅] Successfully mounted ${downloaded_file_name}"
+    dmg_mount_path="$(hdiutil attach -nobrowse "${downloaded_file_path}" | grep -o '/Volumes/.*')"
+    # Parse the actual mount point from hdiutil output
 
-      # shellcheck disable=SC2086
-      # Globbing is desired here, using it to avoid SC2010
-      dmg_mount_path="$(echo /Volumes/${application_name}*)"
-
-    else
+    if [[ -z "${dmg_mount_path}" ]]; then
       echo "[❌] Failed to mount ${downloaded_file_path}"
       exit 1
     fi
+
+    echo "[✅] Successfully mounted ${downloaded_file_name} at ${dmg_mount_path}"
 
     verify_signature "${dmg_mount_path}/${application_name}.app" "${application_name}"
 
