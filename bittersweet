@@ -644,27 +644,30 @@ fi
 
 
 function install_secretive {
-
-  # https://github.com/maxgoedjen/secretive/issues/117
+  # install_secretive
+  #   Installs Secretive via GitHub releases API + plutil
+  #   https://github.com/maxgoedjen/secretive/issues/117
 
   if [[ -d "/Applications/Secretive.app" ]]; then
     echo "[🍺] Secretive already installed"
     return 0
   fi
 
-  echo "Installing Secretive"
+  echo "[🍺] Installing Secretive"
 
-  local zip_name
-  zip_name="Secretive.zip" 
-  local latest_version
-  latest_version="$(curl -I https://github.com/maxgoedjen/secretive/releases/latest \
-                  | grep 'location:' \
-                  | awk -F '/' '{print $NF}' \
-                  | sed 's/\r//')"
+  local api_response
   local zip_download_url
-  zip_download_url="https://github.com/maxgoedjen/secretive/releases/download/${latest_version}/${zip_name}"
   local zip_download_path
-  zip_download_path="${HOME}/Downloads/${zip_name}" 
+
+  api_response="$(curl -s "https://api.github.com/repos/maxgoedjen/secretive/releases/latest")"
+  zip_download_url="$(echo "${api_response}" | plutil -extract "assets.0.browser_download_url" raw -o - -- -)"
+
+  if [[ -z "${zip_download_url}" ]]; then
+    echo "[❌] Failed to get Secretive download URL from GitHub API"
+    return 1
+  fi
+
+  zip_download_path="${HOME}/Downloads/$(basename "${zip_download_url}")"
 
   download_application "${zip_download_path}" "${zip_download_url}"
 
@@ -780,28 +783,32 @@ function  install_deckset {
 
 function install_maccy {
   # install_maccy
-  #   Installs Maccy via usual helpers
+  #   Installs Maccy via GitHub releases API + plutil
 
-if [[ -d "/Applications/Maccy.app" ]]; then
-  echo "[🍺] Maccy already installed"
-  return 0
-fi
+  if [[ -d "/Applications/Maccy.app" ]]; then
+    echo "[🍺] Maccy already installed"
+    return 0
+  fi
 
-local release_version
-local zip_download_url
-local zip_download_path
-local zip_file_name
+  echo "[🍺] Installing Maccy"
 
-zip_file_name="Maccy.app.zip"
-release_version=$(curl -LIs https://github.com/p0deje/Maccy/releases/latest \
-                | awk '/^location: / {split($2, array, "/"); print array[length(array)]}' \
-                | tr -d '\r')
-zip_download_url="https://github.com/p0deje/Maccy/releases/download/${release_version}/${zip_file_name}"
-zip_download_path="${HOME}/Downloads/${zip_file_name}"
+  local api_response
+  local zip_download_url
+  local zip_download_path
 
-download_application "${zip_download_path}" "${zip_download_url}"
+  api_response="$(curl -s "https://api.github.com/repos/p0deje/Maccy/releases/latest")"
+  zip_download_url="$(echo "${api_response}" | plutil -extract "assets.0.browser_download_url" raw -o - -- -)"
 
-install_application "Maccy" "${zip_download_path}"
+  if [[ -z "${zip_download_url}" ]]; then
+    echo "[❌] Failed to get Maccy download URL from GitHub API"
+    return 1
+  fi
+
+  zip_download_path="${HOME}/Downloads/$(basename "${zip_download_url}")"
+
+  download_application "${zip_download_path}" "${zip_download_url}"
+
+  install_application "Maccy" "${zip_download_path}"
 }
 
 
@@ -908,35 +915,33 @@ function install_latex_packages {
 
 function install_blockblock {
   # install_blockblock
-  #   Installs BlockBlock (BB) via usual helpers
-  #     as well as objective_see_install.
-  #    BB installer binary has a different name to the other Obj-s tools
-
+  #   Installs BlockBlock (BB) via GitHub releases API + plutil
+  #   Uses objective_see_install for the actual installation
 
   if [[ -d "/Applications/BlockBlock Helper.app" ]]; then
     echo "[🍺] BlockBlock already installed"
     return 0
   fi
-    
+
   echo "[🍺] Installing BlockBlock"
 
+  local api_response
   local url
   local zip_name
   local zip_download_path
-  local zip_sha1
 
-  url="$(curl -s https://objective-see.org/products/blockblock.html \
-         | grep -m 1 'downloads/BlockBlock' \
-         | awk -F '"' '{print $4}')"
-  zip_name="$(echo "${url}" | awk -F '/' '{print $NF}')"
+  api_response="$(curl -s "https://api.github.com/repos/objective-see/BlockBlock/releases/latest")"
+  url="$(echo "${api_response}" | plutil -extract "assets.0.browser_download_url" raw -o - -- -)"
+
+  if [[ -z "${url}" ]]; then
+    echo "[❌] Failed to get BlockBlock download URL from GitHub API"
+    return 1
+  fi
+
+  zip_name="$(basename "${url}")"
   zip_download_path="${HOME}/Downloads/${zip_name}"
-  zip_sha1="$(curl -s https://objective-see.org/products/blockblock.html \
-                | grep 'SHA-1' \
-                | awk -F '[> |<]' '{print $12}')"
 
   download_application "${zip_download_path}" "${url}"
-
-  verify_sha "${zip_name}" "${zip_download_path}" "1" "${zip_sha1}"
 
   objective_see_install "BlockBlock" "${zip_download_path}"
 
@@ -948,8 +953,9 @@ function install_blockblock {
 
 
 function install_oversight {
-
-  # Install OverSight
+  # install_oversight
+  #   Installs OverSight via GitHub releases API + plutil
+  #   Uses objective_see_install for the actual installation
 
   if [[ -d "/Applications/OverSight.app" ]]; then
     echo "[🍺] OverSight already installed"
@@ -958,25 +964,27 @@ function install_oversight {
 
   echo "[🍺] Installing OverSight 📸🎤"
 
+  local api_response
   local url
   local zip_name
   local zip_download_path
-  local zip_sha1
 
-  url="$(curl --silent https://objective-see.org/products/oversight.html \
-        | awk -F'"' 'BEGIN {found=0} /<a href="/ && !found {print $2; found=1}')"
-  zip_name="$(echo "${url}" | awk -F '/' '{print $NF}')"
+  api_response="$(curl -s "https://api.github.com/repos/objective-see/OverSight/releases/latest")"
+  url="$(echo "${api_response}" | plutil -extract "assets.0.browser_download_url" raw -o - -- -)"
+
+  if [[ -z "${url}" ]]; then
+    echo "[❌] Failed to get OverSight download URL from GitHub API"
+    return 1
+  fi
+
+  zip_name="$(basename "${url}")"
   zip_download_path="${HOME}/Downloads/${zip_name}"
-  zip_sha1="$( curl -s https://objective-see.org/products/oversight.html \
-            | awk '{ if(match($0, /[A-F0-9]{40}/)) print substr($0, RSTART, RLENGTH)}')"
 
   download_application "${zip_download_path}" "${url}"
 
-  verify_sha "${zip_name}" "${zip_download_path}" "1" "${zip_sha1}"
-
   objective_see_install "OverSight" "${zip_download_path}"
 
-  # Enable headless mode, auto updtaes & start on login
+  # Enable headless mode, auto updates & start on login
   defaults write com.objective-see.OverSight runHeadless   -bool true
   defaults write com.objective-see.OverSight check4Updates -bool true
   defaults write com.objective-see.OverSight startAtLogin  -bool true
