@@ -1222,6 +1222,10 @@ function main {
     hailmary)
       # Execute all the functions
       # Order matters!
+      # - System config (no dependencies)
+      # - Security tools (curl + plutil, no brew needed)
+      # - Homebrew + Brewfile (installs shellcheck, zsh)
+      # - Everything else...
       echo -e "[🍺] ${RED}Hailmary${RESET} engaged"
       sleep 3
 
@@ -1229,19 +1233,19 @@ function main {
       install_dotfiles
       install_scripts
       enable_touchid_sudo
-      install_secretive
-      install_sublime_text
-      install_tower
-      install_deckset
-      install_maccy
-      install_texpad
-      install_basictex
-      install_latex_packages
       install_blockblock
       install_oversight
       install_brew
       install_brewfile
       zsh_compinit_fix
+      install_secretive
+      install_maccy
+      install_sublime_text
+      install_tower
+      install_deckset
+      install_texpad
+      install_basictex
+      install_latex_packages
       open_system_preferences_mdm_profile
       ;;
     *)
