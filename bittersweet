@@ -524,6 +524,29 @@ function install_dotfiles {
   else
     echo "[❌] Failed to link settings.json to ${HOME}/.claude/settings.json"
   fi
+
+  # Harden file permissions
+  # git clone sets 644 by default; enforce 600 on sensitive files
+  # chmod follows symlinks so this works on both the source and linked paths
+  local -ar sensitive_files=(
+    "${SCRIPT_DIR}/.ssh/config"
+    "${SCRIPT_DIR}/.ssh/.extra_ssh"
+    "${SCRIPT_DIR}/.config/git/config"
+    "${SCRIPT_DIR}/.config/git/ignore"
+    "${SCRIPT_DIR}/.config/git/allowed_signers"
+    "${SCRIPT_DIR}/.zshrc"
+    "${SCRIPT_DIR}/.aliases"
+    "${SCRIPT_DIR}/settings.json"
+  )
+  local sensitive_file
+
+  for sensitive_file in "${sensitive_files[@]}"; do
+    if chmod 600 "${sensitive_file}"; then
+      echo "[✅] Hardened permissions on ${sensitive_file##*/}"
+    else
+      echo "[❌] Failed to harden permissions on ${sensitive_file##*/}"
+    fi
+  done
 }
 
 
