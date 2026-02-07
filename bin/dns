@@ -36,8 +36,8 @@ function get_ip {
     exit 1
   fi
   
-  ip=$(curl -s "https://cloudflare-dns.com/dns-query?ct=application/dns-json&name=${domain}&type=${record_type}"\
-    | awk -F '"' '{print $34}') 
+  ip=$(curl -s -H "accept: application/dns-json" "https://cloudflare-dns.com/dns-query?name=${domain}&type=${record_type}" \
+    | jq -r '.Answer[-1].data')
 }
 
 
@@ -46,7 +46,7 @@ function main {
   domain=${1:-""}
   record_type=${2:-"A"}
 
-  if [ -z "${domain}" ]; then
+  if [[ -z "${domain}" ]]; then
     usage
   fi
 
