@@ -30,14 +30,6 @@ if [[ -x "/opt/homebrew/bin/brew" ]]; then
 fi
 
 
-if [[ -x "$HOME/Library/Python/3.9/bin/virtualenv" ]]; then
-  # Should the second check be "$HOME/Library/Python/*/bin/virtualenv" this will need manually 
-  #   changed when python moves to version 4.x
-  
-  export PATH=$PATH:$HOME/Library/Python/3.9/bin
-  # Required for virtualenv as installed by pip
-  # pip3 show virtualenv
-fi
 
 if [[ -x "$HOME/.local/bin/claude" ]]; then
   export PATH="$HOME/.local/bin:$PATH"
