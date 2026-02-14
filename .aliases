@@ -16,17 +16,19 @@ alias .....='cd ../../../..'
 alias c='clear'
 
 # Preferred ls behaviour
-alias ll='ls -aFGhl'
+alias ll='ls -aFGhlt'
 # -a show files and dirs starting with .
 # -F write `/' after directories, '*' after executables and '@' after symlinks
 # -G enable colorised output
 # -h show sizes in human readable form
 # -l display in long format
+# -t sort by descending time modified
 
 # Better ls, don't always want long format
-alias ls='ls -FG'
+alias ls='ls -FGt'
 # -F write `/' after directories, '*' after executables and '@' after symlinks
 # -G enable colorised output
+# -t sort by descending time modified
 
 # Preferred grep behaviour
 alias grep='grep --color=auto '
