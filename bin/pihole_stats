@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/env zsh
 # dotfiles/bin/pihole_stats
 
 # pihole_stats.sh
