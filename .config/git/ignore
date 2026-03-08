@@ -1,5 +1,5 @@
-# ~/.gitignore_global
-# Symlinked into ~/ as .gitignore
+# Global gitignore
+# Symlinked into ~/.config/git/ignore
 
 # Compiled source
 *.dll
