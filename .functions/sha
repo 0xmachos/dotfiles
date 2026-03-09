@@ -31,7 +31,7 @@ function sha {
 
     if SHASUM_OUTPUT=$("/sbin/sha256sum" "${MACHO_FILE_PATH}"); then
       echo "${SHASUM_OUTPUT}"
-      echo "${SHASUM_OUTPUT}" | awk '{print $1}' | pbcopy
+      awk '{print $1}' <<< "${SHASUM_OUTPUT}" | pbcopy
       # Copy the hash to the clipboard
       return 0
     fi
@@ -40,5 +40,5 @@ function sha {
 
   SHASUM_OUTPUT=$(shasum -a 256 "${FILE_PATH}")
   echo "${SHASUM_OUTPUT}"
-  echo "${SHASUM_OUTPUT}" | awk '{print $1}' | pbcopy
+  awk '{print $1}' <<< "${SHASUM_OUTPUT}" | pbcopy
 }

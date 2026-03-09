@@ -124,7 +124,7 @@ function download_application {
   local download_path=${1:?download_path not passed to download_application}
   local url=${2:?url not passed to download_application}
   local file_name
-  file_name=$(echo "${download_path}" | awk -F '/' '{print $(NF)}')
+  file_name=$(awk -F '/' '{print $(NF)}' <<< "${download_path}")
 
   echo "[🍺] Downloading ${file_name}"
   
@@ -247,7 +247,7 @@ function install_application {
   local downloaded_file_path=${2:?downloaded_file_path not passed}
   local downloaded_file_name
   local dmg_mount_path
-  downloaded_file_name="$(echo "${downloaded_file_path}" | awk -F '/' '{print $NF}')"
+  downloaded_file_name="$(awk -F '/' '{print $NF}' <<< "${downloaded_file_path}")"
 
 
   if file "${downloaded_file_path}" | grep --quiet 'Zip'; then
@@ -330,7 +330,7 @@ function objective_see_install {
   local downloaded_file_path=${2:?downloaded_file_path not passed objective_see_install}
   local downloaded_file_name
   local installer_file_name
-  downloaded_file_name=$(echo "${downloaded_file_path}" | awk -F '/' '{print $(NF)}')
+  downloaded_file_name=$(awk -F '/' '{print $(NF)}' <<< "${downloaded_file_path}")
   installer_file_name="${application_name} Installer"
 
 
@@ -660,7 +660,7 @@ function install_secretive {
   local zip_download_path
 
   api_response="$(curl -s "https://api.github.com/repos/maxgoedjen/secretive/releases/latest")"
-  zip_download_url="$(echo "${api_response}" | plutil -extract "assets.0.browser_download_url" raw -o - -- -)"
+  zip_download_url="$(plutil -extract "assets.0.browser_download_url" raw -o - -- - <<< "${api_response}")"
 
   if [[ -z "${zip_download_url}" ]]; then
     echo "[❌] Failed to get Secretive download URL from GitHub API"
@@ -733,7 +733,7 @@ function install_tower {
         | grep 'Location' \
         | awk '{print $2}' \
         | tr -d '\r')"
-  zip_name="$(echo "${url}" | awk -F '/' '{print $7}')"
+  zip_name="$(awk -F '/' '{print $7}' <<< "${url}")"
   zip_download_path="${HOME}/Downloads/${zip_name}" 
 
   download_application "${zip_download_path}" "${url}"
@@ -769,8 +769,8 @@ function  install_deckset {
   local dmg_download_path
   
   location_header="$(curl -sLI https://www.decksetapp.com/download | grep 'dl.decksetapp')"
-  version="$(echo -e "${location_header}" | awk -F '[+|+]' '{print $2}')"
-  build="$(echo -e "${location_header}" | awk -F '[(|)]' '{print $2}')"
+  version="$(awk -F '[+|+]' '{print $2}' <<< "${location_header}")"
+  build="$(awk -F '[(|)]' '{print $2}' <<< "${location_header}")"
   url="https://dl.decksetapp.com/Deckset+${version}+(${build}).dmg"
   dmg_name=$(basename "${url}")
   dmg_download_path="${HOME}/Downloads/${dmg_name}"
@@ -797,7 +797,7 @@ function install_maccy {
   local zip_download_path
 
   api_response="$(curl -s "https://api.github.com/repos/p0deje/Maccy/releases/latest")"
-  zip_download_url="$(echo "${api_response}" | plutil -extract "assets.0.browser_download_url" raw -o - -- -)"
+  zip_download_url="$(plutil -extract "assets.0.browser_download_url" raw -o - -- - <<< "${api_response}")"
 
   if [[ -z "${zip_download_url}" ]]; then
     echo "[❌] Failed to get Maccy download URL from GitHub API"
@@ -931,7 +931,7 @@ function install_blockblock {
   local zip_download_path
 
   api_response="$(curl -s "https://api.github.com/repos/objective-see/BlockBlock/releases/latest")"
-  url="$(echo "${api_response}" | plutil -extract "assets.0.browser_download_url" raw -o - -- -)"
+  url="$(plutil -extract "assets.0.browser_download_url" raw -o - -- - <<< "${api_response}")"
 
   if [[ -z "${url}" ]]; then
     echo "[❌] Failed to get BlockBlock download URL from GitHub API"
@@ -970,7 +970,7 @@ function install_oversight {
   local zip_download_path
 
   api_response="$(curl -s "https://api.github.com/repos/objective-see/OverSight/releases/latest")"
-  url="$(echo "${api_response}" | plutil -extract "assets.0.browser_download_url" raw -o - -- -)"
+  url="$(plutil -extract "assets.0.browser_download_url" raw -o - -- - <<< "${api_response}")"
 
   if [[ -z "${url}" ]]; then
     echo "[❌] Failed to get OverSight download URL from GitHub API"
@@ -1136,7 +1136,7 @@ function open_system_preferences_mdm_profile {
       return 1
     fi
 
-    profile_name=$(echo "${profile}" | awk -F '/' '{print $2}')
+    profile_name=$(basename "${profile}")
     echo "[⚠️ ] Go to System Preferences > Profiles and install ${profile_name}"
   done
 
