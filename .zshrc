@@ -40,10 +40,12 @@ fi
 
 if [[ -x "/opt/homebrew/bin/brew" ]]; then
   export BREW_VERIFY_ATTESTATIONS=true
+  # Requires `gh` (GitHub CLI) — Homebrew shells out to `gh attestation verify`
   # https://blog.trailofbits.com/2023/11/06/adding-build-provenance-to-homebrew/
   # https://blog.trailofbits.com/2024/05/14/a-peek-into-build-provenance-for-homebrew/
 
   export HOMEBREW_DOWNLOAD_CONCURRENCY=auto
+  export HOMEBREW_NO_ENV_HINTS=1
 fi
 
 if [[ -d "/Applications/Secretive.app" ]]; then
