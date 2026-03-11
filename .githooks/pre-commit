@@ -1,0 +1,12 @@
+#!/usr/bin/env zsh
+# .githooks/pre-commit
+# Scan staged changes for secrets before allowing commit
+
+set -euo pipefail
+
+if ! command -v gitleaks &>/dev/null; then
+  echo "[❌] gitleaks not found. Install via: brew install gitleaks"
+  exit 1
+fi
+
+gitleaks protect --staged --verbose
