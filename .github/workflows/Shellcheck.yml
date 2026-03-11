@@ -90,9 +90,10 @@ jobs:
     - name: Lint
       run: |
         set -euo pipefail
+        typeset -a ERRORS
         typeset -a FILES
 
-        while IFS=$'\n' read -r file; do 
+        while IFS=$'\n' read -r file; do
           FILES+=("${file}");
         done < <(/usr/bin/find "${{ github.workspace }}" -maxdepth 4 \
                 -type f \
