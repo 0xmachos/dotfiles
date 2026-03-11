@@ -5,7 +5,7 @@ function sha {
 
   local -r FILE_PATH=${1:?sha requires a path to a file or .app bundle}
 
-  if [[ "${FILE_PATH}" =~ .app ]]; then
+  if [[ "${FILE_PATH}" =~ \.app$ ]]; then
 
     MACHO_FILE_NAME=$(/usr/bin/basename "${FILE_PATH}"\
                       | awk -F '.' '{print $1}')
