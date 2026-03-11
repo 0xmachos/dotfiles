@@ -1,0 +1,24 @@
+#!/usr/bin/env zsh
+# dotfiles/.functions/sdkpath
+
+function sdkpath {
+
+  local sdk
+
+  case "${1:-mac}" in
+    mac)     sdk="macosx"             ;;
+    phone)   sdk="iphoneos"           ;;
+    sim)     sdk="iphonesimulator"    ;;
+    watch)   sdk="watchos"            ;;
+    tv)      sdk="appletvos"          ;;
+    vision)  sdk="xros"              ;;
+    driver)  sdk="driverkit"          ;;
+    *)
+      echo "Unknown platform: ${1}" >&2
+      echo "Platforms: mac (default), phone, sim, watch, tv, vision, driver" >&2
+      return 1
+      ;;
+  esac
+
+  xcrun --sdk "${sdk}" --show-sdk-path
+}
