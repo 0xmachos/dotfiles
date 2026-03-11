@@ -42,11 +42,13 @@ function find_files {
 }
 
 
-function analyse_shell_scripts { 
+function analyse_shell_scripts {
   # analyse_shell_scripts
   #   Iterate over $FILES to find bash and zsh scripts
   #   Call shellcheck on them via analyse function
-  
+
+  echo "── ShellCheck ────────────────────────────────"
+
   for file in "${FILES[@]}"; do
     if /usr/bin/file "${file}" | /usr/bin/grep --quiet "shell" || \
        /usr/bin/file "${file}" | /usr/bin/grep --quiet "bash" ; then
@@ -88,39 +90,210 @@ function analyse {
 }
 
 function lint_plist_mobileconfig {
-  
+
+  echo "── Plutil ────────────────────────────────────"
+
   local -a FILES
 
-  while IFS=$'\n' read -r file; do 
-   FILES+=("${file}"); 
+  while IFS=$'\n' read -r file; do
+   FILES+=("${file}");
   done < <(/usr/bin/find . -maxdepth 4 \
             -type f \
             \( -name "*.plist" -o -name "*.mobileconfig" \))
 
+  local output
+
   for file in "${FILES[@]}"; do
-    if ! /usr/bin/plutil -lint "${file}" ; then
+    output=""
+    if output="$(/usr/bin/plutil -lint "${file}" 2>&1)"; then
+      echo "[PASS] $(/usr/bin/basename "${file}")"
+    else
       echo "[FAIL] $(/usr/bin/basename "${file}")"
+      echo "       ${output}"
       ERRORS+=("${file}")
     fi
-
   done
+}
+
+
+function test_santa_profile {
+  # test_santa_profile
+  #   Validate Santa BlockedPathRegex profile structure and regex coverage
+
+  echo "── Santa ─────────────────────────────────────"
+
+  local profile="profiles/com.northpolesec.santa.vault.mobileconfig"
+  local pb="/usr/libexec/PlistBuddy"
+
+  if ! [[ -x "${pb}" ]]; then
+    echo "[SKIP] PlistBuddy not found, skipping Santa profile tests"
+    return 0
+  fi
+
+  if ! [[ -f "${profile}" ]]; then
+    echo "[FAIL] Santa profile not found: ${profile}"
+    ERRORS+=("${profile}")
+    return 0
+  fi
+
+  local initial_error_count=${#ERRORS[@]}
+
+  # --- 1. Profile structure (PlistBuddy extraction) ---
+
+  local keypath expected actual
+
+  while IFS='|' read -r keypath expected; do
+    actual=""
+    actual="$("${pb}" -c "Print ${keypath}" "${profile}" 2>/dev/null)" || true
+    if [[ "${actual}" != "${expected}" ]]; then
+      echo "[FAIL] ${keypath}: expected '${expected}', got '${actual}'"
+      ERRORS+=("santa:${keypath}")
+    fi
+  done <<'CHECKS'
+:PayloadRemovalDisallowed|true
+:PayloadScope|System
+:TargetDeviceType|5
+:PayloadType|Configuration
+:PayloadContent:0:PayloadType|com.northpolesec.santa
+:PayloadEnabled|true
+:PayloadContent:0:PayloadEnabled|true
+CHECKS
+
+  # Top-level and nested PayloadUUIDs must differ
+  local top_uuid nested_uuid
+
+  top_uuid=""
+  top_uuid="$("${pb}" -c "Print :PayloadUUID" "${profile}" 2>/dev/null)" || true
+
+  nested_uuid=""
+  nested_uuid="$("${pb}" -c "Print :PayloadContent:0:PayloadUUID" "${profile}" 2>/dev/null)" || true
+
+  if [[ -z "${top_uuid}" ]] || [[ -z "${nested_uuid}" ]]; then
+    echo "[FAIL] PayloadUUID: could not extract one or both UUIDs"
+    ERRORS+=("santa:PayloadUUID")
+  elif [[ "${top_uuid}" == "${nested_uuid}" ]]; then
+    echo "[FAIL] PayloadUUID: top-level and nested UUIDs must differ"
+    ERRORS+=("santa:PayloadUUID")
+  fi
+
+  # BlockedPathRegex must be non-empty
+  local regex
+  regex=""
+  regex="$("${pb}" -c "Print :PayloadContent:0:BlockedPathRegex" "${profile}" 2>/dev/null)" || true
+
+  if [[ -z "${regex}" ]]; then
+    echo "[FAIL] BlockedPathRegex: empty or missing"
+    ERRORS+=("santa:BlockedPathRegex")
+    return 0
+  fi
+
+  # --- 2. Regex path coverage ---
+
+  local -a must_match=(
+    "/Volumes/Vault/malware.bin"
+    "/Volumes/Vault/subdir/file"
+    "/Volumes/Vault/.hidden"
+    "/Volumes/Vault/"
+    "/Volumes/dmg-cage/sample.exe"
+    "/Volumes/dmg-cage/deep/nested/path"
+    "/Users/mikey/Downloads/suspicious.app"
+    "/Users/mikey/Downloads/.test-exec"
+    "/Users/mikey/Downloads/path with spaces/file"
+  )
+
+  local -a must_not_match=(
+    "/Volumes/Vault"
+    "/Volumes/VaultExtra/file"
+    "/Volumes/dmg-cage"
+    "/Volumes/dmg-cages/file"
+    "/tmp/anything"
+    "/usr/bin/true"
+    "/Users/mikey/Desktop/file"
+    "/Users/other/Downloads/file"
+  )
+
+  local path
+
+  for path in "${must_match[@]}"; do
+    if ! /usr/bin/grep -Eq "${regex}" <<< "${path}"; then
+      echo "[FAIL] BlockedPathRegex must match: ${path}"
+      ERRORS+=("santa:must_match:${path}")
+    fi
+  done
+
+  for path in "${must_not_match[@]}"; do
+    if /usr/bin/grep -Eq "${regex}" <<< "${path}"; then
+      echo "[FAIL] BlockedPathRegex must NOT match: ${path}"
+      ERRORS+=("santa:must_not_match:${path}")
+    fi
+  done
+
+  # --- 3. Required path invariants ---
+  # Catches accidental deletion of an entire regex alternation branch
+
+  local -a required_substrings=(
+    "/Volumes/Vault/"
+    "/Volumes/dmg-cage/"
+    "/Users/mikey/Downloads/"
+  )
+
+  local stripped
+  stripped="${regex//\\/}"
+
+  local substr
+
+  for substr in "${required_substrings[@]}"; do
+    if [[ "${stripped}" != *"${substr}"* ]]; then
+      echo "[FAIL] BlockedPathRegex missing required path: ${substr}"
+      ERRORS+=("santa:invariant:${substr}")
+    fi
+  done
+
+  # --- Summary ---
+
+  if [[ ${#ERRORS[@]} -eq ${initial_error_count} ]]; then
+    echo "[PASS] Santa profile ($(/usr/bin/basename "${profile}"))"
+  fi
 }
 
 
 function main {
 
-  check_shellcheck
+  typeset -a ERRORS
+  typeset -a FILES
 
-  declare -a ERRORS
-  declare -a FILES
+  local filter="${1:-all}"
 
-  find_files
-  analyse_shell_scripts
+  case "${filter}" in
+    shellcheck)
+      check_shellcheck
+      find_files
+      analyse_shell_scripts
+      ;;
+    plutil)
+      lint_plist_mobileconfig
+      ;;
+    santa)
+      test_santa_profile
+      ;;
+    all)
+      check_shellcheck
+      find_files
+      analyse_shell_scripts
+      lint_plist_mobileconfig
+      test_santa_profile
+      ;;
+    *)
+      echo "[FAIL] Unknown test: ${filter}"
+      echo "[INFO] Valid tests: shellcheck, plutil, santa (or no argument for all)"
+      exit 1
+      ;;
+  esac
 
-  lint_plist_mobileconfig
+  echo "──────────────────────────────────────────────"
 
   if [[ ${#ERRORS[@]} -eq 0 ]]; then
-    # If ERRORS empty then 
+    # If ERRORS empty then
     echo "[PASS] No errors, hooray"
     exit 0
   else
