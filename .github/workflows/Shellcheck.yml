@@ -14,6 +14,9 @@ jobs:
   shellcheck:
     # The type of runner that the job will run on
     runs-on: macos-latest
+    defaults:
+      run:
+        shell: zsh {0}
 
     # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
@@ -24,7 +27,7 @@ jobs:
       env:
         SHELLCHECK_LATEST_VERSION: "0.10.0"
       run: |
-        
+        set -euo pipefail
         curl --silent --location --output  "${{ github.workspace }}/shellcheck-v${SHELLCHECK_LATEST_VERSION}.tar.xz" \
         "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_LATEST_VERSION}/shellcheck-v${SHELLCHECK_LATEST_VERSION}.darwin.aarch64.tar.xz"
 
@@ -34,12 +37,14 @@ jobs:
     
     - name: Print shellcheck version
       run: |
+        set -euo pipefail
         "${{ github.workspace }}/shellcheck" --version
     
     - name: Execute test
       run: |
-        declare -a ERRORS
-        declare -a FILES
+        set -euo pipefail
+        typeset -a ERRORS
+        typeset -a FILES
 
         while IFS=$'\n' read -r file; do
           FILES+=("${file}");
@@ -76,12 +81,16 @@ jobs:
   
   lint-plists:
     runs-on: macos-latest
+    defaults:
+      run:
+        shell: zsh {0}
 
     steps:
     - uses: actions/checkout@v6
     - name: Lint
       run: |
-        declare -a FILES
+        set -euo pipefail
+        typeset -a FILES
 
         while IFS=$'\n' read -r file; do 
           FILES+=("${file}");
