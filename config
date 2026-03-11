@@ -16,6 +16,9 @@ theme = Solarized Dark Higher Contrast
 # macOS Specific Settings
 macos-auto-secure-input = true
 macos-secure-input-indication = false
+# Left Option sends Alt/Meta for Claude Code keybindings (e.g. alt+t)
+# Right Option retains macOS special character input
+macos-option-as-alt = left
 
 # Keybinds
 keybind = super+l=jump_to_prompt:-1
