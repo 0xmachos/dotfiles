@@ -9,7 +9,8 @@ oscrypto-ca-bundle.crt
 *.sublime-workspace
 .SublimeREPLHistory
 
-# files for sensitive info 
+# files for sensitive info
 .extra*
+.vt.toml
 .zsh_history
 
