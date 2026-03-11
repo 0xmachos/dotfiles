@@ -114,18 +114,33 @@ unsetopt case_glob
 
 ### Completion ###
 
-# Initialise zsh completion system 
+# Initialise zsh completion system
 #   https://github.com/zsh-users/zsh-completions
 #   https://docs.brew.sh/Shell-Completion#configuring-completions-in-zsh
 #   Enables zsh-completions as installed by brew
-#   If “zsh compinit: insecure directories” run 
-#     chmod -R go-w "$(brew --prefix)/share"
+#   If “zsh compinit: insecure directories” run
+#     chmod -R go-w “$(brew --prefix)/share”
 if type brew &>/dev/null; then
   FPATH=$(brew --prefix)/share/zsh-completions:$FPATH
-
-  autoload -Uz compinit
-  compinit
 fi
+
+# User functions — must be in FPATH before compinit
+if [[ -d "$HOME/.functions" ]]; then
+  FPATH="$HOME/.functions/:$FPATH"
+fi
+
+# User completions — compinit scans for #compdef headers to register them
+if [[ -d "$HOME/.completions" ]]; then
+  FPATH="$HOME/.completions/:$FPATH"
+fi
+
+# Docker CLI completions (added by Docker Desktop)
+if [[ -d "$HOME/.docker/completions" ]]; then
+  FPATH="$HOME/.docker/completions:$FPATH"
+fi
+
+autoload -Uz compinit
+compinit
 
 # Case insensitive path-completion
 zstyle ':completion:*' matcher-list 'm:
@@ -144,14 +159,10 @@ zstyle ':completion:*' expand prefix suffix
 ### Functions ###
 
 if [[ -d "$HOME/.functions" ]]; then
-  
-  FPATH="$HOME/.functions/:$FPATH"
-  # Add $HOME/.functions/ to FPATH
-
   # shellcheck disable=SC2086,SC2154,SC1087
   autoload -Uz $fpath[1]/*(.:t)
-  # Lazy autoload every file in $HOME/.functions/*  as a function
-  #   I've no idea what (.:t) does ¯\_(ツ)_/¯
+  # Lazy autoload every file in $HOME/.functions/* as a function
+  #   (.:t) glob qualifier: regular files only (.), basename only (:t)
   #   https://unix.stackexchange.com/a/526429
 fi
 
