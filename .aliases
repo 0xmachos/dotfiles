@@ -51,6 +51,8 @@ alias pj='cd ~/Documents/Projects'
 alias ap='cd /Applications/'
 # cd into HOME/Documents/Projects directory
 alias xdd='cd ~/Library/Developer/Xcode/DerivedData'
+# EndpointSecurity SDK headers path (AUTO_CD will cd into it)
+alias esh='"$(sdkpath)/usr/include/EndpointSecurity"'
 
 ## Restart/ Kill 
 # Tear down and rebuild userspace login sessions
