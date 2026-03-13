@@ -161,8 +161,8 @@ zstyle ':completion:*' expand prefix suffix
 ### Functions ###
 
 if [[ -d "$HOME/.functions" ]]; then
-  # shellcheck disable=SC2086,SC2154,SC1087
-  autoload -Uz $fpath[1]/*(.:t)
+  # shellcheck disable=SC2086,SC1087
+  autoload -Uz "$HOME/.functions/"*(.:t)
   # Lazy autoload every file in $HOME/.functions/* as a function
   #   (.:t) glob qualifier: regular files only (.), basename only (:t)
   #   https://unix.stackexchange.com/a/526429
