@@ -52,9 +52,13 @@ if [[ -d "/Applications/Secretive.app" ]]; then
   export SSH_AUTH_SOCK=$HOME/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh
 fi
 
-export IIOEnableOOP=YES
-# Enabled the undocumeted ImageIO sandbox
-# Tells ImageIO to parse images our of process in the ImageIOXPCService process instead 
+# Value must be 1, not YES: ImageIO uses atoi() — atoi("YES") returns 0
+# (disabled), atoi("1") returns 1 (enabled)
+export IIOEnableOOP=1
+# Enable undocumented ImageIO out-of-process parsing (ImageIOXPCService sandbox)
+# Only affects terminal-launched processes; GUI apps get coverage via
+# LaunchAgents/com.mikey.imageio-oop.plist (launchctl setenv at login)
+# For immediate effect in current session: launchctl setenv IIOEnableOOP 1
 # https://rtx.meta.security/mitigation/2023/09/11/Sandboxing-ImageIO-in-macOS.html
 
 
