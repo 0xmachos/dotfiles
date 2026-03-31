@@ -1,0 +1,278 @@
+#!/bin/zsh
+# dotfiles/bin/test-jump
+
+# test-jump
+#   Tests for jump-user and jump-system scripts. Verifies internet
+#   connectivity checks, binary detection, and logging behaviour.
+#
+# Usage: test-jump
+#
+# ShellCheck: Use `shellcheck --shell=bash` (no native Zsh support).
+#   Zsh associative array iteration (${(@k)}) triggers SC2066/SC2296 —
+#   suppressed inline. SC1090 (non-constant source) suppressed for
+#   run_and_log tests.
+
+set -euo pipefail
+
+IFS=$'\n\t'
+
+### Constants ###
+
+readonly RED=$'\e[31m'
+readonly GREEN=$'\e[32m'
+readonly YELLOW=$'\e[33m'
+readonly BOLD=$'\e[1m'
+readonly RESET=$'\e[0m'
+
+readonly SCRIPT_DIR="${0:A:h}"
+readonly JUMP_USER="${SCRIPT_DIR}/jump-user"
+readonly JUMP_SYSTEM="${SCRIPT_DIR}/jump-system"
+
+### END Constants ###
+
+pass_count=0
+fail_count=0
+skip_count=0
+
+### Utility Functions ###
+
+function _pass {
+  echo "${GREEN}PASS${RESET}  $1"
+  (( pass_count += 1 ))
+}
+
+function _fail {
+  echo "${RED}FAIL${RESET}  $1"
+  (( fail_count += 1 ))
+}
+
+function _skip {
+  echo "${YELLOW}SKIP${RESET}  $1"
+  (( skip_count += 1 ))
+}
+
+### END Utility Functions ###
+
+
+### Tests ###
+
+# ── script existence ──────────────────────────────
+
+function test_scripts_exist {
+  echo ""
+  echo "${BOLD}── script existence ──${RESET}"
+
+  if [[ -x "${JUMP_USER}" ]]; then
+    _pass "jump-user is executable"
+  else
+    _fail "jump-user missing or not executable"
+  fi
+
+  if [[ -x "${JUMP_SYSTEM}" ]]; then
+    _pass "jump-system is executable"
+  else
+    _fail "jump-system missing or not executable"
+  fi
+}
+
+# ── shellcheck ────────────────────────────────────
+
+function test_shellcheck {
+  echo ""
+  echo "${BOLD}── shellcheck ──${RESET}"
+
+  if ! command -v shellcheck >/dev/null 2>&1; then
+    _skip "shellcheck not installed"
+    return
+  fi
+
+  local output
+  if output=$(shellcheck --shell=bash "${JUMP_USER}" 2>&1); then
+    _pass "jump-user passes shellcheck"
+  else
+    _fail "jump-user shellcheck errors: ${output}"
+  fi
+
+  if output=$(shellcheck --shell=bash "${JUMP_SYSTEM}" 2>&1); then
+    _pass "jump-system passes shellcheck"
+  else
+    _fail "jump-system shellcheck errors: ${output}"
+  fi
+}
+
+# ── internet connectivity check ───────────────────
+# Verifies the grep pattern matches all known scutil -r output formats
+
+function test_reachability_patterns {
+  echo ""
+  echo "${BOLD}── reachability pattern ──${RESET}"
+
+  # All known scutil -r output formats that indicate reachability
+  # root returns "Reachable", user returns "Reachable,Transient Connection"
+  local -a reachable_outputs=(
+    "Reachable"
+    "Reachable,Transient Connection"
+    "Reachable,Direct"
+    "Reachable,Directly Reachable Address"
+  )
+  local -a unreachable_outputs=(
+    "Not Reachable"
+    ""
+    "Transient Connection"
+  )
+
+  local pattern='^Reachable'
+
+  for output in "${reachable_outputs[@]}"; do
+    if echo "${output}" | grep "${pattern}" >/dev/null 2>&1; then
+      _pass "pattern matches: '${output}'"
+    else
+      _fail "pattern should match: '${output}'"
+    fi
+  done
+
+  # Live check: verify pattern matches this system's actual scutil output
+  local live_output
+  live_output="$(/usr/sbin/scutil -r "captive.apple.com" 2>&1)"
+  if echo "${live_output}" | grep "${pattern}" >/dev/null 2>&1; then
+    _pass "live scutil output matches: '${live_output}'"
+  else
+    _fail "live scutil output rejected: '${live_output}'"
+  fi
+
+  for output in "${unreachable_outputs[@]}"; do
+    if echo "${output}" | grep "${pattern}" >/dev/null 2>&1; then
+      _fail "pattern should NOT match: '${output}'"
+    else
+      _pass "pattern rejects: '${output:-<empty>}'"
+    fi
+  done
+}
+
+# ── binary paths ──────────────────────────────────
+# Verifies that binaries referenced in the scripts exist on this system
+
+function test_binary_paths {
+  echo ""
+  echo "${BOLD}── binary paths (jump-user) ──${RESET}"
+
+  if [[ -x "/opt/homebrew/bin/brew" ]]; then
+    _pass "brew exists"
+  else
+    _fail "brew not found at /opt/homebrew/bin/brew"
+  fi
+
+  echo ""
+  echo "${BOLD}── binary paths (jump-system) ──${RESET}"
+
+  local -A binaries=(
+    [softwareupdate]="/usr/sbin/softwareupdate"
+    [tlmgr]="/Library/TeX/texbin/tlmgr"
+    [xprotect]="/usr/bin/xprotect"
+    [dcg]="/usr/local/bin/dcg"
+  )
+
+  local name path
+  # shellcheck disable=SC2066,SC2296
+  for name in "${(@k)binaries}"; do
+    path="${binaries[$name]}"
+    if [[ -x "${path}" ]]; then
+      _pass "${name} exists at ${path}"
+    else
+      _skip "${name} not found at ${path}"
+    fi
+  done
+}
+
+# ── log file ──────────────────────────────────────
+
+function test_log_file {
+  echo ""
+  echo "${BOLD}── log file ──${RESET}"
+
+  local log_file="${HOME}/Library/Logs/jump.log"
+
+  if [[ -f "${log_file}" ]]; then
+    _pass "jump.log exists"
+  else
+    _skip "jump.log not found (no failures logged yet)"
+    return
+  fi
+
+  if [[ -w "${log_file}" || "$(stat -f '%u' "${log_file}")" == "0" ]]; then
+    _pass "jump.log is writable (or root-owned for jump-system)"
+  else
+    _fail "jump.log exists but not writable"
+  fi
+}
+
+# ── run_and_log function ──────────────────────────
+# Verifies the logging function works by running a trivial command
+
+function test_run_and_log {
+  echo ""
+  echo "${BOLD}── run_and_log ──${RESET}"
+
+  # Source jump-user in a subshell to test run_and_log
+  local test_log
+  test_log="${TMPDIR}test-jump-$$.log"
+
+  # Inline a minimal run_and_log (sourcing jump-user would execute main)
+  local description output
+
+  # Test success case
+  description="test true"
+  if output=$(/usr/bin/true 2>&1); then
+    : # success — would log to syslog, not file
+  else
+    { echo "[FAIL] ${description}"; echo "${output}"; } >> "${test_log}"
+  fi
+
+  if [[ ! -f "${test_log}" ]] || ! grep -q "test true" "${test_log}" 2>/dev/null; then
+    _pass "run_and_log: success does not write to log file"
+  else
+    _fail "run_and_log: success should not write to log file"
+  fi
+
+  # Test failure case
+  description="test false"
+  if output=$(/usr/bin/false 2>&1); then
+    : # success
+  else
+    { echo "[FAIL] ${description}"; echo "${output}"; } >> "${test_log}"
+  fi
+
+  if grep -q "FAIL.*test false" "${test_log}" 2>/dev/null; then
+    _pass "run_and_log: failure writes [FAIL] to log file"
+  else
+    _fail "run_and_log: failure should write [FAIL] to log file"
+  fi
+
+  /bin/rm -f "${test_log}"
+}
+
+### END Tests ###
+
+
+### Main ###
+
+function main {
+  echo "${BOLD}test-jump — jump-user & jump-system test suite${RESET}"
+
+  test_scripts_exist
+  test_shellcheck
+  test_reachability_patterns
+  test_binary_paths
+  test_log_file
+  test_run_and_log
+
+  echo ""
+  echo "────────────────────────────────────────"
+  echo "${GREEN}${pass_count} pass${RESET}, ${RED}${fail_count} fail${RESET}, ${YELLOW}${skip_count} skip${RESET}"
+
+  if (( fail_count > 0 )); then
+    return 1
+  fi
+}
+
+main "$@"

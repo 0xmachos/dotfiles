@@ -1,0 +1,97 @@
+#!/usr/bin/env zsh
+# dotfiles/bin/jump-system
+#
+# jump-system
+#   System-level update script (runs as root via LaunchDaemon)
+#   Updates: macOS, LaTeX (tlmgr), XProtect, REDACTED, dcg
+#   Designed to be run by LaunchDaemon com.mikey.jump-system
+#   Can also be run manually with sudo
+
+set -uo pipefail
+
+# Determine console user's home directory for shared log file
+CONSOLE_USER=$(stat -f '%Su' /dev/console)
+if [[ "${CONSOLE_USER}" != "root" && -n "${CONSOLE_USER}" ]]; then
+  LOG_FILE="$(dscl . -read "/Users/${CONSOLE_USER}" NFSHomeDirectory | awk '{print $2}')/Library/Logs/jump.log"
+else
+  LOG_FILE="/var/log/jump.log"
+fi
+
+function run_and_log {
+  local description="$1"
+  shift
+  local output
+  if output=$("$@" 2>&1); then
+    logger -t "com.mikey.jump" "[OK] ${description}"
+  else
+    logger -t "com.mikey.jump" "[FAIL] ${description}"
+    {
+      echo "[$(date '+%Y-%m-%d %H:%M:%S')] [FAIL] ${description}"
+      echo "${output}"
+      echo ""
+    } >> "${LOG_FILE}"
+  fi
+}
+
+function check_internet_connection {
+  local -a domains=("captive.apple.com" "google.com" "flightywifi.com")
+  local all_domains_not_reachable=true
+
+  for domain in "${domains[@]}"; do
+    if /usr/sbin/scutil -r "${domain}" | grep '^Reachable' >/dev/null; then
+      all_domains_not_reachable=false
+    fi
+  done
+
+  if [[ "${all_domains_not_reachable}" = "true" ]]; then
+    logger -t "com.mikey.jump" "[FAIL] jump-system: not connected to the internet"
+    return 1
+  fi
+}
+
+function main {
+  if ! check_internet_connection; then
+    return 1
+  fi
+
+  local -r SWUPDATE_BINARY="/usr/sbin/softwareupdate"
+  local -r TLMGR_BINARY="/Library/TeX/texbin/tlmgr"
+  local -r XPROTECT_BINARY="/usr/bin/xprotect"
+  local -r XPROTECT_APP="/Library/Apple/System/Library/CoreServices/XProtect.app/Contents/MacOS/XProtect"
+  local -r REDACTED_BINARY="/Applications/REDACTED EDR.app/Contents/Resources/REDACTED.app/Contents/MacOS/REDACTED"
+
+  ## macOS ##
+  if [[ -x "${SWUPDATE_BINARY}" ]]; then
+    run_and_log "softwareupdate" "${SWUPDATE_BINARY}" --install --all --include-config-data --no-restart
+  fi
+
+  ## LaTeX ##
+  # GPG repo verification disabled: gnupg not installed, SHA-512 checksums
+  # and HTTPS transport still protect package integrity. See TODOs.md.
+  if [[ -x "${TLMGR_BINARY}" ]]; then
+    run_and_log "tlmgr update --self" "${TLMGR_BINARY}" --verify-repo=none update --self
+    run_and_log "tlmgr update --all"  "${TLMGR_BINARY}" --verify-repo=none update --all
+  fi
+
+  ## XProtect ##
+  if [[ -x "${XPROTECT_BINARY}" ]]; then
+    run_and_log "xprotect update" "${XPROTECT_BINARY}" update --prerelease
+  fi
+
+  if [[ -x "${XPROTECT_APP}" ]]; then
+    run_and_log "XProtect scan" "${XPROTECT_APP}"
+  fi
+
+  ## REDACTED / REDACTED ##
+  if [[ -x "${REDACTED_BINARY}" ]]; then
+    run_and_log "REDACTED" "${REDACTED_BINARY}"
+  fi
+
+  ## dcg ##
+  local -r DCG_BINARY="/usr/local/bin/dcg"
+  if [[ -x "${DCG_BINARY}" ]]; then
+    run_and_log "dcg update" "${DCG_BINARY}" update --verify --system
+  fi
+}
+
+main "$@"
