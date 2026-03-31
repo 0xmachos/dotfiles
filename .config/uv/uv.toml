@@ -1,0 +1,20 @@
+# Supply chain hardening
+# https://docs.astral.sh/uv/reference/settings/
+
+# Don't resolve packages published in the last 3 days. Gives the community
+# time to spot compromised releases before we pull them.
+# Accepts friendly durations ("3 days"), RFC 3339 timestamps, or ISO 8601 (P3D).
+# Override: --exclude-newer "" or per-project uv.toml
+exclude-newer = "3 days"
+
+# Refuse to build source distributions. Prevents setup.py / build backend
+# code execution at install time — eliminates build-time RCE as an attack
+# class. Most packages publish pre-built wheels for macOS arm64.
+# Override: --no-build false or per-project uv.toml
+no-build = true
+
+# TODO: Enable Sigstore attestation verification when shipped.
+# PEP 740 install-side verification is tracked in:
+#   https://github.com/astral-sh/uv/issues/9122
+# Being built by William Woodruff (PEP 740 author, Astral).
+# ~132k PyPI packages already publish attestations (arewepep740yet.com).
