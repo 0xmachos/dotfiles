@@ -1,0 +1,17 @@
+#!/usr/bin/env zsh
+# dotfiles/.functions/pshare
+
+function pshare {
+
+	local bind_address="0.0.0.0"
+
+	if [[ "${1:-}" == "--local" ]]; then
+		bind_address="127.0.0.1"
+		shift
+	else
+		ipconfig getifaddr en0
+	fi
+
+	python3 -m http.server --bind "${bind_address}" "$@"
+}
+
