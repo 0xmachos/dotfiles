@@ -1,0 +1,46 @@
+#!/usr/bin/env zsh
+# .githooks/post-commit
+# Regenerate Sublime Text sidebar syntax for extensionless zsh scripts.
+# Runs on every commit; generation takes <100ms so no perceptible delay.
+
+set -euo pipefail
+
+live_st_dir=""
+for candidate in "Sublime Text 3" "Sublime Text"; do
+  if [[ -d "${HOME}/Library/Application Support/${candidate}/Packages/User" ]]; then
+    live_st_dir="${HOME}/Library/Application Support/${candidate}"
+    break
+  fi
+done
+[[ -z "${live_st_dir}" ]] && exit 0
+
+repo_dir="$(git rev-parse --show-toplevel)"
+output="${live_st_dir}/Packages/User/Zsh (Dotfiles).sublime-syntax"
+names=()
+
+while IFS= read -r -d '' file; do
+  basename="${file##*/}"
+  [[ "${basename}" == ?*.* ]] && continue
+  first_line="$(head -1 "${file}" 2>/dev/null)" || continue
+  if [[ "${first_line}" == *'#!'*zsh* ]] || \
+     [[ "${first_line}" == '#compdef '* ]] || \
+     [[ "${first_line}" == '#autoload'* ]]; then
+    names+=("${basename}")
+  fi
+done < <(find "${repo_dir}" -maxdepth 2 -type f -not -path '*/.git/*' -print0)
+
+cat > "${output}" <<'EOF'
+%YAML 1.2
+---
+name: Zsh (Dotfiles)
+scope: source.shell.zsh
+version: 2
+hidden: true
+extends: Packages/ShellScript/Zsh.sublime-syntax
+
+hidden_file_extensions:
+EOF
+
+printf '%s\n' "${names[@]}" | sort -u | while IFS= read -r name; do
+  printf '  - %s\n' "${name}" >> "${output}"
+done

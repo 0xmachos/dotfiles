@@ -1,0 +1,37 @@
+{
+    "syntaxes": [
+        {
+            "syntax": "zzz A File Icon/aliases/XML (PList)",
+            "extensions": ["mobileconfig"]
+        },
+        {
+            "syntax": "Git Formats/Git Ignore",
+            "extensions": [".gitleaksignore"]
+        },
+        {
+            "syntax": "SSH Config/syntax/SSH Config",
+            "extensions": [".extra_ssh"],
+            "rules": [
+                {"file_path": ".*\\.ssh/config$"}
+            ]
+        },
+        {
+            "syntax": "Git Formats/Git Config",
+            "rules": [
+                {"file_path": ".*\\.config/git/config$"}
+            ]
+        },
+        {
+            "syntax": "Git Formats/Git Ignore",
+            "rules": [
+                {"file_path": ".*\\.config/git/ignore$"}
+            ]
+        },
+        {
+            "syntax": "zzz A File Icon/aliases/XML (PList)",
+            "rules": [
+                {"file_path": ".*/mobileconfig-payload-template$"}
+            ]
+        }
+    ]
+}

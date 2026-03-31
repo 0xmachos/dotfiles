@@ -1,0 +1,21 @@
+// SublimeLinter Settings - User
+{
+    "lint_mode": "background",
+    
+        "styles": [
+            {
+                "mark_style": "outline",
+                "scope": "region.orangish markup.warning.sublime_linter",
+            }
+        ],
+    
+    "linters": {
+        "shellcheck": {
+            // Disables the linter. The default here is 'not set'
+            "disable": false,
+            "args": ["--shell=bash"],
+            "executable": "/opt/homebrew/bin/shellcheck",
+        }
+    }
+
+}

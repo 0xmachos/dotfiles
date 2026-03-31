@@ -1,0 +1,22 @@
+{
+	"bootstrapped": true,
+	"in_process_packages":
+	[
+	],
+	"installed_packages":
+	[
+		"A File Icon",
+		"BracketHighlighter",
+		"GitGutter",
+		"Jekyll",
+		"MarkdownLivePreview",
+		"MarkdownPreview",
+		"Package Control",
+		"SublimeLinter",
+		"SublimeLinter-annotations",
+		"SublimeLinter-shellcheck",
+	],
+	"repositories":
+	[
+	],
+}
