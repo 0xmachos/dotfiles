@@ -1,0 +1,7 @@
+# .gitleaksignore
+# Fingerprints of known false positives (one per line)
+# Format: commit:file:rule:line
+# Generate via: gitleaks detect --verbose
+
+# GPG key fingerprint (public identifier, not a secret) in old .gitconfig
+8c5c7cd16110a316426880806b9fea748d4dbf03:.gitconfig:generic-api-key:6
