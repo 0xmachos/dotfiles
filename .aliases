@@ -16,12 +16,13 @@ alias .....='cd ../../../..'
 alias c='clear'
 
 # Preferred ls behaviour
-alias ll='ls -aFGhl'
+alias ll='ls -aFGhlt'
 # -a show files and dirs starting with .
 # -F write `/' after directories, '*' after executables and '@' after symlinks
 # -G enable colorised output
 # -h show sizes in human readable form
 # -l display in long format
+# -t sort by descending time modified
 
 # Better ls, don't always want long format
 alias ls='ls -FG'
@@ -34,6 +35,16 @@ alias grep='grep --color=auto '
 
 # Enable all clang warnings
 alias cc='cc -Wall'
+
+# Use macos-trash instead of rm (moves to Finder Bin, strips rm flags)
+alias rm='/opt/homebrew/opt/macos-trash/bin/trash'
+
+# unlink(1) removes a single file — same effect as rm, bypasses the rm alias
+alias unlink='/opt/homebrew/opt/macos-trash/bin/trash'
+
+# shred/gshred: multi-pass overwrite is meaningless on APFS (CoW) + SSD (TRIM)
+alias shred='/opt/homebrew/opt/macos-trash/bin/trash'
+alias gshred='/opt/homebrew/opt/macos-trash/bin/trash'
 
 
 #   -----------------------------
@@ -83,6 +94,10 @@ alias r!='pip install -r requirements.txt'
 alias ppl='/usr/libexec/PlistBuddy -c print '
 # Lint given plst file for syntax errors
 alias plint='plutil -lint '
+
+## Gucci
+# Pull pcap captures from Gucci into today's dated directory
+alias gucci-fetch-pcaps='mkdir -p ~/Documents/Projects/ridleys-shooting-party/pcaps/$(date +%Y-%m-%d) && SSH_ASKPASS_REQUIRE=force SSH_ASKPASS=gucci-askpass scp "gucci:/sdcard1/*.pcap" ~/Documents/Projects/ridleys-shooting-party/pcaps/$(date +%Y-%m-%d)/'
 
 ## Miscellaneous
 

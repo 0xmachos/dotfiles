@@ -39,7 +39,7 @@ fi
 ### Enviroment Variable Exports ###
 
 if [[ -x "/opt/homebrew/bin/brew" ]]; then
-  export BREW_VERIFY_ATTESTATIONS=true
+  export HOMEBREW_VERIFY_ATTESTATIONS=true
   # Requires `gh` (GitHub CLI) — Homebrew shells out to `gh attestation verify`
   # https://blog.trailofbits.com/2023/11/06/adding-build-provenance-to-homebrew/
   # https://blog.trailofbits.com/2024/05/14/a-peek-into-build-provenance-for-homebrew/
@@ -221,8 +221,12 @@ fi
 
 
 # dcg: warn if hook was silently removed from Claude Code settings
-if command -v dcg &>/dev/null && command -v jq &>/dev/null; then
-  if [ -f "$HOME/.claude/settings.json" ] &&      ! jq -e '.hooks.PreToolUse[]? | select(.hooks[]?.command | test("dcg$"))'        "$HOME/.claude/settings.json" &>/dev/null; then
+# Uses zsh builtin read + pattern match instead of jq to avoid spawning an
+# unsigned Homebrew binary that would be blocked by Santa FAA on settings.json
+if command -v dcg &>/dev/null && [[ -f "$HOME/.claude/settings.json" ]]; then
+  local _dcg_settings
+  _dcg_settings="$(<"$HOME/.claude/settings.json")"
+  if [[ "${_dcg_settings}" != *dcg* ]]; then
     printf '\033[1;33m[dcg] Hook missing from ~/.claude/settings.json — run: dcg install\033[0m\n'
   fi
 fi
