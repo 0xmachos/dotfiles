@@ -5,6 +5,7 @@
 #   Configures macOS just the way I like it
 
 set -euo pipefail
+umask 077
 # -e exit if any command returns non-zero status code
 # -u prevent using undefined variables
 # -o pipefail force pipelines to fail on first non-zero status code
@@ -53,11 +54,16 @@ function usage {
   echo "  latex                 - Install LaTeX packages via tlmgr"
   echo "  blockblock            - Install BlockBlock"
   echo "  oversight             - Install OverSight 📸🎤"
+  echo "  dcg                   - Install Destructive Command Guard (dcg)"
+  echo "  danger-verify         - Build and install danger-verify Swift helper"
+  echo "  santa-faa             - Install Santa FAA policy for dotfiles protection"
+  echo "  claude                - Install Claude Code & dcg"
   echo "  brew                  - Install Homebrew"
   echo "  brewfile              - Install Homebrew packages from Brewfile"
   echo "  compinit              - Fix permissions on zsh completion directory /usr/local/share"
   echo "  shell                 - Change shell to zsh as installed by Brew"
   echo "  mdmprofile            - Open System Preferences to install MDM Profile"
+  echo "  launchagents          - Install and load LaunchAgents & LaunchDaemon"
 
   echo -e "\\n  ${RED}hailmary${RESET}              - ${BOLD}Run every function${RESET} in order listed above"
 
@@ -72,7 +78,6 @@ function usage {
 # verify_sha
 # verify_signature
 # install_application
-# objective_see_install
 # get_sudo
 # ctrl_c
 # run_test
@@ -206,6 +211,7 @@ function verify_signature {
       return 0
     else
       echo "[❌] ${package_name} is NOT notarised"
+      exit 1
     fi
   fi
 
@@ -227,6 +233,7 @@ function verify_signature {
       return 0
     else
       echo "[❌] ${application_name}.app is NOT notarised"
+      exit 1
     fi
 
   else
@@ -318,53 +325,6 @@ function install_application {
     rm "${downloaded_file_path:?}"
 
   fi  
-}
-
-
-function objective_see_install {
-  # objective_see_install
-  #   Installs tools from objective-see.com
-  #   Currently used for BlockBlock & Oversight
-
-  local application_name=${1:?application_name not passed to objective_see_install}
-  local downloaded_file_path=${2:?downloaded_file_path not passed objective_see_install}
-  local downloaded_file_name
-  local installer_file_name
-  downloaded_file_name=$(awk -F '/' '{print $(NF)}' <<< "${downloaded_file_path}")
-  installer_file_name="${application_name} Installer"
-
-
-  echo "[🍺] Attempting to unzip ${downloaded_file_path}"
-  
-  if unzip -qa "${downloaded_file_path}" -d "${HOME}/Downloads"; then
-    # Attempt to unzip
-    echo "[✅] Successfully unzipped ${downloaded_file_name}"
-  else
-    echo "[❌] Failed to unzip ${downloaded_file_name}"
-    exit 1
-  fi
-
-  verify_signature "${HOME}/Downloads/${installer_file_name}.app" "${application_name}"
-
-  get_sudo "to install ${application_name}"
-
-  if sudo "${HOME}/Downloads/${installer_file_name}.app/Contents/MacOS/${installer_file_name}" -install >/dev/null; then
-    echo "[✅] Successfully installed ${application_name}"
-  else
-    echo "[❌] Failed to install ${application_name}"
-    exit 1
-  fi
-
-  ## Cleanup
-
-  echo "[🍺] Deleting ${downloaded_file_path}"
-  # Delete the zip
-  rm "${downloaded_file_path:?}"
-
-  echo "[🍺] Deleting ${HOME}/Downloads/${installer_file_name}.app"
-  # Delete installer application bundle
-  rm -rf "${HOME:?}/Downloads/${installer_file_name:?}.app"
-
 }
 
 
@@ -461,89 +421,223 @@ function write_defaults {
   defaults write com.apple.desktopservices DSDontWriteNetworkStores -bool true
   # SMB: Don't write .DS_Store files on SMB shares
   # Default: defaults write com.apple.desktopservices DSDontWriteNetworkStores -bool false
+
+  defaults write com.aone.keka SUAutomaticallyUpdate -bool false
+  # Keka: Disable Sparkle auto-updater (managed by Homebrew)
+  # Default: -bool true
+
+  defaults write com.aone.keka RemoveIncompleteExtraction -bool true
+  # Keka: Clean up partial extractions on failure
+  # Default: -bool false
+
+  defaults write com.aone.keka ApplyQuarantineAfterExtraction -bool true
+  # Keka: Preserve com.apple.quarantine on extracted files (Gatekeeper)
+  # Default: -bool true
+
+  defaults write com.aone.keka ZipUsingAES -bool true
+  # Keka: Use AES-256 for ZIP encryption instead of weak ZipCrypto
+  # Default: -bool true
+
+  defaults write com.aone.keka ExcludeMacForks -bool true
+  # Keka: Strip __MACOSX and ._ files when creating archives
+  # Default: -bool true
+
+  defaults write com.aone.keka VerifyCompression -bool true
+  # Keka: Verify archive integrity after creation
+  # Default: -bool true
+
+  defaults write com.aone.keka Encryption -bool true
+  # Keka: Enable encryption option by default for new archives
+  # Default: -bool true
 }
+
+
+### Dotfile Helpers ###
+# Internal helpers for install_dotfiles. Print only on failure.
+# Counters (_dir_count, _link_count, etc.) are declared in install_dotfiles.
+
+function _ensure_dir {
+  local dir=${1:?dir not passed to _ensure_dir}
+  local mode=${2:-}
+
+  if mkdir -p "${dir}"; then
+    (( _dir_count += 1 ))
+    [[ -n "${mode}" ]] && chmod "${mode}" "${dir}"
+  else
+    echo "[❌] Failed to create ${dir}"
+    (( _error_count += 1 ))
+  fi
+}
+
+function _symlink {
+  local src=${1:?src not passed to _symlink}
+  local dest=${2:?dest not passed to _symlink}
+
+  if [[ ! -e "${src}" ]]; then
+    echo "[❌] Source missing: ${src}"
+    (( _error_count += 1 ))
+    return 0
+  fi
+
+  # ln -sfn silently does the wrong thing when dest is a real directory:
+  # it creates the symlink *inside* dest instead of replacing it (exit 0).
+  if [[ -d "${dest}" && ! -L "${dest}" ]]; then
+    echo "[❌] Cannot symlink ${dest##*/}: real directory exists (remove it first)"
+    (( _error_count += 1 ))
+    return 0
+  fi
+
+  if ln -sfn "${src}" "${dest}"; then
+    (( _link_count += 1 ))
+  else
+    echo "[❌] Failed to link ${src} to ${dest}"
+    (( _error_count += 1 ))
+  fi
+}
+
+function _harden {
+  local file=${1:?file not passed to _harden}
+
+  if [[ ! -e "${file}" ]]; then
+    echo "[❌] Cannot harden (missing): ${file##*/}"
+    (( _error_count += 1 ))
+    return 0
+  fi
+
+  local mode=600
+  [[ -d "${file}" ]] && mode=700
+
+  if chmod "${mode}" "${file}"; then
+    (( _harden_count += 1 ))
+  else
+    echo "[❌] Failed to harden permissions on ${file##*/}"
+    (( _error_count += 1 ))
+  fi
+}
+
+### END Dotfile Helpers ###
 
 
 function install_dotfiles {
   # install_dotfiles
   #   Create directories in $HOME
-  #   Soft links config files from repo into $HOME
-  #   Config files for: zsh, git, ssh
+  #   Symlink config files from repo into $HOME
+  #   Config files for: zsh, git, ssh, Claude Code, VirusTotal, Xcode
 
-  local -ar dot_dirs=(.ssh .extra .config/git .claude)
-  local dot_dir
-  local -ar dot_files=(.zshrc .functions .aliases)
-  local dot_file
+  local _dir_count=0
+  local _link_count=0
+  local _harden_count=0
+  local _error_count=0
+
+  local -ar dot_dirs=(.ssh .extra .config/git .config/uv .claude .claude/skills .claude/rules)
+  local -ar dot_files=(.zshrc .functions .completions .aliases)
   local -ar ssh_configs=(config .extra_ssh)
-  local ssh_config
   local -ar git_configs=(config ignore allowed_signers)
-  local git_config
-
-  # Create required directories
-  for dot_dir in "${dot_dirs[@]}"; do
-    if mkdir -p "${HOME}/${dot_dir}"; then
-      echo "[✅] Successfully created ${HOME}/${dot_dir}"
-    else
-      echo "[❌] Failed to create ${HOME}/${dot_dir}"
-    fi
-  done
-
-  # Symlink general dotfiles into $HOME
-  for dot_file in "${dot_files[@]}"; do
-      if ln -sfn "${SCRIPT_DIR}/${dot_file}" "${HOME}/${dot_file}"; then
-        echo "[✅] Successfully linked ${SCRIPT_DIR}/${dot_file} to ${HOME}/${dot_file}"
-      else
-        echo "[❌] Failed to link ${SCRIPT_DIR}/${dot_file} to ${HOME}/${dot_file}"
-      fi
-  done
-
-  # Symlink ssh config in to $HOME/.ssh/
-  for ssh_config in "${ssh_configs[@]}"; do
-    if ln -sfn "${SCRIPT_DIR}/.ssh/${ssh_config}" "${HOME}/.ssh/${ssh_config}"; then
-      echo "[✅] Successfully linked ${ssh_config} to ${HOME}/.ssh/${ssh_config}"
-    else
-      echo "[❌] Failed to link ${ssh_config} to ${HOME}/.ssh/${ssh_config}"
-    fi
-  done
-
-  # Symlink git config files into $HOME/.config/git/
-  for git_config in "${git_configs[@]}"; do
-    if ln -sfn "${SCRIPT_DIR}/.config/git/${git_config}" "${HOME}/.config/git/${git_config}"; then
-      echo "[✅] Successfully linked ${git_config} to ${HOME}/.config/git/${git_config}"
-    else
-      echo "[❌] Failed to link ${git_config} to ${HOME}/.config/git/${git_config}"
-    fi
-  done
-
-  # Symlink Claude Code settings into $HOME/.claude/
-  if ln -sfn "${SCRIPT_DIR}/settings.json" "${HOME}/.claude/settings.json"; then
-    echo "[✅] Successfully linked settings.json to ${HOME}/.claude/settings.json"
-  else
-    echo "[❌] Failed to link settings.json to ${HOME}/.claude/settings.json"
-  fi
-
-  # Harden file permissions
-  # git clone sets 644 by default; enforce 600 on sensitive files
-  # chmod follows symlinks so this works on both the source and linked paths
+  local -ar claude_files=(
+    "claude/settings.json:settings.json"
+    "claude/statusline-command.sh:statusline-command.sh"
+    "claude/global-claude.md:CLAUDE.md"
+    "claude/lint-hook.sh:lint-hook.sh"
+  )
   local -ar sensitive_files=(
     "${SCRIPT_DIR}/.ssh/config"
     "${SCRIPT_DIR}/.ssh/.extra_ssh"
     "${SCRIPT_DIR}/.config/git/config"
     "${SCRIPT_DIR}/.config/git/ignore"
     "${SCRIPT_DIR}/.config/git/allowed_signers"
+    "${SCRIPT_DIR}/.functions"
+    "${SCRIPT_DIR}/.completions"
     "${SCRIPT_DIR}/.zshrc"
     "${SCRIPT_DIR}/.aliases"
-    "${SCRIPT_DIR}/settings.json"
+    "${SCRIPT_DIR}/claude/settings.json"
   )
-  local sensitive_file
 
-  for sensitive_file in "${sensitive_files[@]}"; do
-    if chmod 600 "${sensitive_file}"; then
-      echo "[✅] Hardened permissions on ${sensitive_file##*/}"
-    else
-      echo "[❌] Failed to harden permissions on ${sensitive_file##*/}"
-    fi
+  local dot_dir dot_file ssh_config git_config claude_file sensitive_file
+  local src dest
+
+  # Create required directories
+  for dot_dir in "${dot_dirs[@]}"; do
+    _ensure_dir "${HOME}/${dot_dir}"
   done
+
+  _ensure_dir "${HOME}/.ssh/sockets" 700
+
+  # Symlink general dotfiles into $HOME
+  for dot_file in "${dot_files[@]}"; do
+    _symlink "${SCRIPT_DIR}/${dot_file}" "${HOME}/${dot_file}"
+  done
+
+  # Symlink SSH configs into $HOME/.ssh/
+  for ssh_config in "${ssh_configs[@]}"; do
+    _symlink "${SCRIPT_DIR}/.ssh/${ssh_config}" "${HOME}/.ssh/${ssh_config}"
+  done
+
+  # Symlink git configs into $HOME/.config/git/
+  for git_config in "${git_configs[@]}"; do
+    _symlink "${SCRIPT_DIR}/.config/git/${git_config}" "${HOME}/.config/git/${git_config}"
+  done
+
+  # Symlink uv config into $HOME/.config/uv/
+  _symlink "${SCRIPT_DIR}/.config/uv/uv.toml" "${HOME}/.config/uv/uv.toml"
+
+  # Symlink npm config into $HOME/.npmrc (npm hardcodes ~/.npmrc)
+  _symlink "${SCRIPT_DIR}/.config/npm/.npmrc" "${HOME}/.npmrc"
+
+  # Symlink Claude Code configs into $HOME/.claude/
+  for claude_file in "${claude_files[@]}"; do
+    src="${claude_file%%:*}"
+    dest="${claude_file##*:}"
+    _symlink "${SCRIPT_DIR}/${src}" "${HOME}/.claude/${dest}"
+  done
+
+  # Symlink custom skills into $HOME/.claude/skills/
+  local skill_dir skill_name
+  for skill_dir in "${SCRIPT_DIR}"/claude/skills/*/; do
+    skill_name="${skill_dir%/}"
+    skill_name="${skill_name##*/}"
+    _symlink "${skill_dir%/}" "${HOME}/.claude/skills/${skill_name}"
+  done
+
+  # Symlink Claude Code rules into $HOME/.claude/rules/
+  local rule_file rule_name
+  for rule_file in "${SCRIPT_DIR}"/claude/rules/*.md; do
+    [[ -f "${rule_file}" ]] || continue
+    rule_name="${rule_file##*/}"
+    _symlink "${rule_file}" "${HOME}/.claude/rules/${rule_name}"
+  done
+
+  # Symlink API wrapper scripts into ~/.local/bin/ (ahead of /opt/homebrew/bin
+  # on PATH, so wrappers shadow Homebrew binaries and inject 1Password keys)
+  _ensure_dir "${HOME}/.local/bin"
+  local -ar op_wrapper_scripts=(vt urlscan)
+  local wrapper
+  for wrapper in "${op_wrapper_scripts[@]}"; do
+    _symlink "${SCRIPT_DIR}/bin/${wrapper}" "${HOME}/.local/bin/${wrapper}"
+  done
+
+  # Symlink Xcode file header template into per-user global location
+  _ensure_dir "${HOME}/Library/Developer/Xcode/UserData"
+  _symlink "${SCRIPT_DIR}/IDETemplateMacros.plist" "${HOME}/Library/Developer/Xcode/UserData/IDETemplateMacros.plist"
+
+  # Enable pre-commit secret scanning via gitleaks
+  if git -C "${SCRIPT_DIR}" config --local core.hooksPath .githooks; then
+    echo "[✅] Enabled .githooks/pre-commit (gitleaks secret scanning)"
+  else
+    echo "[❌] Failed to set core.hooksPath"
+    (( _error_count += 1 ))
+  fi
+
+  # Harden file permissions
+  # git clone sets 644 by default; enforce 600 on sensitive files
+  # chmod follows symlinks so this works on both the source and linked paths
+  for sensitive_file in "${sensitive_files[@]}"; do
+    _harden "${sensitive_file}"
+  done
+
+  echo "[✅] Dotfiles installed (${_link_count} symlinks, ${_dir_count} dirs, ${_harden_count} hardened)"
+  if (( _error_count > 0 )); then
+    echo "[⚠️] ${_error_count} operations failed (see above)"
+  fi
 }
 
 
@@ -553,13 +647,13 @@ function install_scripts {
   #   Create /usr/local/bin
   #   Symlink files in /usr/local/bin
   
-  local -ar bin_files=(dns pihole_stats sublime_backup)
+  local -ar bin_files=(dns pihole_stats jump-user danger gucci-askpass mdview)
   local -ar macos_script_bin_files=(c0design)
   
   # Create /usr/local/bin
   if ! [[ -d "/usr/local/bin/" ]]; then 
     get_sudo "to create /usr/local/bin/"
-    if sudo mkdir -p "/usr/local/bin/"; then
+    if sudo mkdir -m 755 -p "/usr/local/bin/"; then
       echo "[✅] Successfully created /usr/local/bin/"
     else
       echo "[❌] Failed to create /usr/local/bin/"
@@ -576,6 +670,17 @@ function install_scripts {
       echo "[❌] Failed to link ${bin_file} to /usr/local/bin/${bin_file}"
     fi
   done
+
+  # Copy jump-system as root-owned (executed by LaunchDaemon, must not be
+  # user-writable — symlink would be a local privilege escalation)
+  sudo rm -f "/usr/local/bin/jump-system"
+  if sudo cp "${SCRIPT_DIR}/bin/jump-system" "/usr/local/bin/jump-system"; then
+    sudo chown root:wheel "/usr/local/bin/jump-system"
+    sudo chmod 700 "/usr/local/bin/jump-system"
+    echo "[✅] Successfully installed jump-system to /usr/local/bin/jump-system (root:wheel 700)"
+  else
+    echo "[❌] Failed to install jump-system to /usr/local/bin/jump-system"
+  fi
 
   # Symlink bittersweet into /usr/local/bin
   if sudo ln -sfn "${SCRIPT_DIR}/bittersweet" "/usr/local/bin"; then
@@ -645,100 +750,133 @@ fi
 
 function install_secretive {
   # install_secretive
-  #   Installs Secretive via GitHub releases API + plutil
-  #   https://github.com/maxgoedjen/secretive/issues/117
+  #   Installs Secretive via Homebrew cask
 
   if [[ -d "/Applications/Secretive.app" ]]; then
     echo "[🍺] Secretive already installed"
     return 0
   fi
 
-  echo "[🍺] Installing Secretive"
+  echo "[🍺] Installing Secretive..."
 
-  local api_response
-  local zip_download_url
-  local zip_download_path
-
-  api_response="$(curl -s "https://api.github.com/repos/maxgoedjen/secretive/releases/latest")"
-  zip_download_url="$(plutil -extract "assets.0.browser_download_url" raw -o - -- - <<< "${api_response}")"
-
-  if [[ -z "${zip_download_url}" ]]; then
-    echo "[❌] Failed to get Secretive download URL from GitHub API"
+  if brew install --cask secretive; then
+    echo "[✅] Successfully installed Secretive"
+  else
+    echo "[❌] Failed to install Secretive"
     return 1
   fi
+}
 
-  zip_download_path="${HOME}/Downloads/$(basename "${zip_download_url}")"
 
-  download_application "${zip_download_path}" "${zip_download_url}"
+function _generate_zsh_sidebar_syntax {
+  # _generate_zsh_sidebar_syntax OUTPUT_FILE
+  #   Scans repo for extensionless zsh scripts and generates a .sublime-syntax
+  #   that registers their filenames for Sublime Text sidebar icons.
+  local output_file="${1}"
+  local -a names=()
+  local file basename first_line
 
-  install_application "Secretive" "${zip_download_path}"
+  while IFS= read -r -d '' file; do
+    basename="${file##*/}"
+    [[ "${basename}" == ?*.* ]] && continue
+    first_line="$(head -1 "${file}" 2>/dev/null)" || continue
+    if [[ "${first_line}" == *'#!'*zsh* ]] || \
+       [[ "${first_line}" == '#compdef '* ]] || \
+       [[ "${first_line}" == '#autoload'* ]]; then
+      names+=("${basename}")
+    fi
+  done < <(find "${SCRIPT_DIR}" -maxdepth 2 -type f -not -path '*/.git/*' -print0)
+
+  cat > "${output_file}" <<'EOF'
+%YAML 1.2
+---
+name: Zsh (Dotfiles)
+scope: source.shell.zsh
+version: 2
+hidden: true
+extends: Packages/ShellScript/Zsh.sublime-syntax
+
+hidden_file_extensions:
+EOF
+
+  printf '%s\n' "${names[@]}" | sort -u | while IFS= read -r name; do
+    printf '  - %s\n' "${name}" >> "${output_file}"
+  done
 }
 
 
 function install_sublime_text {
+  # install_sublime_text
+  #   Installs Sublime Text via Homebrew cask + symlinks settings files
 
   if [[ -d "/Applications/Sublime Text.app" ]]; then
     echo "[🍺] Sublime Text already installed"
-    return 0
+  else
+    echo "[🍺] Installing Sublime Text..."
+    if brew install --cask sublime-text; then
+      echo "[✅] Successfully installed Sublime Text"
+    else
+      echo "[❌] Failed to install Sublime Text"
+      return 1
+    fi
   fi
 
-  echo "[🍺] Installing Sublime Text"
+  # Detect live config directory (ST4 upgrades reuse ST3 dir name)
+  local live_st_dir=""
+  local candidate
+  for candidate in "Sublime Text 3" "Sublime Text"; do
+    if [[ -d "${HOME}/Library/Application Support/${candidate}" ]]; then
+      live_st_dir="${HOME}/Library/Application Support/${candidate}"
+      break
+    fi
+  done
+  # Fresh install: ST4 creates "Sublime Text/" on first launch
+  [[ -z "${live_st_dir}" ]] && live_st_dir="${HOME}/Library/Application Support/Sublime Text"
 
-  local latest_build  
-  latest_build="$(curl -s https://www.sublimetext.com/download \
-                  | awk -F 'Build ' 'BEGIN {found=0} /Build/ && !found {sub("</p>", "", $2); print $2; found=1}')"
-  # Get the latest build number
-  # TIL https://stackoverflow.com/a/28879552
+  local _dir_count=0
+  local _link_count=0
+  local _error_count=0
 
-  local zip_name="sublime_text_build_${latest_build}_mac.zip"
-  local zip_download_path="${HOME}/Downloads/${zip_name}"
+  _ensure_dir "${live_st_dir}/Packages/User"
 
-  download_application "${zip_download_path}" "https://download.sublimetext.com/sublime_text_build_${latest_build}_mac.zip"
+  echo "[🍺] Symlinking Sublime Text settings"
+  local settings_file filename
+  for settings_file in "${SCRIPT_DIR}/Sublime Text/Packages/User"/*.sublime-settings; do
+    [[ -f "${settings_file}" ]] || continue
+    filename="${settings_file##*/}"
+    _symlink "${settings_file}" "${live_st_dir}/Packages/User/${filename}"
+  done
 
-  install_application "Sublime Text" "${zip_download_path}"
+  # Generate sidebar icon syntax from repo contents (not symlinked)
+  local zsh_syntax="${live_st_dir}/Packages/User/Zsh (Dotfiles).sublime-syntax"
+  /bin/rm -f "${zsh_syntax}"
+  _generate_zsh_sidebar_syntax "${zsh_syntax}"
+  echo "[🍺] Generated Zsh sidebar syntax ($(grep -c '^ *- ' "${zsh_syntax}") files)"
 
-  ## Install config files
-  echo "[🍺] Installing Sublime Text config files"
-
-  if mkdir -p "$HOME/Library/Application Support/Sublime Text 3/Packages/"; then
-    echo "[✅] Successfully created ~/Library/Application Support/Sublime Text 3/Packages/"
-  else
-    echo "[❌] Failed to create ~/Library/Application Support/Sublime Text 3/Packages/"
-    exit 1
-  fi 
-
-  if cp -r "${SCRIPT_DIR}/Sublime Text 3/Packages/User" "$HOME/Library/Application Support/Sublime Text 3/Packages"; then
-    echo "[✅] Successfully installed Sublime Text config files"
-  else
-    echo "[❌] Failed to install Sublime Text config files"
-    exit 1
+  echo "[✅] Sublime Text config installed (${_link_count} symlinks)"
+  if (( _error_count > 0 )); then
+    echo "[⚠️] ${_error_count} operations failed (see above)"
   fi
 }
 
 
 function install_tower {
+  # install_tower
+  #   Installs Tower via Homebrew cask
 
   if [[ -d "/Applications/Tower.app" ]]; then
     echo "[🍺] Tower already installed"
     return 0
   fi
 
-  echo "[🍺] Installing Tower"
+  echo "[🍺] Installing Tower..."
 
-  local url
-  local zip_name
-  local zip_download_path
-
-  url="$(curl -sI https://updates.fournova.com/tower3-mac/stable/releases/latest/download \
-        | grep 'Location' \
-        | awk '{print $2}' \
-        | tr -d '\r')"
-  zip_name="$(awk -F '/' '{print $7}' <<< "${url}")"
-  zip_download_path="${HOME}/Downloads/${zip_name}" 
-
-  download_application "${zip_download_path}" "${url}"
-
-  install_application "Tower" "${zip_download_path}"
+  if brew install --cask tower; then
+    echo "[✅] Successfully installed Tower"
+  else
+    echo "[❌] Failed to install Tower"
+    return 1
+  fi
 }
 
 
@@ -783,32 +921,21 @@ function  install_deckset {
 
 function install_maccy {
   # install_maccy
-  #   Installs Maccy via GitHub releases API + plutil
+  #   Installs Maccy via Homebrew cask
 
   if [[ -d "/Applications/Maccy.app" ]]; then
     echo "[🍺] Maccy already installed"
     return 0
   fi
 
-  echo "[🍺] Installing Maccy"
+  echo "[🍺] Installing Maccy..."
 
-  local api_response
-  local zip_download_url
-  local zip_download_path
-
-  api_response="$(curl -s "https://api.github.com/repos/p0deje/Maccy/releases/latest")"
-  zip_download_url="$(plutil -extract "assets.0.browser_download_url" raw -o - -- - <<< "${api_response}")"
-
-  if [[ -z "${zip_download_url}" ]]; then
-    echo "[❌] Failed to get Maccy download URL from GitHub API"
+  if brew install --cask maccy; then
+    echo "[✅] Successfully installed Maccy"
+  else
+    echo "[❌] Failed to install Maccy"
     return 1
   fi
-
-  zip_download_path="${HOME}/Downloads/$(basename "${zip_download_url}")"
-
-  download_application "${zip_download_path}" "${zip_download_url}"
-
-  install_application "Maccy" "${zip_download_path}"
 }
 
 
@@ -838,40 +965,21 @@ install_application "Texifier" "${dmg_download_path}"
 
 function install_basictex {
   # install_basictex
-  #   Installs the MacTeX BasicTeX distribution via usual helpers
+  #   Installs the MacTeX BasicTeX distribution via Homebrew cask
 
   if [[ -x "$(command -v tlmgr)" ]]; then
     echo "[🍺] MacTeX already installed"
     return 0
   fi
 
-  local pkg_download_url
-  local pkg_name
-  local pkg_download_path
+  echo "[🍺] Installing BasicTeX via Homebrew..."
 
-  pkg_download_url="https://mirror.ctan.org/systems/mac/mactex/BasicTeX.pkg"
-  pkg_name="$(basename "${pkg_download_url}")"
-  pkg_download_path="$HOME/Downloads/${pkg_name}"
-
-  download_application "${pkg_download_path}" "${pkg_download_url}"
-
-  echo "[🍺] Attempting to install ${pkg_name}"
-
-  get_sudo "to install BasicTeX"
-
-  if sudo installer -pkg "${pkg_download_path}" -target "/" >/dev/null; then
-    # !! SUDO !!
-    # Install
+  if brew install --cask basictex; then
     echo "[✅] Successfully installed BasicTeX"
   else
     echo "[❌] Failed to install BasicTeX"
     exit 1
   fi
-
-  # Cleanup
-  echo "[🍺] Deleting ${pkg_download_path}"
-  rm "${pkg_download_path:?}"
-  # Delete the pkg
 }
 
 
@@ -884,16 +992,19 @@ function install_latex_packages {
   sleep 2
 
   get_sudo "to update tlmgr, update installed packages and install packages"
-  
-  # Update tlmgr 
-  if sudo tlmgr update --self >/dev/null; then
+
+  # GPG repo verification disabled: gnupg not installed, SHA-512 checksums
+  # and HTTPS transport still protect package integrity. See TODOs.md.
+
+  # Update tlmgr
+  if sudo tlmgr --verify-repo=none update --self >/dev/null; then
     echo "[✅] Successfully updated tlmgr"
   else
     echo "[❌] Failed to update tlmgr"
   fi
 
-  # Update packages installed via tlmgr 
-  if sudo tlmgr update --all >/dev/null; then
+  # Update packages installed via tlmgr
+  if sudo tlmgr --verify-repo=none update --all >/dev/null; then
     echo "[✅] Successfully updated LaTeX packages via tlmgr"
   else
     echo "[❌] Failed to update LaTeX packages via tlmgr"
@@ -904,7 +1015,7 @@ function install_latex_packages {
   # helvetic: Installs the helvetica font (phv) for the custom sectioning
 
   for PACKAGE in "${PACKAGES[@]}"; do
-    if sudo tlmgr install "${PACKAGE}"; then
+    if sudo tlmgr --verify-repo=none install "${PACKAGE}"; then
       echo "[✅] Successfully installed LaTeX package ${PACKAGE} via tlmgr"
     else
       echo "[❌] Failed to install LaTeX package ${PACKAGE} via tlmgr"
@@ -915,35 +1026,21 @@ function install_latex_packages {
 
 function install_blockblock {
   # install_blockblock
-  #   Installs BlockBlock (BB) via GitHub releases API + plutil
-  #   Uses objective_see_install for the actual installation
+  #   Installs BlockBlock via Homebrew cask
 
   if [[ -d "/Applications/BlockBlock Helper.app" ]]; then
     echo "[🍺] BlockBlock already installed"
     return 0
   fi
 
-  echo "[🍺] Installing BlockBlock"
+  echo "[🍺] Installing BlockBlock..."
 
-  local api_response
-  local url
-  local zip_name
-  local zip_download_path
-
-  api_response="$(curl -s "https://api.github.com/repos/objective-see/BlockBlock/releases/latest")"
-  url="$(plutil -extract "assets.0.browser_download_url" raw -o - -- - <<< "${api_response}")"
-
-  if [[ -z "${url}" ]]; then
-    echo "[❌] Failed to get BlockBlock download URL from GitHub API"
+  if brew install --cask blockblock; then
+    echo "[✅] Successfully installed BlockBlock"
+  else
+    echo "[❌] Failed to install BlockBlock"
     return 1
   fi
-
-  zip_name="$(basename "${url}")"
-  zip_download_path="${HOME}/Downloads/${zip_name}"
-
-  download_application "${zip_download_path}" "${url}"
-
-  objective_see_install "BlockBlock" "${zip_download_path}"
 
   echo "[⚠️] Remember to enable Full Disk Access for BlockBlock"
 
@@ -954,41 +1051,271 @@ function install_blockblock {
 
 function install_oversight {
   # install_oversight
-  #   Installs OverSight via GitHub releases API + plutil
-  #   Uses objective_see_install for the actual installation
+  #   Installs OverSight via Homebrew cask
 
   if [[ -d "/Applications/OverSight.app" ]]; then
     echo "[🍺] OverSight already installed"
     return 0
   fi
 
-  echo "[🍺] Installing OverSight 📸🎤"
+  echo "[🍺] Installing OverSight..."
 
-  local api_response
-  local url
-  local zip_name
-  local zip_download_path
-
-  api_response="$(curl -s "https://api.github.com/repos/objective-see/OverSight/releases/latest")"
-  url="$(plutil -extract "assets.0.browser_download_url" raw -o - -- - <<< "${api_response}")"
-
-  if [[ -z "${url}" ]]; then
-    echo "[❌] Failed to get OverSight download URL from GitHub API"
+  if brew install --cask oversight; then
+    echo "[✅] Successfully installed OverSight"
+  else
+    echo "[❌] Failed to install OverSight"
     return 1
   fi
-
-  zip_name="$(basename "${url}")"
-  zip_download_path="${HOME}/Downloads/${zip_name}"
-
-  download_application "${zip_download_path}" "${url}"
-
-  objective_see_install "OverSight" "${zip_download_path}"
 
   # Enable headless mode, auto updates & start on login
   defaults write com.objective-see.OverSight runHeadless   -bool true
   defaults write com.objective-see.OverSight check4Updates -bool true
   defaults write com.objective-see.OverSight startAtLogin  -bool true
 } 
+
+
+function install_dcg {
+  # install_dcg
+  #   Installs Destructive Command Guard (dcg) via GitHub releases API
+  #   https://github.com/Dicklesworthstone/destructive_command_guard
+  #   Claude Code PreToolUse hook — blocks destructive Bash commands
+  #   Not Apple codesigned; verified via SHA256 + Sigstore/cosign
+
+  local -r dcg_binary="/usr/local/bin/dcg"
+
+  if [[ -x "${dcg_binary}" ]]; then
+    # Upgrades handled by: sudo dcg update --verify (run by jump/jump-system)
+    echo "[🍺] dcg already installed"
+    return 0
+  fi
+
+  echo "[🍺] Installing dcg (Destructive Command Guard)"
+
+  local api_response
+  local tarball_url
+  local tarball_name
+  local tarball_path
+  local sha_url
+  local sha_path
+  local sigstore_url
+  local sigstore_path
+
+  api_response="$(curl -s "https://api.github.com/repos/Dicklesworthstone/destructive_command_guard/releases/latest")"
+
+  # Find the aarch64-apple-darwin tarball asset
+  # plutil array indexing: walk assets to find the right filename
+  local i=0
+  local asset_name
+  tarball_url=""
+  while true; do
+    asset_name="$(plutil -extract "assets.${i}.name" raw -o - -- - <<< "${api_response}" 2>/dev/null)" || break
+    if [[ "${asset_name}" == "dcg-aarch64-apple-darwin.tar.xz" ]]; then
+      tarball_url="$(plutil -extract "assets.${i}.browser_download_url" raw -o - -- - <<< "${api_response}")"
+      break
+    fi
+    (( i += 1 ))
+  done
+
+  if [[ -z "${tarball_url}" ]]; then
+    echo "[❌] Failed to find dcg-aarch64-apple-darwin.tar.xz in GitHub release"
+    return 1
+  fi
+
+  tarball_name="$(basename "${tarball_url}")"
+  tarball_path="${HOME}/Downloads/${tarball_name}"
+  sha_url="${tarball_url}.sha256"
+  sha_path="${tarball_path}.sha256"
+  sigstore_url="${tarball_url}.sigstore.json"
+  sigstore_path="${tarball_path}.sigstore.json"
+
+  # Download tarball + SHA256 checksum
+  download_application "${tarball_path}" "${tarball_url}"
+  download_application "${sha_path}" "${sha_url}"
+
+  # Verify SHA256
+  echo "[🍺] Verifying SHA256 checksum"
+  if ! (cd "${HOME}/Downloads" && shasum -a 256 -c "${sha_path}" >/dev/null); then
+    echo "[❌] SHA256 verification failed for ${tarball_name}"
+    rm -f "${tarball_path}" "${sha_path}"
+    return 1
+  fi
+  echo "[✅] SHA256 checksum verified"
+
+  # Verify Sigstore bundle if cosign is available
+  if command -v cosign &>/dev/null; then
+    download_application "${sigstore_path}" "${sigstore_url}"
+    echo "[🍺] Verifying Sigstore bundle with cosign"
+    if ! cosign verify-blob "${tarball_path}" --bundle "${sigstore_path}" --certificate-oidc-issuer="https://token.actions.githubusercontent.com" --certificate-identity-regexp="github.com/Dicklesworthstone/destructive_command_guard"; then
+      echo "[❌] Sigstore verification failed for ${tarball_name}"
+      rm -f "${tarball_path}" "${sha_path}" "${sigstore_path}"
+      return 1
+    fi
+    echo "[✅] Sigstore verification passed"
+    rm -f "${sigstore_path}"
+  else
+    echo "[⚠️ ] cosign not found — skipping Sigstore verification (SHA256 OK)"
+  fi
+
+  # Extract and install
+  echo "[🍺] Extracting ${tarball_name}"
+  if ! tar -xf "${tarball_path}" -C "${HOME}/Downloads"; then
+    echo "[❌] Failed to extract ${tarball_name}"
+    rm -f "${tarball_path}" "${sha_path}"
+    return 1
+  fi
+
+  get_sudo "to install dcg to /usr/local/bin"
+  if sudo install -m 755 "${HOME}/Downloads/dcg" "${dcg_binary}"; then
+    echo "[✅] Successfully installed dcg to ${dcg_binary}"
+  else
+    echo "[❌] Failed to install dcg to ${dcg_binary}"
+    rm -f "${HOME}/Downloads/dcg" "${tarball_path}" "${sha_path}"
+    return 1
+  fi
+
+  # Cleanup
+  rm -f "${HOME}/Downloads/dcg" "${tarball_path}" "${sha_path}"
+}
+
+
+function install_danger_verify {
+  # install_danger_verify
+  #   Builds and installs the danger-verify Swift helper binary
+  #   Kernel-level mount verification for bin/danger (statfs, posix_spawn)
+  #   Source: ~/Documents/Projects/danger-verify/
+  #   Destination: /usr/local/bin/danger-verify
+
+  local -r src_dir="${HOME}/Documents/Projects/danger-verify"
+  local -r binary="/usr/local/bin/danger-verify"
+
+  if ! [[ -d "${src_dir}" ]]; then
+    echo "[❌] danger-verify source not found at ${src_dir}"
+    return 1
+  fi
+
+  echo "[🍺] Building danger-verify"
+
+  if ! swift build --package-path "${src_dir}" -c release --quiet 2>&1; then
+    echo "[❌] Failed to build danger-verify"
+    return 1
+  fi
+
+  echo "[✅] Successfully built danger-verify"
+
+  get_sudo "to install danger-verify to /usr/local/bin"
+
+  if sudo install -m 755 "${src_dir}/.build/release/danger-verify" "${binary}"; then
+    echo "[✅] Successfully installed danger-verify to ${binary}"
+  else
+    echo "[❌] Failed to install danger-verify to ${binary}"
+    return 1
+  fi
+}
+
+
+function install_vault_guard {
+  # install_vault_guard
+  #   Builds and installs the vault-guard DA mount approval daemon
+  #   Blocks Finder-initiated SMB mounts to the research vault
+  #   Source: ~/Documents/Projects/danger-verify/ (vault-guard target)
+  #   Destination: /usr/local/bin/vault-guard
+
+  local -r src_dir="${HOME}/Documents/Projects/danger-verify"
+  local -r binary="/usr/local/bin/vault-guard"
+
+  if ! [[ -d "${src_dir}" ]]; then
+    echo "[❌] danger-verify source not found at ${src_dir}"
+    return 1
+  fi
+
+  echo "[🍺] Building vault-guard"
+
+  if ! swift build --package-path "${src_dir}" -c release --quiet 2>&1; then
+    echo "[❌] Failed to build vault-guard"
+    return 1
+  fi
+
+  echo "[✅] Successfully built vault-guard"
+
+  get_sudo "to install vault-guard to /usr/local/bin"
+
+  if sudo install -m 755 "${src_dir}/.build/release/vault-guard" "${binary}"; then
+    echo "[✅] Successfully installed vault-guard to ${binary}"
+  else
+    echo "[❌] Failed to install vault-guard to ${binary}"
+    return 1
+  fi
+}
+
+
+function install_santa_faa {
+  # install_santa_faa
+  #   Installs Santa FAA policy plist to /Library/Santa/
+  #   Root-owned so non-root processes cannot modify the policy itself
+  #   Referenced by com.northpolesec.santa.vault.mobileconfig via FileAccessPolicyPlist
+
+  local -r src="${SCRIPT_DIR}/profiles/santa-faa-policy.plist"
+  local -r dest="/Library/Santa/faa-policy.plist"
+
+  if ! [[ -f "${src}" ]]; then
+    echo "[❌] santa-faa-policy.plist not found at ${src}"
+    return 1
+  fi
+
+  get_sudo "to install Santa FAA policy to /Library/Santa"
+
+  if ! sudo mkdir -m 755 -p /Library/Santa; then
+    echo "[❌] Failed to create /Library/Santa/"
+    return 1
+  fi
+
+  if sudo install -m 644 -o root -g wheel "${src}" "${dest}"; then
+    echo "[✅] Successfully installed FAA policy to ${dest}"
+  else
+    echo "[❌] Failed to install FAA policy to ${dest}"
+    return 1
+  fi
+}
+
+
+
+function install_claude {
+  # install_claude
+  #   Installs Claude Code via the official native installer
+  #   https://claude.ai/install.sh
+  #   Downloads the installer to ~/Downloads, executes it, then cleans up
+  #   Always calls install_dcg — DCG must be present when Claude Code is
+
+  local -r claude_binary="${HOME}/.local/bin/claude"
+
+  if [[ -x "${claude_binary}" ]]; then
+    echo "[🍺] Claude Code already installed"
+    install_dcg
+    return 0
+  fi
+
+  echo "[🍺] Installing Claude Code"
+
+  local -r installer_path="${HOME}/Downloads/claude-install.sh"
+  local -r installer_url="https://claude.ai/install.sh"
+
+  download_application "${installer_path}" "${installer_url}"
+
+  echo "[🍺] Running Claude Code installer"
+  if bash "${installer_path}"; then
+    echo "[✅] Successfully installed Claude Code"
+  else
+    echo "[❌] Failed to install Claude Code"
+    rm -f "${installer_path}"
+    install_dcg
+    return 1
+  fi
+
+  rm -f "${installer_path}"
+
+  # DCG must always be installed alongside Claude Code
+  install_dcg
+}
 
 
 function install_brew {
@@ -1143,6 +1470,88 @@ function open_system_preferences_mdm_profile {
 }
 
 
+function install_launchagents {
+  # install_launchagents
+  #   Copy LaunchAgent plists to ~/Library/LaunchAgents/
+  #   Copy LaunchDaemon plist to /Library/LaunchDaemons/ (must be owned by root:wheel 644)
+  #
+  #   Plists are copied, not symlinked. Since macOS Sonoma 14.0, launchd's
+  #   automatic login scan of ~/Library/LaunchAgents/ does not follow symlinks.
+  #   Symlinked plists are silently skipped — RunAtLoad never fires.
+  #   Explicit `launchctl bootstrap` still follows symlinks, but doesn't
+  #   survive reboot. Copying is the only reliable approach.
+
+  local -ar launchagent_plists=(
+    com.mikey.jump-user
+    com.mikey.vault-guard
+    com.mikey.imageio-oop
+  )
+
+  # LaunchAgents: copy into ~/Library/LaunchAgents/
+  if mkdir -p "${HOME}/Library/LaunchAgents"; then
+    for plist in "${launchagent_plists[@]}"; do
+      if cp "${SCRIPT_DIR}/LaunchAgents/${plist}.plist" "${HOME}/Library/LaunchAgents/${plist}.plist"; then
+        chmod 644 "${HOME}/Library/LaunchAgents/${plist}.plist"
+        echo "[✅] Successfully installed ${plist}.plist to ~/Library/LaunchAgents/"
+      else
+        echo "[❌] Failed to install ${plist}.plist"
+      fi
+    done
+  else
+    echo "[❌] Failed to create ~/Library/LaunchAgents/"
+  fi
+
+  # LaunchDaemon: copy to /Library/LaunchDaemons/ with root:wheel 644
+  get_sudo "to install LaunchDaemon"
+
+  if sudo cp "${SCRIPT_DIR}/LaunchDaemons/com.mikey.jump-system.plist" "/Library/LaunchDaemons/com.mikey.jump-system.plist"; then
+    sudo chown root:wheel "/Library/LaunchDaemons/com.mikey.jump-system.plist"
+    sudo chmod 644 "/Library/LaunchDaemons/com.mikey.jump-system.plist"
+    echo "[✅] Successfully installed com.mikey.jump-system.plist to /Library/LaunchDaemons/"
+  else
+    echo "[❌] Failed to install com.mikey.jump-system.plist"
+  fi
+}
+
+
+function load_launchagents {
+  # load_launchagents
+  #   Load LaunchAgents and LaunchDaemon via launchctl bootstrap/bootout
+
+  local -r uid=$(id -u)
+
+  local -ar launchagent_plists=(
+    com.mikey.jump-user
+    com.mikey.vault-guard
+    com.mikey.imageio-oop
+  )
+
+  for plist in "${launchagent_plists[@]}"; do
+    launchctl bootout "gui/${uid}/${plist}" 2>/dev/null || true
+    if launchctl bootstrap "gui/${uid}" "${HOME}/Library/LaunchAgents/${plist}.plist"; then
+      echo "[✅] Successfully loaded ${plist} LaunchAgent"
+    else
+      echo "[❌] Failed to load ${plist} LaunchAgent"
+    fi
+  done
+
+  # Verify imageio-oop env var took effect
+  if [[ "$(launchctl getenv IIOEnableOOP)" != "1" ]]; then
+    echo "[❌] com.mikey.imageio-oop loaded but IIOEnableOOP not set in launchd"
+  fi
+
+  # LaunchDaemon
+  get_sudo "to load LaunchDaemon"
+
+  sudo launchctl bootout "system/com.mikey.jump-system" 2>/dev/null || true
+  if sudo launchctl bootstrap "system" "/Library/LaunchDaemons/com.mikey.jump-system.plist"; then
+    echo "[✅] Successfully loaded com.mikey.jump-system LaunchDaemon"
+  else
+    echo "[❌] Failed to load com.mikey.jump-system LaunchDaemon"
+  fi
+}
+
+
 function main {
 
   check_os_compatibility
@@ -1200,6 +1609,21 @@ function main {
     oversight)
       install_oversight
       ;;
+    dcg)
+      install_dcg
+      ;;
+    danger-verify)
+      install_danger_verify
+      ;;
+    vault-guard)
+      install_vault_guard
+      ;;
+    santa-faa)
+      install_santa_faa
+      ;;
+    claude)
+      install_claude
+      ;;
     brew)
       install_brew
       ;;
@@ -1216,6 +1640,10 @@ function main {
     mdmprofile)
       open_system_preferences_mdm_profile
       ;;
+    launchagents)
+      install_launchagents
+      load_launchagents
+      ;;
     test)
       run_test
       ;;
@@ -1231,10 +1659,14 @@ function main {
 
       write_defaults
       install_dotfiles
+      install_danger_verify
+      install_vault_guard
+      install_santa_faa
       install_scripts
       enable_touchid_sudo
       install_blockblock
       install_oversight
+      install_claude
       install_brew
       install_brewfile
       zsh_compinit_fix
@@ -1247,6 +1679,8 @@ function main {
       install_basictex
       install_latex_packages
       open_system_preferences_mdm_profile
+      install_launchagents
+      load_launchagents
       ;;
     *)
       usage
