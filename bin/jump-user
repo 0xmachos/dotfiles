@@ -1,0 +1,82 @@
+#!/usr/bin/env zsh
+# dotfiles/bin/jump-user
+#
+# jump-user
+#   User-level update script for Homebrew
+#   Designed to be run by LaunchAgent com.mikey.jump-user
+#   Can also be run manually
+#
+#   Usage: jump-user [--delay N]
+
+set -uo pipefail
+
+LOG_FILE="${HOME}/Library/Logs/jump.log"
+
+function run_and_log {
+  local description="$1"
+  shift
+  local output
+  if output=$("$@" 2>&1); then
+    logger -t "com.mikey.jump" "[OK] ${description}"
+  else
+    logger -t "com.mikey.jump" "[FAIL] ${description}"
+    {
+      echo "[$(date '+%Y-%m-%d %H:%M:%S')] [FAIL] ${description}"
+      echo "${output}"
+      echo ""
+    } >> "${LOG_FILE}"
+  fi
+}
+
+function check_internet_connection {
+  local -a domains=("captive.apple.com" "google.com" "flightywifi.com")
+  local all_domains_not_reachable=true
+
+  for domain in "${domains[@]}"; do
+    if /usr/sbin/scutil -r "${domain}" | grep '^Reachable' >/dev/null; then
+      all_domains_not_reachable=false
+    fi
+  done
+
+  if [[ "${all_domains_not_reachable}" = "true" ]]; then
+    logger -t "com.mikey.jump" "[FAIL] jump-user: not connected to the internet"
+    return 1
+  fi
+}
+
+function main {
+  # Parse --delay flag
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --delay)
+        sleep "$2"
+        shift 2
+        ;;
+      *)
+        shift
+        ;;
+    esac
+  done
+
+  if ! check_internet_connection; then
+    return 1
+  fi
+
+  # Set up Homebrew environment (launchd does not source .zshrc)
+  eval "$(/opt/homebrew/bin/brew shellenv)"
+
+  local -r BREW_BINARY="/opt/homebrew/bin/brew"
+
+  if ! [[ -x "${BREW_BINARY}" ]]; then
+    logger -t "com.mikey.jump" "[FAIL] jump-user: brew not found"
+    return 1
+  fi
+
+  run_and_log "brew update"     "${BREW_BINARY}" update
+  run_and_log "brew upgrade"    "${BREW_BINARY}" upgrade
+  run_and_log "brew cleanup"    "${BREW_BINARY}" cleanup
+  run_and_log "brew autoremove" "${BREW_BINARY}" autoremove
+  run_and_log "brew doctor"     "${BREW_BINARY}" doctor
+}
+
+main "$@"
