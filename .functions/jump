@@ -3,7 +3,7 @@
 
 function jump {
   # jump
-  #   Update macOS, Homebrew, LaTeX packages & XProtect
+  #   Update macOS, Homebrew, dcg, LaTeX packages & XProtect
   #   Run XProtect scan
 
   local -r SUDO_BINARY="/usr/bin/sudo"
@@ -12,6 +12,7 @@ function jump {
   local -r TLMGR_BINARY="/Library/TeX/texbin/tlmgr"
   local -r XPROTECT_BINARY="/usr/bin/xprotect"
   local -r XPROTECT_APP="/Library/Apple/System/Library/CoreServices/XProtect.app/Contents/MacOS/XProtect"
+  local -r DCG_BINARY="/usr/local/bin/dcg"
 
 
   ## macOS ##
@@ -40,13 +41,25 @@ function jump {
   fi
 
 
+
+  ## dcg ##
+  if [[ -x "${DCG_BINARY}" ]]; then
+    "${SUDO_BINARY}" --prompt="[⚠️ ] Password required to update dcg: " -v
+    echo "[🛡️] Updating dcg..."
+    "${SUDO_BINARY}" "${DCG_BINARY}" update --verify --system
+  fi
+
+
   ## LaTeX ##
+  # GPG repo verification disabled: gnupg not installed, SHA-512 checksums
+  # and HTTPS transport still protect package integrity. See TODOs.md.
   if [[ -x "${TLMGR_BINARY}" ]]; then
     "${SUDO_BINARY}" --prompt="[⚠️ ] Password required to run tlmgr: " -v
     echo "[📝] Updating LaTeX..."
-    "${SUDO_BINARY}" "${TLMGR_BINARY}" update --self
-    "${SUDO_BINARY}" "${TLMGR_BINARY}" update --all
+    "${SUDO_BINARY}" "${TLMGR_BINARY}" --verify-repo=none update --self
+    "${SUDO_BINARY}" "${TLMGR_BINARY}" --verify-repo=none update --all
   fi
+
 
   ## XProtect ##
   if [[ -x "${XPROTECT_BINARY}" ]]; then
@@ -58,5 +71,13 @@ function jump {
   if [[ -x "${XPROTECT_APP}" ]]; then
     echo "[🔍] Running XProtect scan in the background..."
     "${XPROTECT_APP}" &
+  fi
+
+
+  ## ImageIO OOP ##
+  if [[ "$(launchctl getenv IIOEnableOOP)" != "1" ]]; then
+    echo "[❌] IIOEnableOOP not set in launchd — GUI apps parsing images in-process"
+    echo "    Run: launchctl setenv IIOEnableOOP 1"
+    echo "    Or:  bittersweet launchagents"
   fi
 }
