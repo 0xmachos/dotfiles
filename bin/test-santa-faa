@@ -1,0 +1,284 @@
+#!/bin/zsh
+# dotfiles/bin/test-santa-faa
+
+# test-santa-faa
+#   Test Santa FAA (File Access Authorization) rules. Verifies that watched
+#   paths are protected and that allowlisted processes can still access them.
+#
+# Usage: test-santa-faa [rule-name]
+#   No args         — run all rule tests
+#   ssh-config      — test SSH config protection only
+#   git-signing     — test git signing config protection only
+#   shell-startup   — test shell startup config protection only
+#   shell-functions — test shell functions protection only
+#   claude-config   — test Claude Code config protection only
+#
+# ShellCheck: Use `shellcheck --shell=bash` (no native Zsh support).
+#   No Zsh-only syntax used — all constructs are Bash-compatible.
+
+set -euo pipefail
+# -e exit if any command returns non-zero status code
+# -u prevent using undefined variables
+# -o pipefail force pipelines to fail on first non-zero status code
+
+IFS=$'\n\t'
+# Set Internal Field Separator to newlines and tabs
+# This makes bash consider newlines and tabs as separating words
+# See: http://redsymbol.net/articles/unofficial-bash-strict-mode/
+
+### Constants ###
+
+readonly RED=$'\e[31m'
+readonly GREEN=$'\e[32m'
+readonly YELLOW=$'\e[33m'
+readonly BOLD=$'\e[1m'
+readonly RESET=$'\e[0m'
+
+### END Constants ###
+
+pass_count=0
+fail_count=0
+skip_count=0
+
+### Utility Functions ###
+
+function _pass {
+  echo "${GREEN}PASS${RESET}  $1"
+  (( pass_count += 1 ))
+}
+
+function _fail {
+  echo "${RED}FAIL${RESET}  $1"
+  (( fail_count += 1 ))
+}
+
+function _skip {
+  echo "${YELLOW}SKIP${RESET}  $1"
+  (( skip_count += 1 ))
+}
+
+# Expect a command to be BLOCKED by Santa (EPERM on open)
+function _expect_blocked {
+  local desc="$1"
+  shift
+  local err
+  if err="$("$@" 2>&1)"; then
+    _fail "${desc} — expected EPERM, got success"
+    return
+  fi
+  if [[ "${err}" == *"Operation not permitted"* ]]; then
+    _pass "${desc}"
+  else
+    _fail "${desc} — not EPERM: ${err}"
+  fi
+}
+
+# Expect a command to succeed (caller is allowlisted)
+function _expect_allowed {
+  local desc="$1"
+  shift
+  if "$@" >/dev/null 2>&1; then
+    _pass "${desc}"
+  else
+    _fail "${desc} — expected success, got denied"
+  fi
+}
+
+### END Utility Functions ###
+
+
+### Rule Tests ###
+
+# ── ssh-config ─────────────────────────────────
+# Rules: SSHConfigSymlinks + SSHConfigResolved
+# SSHConfigResolved is AuditOnly (Xcode git signing issue — can't allowlist git).
+# ES resolves symlinks for OPEN, so reads through symlinks hit the Resolved rule.
+# Allowed: com.apple.ssh, com.apple.scp, com.apple.sftp, com.sublimetext.4,
+#          com.fournova.Tower3, com.apple.ln (symlink rules only)
+function test_ssh_config {
+  echo ""
+  echo "${BOLD}── ssh-config (SSHConfigSymlinks + SSHConfigResolved) [AuditOnly] ──${RESET}"
+
+  local paths=(
+    "${HOME}/.ssh/config"
+    "${HOME}/.ssh/.extra_ssh"
+    "${HOME}/Documents/Projects/dotfiles/.ssh/config"
+    "${HOME}/Documents/Projects/dotfiles/.ssh/.extra_ssh"
+  )
+
+  local p
+  for p in "${paths[@]}"; do
+    if [[ ! -e "${p}" ]]; then
+      _skip "path missing: ${p}"
+      continue
+    fi
+    _skip "AuditOnly: ${p}"
+  done
+
+  # ssh -G dumps resolved config to stdout without connecting
+  _expect_allowed "ssh allowed: reads config via ssh -G" /usr/bin/ssh -G localhost
+}
+
+# ── git-signing ───────────────────────────────
+# Rules: GitSigningConfig + GitSigningConfigResolved
+# Currently AuditOnly — git spawns many helper binaries that all read config,
+# and neither PlatformBinary nor TeamID matching works for Xcode developer tools.
+# Blocked tests are skipped; allowed test confirms git can still read config.
+# Allowed: com.apple.git, com.apple.git-remote-http, com.sublimetext.4
+function test_git_signing {
+  echo ""
+  echo "${BOLD}── git-signing (GitSigningConfig + GitSigningConfigResolved) [AuditOnly] ──${RESET}"
+
+  local paths=(
+    "${HOME}/.config/git/config"
+    "${HOME}/.config/git/allowed_signers"
+    "${HOME}/Documents/Projects/dotfiles/.config/git/config"
+    "${HOME}/Documents/Projects/dotfiles/.config/git/allowed_signers"
+  )
+
+  local p
+  for p in "${paths[@]}"; do
+    if [[ ! -e "${p}" ]]; then
+      _skip "path missing: ${p}"
+      continue
+    fi
+    _skip "AuditOnly: ${p}"
+  done
+
+  # git config --list reads ~/.config/git/config
+  _expect_allowed "git allowed: reads config via git config --list" /usr/bin/git config --list
+}
+
+# ── shell-startup ─────────────────────────────
+# Rules: ShellStartupConfig + ShellStartupConfigResolved
+# ShellStartupConfigResolved is AuditOnly (Xcode git signing issue).
+# ES resolves symlinks for OPEN, so reads through symlinks hit the Resolved rule.
+# Allowed: com.apple.zsh, com.sublimetext.4, com.apple.ln (symlink rules only)
+function test_shell_startup {
+  echo ""
+  echo "${BOLD}── shell-startup (ShellStartupConfig + ShellStartupConfigResolved) [AuditOnly] ──${RESET}"
+
+  local paths=(
+    "${HOME}/.zshrc"
+    "${HOME}/.aliases"
+    "${HOME}/Documents/Projects/dotfiles/.zshrc"
+    "${HOME}/Documents/Projects/dotfiles/.aliases"
+  )
+
+  local p
+  for p in "${paths[@]}"; do
+    if [[ ! -e "${p}" ]]; then
+      _skip "path missing: ${p}"
+      continue
+    fi
+    _skip "AuditOnly: ${p}"
+  done
+
+  # zsh -c sources .zshrc — confirms zsh is allowlisted
+  _expect_allowed "zsh allowed: sources .zshrc via zsh -c" /bin/zsh -c "source ${HOME}/.zshrc"
+}
+
+# ── shell-functions ───────────────────────────
+# Rules: ShellFunctions + ShellFunctionsResolved
+# ShellFunctionsResolved is AuditOnly (Xcode git signing issue).
+# ES resolves symlinks for OPEN, so reads through symlinks hit the Resolved rule.
+# Allowed: com.apple.zsh, com.sublimetext.4, com.apple.ln (symlink rules only)
+function test_shell_functions {
+  echo ""
+  echo "${BOLD}── shell-functions (ShellFunctions + ShellFunctionsResolved) [AuditOnly] ──${RESET}"
+
+  local paths=(
+    "${HOME}/.functions/jump"
+    "${HOME}/.functions/layup"
+    "${HOME}/Documents/Projects/dotfiles/.functions/jump"
+    "${HOME}/Documents/Projects/dotfiles/.functions/layup"
+  )
+
+  local p
+  for p in "${paths[@]}"; do
+    if [[ ! -e "${p}" ]]; then
+      _skip "path missing: ${p}"
+      continue
+    fi
+    _skip "AuditOnly: ${p}"
+  done
+
+  # zsh autoload reads function files from FPATH
+  _expect_allowed "zsh allowed: autoloads function via zsh -c" /bin/zsh -c \
+    "fpath=(${HOME}/.functions \$fpath); autoload -Uz jump; whence -v jump"
+}
+
+# ── claude-config ─────────────────────────────
+# Rules: ClaudeCodeConfig + ClaudeCodeConfigResolved
+# Watched: ~/.claude/settings.json, dotfiles/claude/settings.json
+# Allowed: com.anthropic.claude-code, com.sublimetext.4
+function test_claude_config {
+  echo ""
+  echo "${BOLD}── claude-config (ClaudeCodeConfig + ClaudeCodeConfigResolved) ──${RESET}"
+
+  local paths=(
+    "${HOME}/.claude/settings.json"
+    "${HOME}/Documents/Projects/dotfiles/claude/settings.json"
+  )
+
+  local p
+  for p in "${paths[@]}"; do
+    if [[ ! -e "${p}" ]]; then
+      _skip "path missing: ${p}"
+      continue
+    fi
+    _expect_blocked "cat blocked: ${p}" /bin/cat "${p}"
+  done
+
+  # claude -p reads settings.json on startup to load hooks/permissions
+  local claude_bin
+  claude_bin="$(command -v claude 2>/dev/null || true)"
+  if [[ -z "${claude_bin}" ]]; then
+    _skip "claude binary not found"
+  else
+    _expect_allowed "claude allowed: reads settings via claude -p" \
+      "${claude_bin}" -p "reply ok"
+  fi
+}
+
+### END Rule Tests ###
+
+
+### Main ###
+
+function main {
+  local filter="${1:-}"
+
+  # Preflight: Watch Items must be enabled
+  local watch_section
+  watch_section="$(santactl status 2>&1 | grep -A1 "Watch Items")"
+  if ! grep -q "Enabled.*Yes" <<< "${watch_section}"; then
+    echo "${RED}ERROR${RESET}  Santa Watch Items not enabled"
+    echo "  Run: santactl status | grep -A5 'Watch Items'"
+    exit 1
+  fi
+
+  local version
+  version="$(santactl status 2>&1 | grep 'Policy Version' | awk -F'|' '{print $2}' | xargs)"
+  echo "Santa FAA tests (policy ${version})"
+
+  case "${filter}" in
+    ""              ) test_ssh_config; test_git_signing; test_shell_startup; test_shell_functions; test_claude_config ;;
+    ssh-config      ) test_ssh_config ;;
+    git-signing     ) test_git_signing ;;
+    shell-startup   ) test_shell_startup ;;
+    shell-functions ) test_shell_functions ;;
+    claude-config   ) test_claude_config ;;
+    *               ) echo "${RED}ERROR${RESET}  Unknown rule: ${filter}"; exit 1 ;;
+  esac
+
+  echo ""
+  echo "${BOLD}── Summary ──${RESET}"
+  echo "${GREEN}${pass_count} passed${RESET}, ${RED}${fail_count} failed${RESET}, ${YELLOW}${skip_count} skipped${RESET}"
+
+  if (( fail_count > 0 )); then
+    exit 1
+  fi
+}
+
+main "$@"

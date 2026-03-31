@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+
+<plist version="1">
+  <dict>
+    
+
+    <!-- Profile Metadata -->
+    <!-- https://developer.apple.com/documentation/devicemanagement/toplevel -->
+    <key>PayloadUUID</key>
+      <!-- UUID for the Profile. Content unimportant but needs to be globaly uniqiue-->
+      <string>441EF30C-E39A-4E4E-9075-7DFD3AD6C78D</string>
+    <key>PayloadType</key>
+      <!-- Can only be "Configuration" -->
+      <string>Configuration</string>
+    <key>PayloadOrganization</key>
+      <string>0xmachos</string>
+    <key>PayloadIdentifier</key>
+      <!-- Reverse-DNS style identifier -->
+      <string>com.machos.gatekeeper.enable</string>
+    <key>PayloadDisplayName</key>
+      <string>0xmachos Enable Gatekeeper</string>
+    <key>PayloadDescription</key>
+      <string>Enable Gatekeeper assesments</string>
+    <key>PayloadVersion</key>
+      <integer>1</integer>
+    <key>PayloadEnabled</key>
+      <true/>
+    <key>PayloadRemovalDisallowed</key>
+      <true/>
+    <key>PayloadScope</key>
+      <string>System</string>
+    <key>TargetDeviceType</key>
+      <integer>5</integer>
+      <!-- 5 = Mac -->
+
+
+    <key>PayloadContent</key>
+    <array>
+
+          <!-- Gatekeeper Configuration -->
+    <!-- https://developer.apple.com/documentation/devicemanagement/systempolicycontrol -->
+      <dict>
+        <key>PayloadUUID</key>
+          <!-- UUID for the Payload. Content unimportant but needs to be globaly uniqiue-->
+          <string>6F9FB9DA-E671-450F-957B-C84F94958377</string>
+        <key>PayloadType</key>
+          <string>com.apple.systempolicy.control</string>
+        <key>PayloadOrganization</key>
+          <string>0xmachos</string>
+        <key>PayloadIdentifier</key>
+          <string>com.machos.dotfiles.systempolicy.control</string>
+        <key>PayloadDisplayName</key>
+          <!-- This is what actually populates the Description field -->
+          <string>Enable Gatekeeper</string>
+        
+        <key>PayloadVersion</key>
+          <integer>1</integer>
+        
+        <key>PayloadEnabled</key>
+          <true/>
+
+        <key>EnableAssessment</key>
+          <true/>
+      
+      </dict>
+    </array>
+  
+  </dict>
+</plist>
