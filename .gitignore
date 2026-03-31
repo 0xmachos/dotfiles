@@ -11,6 +11,6 @@ oscrypto-ca-bundle.crt
 
 # files for sensitive info
 .extra*
-.vt.toml
 .zsh_history
 
+internals/
