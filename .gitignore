@@ -14,3 +14,6 @@ oscrypto-ca-bundle.crt
 .zsh_history
 
 internals/
+
+# PII patterns for pre-commit hook
+.githooks/pii-patterns

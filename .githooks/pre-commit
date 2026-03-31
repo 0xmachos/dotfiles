@@ -10,3 +10,24 @@ if ! command -v gitleaks &>/dev/null; then
 fi
 
 gitleaks protect --staged --verbose
+
+# Block commits containing PII patterns (one grep -E pattern per line)
+pii_file="$(git rev-parse --show-toplevel)/.githooks/pii-patterns"
+
+if [[ -f "${pii_file}" ]]; then
+  pii_patterns=""
+  while IFS= read -r line; do
+    [[ -z "${line}" || "${line}" == \#* ]] && continue
+    pii_patterns="${pii_patterns:+${pii_patterns}|}${line}"
+  done < "${pii_file}"
+
+  if [[ -n "${pii_patterns}" ]] \
+    && git diff --cached --diff-filter=d -U0 | grep -qiE "${pii_patterns}"; then
+    echo "[❌] Staged changes contain a PII pattern."
+    echo "     Redact before committing."
+    git diff --cached --diff-filter=d -U0 \
+      | grep -inE "${pii_patterns}" \
+      | head -5
+    exit 1
+  fi
+fi
