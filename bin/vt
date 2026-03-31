@@ -1,0 +1,7 @@
+#!/bin/zsh
+# dotfiles/bin/vt
+# Wrapper for virustotal-cli that injects API key from 1Password
+
+set -euo pipefail
+
+exec /opt/homebrew/bin/vt --apikey "$(op read 'op://homelab/VirusTotal/credential')" "$@"

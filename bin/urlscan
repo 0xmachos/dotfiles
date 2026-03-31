@@ -1,0 +1,10 @@
+#!/bin/zsh
+# dotfiles/bin/urlscan
+# Wrapper for urlscan-cli that injects API key from 1Password
+
+set -euo pipefail
+
+export URLSCAN_API_KEY
+URLSCAN_API_KEY="$(op read 'op://homelab/urlscan/credential')"
+
+exec /opt/homebrew/bin/urlscan "$@"
