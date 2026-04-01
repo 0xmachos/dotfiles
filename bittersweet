@@ -61,7 +61,6 @@ function usage {
   echo "  brew                  - Install Homebrew"
   echo "  brewfile              - Install Homebrew packages from Brewfile"
   echo "  compinit              - Fix permissions on zsh completion directory /usr/local/share"
-  echo "  shell                 - Change shell to zsh as installed by Brew"
   echo "  mdmprofile            - Open System Preferences to install MDM Profile"
   echo "  launchagents          - Install and load LaunchAgents & LaunchDaemon"
 
@@ -1407,49 +1406,6 @@ function zsh_compinit_fix {
 }
 
 
-function change_shell {
-  # change_shell
-  #   Change default shell to zsh as installed by Brew
-  #   /usr/local/bin/zsh instead of /bin/zsh
-  # This has been removed from Hailmary as zsh does not
-  #   get updated that much. It is safer to use the system 
-  #   version which is protected by SIP & SSV
-
-  local -r new_shell="/opt/homebrew/bin/zsh"
-  
-  if [[ "${SHELL}" == "${new_shell}" ]]; then
-    echo "[✅] Current shell is already '${new_shell}'"
-    return 0
-  fi
-
-  get_sudo "to change shell"
-
-  if [[ ! -e "${new_shell}" ]]; then
-    echo "[❌] Failed to change shell as '${new_shell}' does not exist"
-    return 1
-  fi
-
-  if ! grep -qx "${new_shell}" /etc/shells; then
-    if ! sudo bash -c "echo ${new_shell} >> /etc/shells"; then
-      # !! SUDO !!
-      # Add new shell to list of allowed shells
-      # https://unix.stackexchange.com/a/4833/271903
-      echo "[❌] Failed to add ${new_shell} to /etc/shells"
-      return 1
-    fi
-  fi
-  
-  if chsh -s "${new_shell}"; then
-  # Change $USER shell
-    echo "[✅] Successfully change default shell to ${new_shell}"
-    return 0
-  else  
-    echo "[❌] Failed to change default shell to ${new_shell}"
-    return 1
-  fi
-}
-
-
 function open_system_preferences_mdm_profile {
   # open_system_preferences_mdm_profile
   # As of macOS Big Sur (11) /usr/bin/profiles can no longer install .mobileconfig profiles
@@ -1634,9 +1590,6 @@ function main {
     compinit)
       zsh_compinit_fix
       ;;
-    shell)
-      change_shell
-      ;;
     mdmprofile)
       open_system_preferences_mdm_profile
       ;;
@@ -1652,7 +1605,7 @@ function main {
       # Order matters!
       # - System config (no dependencies)
       # - Security tools (curl + plutil, no brew needed)
-      # - Homebrew + Brewfile (installs shellcheck, zsh)
+      # - Homebrew + Brewfile (installs shellcheck, etc.)
       # - Everything else...
       echo -e "[🍺] ${RED}Hailmary${RESET} engaged"
       sleep 3
