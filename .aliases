@@ -97,7 +97,7 @@ alias plint='plutil -lint '
 
 ## Gucci
 # Pull pcap captures from Gucci into today's dated directory
-alias gucci-fetch-pcaps='mkdir -p ~/Documents/Projects/ridleys-shooting-party/pcaps/$(date +%Y-%m-%d) && SSH_ASKPASS_REQUIRE=force SSH_ASKPASS=gucci-askpass scp "gucci:/sdcard1/*.pcap" ~/Documents/Projects/ridleys-shooting-party/pcaps/$(date +%Y-%m-%d)/'
+alias gucci-fetch-pcaps='mkdir -p ~/Documents/Projects/ridleys-shooting-party/pcaps/$(date +%Y-%m-%d) && scp "gucci:/sdcard1/*.pcap" ~/Documents/Projects/ridleys-shooting-party/pcaps/$(date +%Y-%m-%d)/'
 
 ## Miscellaneous
 

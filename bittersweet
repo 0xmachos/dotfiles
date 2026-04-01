@@ -646,7 +646,7 @@ function install_scripts {
   #   Create /usr/local/bin
   #   Symlink files in /usr/local/bin
   
-  local -ar bin_files=(dns pihole_stats jump-user danger gucci-askpass mdview)
+  local -ar bin_files=(dns pihole_stats jump-user danger mdview)
   local -ar macos_script_bin_files=(c0design)
   
   # Create /usr/local/bin
