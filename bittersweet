@@ -549,6 +549,7 @@ function install_dotfiles {
     "${SCRIPT_DIR}/.zshrc"
     "${SCRIPT_DIR}/.aliases"
     "${SCRIPT_DIR}/claude/settings.json"
+    "${SCRIPT_DIR}/.config/1Password/ssh/agent.toml"
   )
 
   local dot_dir dot_file ssh_config git_config claude_file sensitive_file
@@ -581,6 +582,11 @@ function install_dotfiles {
 
   # Symlink npm config into $HOME/.npmrc (npm hardcodes ~/.npmrc)
   _symlink "${SCRIPT_DIR}/.config/npm/.npmrc" "${HOME}/.npmrc"
+
+  # Copy 1Password SSH agent config (1Password doesn't follow symlinks)
+  _ensure_dir "${HOME}/.config/1Password/ssh"
+  cp "${SCRIPT_DIR}/.config/1Password/ssh/agent.toml" "${HOME}/.config/1Password/ssh/agent.toml"
+  chmod 600 "${HOME}/.config/1Password/ssh/agent.toml"
 
   # Symlink Claude Code configs into $HOME/.claude/
   for claude_file in "${claude_files[@]}"; do
