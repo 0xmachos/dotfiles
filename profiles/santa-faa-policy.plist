@@ -1,0 +1,657 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+
+<!-- Santa File Access Authorization (FAA) Policy
+     Protects high-value dotfiles from unauthorised reads and writes.
+     Process-level identity enforcement — only allowlisted code-signed
+     binaries can access watched files (chmod 600 only blocks other UIDs).
+
+     Rules: SSH config, git signing config, shell startup, shell functions,
+     Claude Code config. Each has symlink + resolved path pairs because
+     ES resolves symlinks before evaluating AUTH_OPEN.
+
+     Installed to /Library/Santa/faa-policy.plist by bittersweet santa-faa.
+     Referenced by com.northpolesec.santa.vault.mobileconfig via FileAccessPolicyPlist.
+
+     Allowlist is intentionally minimal — iterate as processes are blocked.
+     ES resolves symlinks, so both symlink and resolved paths are watched. -->
+
+<plist version="1.0">
+<dict>
+
+  <key>Version</key>
+  <string>v1.0</string>
+
+  <key>WatchItems</key>
+  <dict>
+
+    <!-- SSH config: symlink paths under ~/.ssh/ -->
+    <key>SSHConfigSymlinks</key>
+    <dict>
+      <key>Paths</key>
+      <array>
+        <dict>
+          <key>Path</key>
+          <string>/Users/*/.ssh/config</string>
+        </dict>
+        <dict>
+          <key>Path</key>
+          <string>/Users/*/.ssh/.extra_ssh</string>
+        </dict>
+      </array>
+      <key>Options</key>
+      <dict>
+        <key>AllowReadAccess</key>
+        <false/>
+        <key>AuditOnly</key>
+        <false/>
+        <key>RuleType</key>
+        <string>PathsWithAllowedProcesses</string>
+      </dict>
+      <key>Processes</key>
+      <array>
+        <!-- ssh: reads config every invocation -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.apple.ssh</string>
+          <key>PlatformBinary</key>
+          <true/>
+        </dict>
+        <!-- scp: uses SSH transport -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.apple.scp</string>
+          <key>PlatformBinary</key>
+          <true/>
+        </dict>
+        <!-- sftp: uses SSH transport -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.apple.sftp</string>
+          <key>PlatformBinary</key>
+          <true/>
+        </dict>
+        <!-- Sublime Text: user's editor -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.sublimetext.4</string>
+          <key>TeamID</key>
+          <string>Z6D26JE4Y4</string>
+        </dict>
+        <!-- ln (com.apple.link): bittersweet recreates symlinks via ln -sfn -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.apple.link</string>
+          <key>PlatformBinary</key>
+          <true/>
+        </dict>
+      </array>
+    </dict>
+
+    <!-- SSH config: resolved symlink targets in dotfiles repo
+         AuditOnly: git reads SSH config for remote operations. Same Xcode
+         developer tool signing issue as GitSigningConfig — can't match
+         git in FAA allowlists. -->
+    <key>SSHConfigResolved</key>
+    <dict>
+      <key>Paths</key>
+      <array>
+        <dict>
+          <key>Path</key>
+          <string>/Users/*/Documents/Projects/dotfiles/.ssh/config</string>
+        </dict>
+        <dict>
+          <key>Path</key>
+          <string>/Users/*/Documents/Projects/dotfiles/.ssh/.extra_ssh</string>
+        </dict>
+      </array>
+      <key>Options</key>
+      <dict>
+        <key>AllowReadAccess</key>
+        <false/>
+        <key>AuditOnly</key>
+        <true/>
+        <key>RuleType</key>
+        <string>PathsWithAllowedProcesses</string>
+      </dict>
+      <key>Processes</key>
+      <array>
+        <!-- ssh: reads config every invocation -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.apple.ssh</string>
+          <key>PlatformBinary</key>
+          <true/>
+        </dict>
+        <!-- scp: uses SSH transport -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.apple.scp</string>
+          <key>PlatformBinary</key>
+          <true/>
+        </dict>
+        <!-- sftp: uses SSH transport -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.apple.sftp</string>
+          <key>PlatformBinary</key>
+          <true/>
+        </dict>
+        <!-- Sublime Text: user's editor -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.sublimetext.4</string>
+          <key>TeamID</key>
+          <string>Z6D26JE4Y4</string>
+        </dict>
+        <!-- Claude Code: reads dotfiles repo files via Read tool -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.anthropic.claude-code</string>
+          <key>TeamID</key>
+          <string>Q6L2SF6YDW</string>
+        </dict>
+        <!-- fileproviderd: Spotlight/iCloud indexing of ~/Documents/ -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.apple.fileproviderd</string>
+          <key>PlatformBinary</key>
+          <true/>
+        </dict>
+        <!-- Tower: git client reads SSH config for remote operations -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.fournova.Tower3</string>
+          <key>TeamID</key>
+          <string>UN97WY764J</string>
+        </dict>
+      </array>
+    </dict>
+
+    <!-- Git signing config: symlink paths under ~/.config/git/ -->
+    <!-- AuditOnly: git spawns many helper binaries (git-remote-http,
+         git-sh-i18n--envsubst, etc.) that all read config. Neither
+         PlatformBinary nor TeamID matching works for Xcode developer
+         tools. Collecting blocked processes before enforcing. -->
+    <key>GitSigningConfig</key>
+    <dict>
+      <key>Paths</key>
+      <array>
+        <dict>
+          <key>Path</key>
+          <string>/Users/*/.config/git/config</string>
+        </dict>
+        <dict>
+          <key>Path</key>
+          <string>/Users/*/.config/git/allowed_signers</string>
+        </dict>
+      </array>
+      <key>Options</key>
+      <dict>
+        <key>AllowReadAccess</key>
+        <false/>
+        <key>AuditOnly</key>
+        <true/>
+        <key>RuleType</key>
+        <string>PathsWithAllowedProcesses</string>
+      </dict>
+      <key>Processes</key>
+      <array>
+        <!-- git: reads config on every operation -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.apple.git</string>
+          <key>PlatformBinary</key>
+          <true/>
+        </dict>
+        <!-- git-remote-http: HTTPS remote operations read config
+             (Xcode developer tool, TeamID 59GAB85EFG, not in platform trust cache) -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.apple.git-remote-http</string>
+          <key>TeamID</key>
+          <string>59GAB85EFG</string>
+        </dict>
+        <!-- Sublime Text: user's editor -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.sublimetext.4</string>
+          <key>TeamID</key>
+          <string>Z6D26JE4Y4</string>
+        </dict>
+        <!-- ssh-keygen: git signature verification via ssh-keygen -Y verify -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.apple.ssh-keygen</string>
+          <key>PlatformBinary</key>
+          <true/>
+        </dict>
+        <!-- ln (com.apple.link): bittersweet recreates symlinks via ln -sfn -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.apple.link</string>
+          <key>PlatformBinary</key>
+          <true/>
+        </dict>
+      </array>
+    </dict>
+
+    <!-- Git signing config: resolved symlink targets in dotfiles repo
+         (AuditOnly — see comment on GitSigningConfig above) -->
+    <key>GitSigningConfigResolved</key>
+    <dict>
+      <key>Paths</key>
+      <array>
+        <dict>
+          <key>Path</key>
+          <string>/Users/*/Documents/Projects/dotfiles/.config/git/config</string>
+        </dict>
+        <dict>
+          <key>Path</key>
+          <string>/Users/*/Documents/Projects/dotfiles/.config/git/allowed_signers</string>
+        </dict>
+      </array>
+      <key>Options</key>
+      <dict>
+        <key>AllowReadAccess</key>
+        <false/>
+        <key>AuditOnly</key>
+        <true/>
+        <key>RuleType</key>
+        <string>PathsWithAllowedProcesses</string>
+      </dict>
+      <key>Processes</key>
+      <array>
+        <!-- git: reads config on every operation -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.apple.git</string>
+          <key>PlatformBinary</key>
+          <true/>
+        </dict>
+        <!-- git-remote-http: HTTPS remote operations read config
+             (Xcode developer tool, TeamID 59GAB85EFG, not in platform trust cache) -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.apple.git-remote-http</string>
+          <key>TeamID</key>
+          <string>59GAB85EFG</string>
+        </dict>
+        <!-- Sublime Text: user's editor -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.sublimetext.4</string>
+          <key>TeamID</key>
+          <string>Z6D26JE4Y4</string>
+        </dict>
+        <!-- ssh-keygen: git signature verification via ssh-keygen -Y verify -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.apple.ssh-keygen</string>
+          <key>PlatformBinary</key>
+          <true/>
+        </dict>
+        <!-- Claude Code: reads dotfiles repo files via Read tool -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.anthropic.claude-code</string>
+          <key>TeamID</key>
+          <string>Q6L2SF6YDW</string>
+        </dict>
+        <!-- fileproviderd: Spotlight/iCloud indexing of ~/Documents/ -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.apple.fileproviderd</string>
+          <key>PlatformBinary</key>
+          <true/>
+        </dict>
+        <!-- Tower: git client reads git config for operations -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.fournova.Tower3</string>
+          <key>TeamID</key>
+          <string>UN97WY764J</string>
+        </dict>
+      </array>
+    </dict>
+
+    <!-- Shell startup: symlink paths under ~/ -->
+    <key>ShellStartupConfig</key>
+    <dict>
+      <key>Paths</key>
+      <array>
+        <dict>
+          <key>Path</key>
+          <string>/Users/*/.zshrc</string>
+        </dict>
+        <dict>
+          <key>Path</key>
+          <string>/Users/*/.aliases</string>
+        </dict>
+      </array>
+      <key>Options</key>
+      <dict>
+        <key>AllowReadAccess</key>
+        <false/>
+        <key>AuditOnly</key>
+        <false/>
+        <key>RuleType</key>
+        <string>PathsWithAllowedProcesses</string>
+      </dict>
+      <key>Processes</key>
+      <array>
+        <!-- zsh: reads .zshrc on startup, sources .aliases -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.apple.zsh</string>
+          <key>PlatformBinary</key>
+          <true/>
+        </dict>
+        <!-- Sublime Text: user's editor -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.sublimetext.4</string>
+          <key>TeamID</key>
+          <string>Z6D26JE4Y4</string>
+        </dict>
+        <!-- ln (com.apple.link): bittersweet recreates symlinks via ln -sfn -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.apple.link</string>
+          <key>PlatformBinary</key>
+          <true/>
+        </dict>
+      </array>
+    </dict>
+
+    <!-- Shell startup: resolved symlink targets in dotfiles repo
+         AuditOnly: git reads these for diff when modified. Same Xcode
+         developer tool signing issue as GitSigningConfig — can't match
+         git in FAA allowlists. -->
+    <key>ShellStartupConfigResolved</key>
+    <dict>
+      <key>Paths</key>
+      <array>
+        <dict>
+          <key>Path</key>
+          <string>/Users/*/Documents/Projects/dotfiles/.zshrc</string>
+        </dict>
+        <dict>
+          <key>Path</key>
+          <string>/Users/*/Documents/Projects/dotfiles/.aliases</string>
+        </dict>
+      </array>
+      <key>Options</key>
+      <dict>
+        <key>AllowReadAccess</key>
+        <false/>
+        <key>AuditOnly</key>
+        <true/>
+        <key>RuleType</key>
+        <string>PathsWithAllowedProcesses</string>
+      </dict>
+      <key>Processes</key>
+      <array>
+        <!-- zsh: reads .zshrc on startup, sources .aliases -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.apple.zsh</string>
+          <key>PlatformBinary</key>
+          <true/>
+        </dict>
+        <!-- Sublime Text: user's editor -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.sublimetext.4</string>
+          <key>TeamID</key>
+          <string>Z6D26JE4Y4</string>
+        </dict>
+        <!-- Claude Code: reads dotfiles repo files via Read tool -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.anthropic.claude-code</string>
+          <key>TeamID</key>
+          <string>Q6L2SF6YDW</string>
+        </dict>
+        <!-- fileproviderd: Spotlight/iCloud indexing of ~/Documents/ -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.apple.fileproviderd</string>
+          <key>PlatformBinary</key>
+          <true/>
+        </dict>
+        <!-- Tower: git client reads shell config for diff/status -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.fournova.Tower3</string>
+          <key>TeamID</key>
+          <string>UN97WY764J</string>
+        </dict>
+      </array>
+    </dict>
+
+    <!-- Shell functions: symlink path ~/.functions/ -->
+    <key>ShellFunctions</key>
+    <dict>
+      <key>Paths</key>
+      <array>
+        <dict>
+          <key>Path</key>
+          <string>/Users/*/.functions</string>
+          <key>IsPrefix</key>
+          <true/>
+        </dict>
+      </array>
+      <key>Options</key>
+      <dict>
+        <key>AllowReadAccess</key>
+        <false/>
+        <key>AuditOnly</key>
+        <false/>
+        <key>RuleType</key>
+        <string>PathsWithAllowedProcesses</string>
+      </dict>
+      <key>Processes</key>
+      <array>
+        <!-- zsh: autoloads functions from FPATH -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.apple.zsh</string>
+          <key>PlatformBinary</key>
+          <true/>
+        </dict>
+        <!-- Sublime Text: user's editor -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.sublimetext.4</string>
+          <key>TeamID</key>
+          <string>Z6D26JE4Y4</string>
+        </dict>
+        <!-- ln (com.apple.link): bittersweet recreates symlinks via ln -sfn -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.apple.link</string>
+          <key>PlatformBinary</key>
+          <true/>
+        </dict>
+      </array>
+    </dict>
+
+    <!-- Shell functions: resolved symlink target in dotfiles repo
+         AuditOnly: git reads these for diff when modified. Same Xcode
+         developer tool signing issue as GitSigningConfig — can't match
+         git in FAA allowlists. -->
+    <key>ShellFunctionsResolved</key>
+    <dict>
+      <key>Paths</key>
+      <array>
+        <dict>
+          <key>Path</key>
+          <string>/Users/*/Documents/Projects/dotfiles/.functions</string>
+          <key>IsPrefix</key>
+          <true/>
+        </dict>
+      </array>
+      <key>Options</key>
+      <dict>
+        <key>AllowReadAccess</key>
+        <false/>
+        <key>AuditOnly</key>
+        <true/>
+        <key>RuleType</key>
+        <string>PathsWithAllowedProcesses</string>
+      </dict>
+      <key>Processes</key>
+      <array>
+        <!-- zsh: autoloads functions from FPATH -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.apple.zsh</string>
+          <key>PlatformBinary</key>
+          <true/>
+        </dict>
+        <!-- Sublime Text: user's editor -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.sublimetext.4</string>
+          <key>TeamID</key>
+          <string>Z6D26JE4Y4</string>
+        </dict>
+        <!-- Claude Code: reads dotfiles repo files via Read tool -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.anthropic.claude-code</string>
+          <key>TeamID</key>
+          <string>Q6L2SF6YDW</string>
+        </dict>
+        <!-- fileproviderd: Spotlight/iCloud indexing of ~/Documents/ -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.apple.fileproviderd</string>
+          <key>PlatformBinary</key>
+          <true/>
+        </dict>
+        <!-- Tower: git client reads function files for diff/status -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.fournova.Tower3</string>
+          <key>TeamID</key>
+          <string>UN97WY764J</string>
+        </dict>
+      </array>
+    </dict>
+
+    <!-- Claude Code settings: symlink path under ~/.claude/ -->
+    <key>ClaudeCodeConfig</key>
+    <dict>
+      <key>Paths</key>
+      <array>
+        <dict>
+          <key>Path</key>
+          <string>/Users/*/.claude/settings.json</string>
+        </dict>
+      </array>
+      <key>Options</key>
+      <dict>
+        <key>AllowReadAccess</key>
+        <false/>
+        <key>AuditOnly</key>
+        <false/>
+        <!-- Suppress SantaGUI popup for Spotlight (mds/mdworker_shared) denials -->
+        <key>EnableSilentMode</key>
+        <true/>
+        <key>RuleType</key>
+        <string>PathsWithAllowedProcesses</string>
+      </dict>
+      <key>Processes</key>
+      <array>
+        <!-- Claude Code: reads settings on startup -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.anthropic.claude-code</string>
+          <key>TeamID</key>
+          <string>Q6L2SF6YDW</string>
+        </dict>
+        <!-- zsh: dcg hook check in .zshrc reads settings.json -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.apple.zsh</string>
+          <key>PlatformBinary</key>
+          <true/>
+        </dict>
+        <!-- Sublime Text: user's editor -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.sublimetext.4</string>
+          <key>TeamID</key>
+          <string>Z6D26JE4Y4</string>
+        </dict>
+        <!-- ln (com.apple.link): bittersweet recreates symlinks via ln -sfn -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.apple.link</string>
+          <key>PlatformBinary</key>
+          <true/>
+        </dict>
+      </array>
+    </dict>
+
+    <!-- Claude Code settings: resolved symlink target in dotfiles repo -->
+    <key>ClaudeCodeConfigResolved</key>
+    <dict>
+      <key>Paths</key>
+      <array>
+        <dict>
+          <key>Path</key>
+          <string>/Users/*/Documents/Projects/dotfiles/claude/settings.json</string>
+        </dict>
+      </array>
+      <key>Options</key>
+      <dict>
+        <key>AllowReadAccess</key>
+        <false/>
+        <key>AuditOnly</key>
+        <false/>
+        <!-- Suppress SantaGUI popup for Spotlight (mds/mdworker_shared) denials -->
+        <key>EnableSilentMode</key>
+        <true/>
+        <key>RuleType</key>
+        <string>PathsWithAllowedProcesses</string>
+      </dict>
+      <key>Processes</key>
+      <array>
+        <!-- Claude Code: reads settings on startup -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.anthropic.claude-code</string>
+          <key>TeamID</key>
+          <string>Q6L2SF6YDW</string>
+        </dict>
+        <!-- zsh: dcg hook check in .zshrc reads settings.json -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.apple.zsh</string>
+          <key>PlatformBinary</key>
+          <true/>
+        </dict>
+        <!-- Sublime Text: user's editor -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.sublimetext.4</string>
+          <key>TeamID</key>
+          <string>Z6D26JE4Y4</string>
+        </dict>
+        <!-- fileproviderd: Spotlight/iCloud indexing of ~/Documents/ -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.apple.fileproviderd</string>
+          <key>PlatformBinary</key>
+          <true/>
+        </dict>
+      </array>
+    </dict>
+
+  </dict>
+
+</dict>
+</plist>
