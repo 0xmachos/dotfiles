@@ -22,10 +22,11 @@ if [[ -f "${pii_file}" ]]; then
   done < "${pii_file}"
 
   if [[ -n "${pii_patterns}" ]] \
-    && git diff --cached --diff-filter=d -U0 | grep -qiE "${pii_patterns}"; then
+    && git diff --cached --diff-filter=d -U0 | grep '^+' | grep -v '^+++' | grep -qiE "${pii_patterns}"; then
     echo "[❌] Staged changes contain a PII pattern."
     echo "     Redact before committing."
     git diff --cached --diff-filter=d -U0 \
+      | grep '^+' | grep -v '^+++' \
       | grep -inE "${pii_patterns}" \
       | head -5
     exit 1
