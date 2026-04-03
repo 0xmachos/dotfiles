@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+
+<plist version="1">
+  <dict>
+
+    <!-- Profile Metadata -->
+    <!-- https://developer.apple.com/documentation/devicemanagement/toplevel -->
+    <key>PayloadUUID</key>
+      <!-- UUID for the Profile. Content unimportant but needs to be globally unique -->
+      <string>83AC03E5-0D35-42C4-B89F-EDEB01833615</string>
+    <key>PayloadType</key>
+      <!-- Can only be "Configuration" -->
+      <string>Configuration</string>
+    <key>PayloadOrganization</key>
+      <string>0xmachos</string>
+    <key>PayloadIdentifier</key>
+      <!-- Reverse-DNS style identifier -->
+      <string>com.0xmachos.santa.vault</string>
+    <key>PayloadDisplayName</key>
+      <string>Santa Vault Path Blocking</string>
+    <key>PayloadDescription</key>
+      <string>Block execution from research vault, dmg-cage, and Downloads paths via Santa BlockedPathRegex</string>
+    <key>PayloadVersion</key>
+      <integer>1</integer>
+    <key>PayloadEnabled</key>
+      <true/>
+    <key>PayloadRemovalDisallowed</key>
+      <true/>
+    <key>PayloadScope</key>
+      <string>System</string>
+    <key>TargetDeviceType</key>
+      <integer>5</integer>
+      <!-- 5 = Mac -->
+
+
+    <key>PayloadContent</key>
+    <array>
+
+      <!-- Santa BlockedPathRegex -->
+      <!-- Blocks Mach-O execution from vault, dmg-cage, and ~/Downloads.
+           Defence-in-depth for vault (MNT_NOEXEC is enforced by kernel when
+           mounted via danger-verify / NetFS, but Finder auto-reconnect mounts
+           lack MNT_NOEXEC — Santa catches that gap).
+           Defence-in-depth for dmg-cage.
+           ~/Downloads catches binaries with stripped quarantine xattr. -->
+      <dict>
+        <key>PayloadUUID</key>
+          <string>D49F1D8F-2DC5-45D0-B6C2-F45A0A326CAF</string>
+        <key>PayloadType</key>
+          <string>com.northpolesec.santa</string>
+        <key>PayloadOrganization</key>
+          <string>0xmachos</string>
+        <key>PayloadIdentifier</key>
+          <string>com.0xmachos.santa.vault.santa</string>
+        <key>PayloadDisplayName</key>
+          <string>Block execution from vault, dmg-cage, and Downloads</string>
+        <key>PayloadVersion</key>
+          <integer>1</integer>
+        <key>PayloadEnabled</key>
+          <true/>
+
+        <key>BlockedPathRegex</key>
+          <string>^(\/Volumes\/Vault\/.*|\/Volumes\/dmg-cage\/.*|\/Users\/[^\/]+\/Downloads\/.*)$</string>
+
+        <!-- FAA policy for dotfiles protection (SSH, git signing, shell, Claude Code).
+             Policy file is installed to /Library/Santa/ by bittersweet santa-faa.
+             See: CLAUDE.md "Santa FAA (dotfiles protection)" -->
+        <!-- Block binaries with invalid/tampered code signatures even in Monitor mode -->
+        <key>EnableBadSignatureProtection</key>
+          <true/>
+
+        <!-- Force-remount USB mass storage with restricted kernel flags -->
+        <key>RemountUSBMode</key>
+        <array>
+          <string>noexec</string>
+          <string>nosuid</string>
+          <string>nodev</string>
+        </array>
+        <!-- Re-apply RemountUSBMode flags to USB drives already mounted at Santa startup -->
+        <key>OnStartUSBOptions</key>
+          <string>Remount</string>
+
+        <key>FileAccessPolicyPlist</key>
+          <string>/Library/Santa/faa-policy.plist</string>
+        <key>FileAccessPolicyUpdateIntervalSec</key>
+          <integer>60</integer>
+      </dict>
+
+    </array>
+
+  </dict>
+</plist>
