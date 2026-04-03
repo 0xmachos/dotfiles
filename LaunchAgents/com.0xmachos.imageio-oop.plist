@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>Label</key>
-	<string>com.mikey.imageio-oop</string>
+	<string>com.0xmachos.imageio-oop</string>
 	<key>ProgramArguments</key>
 	<array>
 		<string>/bin/launchctl</string>

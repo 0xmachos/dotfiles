@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>Label</key>
-	<string>com.mikey.jump-system</string>
+	<string>com.0xmachos.jump-system</string>
 	<key>ProgramArguments</key>
 	<array>
 		<string>/usr/local/bin/jump-system</string>

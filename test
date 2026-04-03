@@ -196,9 +196,9 @@ CHECKS
     "/Volumes/Vault/"
     "/Volumes/dmg-cage/sample.exe"
     "/Volumes/dmg-cage/deep/nested/path"
-    "/Users/mikey/Downloads/suspicious.app"
-    "/Users/mikey/Downloads/.test-exec"
-    "/Users/mikey/Downloads/path with spaces/file"
+    "/Users/testuser/Downloads/suspicious.app"
+    "/Users/testuser/Downloads/.test-exec"
+    "/Users/testuser/Downloads/path with spaces/file"
   )
 
   local -a must_not_match=(
@@ -208,7 +208,7 @@ CHECKS
     "/Volumes/dmg-cages/file"
     "/tmp/anything"
     "/usr/bin/true"
-    "/Users/mikey/Desktop/file"
+    "/Users/testuser/Desktop/file"
     "/Users/other/Downloads/file"
   )
 
@@ -234,7 +234,7 @@ CHECKS
   local -a required_substrings=(
     "/Volumes/Vault/"
     "/Volumes/dmg-cage/"
-    "/Users/mikey/Downloads/"
+    "/Users/testuser/Downloads/"
   )
 
   local stripped

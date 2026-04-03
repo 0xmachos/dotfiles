@@ -3,7 +3,7 @@
 #
 # jump-user
 #   User-level update script for Homebrew
-#   Designed to be run by LaunchAgent com.mikey.jump-user
+#   Designed to be run by LaunchAgent com.0xmachos.jump-user
 #   Can also be run manually
 #
 #   Usage: jump-user [--delay N]
@@ -17,9 +17,9 @@ function run_and_log {
   shift
   local output
   if output=$("$@" 2>&1); then
-    logger -t "com.mikey.jump" "[OK] ${description}"
+    logger -t "com.0xmachos.jump" "[OK] ${description}"
   else
-    logger -t "com.mikey.jump" "[FAIL] ${description}"
+    logger -t "com.0xmachos.jump" "[FAIL] ${description}"
     {
       echo "[$(date '+%Y-%m-%d %H:%M:%S')] [FAIL] ${description}"
       echo "${output}"
@@ -39,7 +39,7 @@ function check_internet_connection {
   done
 
   if [[ "${all_domains_not_reachable}" = "true" ]]; then
-    logger -t "com.mikey.jump" "[FAIL] jump-user: not connected to the internet"
+    logger -t "com.0xmachos.jump" "[FAIL] jump-user: not connected to the internet"
     return 1
   fi
 }
@@ -68,7 +68,7 @@ function main {
   local -r BREW_BINARY="/opt/homebrew/bin/brew"
 
   if ! [[ -x "${BREW_BINARY}" ]]; then
-    logger -t "com.mikey.jump" "[FAIL] jump-user: brew not found"
+    logger -t "com.0xmachos.jump" "[FAIL] jump-user: brew not found"
     return 1
   fi
 

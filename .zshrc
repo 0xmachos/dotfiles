@@ -57,7 +57,7 @@ fi
 export IIOEnableOOP=1
 # Enable undocumented ImageIO out-of-process parsing (ImageIOXPCService sandbox)
 # Only affects terminal-launched processes; GUI apps get coverage via
-# LaunchAgents/com.mikey.imageio-oop.plist (launchctl setenv at login)
+# LaunchAgents/com.0xmachos.imageio-oop.plist (launchctl setenv at login)
 # For immediate effect in current session: launchctl setenv IIOEnableOOP 1
 # https://rtx.meta.security/mitigation/2023/09/11/Sandboxing-ImageIO-in-macOS.html
 

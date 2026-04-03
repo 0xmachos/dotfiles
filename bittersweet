@@ -1404,7 +1404,7 @@ function zsh_compinit_fix {
   fi
   
   if ! chown -R "${USER}:staff" "${completions_dir}"; then
-    echo "[❌] Failed to change owners of ${completions_dir} to mikey:staff"
+    echo "[❌] Failed to change owners of ${completions_dir} to ${USER}:staff"
     return 1
   fi
 
@@ -1444,9 +1444,9 @@ function install_launchagents {
   #   survive reboot. Copying is the only reliable approach.
 
   local -ar launchagent_plists=(
-    com.mikey.jump-user
-    com.mikey.vault-guard
-    com.mikey.imageio-oop
+    com.0xmachos.jump-user
+    com.0xmachos.vault-guard
+    com.0xmachos.imageio-oop
   )
 
   # LaunchAgents: copy into ~/Library/LaunchAgents/
@@ -1466,12 +1466,12 @@ function install_launchagents {
   # LaunchDaemon: copy to /Library/LaunchDaemons/ with root:wheel 644
   get_sudo "to install LaunchDaemon"
 
-  if sudo cp "${SCRIPT_DIR}/LaunchDaemons/com.mikey.jump-system.plist" "/Library/LaunchDaemons/com.mikey.jump-system.plist"; then
-    sudo chown root:wheel "/Library/LaunchDaemons/com.mikey.jump-system.plist"
-    sudo chmod 644 "/Library/LaunchDaemons/com.mikey.jump-system.plist"
-    echo "[✅] Successfully installed com.mikey.jump-system.plist to /Library/LaunchDaemons/"
+  if sudo cp "${SCRIPT_DIR}/LaunchDaemons/com.0xmachos.jump-system.plist" "/Library/LaunchDaemons/com.0xmachos.jump-system.plist"; then
+    sudo chown root:wheel "/Library/LaunchDaemons/com.0xmachos.jump-system.plist"
+    sudo chmod 644 "/Library/LaunchDaemons/com.0xmachos.jump-system.plist"
+    echo "[✅] Successfully installed com.0xmachos.jump-system.plist to /Library/LaunchDaemons/"
   else
-    echo "[❌] Failed to install com.mikey.jump-system.plist"
+    echo "[❌] Failed to install com.0xmachos.jump-system.plist"
   fi
 }
 
@@ -1483,9 +1483,9 @@ function load_launchagents {
   local -r uid=$(id -u)
 
   local -ar launchagent_plists=(
-    com.mikey.jump-user
-    com.mikey.vault-guard
-    com.mikey.imageio-oop
+    com.0xmachos.jump-user
+    com.0xmachos.vault-guard
+    com.0xmachos.imageio-oop
   )
 
   for plist in "${launchagent_plists[@]}"; do
@@ -1499,17 +1499,17 @@ function load_launchagents {
 
   # Verify imageio-oop env var took effect
   if [[ "$(launchctl getenv IIOEnableOOP)" != "1" ]]; then
-    echo "[❌] com.mikey.imageio-oop loaded but IIOEnableOOP not set in launchd"
+    echo "[❌] com.0xmachos.imageio-oop loaded but IIOEnableOOP not set in launchd"
   fi
 
   # LaunchDaemon
   get_sudo "to load LaunchDaemon"
 
-  sudo launchctl bootout "system/com.mikey.jump-system" 2>/dev/null || true
-  if sudo launchctl bootstrap "system" "/Library/LaunchDaemons/com.mikey.jump-system.plist"; then
-    echo "[✅] Successfully loaded com.mikey.jump-system LaunchDaemon"
+  sudo launchctl bootout "system/com.0xmachos.jump-system" 2>/dev/null || true
+  if sudo launchctl bootstrap "system" "/Library/LaunchDaemons/com.0xmachos.jump-system.plist"; then
+    echo "[✅] Successfully loaded com.0xmachos.jump-system LaunchDaemon"
   else
-    echo "[❌] Failed to load com.mikey.jump-system LaunchDaemon"
+    echo "[❌] Failed to load com.0xmachos.jump-system LaunchDaemon"
   fi
 }
 
