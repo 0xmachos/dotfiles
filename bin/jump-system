@@ -4,7 +4,7 @@
 # jump-system
 #   System-level update script (runs as root via LaunchDaemon)
 #   Updates: macOS, LaTeX (tlmgr), XProtect, REDACTED, dcg
-#   Designed to be run by LaunchDaemon com.mikey.jump-system
+#   Designed to be run by LaunchDaemon com.0xmachos.jump-system
 #   Can also be run manually with sudo
 
 set -uo pipefail
@@ -22,9 +22,9 @@ function run_and_log {
   shift
   local output
   if output=$("$@" 2>&1); then
-    logger -t "com.mikey.jump" "[OK] ${description}"
+    logger -t "com.0xmachos.jump" "[OK] ${description}"
   else
-    logger -t "com.mikey.jump" "[FAIL] ${description}"
+    logger -t "com.0xmachos.jump" "[FAIL] ${description}"
     {
       echo "[$(date '+%Y-%m-%d %H:%M:%S')] [FAIL] ${description}"
       echo "${output}"
@@ -44,7 +44,7 @@ function check_internet_connection {
   done
 
   if [[ "${all_domains_not_reachable}" = "true" ]]; then
-    logger -t "com.mikey.jump" "[FAIL] jump-system: not connected to the internet"
+    logger -t "com.0xmachos.jump" "[FAIL] jump-system: not connected to the internet"
     return 1
   fi
 }
