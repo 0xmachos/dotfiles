@@ -521,7 +521,7 @@ function install_dotfiles {
   # install_dotfiles
   #   Create directories in $HOME
   #   Symlink config files from repo into $HOME
-  #   Config files for: zsh, git, ssh, Claude Code, VirusTotal, Xcode
+  #   Config files for: zsh, git, ssh, Claude Code, VirusTotal, Ghostty, Xcode
 
   local _dir_count=0
   local _link_count=0
@@ -619,6 +619,10 @@ function install_dotfiles {
   for wrapper in "${op_wrapper_scripts[@]}"; do
     _symlink "${SCRIPT_DIR}/bin/${wrapper}" "${HOME}/.local/bin/${wrapper}"
   done
+
+  # Symlink Ghostty config into macOS Application Support location
+  _ensure_dir "${HOME}/Library/Application Support/com.mitchellh.ghostty"
+  _symlink "${SCRIPT_DIR}/config" "${HOME}/Library/Application Support/com.mitchellh.ghostty/config"
 
   # Symlink Xcode file header template into per-user global location
   _ensure_dir "${HOME}/Library/Developer/Xcode/UserData"
