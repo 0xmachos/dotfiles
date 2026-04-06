@@ -112,3 +112,6 @@ alias unpack='pkgutil --expand-full'
 # https://tailscale.com/kb/1080/cli
 alias tailscale='/Applications/Tailscale.app/Contents/MacOS/Tailscale'
 
+# Skip permission prompts (dcg hook + settings.json deny rules remain active)
+alias claude='claude --dangerously-skip-permissions'
+
