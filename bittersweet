@@ -22,6 +22,13 @@ readonly SCRIPT_DIR="${0:A:h}"
 # :h  - take the head (parent directory), stripping the filename
 # This ensures paths resolve correctly regardless of $PWD
 
+if [[ ! -f "${SCRIPT_DIR}/bittersweet" ]]; then
+  echo "[❌] SCRIPT_DIR failed to resolve (got: ${SCRIPT_DIR})"
+  echo "    zsh :A cannot follow symlinks with restricted permissions."
+  echo "    Run directly from the repo: ~/Documents/Projects/dotfiles/bittersweet"
+  exit 1
+fi
+
 ### Define Colours ###
 
 /usr/bin/tput sgr0;
@@ -537,6 +544,7 @@ function install_dotfiles {
     "claude/statusline-command.sh:statusline-command.sh"
     "claude/global-claude.md:CLAUDE.md"
     "claude/lint-hook.sh:lint-hook.sh"
+    "claude/anti-rationalization-hook.sh:anti-rationalization-hook.sh"
   )
   local -ar sensitive_files=(
     "${SCRIPT_DIR}/.ssh/config"
@@ -656,7 +664,7 @@ function install_scripts {
   #   Create /usr/local/bin
   #   Symlink files in /usr/local/bin
   
-  local -ar bin_files=(dns pihole_stats jump-user danger mdview)
+  local -ar bin_files=(dns pihole_stats jump-user danger mdview npm-audit-check)
   local -ar macos_script_bin_files=(c0design)
   
   # Create /usr/local/bin
@@ -672,8 +680,12 @@ function install_scripts {
   get_sudo "to symlink scripts into /usr/local/bin/"
   
   # Symlink files
+  # chmod -h fixes symlink mode after ln: umask 077 produces lrwx------ which
+  # blocks readlink(2) for non-root (XNU checks KAUTH_VNODE_READ_DATA on
+  # symlinks despite symlink(7) saying permissions are ignored)
   for bin_file in "${bin_files[@]}"; do
     if sudo ln -sfn "${SCRIPT_DIR}/bin/${bin_file}" "/usr/local/bin/${bin_file}"; then
+      sudo chmod -h 755 "/usr/local/bin/${bin_file}"
       echo "[✅] Successfully linked ${bin_file} to /usr/local/bin/${bin_file}"
     else
       echo "[❌] Failed to link ${bin_file} to /usr/local/bin/${bin_file}"
@@ -693,6 +705,7 @@ function install_scripts {
 
   # Symlink bittersweet into /usr/local/bin
   if sudo ln -sfn "${SCRIPT_DIR}/bittersweet" "/usr/local/bin"; then
+    sudo chmod -h 755 "/usr/local/bin/bittersweet"
     echo "[✅] Successfully linked bittersweet to /usr/local/bin/bittersweet"
   else
     echo "[❌] Failed to link bittersweet to /usr/local/bin/bittersweet"
@@ -701,6 +714,7 @@ function install_scripts {
   # Symlink some files in macos-scripts repo into /usr/local/bin
   for macos_script in "${macos_script_bin_files[@]}"; do
     if sudo ln -sfn "$HOME/Documents/Projects/macos-scripts/${macos_script}" "/usr/local/bin/${macos_script}"; then
+      sudo chmod -h 755 "/usr/local/bin/${macos_script}"
       echo "[✅] Successfully linked ${macos_script} to /usr/local/bin/${macos_script}"
     else
       echo "[❌] Failed to link ${macos_script} to /usr/local/bin/${macos_script}"
