@@ -58,6 +58,8 @@ alias dl='cd ~/Downloads'
 alias dk='cd ~/Desktop'
 # cd into HOME/Documents/Projects directory
 alias pj='cd ~/Documents/Projects'
+# cd into HOME/Documents/Projects/dotfiles directory
+alias dot='cd ~/Documents/Projects/dotfiles'
 # cd in /Applications
 alias ap='cd /Applications/'
 # cd into HOME/Documents/Projects directory
