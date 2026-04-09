@@ -309,6 +309,7 @@ function test_dotfile_coverage {
     [.github]=repo
     [internals]=repo
     [templates]=repo
+
   )
 
   # .config/ subdirs must each be wired in install_dotfiles
@@ -328,6 +329,7 @@ function test_dotfile_coverage {
     [jump-system]=install_scripts
     [danger]=install_scripts
     [mdview]=install_scripts
+    [npm-audit-check]=install_scripts
     # install_dotfiles → ~/.local/bin/ (op wrappers)
     [vt]=install_dotfiles
     [urlscan]=install_dotfiles
@@ -336,6 +338,17 @@ function test_dotfile_coverage {
     [test-santa-faa]=repo
     # Manually-run scripts
     [survey]=repo
+  )
+
+  # claude/ files → owning subcommand (rules/ and skills/ are dynamic)
+  local -A claude_items=(
+    [settings.json]=install_dotfiles
+    [global-claude.md]=install_dotfiles
+    [statusline-command.sh]=install_dotfiles
+    [lint-hook.sh]=install_dotfiles
+    [anti-rationalization-hook.sh]=install_dotfiles
+    [rules]=install_dotfiles                 # Dynamic (individual rules)
+    [skills]=install_dotfiles                # Dynamic (individual skills)
   )
 
   # LaunchAgent plists must each be in install_launchagents
@@ -410,6 +423,19 @@ function test_dotfile_coverage {
       echo "[FAIL] Untracked LaunchDaemon: ${name}"
       echo "       Add to install_launchagents and launchdaemon_plists map"
       ERRORS+=("coverage:LaunchDaemons/${name}")
+    fi
+  done
+
+  # 6. claude/ items (files and subdirs, skip .DS_Store)
+  local claude_item
+  for claude_item in claude/*; do
+    [[ -e "${claude_item}" ]] || continue
+    name="${claude_item##*/}"
+    [[ "${name}" == ".DS_Store" ]] && continue
+    if [[ -z "${claude_items[${name}]+_}" ]]; then
+      echo "[FAIL] Untracked claude/ item: ${name}"
+      echo "       Add to claude_files in install_dotfiles and claude_items map"
+      ERRORS+=("coverage:claude/${name}")
     fi
   done
 
