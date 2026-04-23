@@ -52,6 +52,13 @@ if [[ -d "/Applications/Secretive.app" ]]; then
   export SSH_AUTH_SOCK=$HOME/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh
 fi
 
+# Opt out of CLI tool telemetry
+# DO_NOT_TRACK is the cross-tool convention (consoledonottrack.com) honoured by
+# gh, Homebrew, Next.js, Turbo, Zola, etc. GH_TELEMETRY=false is belt-and-braces
+# for `gh` specifically — it checks both independently
+export DO_NOT_TRACK=true
+export GH_TELEMETRY=false
+
 # Value must be 1, not YES: ImageIO uses atoi() — atoi("YES") returns 0
 # (disabled), atoi("1") returns 1 (enabled)
 export IIOEnableOOP=1
