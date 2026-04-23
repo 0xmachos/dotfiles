@@ -219,6 +219,13 @@ setopt HIST_IGNORE_SPACE
 # Do not store command lines starting with a space
 
 
+### Zoxide ###
+
+if [[ -x "/opt/homebrew/bin/zoxide" ]]; then
+  eval "$(zoxide init zsh)"
+fi
+
+
 ### Change into Inital Directory ###
 
 if [[ -d "${INITIAL_DIR}" ]]; then
@@ -231,6 +238,7 @@ fi
 # Uses zsh builtin read + pattern match instead of jq to avoid spawning an
 # unsigned Homebrew binary that would be blocked by Santa FAA on settings.json
 if command -v dcg &>/dev/null && [[ -f "$HOME/.claude/settings.json" ]]; then
+  # shellcheck disable=SC2168 # local is valid at top-level in zsh
   local _dcg_settings
   _dcg_settings="$(<"$HOME/.claude/settings.json")"
   if [[ "${_dcg_settings}" != *dcg* ]]; then

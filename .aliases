@@ -33,6 +33,12 @@ alias ls='ls -FG'
 alias grep='grep --color=auto '
 # Highlight match with colour
 
+# ripgrep: search everything (hidden files + VCS-ignored files), skip .git/
+alias rga='rg --hidden --no-ignore --glob "!.git/"'
+
+# fd: search everything (hidden files + VCS-ignored files), skip .git/
+alias fda='fd --hidden --no-ignore --exclude .git'
+
 # Enable all clang warnings
 alias cc='cc -Wall'
 
