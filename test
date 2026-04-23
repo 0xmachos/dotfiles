@@ -346,7 +346,6 @@ function test_dotfile_coverage {
     [global-claude.md]=install_dotfiles
     [statusline-command.sh]=install_dotfiles
     [lint-hook.sh]=install_dotfiles
-    [anti-rationalization-hook.sh]=install_dotfiles
     [rules]=install_dotfiles                 # Dynamic (individual rules)
     [skills]=install_dotfiles                # Dynamic (individual skills)
   )
