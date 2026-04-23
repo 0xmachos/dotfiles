@@ -663,7 +663,7 @@ function install_scripts {
   #   Create /usr/local/bin
   #   Symlink files in /usr/local/bin
   
-  local -ar bin_files=(dns pihole_stats jump-user danger mdview npm-audit-check)
+  local -ar bin_files=(dns jump-user danger mdview npm-audit-check)
   local -ar macos_script_bin_files=(c0design)
   
   # Create /usr/local/bin
