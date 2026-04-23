@@ -1,0 +1,43 @@
+#compdef bittersweet
+
+# Completion for bittersweet — macOS configuration and dotfiles installer
+# See: bittersweet
+
+local -a subcommands
+subcommands=(
+  'defaults:Write new system and application default settings'
+  'dotfiles:Symlink various config files into $HOME'
+  'scripts:Symlink scripts in bin into /usr/local/bin'
+  'sudotouch:Enable TouchID to sudo'
+  'secretive:Install Secretive'
+  'sublimetext:Install Sublime Text'
+  'tower:Install Tower'
+  'deckset:Install Deckset'
+  'maccy:Install Maccy'
+  'texpad:Install Texpad (Texifier) and BasicTeX'
+  'basictex:Install MacTeX BasicTeX Distribution'
+  'latex:Install LaTeX packages via tlmgr'
+  'blockblock:Install BlockBlock'
+  'oversight:Install OverSight'
+  'dcg:Install Destructive Command Guard (dcg)'
+  'danger-verify:Build and install danger-verify Swift helper'
+  'vault-guard:Build and install vault-guard DA mount approval daemon'
+  'santa-faa:Install Santa FAA policy for dotfiles protection'
+  'claude:Install Claude Code and dcg'
+  'brew:Install Homebrew'
+  'brewfile:Install Homebrew packages from Brewfile'
+  'compinit:Fix permissions on zsh completion directory'
+  'mdmprofile:Open System Preferences to install MDM Profile'
+  'launchagents:Install and load LaunchAgents and LaunchDaemon'
+  'test:Run test suite'
+  'hailmary:Run every function in order'
+)
+
+_arguments -C \
+  '1:subcommand:->subcmd'
+
+case "${state}" in
+  subcmd)
+    _describe 'subcommand' subcommands
+    ;;
+esac
