@@ -324,7 +324,6 @@ function test_dotfile_coverage {
   local -A bin_scripts=(
     # install_scripts → /usr/local/bin/
     [dns]=install_scripts
-    [pihole_stats]=install_scripts
     [jump-user]=install_scripts
     [jump-system]=install_scripts
     [danger]=install_scripts
