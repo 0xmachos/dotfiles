@@ -26,7 +26,7 @@ cd "${SCRIPT_DIR}"
 # shellcheck source=tests/lib disable=SC1091
 source "${SCRIPT_DIR}/tests/lib"
 
-readonly -a SUITES=(shellcheck extensions plutil santa-profile linkage jump santa-faa)
+readonly -a SUITES=(shellcheck extensions plutil santa-profile linkage completions jump santa-faa)
 
 function _usage {
   echo "Usage: ./test [suite [arg]]"

@@ -43,35 +43,66 @@ readonly RED
 ### END Colours ###
 
 
+### Subcommand Source of Truth ###
+# Ordered list of (subcommand:description) pairs in `_describe` format.
+# Single source of truth, consumed by:
+#   - usage()                          (help text)
+#   - _generate_bittersweet_completion (writes .completions/_bittersweet)
+#   - tests/completions                (parity check vs dispatch case arms)
+# Order is preserved in usage() output and zsh completion suggestions.
+# When adding a new subcommand: add an entry here AND a matching dispatch
+# arm at the bottom of main(). tests/completions enforces both sides match.
+#
+# shellcheck disable=SC2016
+# Description text contains literal `$HOME` — documentation, not a variable
+# reference. Disabling SC2016 array-wide; descriptions are user-facing strings.
+typeset -ra BITTERSWEET_SUBCOMMANDS=(
+  'defaults:Write new system and application default settings'
+  'dotfiles:Symlink various config files into $HOME'
+  'scripts:Symlink scripts in bin into /usr/local/bin'
+  'sudotouch:Enable TouchID to sudo'
+  'secretive:Install Secretive'
+  'sublimetext:Install Sublime Text'
+  'tower:Install Tower'
+  'deckset:Install Deckset'
+  'maccy:Install Maccy'
+  'texpad:Install Texpad (Texifier) and BasicTeX'
+  'basictex:Install MacTeX BasicTeX Distribution'
+  'latex:Install LaTeX packages via tlmgr'
+  'blockblock:Install BlockBlock'
+  'oversight:Install OverSight'
+  'dcg:Install Destructive Command Guard (dcg)'
+  'danger-verify:Build and install danger-verify Swift helper'
+  'vault-guard:Build and install vault-guard DA mount approval daemon'
+  'santa-faa:Install Santa FAA policy for dotfiles protection'
+  'claude:Install Claude Code and dcg'
+  'brew:Install Homebrew'
+  'brewfile:Install Homebrew packages from Brewfile'
+  'compinit:Fix permissions on zsh completion directory'
+  'mdmprofile:Open System Preferences to install MDM Profile'
+  'launchagents:Install and load LaunchAgents and LaunchDaemon'
+  'completions:Regenerate .completions/_bittersweet from BITTERSWEET_SUBCOMMANDS'
+  'test:Run test suite'
+  'hailmary:Run every function in order'
+)
+### END Subcommand SOT ###
+
+
 function usage {
 
   echo -e "\\nConfigures macOS just the way I like it 🤓\\n"
   echo "Usage:"
-  echo "  defaults              - Write new system and application default settings"
-  echo "  dotfiles              - Symlink various config files into ${HOME}"
-  echo "  scripts               - Symlink scripts in bin into /usr/local/bin"
-  echo "  sudotouch             - Enable TouchID to sudo"
-  echo "  secretive             - Install Secretive 🔑"
-  echo "  sublimetext           - Install Sublime Text"
-  echo "  tower                 - Install Tower"
-  echo "  deckset               - Install Deckset"
-  echo "  maccy                 - Install Maccy"
-  echo "  texpad                - Install Texpad (Texifier) & BasicTeX"
-  echo "  basictex              - Install MacTeX BasicTeX Distribution"
-  echo "  latex                 - Install LaTeX packages via tlmgr"
-  echo "  blockblock            - Install BlockBlock"
-  echo "  oversight             - Install OverSight 📸🎤"
-  echo "  dcg                   - Install Destructive Command Guard (dcg)"
-  echo "  danger-verify         - Build and install danger-verify Swift helper"
-  echo "  santa-faa             - Install Santa FAA policy for dotfiles protection"
-  echo "  claude                - Install Claude Code & dcg"
-  echo "  brew                  - Install Homebrew"
-  echo "  brewfile              - Install Homebrew packages from Brewfile"
-  echo "  compinit              - Fix permissions on zsh completion directory /usr/local/share"
-  echo "  mdmprofile            - Open System Preferences to install MDM Profile"
-  echo "  launchagents          - Install and load LaunchAgents & LaunchDaemon"
 
-  echo -e "\\n  ${RED}hailmary${RESET}              - ${BOLD}Run every function${RESET} in order listed above"
+  local entry name desc
+  for entry in "${BITTERSWEET_SUBCOMMANDS[@]}"; do
+    name="${entry%%:*}"
+    desc="${entry#*:}"
+    if [[ "${name}" == "hailmary" ]]; then
+      echo -e "\\n  ${RED}${name}${RESET}              - ${BOLD}${desc}${RESET}"
+    else
+      printf '  %-22s- %s\n' "${name}" "${desc}"
+    fi
+  done
 
   exit 0
 }
@@ -824,6 +855,47 @@ EOF
   printf '%s\n' "${names[@]}" | sort -u | while IFS= read -r name; do
     printf '  - %s\n' "${name}" >> "${output_file}"
   done
+}
+
+
+function _generate_bittersweet_completion {
+  # _generate_bittersweet_completion OUTPUT_FILE
+  #   Writes a #compdef file for bittersweet sourced from
+  #   BITTERSWEET_SUBCOMMANDS. Idempotent — safe to overwrite the existing
+  #   .completions/_bittersweet on every call. Uses heredocs (quoted EOF) so
+  #   every literal in the output passes through verbatim — no expansion, no
+  #   linter noise about single-quoted backticks or trailing backslashes.
+  local output_file="${1}"
+  local entry
+
+  cat > "${output_file}" <<'EOF'
+#compdef bittersweet
+
+# Auto-generated by `bittersweet completions` — do not edit by hand.
+# Source of truth: BITTERSWEET_SUBCOMMANDS in `bittersweet`.
+# Drift between this file and the dispatch case statement is caught
+# by `./test completions` and the .githooks/pre-commit hook.
+
+local -a subcommands
+subcommands=(
+EOF
+
+  for entry in "${BITTERSWEET_SUBCOMMANDS[@]}"; do
+    printf "  '%s'\n" "${entry}" >> "${output_file}"
+  done
+
+  cat >> "${output_file}" <<'EOF'
+)
+
+_arguments -C \
+  '1:subcommand:->subcmd'
+
+case "${state}" in
+  subcmd)
+    _describe 'subcommand' subcommands
+    ;;
+esac
+EOF
 }
 
 
@@ -1619,6 +1691,13 @@ function main {
     launchagents)
       install_launchagents
       load_launchagents
+      ;;
+    completions)
+      # Optional second arg: alternate output path (used by tests/completions
+      # to generate into $TMPDIR without mutating the tracked file).
+      local out_path="${2:-${SCRIPT_DIR}/.completions/_bittersweet}"
+      _generate_bittersweet_completion "${out_path}"
+      echo "[✅] Regenerated ${out_path}"
       ;;
     test)
       run_test
