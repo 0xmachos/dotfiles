@@ -1,113 +1,63 @@
 #!/bin/zsh
-# dotfiles/bin/test-jump
-
-# test-jump
-#   Tests for jump-user and jump-system scripts. Verifies internet
-#   connectivity checks, binary detection, and logging behaviour.
+# dotfiles/tests/jump
 #
-# Usage: test-jump
+# Tests for jump-user and jump-system scripts. Verifies internet
+# connectivity checks, binary detection, and logging behaviour.
 #
-# ShellCheck: Use `shellcheck --shell=bash` (no native Zsh support).
+# ShellCheck: lint with `shellcheck --shell=bash tests/jump`.
 #   Zsh associative array iteration (${(@k)}) triggers SC2066/SC2296 —
-#   suppressed inline. SC1090 (non-constant source) suppressed for
-#   run_and_log tests.
+#   suppressed inline.
+# This file is sourced, not executed — chmod 644.
+#
+# shellcheck source=tests/lib
 
-set -euo pipefail
+function _jump_test_scripts_exist {
+  _section "script existence"
 
-IFS=$'\n\t'
+  local bindir="bin"
 
-### Constants ###
-
-readonly RED=$'\e[31m'
-readonly GREEN=$'\e[32m'
-readonly YELLOW=$'\e[33m'
-readonly BOLD=$'\e[1m'
-readonly RESET=$'\e[0m'
-
-readonly SCRIPT_DIR="${0:A:h}"
-readonly JUMP_USER="${SCRIPT_DIR}/jump-user"
-readonly JUMP_SYSTEM="${SCRIPT_DIR}/jump-system"
-
-### END Constants ###
-
-pass_count=0
-fail_count=0
-skip_count=0
-
-### Utility Functions ###
-
-function _pass {
-  echo "${GREEN}PASS${RESET}  $1"
-  (( pass_count += 1 ))
-}
-
-function _fail {
-  echo "${RED}FAIL${RESET}  $1"
-  (( fail_count += 1 ))
-}
-
-function _skip {
-  echo "${YELLOW}SKIP${RESET}  $1"
-  (( skip_count += 1 ))
-}
-
-### END Utility Functions ###
-
-
-### Tests ###
-
-# ── script existence ──────────────────────────────
-
-function test_scripts_exist {
-  echo ""
-  echo "${BOLD}── script existence ──${RESET}"
-
-  if [[ -x "${JUMP_USER}" ]]; then
+  if [[ -x "${bindir}/jump-user" ]]; then
     _pass "jump-user is executable"
   else
     _fail "jump-user missing or not executable"
   fi
 
-  if [[ -x "${JUMP_SYSTEM}" ]]; then
+  if [[ -x "${bindir}/jump-system" ]]; then
     _pass "jump-system is executable"
   else
     _fail "jump-system missing or not executable"
   fi
+
+  if [[ -x "${bindir}/npm-audit-check" ]]; then
+    _pass "npm-audit-check is executable"
+  else
+    _fail "npm-audit-check missing or not executable"
+  fi
 }
 
-# ── shellcheck ────────────────────────────────────
-
-function test_shellcheck {
-  echo ""
-  echo "${BOLD}── shellcheck ──${RESET}"
+function _jump_test_shellcheck {
+  _section "shellcheck (jump scripts)"
 
   if ! command -v shellcheck >/dev/null 2>&1; then
     _skip "shellcheck not installed"
     return
   fi
 
-  local output
-  if output=$(shellcheck --shell=bash "${JUMP_USER}" 2>&1); then
-    _pass "jump-user passes shellcheck"
-  else
-    _fail "jump-user shellcheck errors: ${output}"
-  fi
-
-  if output=$(shellcheck --shell=bash "${JUMP_SYSTEM}" 2>&1); then
-    _pass "jump-system passes shellcheck"
-  else
-    _fail "jump-system shellcheck errors: ${output}"
-  fi
+  local bindir="bin"
+  local script output
+  for script in jump-user jump-system npm-audit-check; do
+    if output=$(shellcheck --shell=bash "${bindir}/${script}" 2>&1); then
+      _pass "${script} passes shellcheck"
+    else
+      _fail "${script} shellcheck errors: ${output}"
+    fi
+  done
 }
 
-# ── internet connectivity check ───────────────────
 # Verifies the grep pattern matches all known scutil -r output formats
+function _jump_test_reachability_patterns {
+  _section "reachability pattern"
 
-function test_reachability_patterns {
-  echo ""
-  echo "${BOLD}── reachability pattern ──${RESET}"
-
-  # All known scutil -r output formats that indicate reachability
   # root returns "Reachable", user returns "Reachable,Transient Connection"
   local -a reachable_outputs=(
     "Reachable"
@@ -123,6 +73,7 @@ function test_reachability_patterns {
 
   local pattern='^Reachable'
 
+  local output
   for output in "${reachable_outputs[@]}"; do
     if echo "${output}" | grep "${pattern}" >/dev/null 2>&1; then
       _pass "pattern matches: '${output}'"
@@ -149,12 +100,9 @@ function test_reachability_patterns {
   done
 }
 
-# ── binary paths ──────────────────────────────────
-# Verifies that binaries referenced in the scripts exist on this system
-
-function test_binary_paths {
-  echo ""
-  echo "${BOLD}── binary paths (jump-user) ──${RESET}"
+# Verifies binaries referenced in the scripts exist on this system
+function _jump_test_binary_paths {
+  _section "binary paths (jump-user)"
 
   if [[ -x "/opt/homebrew/bin/brew" ]]; then
     _pass "brew exists"
@@ -162,8 +110,13 @@ function test_binary_paths {
     _fail "brew not found at /opt/homebrew/bin/brew"
   fi
 
-  echo ""
-  echo "${BOLD}── binary paths (jump-system) ──${RESET}"
+  if [[ -x "/opt/homebrew/bin/npm" ]]; then
+    _pass "npm exists"
+  else
+    _skip "npm not found at /opt/homebrew/bin/npm"
+  fi
+
+  _section "binary paths (jump-system)"
 
   local -A binaries=(
     [softwareupdate]="/usr/sbin/softwareupdate"
@@ -184,11 +137,8 @@ function test_binary_paths {
   done
 }
 
-# ── log file ──────────────────────────────────────
-
-function test_log_file {
-  echo ""
-  echo "${BOLD}── log file ──${RESET}"
+function _jump_test_log_file {
+  _section "log file"
 
   local log_file="${HOME}/Library/Logs/jump.log"
 
@@ -206,18 +156,13 @@ function test_log_file {
   fi
 }
 
-# ── run_and_log function ──────────────────────────
 # Verifies the logging function works by running a trivial command
+function _jump_test_run_and_log {
+  _section "run_and_log"
 
-function test_run_and_log {
-  echo ""
-  echo "${BOLD}── run_and_log ──${RESET}"
-
-  # Source jump-user in a subshell to test run_and_log
   local test_log
   test_log="${TMPDIR}test-jump-$$.log"
 
-  # Inline a minimal run_and_log (sourcing jump-user would execute main)
   local description output
 
   # Test success case
@@ -251,28 +196,11 @@ function test_run_and_log {
   /bin/rm -f "${test_log}"
 }
 
-### END Tests ###
-
-
-### Main ###
-
-function main {
-  echo "${BOLD}test-jump — jump-user & jump-system test suite${RESET}"
-
-  test_scripts_exist
-  test_shellcheck
-  test_reachability_patterns
-  test_binary_paths
-  test_log_file
-  test_run_and_log
-
-  echo ""
-  echo "────────────────────────────────────────"
-  echo "${GREEN}${pass_count} pass${RESET}, ${RED}${fail_count} fail${RESET}, ${YELLOW}${skip_count} skip${RESET}"
-
-  if (( fail_count > 0 )); then
-    return 1
-  fi
+function run_jump {
+  _jump_test_scripts_exist
+  _jump_test_shellcheck
+  _jump_test_reachability_patterns
+  _jump_test_binary_paths
+  _jump_test_log_file
+  _jump_test_run_and_log
 }
-
-main "$@"

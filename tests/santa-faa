@@ -1,93 +1,21 @@
 #!/bin/zsh
-# dotfiles/bin/test-santa-faa
-
-# test-santa-faa
-#   Test Santa FAA (File Access Authorization) rules. Verifies that watched
-#   paths are protected and that allowlisted processes can still access them.
+# dotfiles/tests/santa-faa
 #
-# Usage: test-santa-faa [rule-name]
-#   No args         — run all rule tests
-#   ssh-config      — test SSH config protection only
-#   git-signing     — test git signing config protection only
-#   shell-startup   — test shell startup config protection only
-#   shell-functions — test shell functions protection only
-#   claude-config   — test Claude Code config protection only
+# Test Santa FAA (File Access Authorization) rules. Verifies that watched
+# paths are protected and that allowlisted processes can still access them.
 #
-# ShellCheck: Use `shellcheck --shell=bash` (no native Zsh support).
-#   No Zsh-only syntax used — all constructs are Bash-compatible.
-
-set -euo pipefail
-# -e exit if any command returns non-zero status code
-# -u prevent using undefined variables
-# -o pipefail force pipelines to fail on first non-zero status code
-
-IFS=$'\n\t'
-# Set Internal Field Separator to newlines and tabs
-# This makes bash consider newlines and tabs as separating words
-# See: http://redsymbol.net/articles/unofficial-bash-strict-mode/
-
-### Constants ###
-
-readonly RED=$'\e[31m'
-readonly GREEN=$'\e[32m'
-readonly YELLOW=$'\e[33m'
-readonly BOLD=$'\e[1m'
-readonly RESET=$'\e[0m'
-
-### END Constants ###
-
-pass_count=0
-fail_count=0
-skip_count=0
-
-### Utility Functions ###
-
-function _pass {
-  echo "${GREEN}PASS${RESET}  $1"
-  (( pass_count += 1 ))
-}
-
-function _fail {
-  echo "${RED}FAIL${RESET}  $1"
-  (( fail_count += 1 ))
-}
-
-function _skip {
-  echo "${YELLOW}SKIP${RESET}  $1"
-  (( skip_count += 1 ))
-}
-
-# Expect a command to be BLOCKED by Santa (EPERM on open)
-function _expect_blocked {
-  local desc="$1"
-  shift
-  local err
-  if err="$("$@" 2>&1)"; then
-    _fail "${desc} — expected EPERM, got success"
-    return
-  fi
-  if [[ "${err}" == *"Operation not permitted"* ]]; then
-    _pass "${desc}"
-  else
-    _fail "${desc} — not EPERM: ${err}"
-  fi
-}
-
-# Expect a command to succeed (caller is allowlisted)
-function _expect_allowed {
-  local desc="$1"
-  shift
-  if "$@" >/dev/null 2>&1; then
-    _pass "${desc}"
-  else
-    _fail "${desc} — expected success, got denied"
-  fi
-}
-
-### END Utility Functions ###
-
-
-### Rule Tests ###
+# Usage (via dispatcher):
+#   ./test santa-faa                  — run all rule tests
+#   ./test santa-faa ssh-config       — SSH config protection only
+#   ./test santa-faa git-signing      — git signing config protection only
+#   ./test santa-faa shell-startup    — shell startup config protection only
+#   ./test santa-faa shell-functions  — shell functions protection only
+#   ./test santa-faa claude-config    — Claude Code config protection only
+#
+# ShellCheck: lint with `shellcheck --shell=bash tests/santa-faa`.
+# This file is sourced, not executed — chmod 644.
+#
+# shellcheck source=tests/lib
 
 # ── ssh-config ─────────────────────────────────
 # Rules: SSHConfigSymlinks + SSHConfigResolved
@@ -95,9 +23,8 @@ function _expect_allowed {
 # ES resolves symlinks for OPEN, so reads through symlinks hit the Resolved rule.
 # Allowed: com.apple.ssh, com.apple.scp, com.apple.sftp, com.sublimetext.4,
 #          com.fournova.Tower3, com.apple.ln (symlink rules only)
-function test_ssh_config {
-  echo ""
-  echo "${BOLD}── ssh-config (SSHConfigSymlinks + SSHConfigResolved) [AuditOnly] ──${RESET}"
+function _faa_ssh_config {
+  _section "ssh-config (SSHConfigSymlinks + SSHConfigResolved) [AuditOnly]"
 
   local paths=(
     "${HOME}/.ssh/config"
@@ -125,9 +52,8 @@ function test_ssh_config {
 # and neither PlatformBinary nor TeamID matching works for Xcode developer tools.
 # Blocked tests are skipped; allowed test confirms git can still read config.
 # Allowed: com.apple.git, com.apple.git-remote-http, com.sublimetext.4
-function test_git_signing {
-  echo ""
-  echo "${BOLD}── git-signing (GitSigningConfig + GitSigningConfigResolved) [AuditOnly] ──${RESET}"
+function _faa_git_signing {
+  _section "git-signing (GitSigningConfig + GitSigningConfigResolved) [AuditOnly]"
 
   local paths=(
     "${HOME}/.config/git/config"
@@ -154,9 +80,8 @@ function test_git_signing {
 # ShellStartupConfigResolved is AuditOnly (Xcode git signing issue).
 # ES resolves symlinks for OPEN, so reads through symlinks hit the Resolved rule.
 # Allowed: com.apple.zsh, com.sublimetext.4, com.apple.ln (symlink rules only)
-function test_shell_startup {
-  echo ""
-  echo "${BOLD}── shell-startup (ShellStartupConfig + ShellStartupConfigResolved) [AuditOnly] ──${RESET}"
+function _faa_shell_startup {
+  _section "shell-startup (ShellStartupConfig + ShellStartupConfigResolved) [AuditOnly]"
 
   local paths=(
     "${HOME}/.zshrc"
@@ -183,9 +108,8 @@ function test_shell_startup {
 # ShellFunctionsResolved is AuditOnly (Xcode git signing issue).
 # ES resolves symlinks for OPEN, so reads through symlinks hit the Resolved rule.
 # Allowed: com.apple.zsh, com.sublimetext.4, com.apple.ln (symlink rules only)
-function test_shell_functions {
-  echo ""
-  echo "${BOLD}── shell-functions (ShellFunctions + ShellFunctionsResolved) [AuditOnly] ──${RESET}"
+function _faa_shell_functions {
+  _section "shell-functions (ShellFunctions + ShellFunctionsResolved) [AuditOnly]"
 
   local paths=(
     "${HOME}/.functions/jump"
@@ -212,9 +136,8 @@ function test_shell_functions {
 # Rules: ClaudeCodeConfig + ClaudeCodeConfigResolved
 # Watched: ~/.claude/settings.json, dotfiles/claude/settings.json
 # Allowed: com.anthropic.claude-code, com.sublimetext.4
-function test_claude_config {
-  echo ""
-  echo "${BOLD}── claude-config (ClaudeCodeConfig + ClaudeCodeConfigResolved) ──${RESET}"
+function _faa_claude_config {
+  _section "claude-config (ClaudeCodeConfig + ClaudeCodeConfigResolved)"
 
   local paths=(
     "${HOME}/.claude/settings.json"
@@ -241,21 +164,21 @@ function test_claude_config {
   fi
 }
 
-### END Rule Tests ###
-
-
-### Main ###
-
-function main {
+function run_santa_faa {
   local filter="${1:-}"
 
-  # Preflight: Watch Items must be enabled
+  # Preflight: Watch Items must be enabled. Skip the suite if not — the suite
+  # is sourced into a shared shell, so `exit 1` would kill the whole dispatcher.
+  if ! command -v santactl >/dev/null 2>&1; then
+    _skip "santactl not installed — Santa FAA suite skipped"
+    return 0
+  fi
+
   local watch_section
   watch_section="$(santactl status 2>&1 | grep -A1 "Watch Items")"
   if ! grep -q "Enabled.*Yes" <<< "${watch_section}"; then
-    echo "${RED}ERROR${RESET}  Santa Watch Items not enabled"
-    echo "  Run: santactl status | grep -A5 'Watch Items'"
-    exit 1
+    _skip "Santa Watch Items not enabled — run \`santactl status | grep -A5 'Watch Items'\`"
+    return 0
   fi
 
   local version
@@ -263,22 +186,12 @@ function main {
   echo "Santa FAA tests (policy ${version})"
 
   case "${filter}" in
-    ""              ) test_ssh_config; test_git_signing; test_shell_startup; test_shell_functions; test_claude_config ;;
-    ssh-config      ) test_ssh_config ;;
-    git-signing     ) test_git_signing ;;
-    shell-startup   ) test_shell_startup ;;
-    shell-functions ) test_shell_functions ;;
-    claude-config   ) test_claude_config ;;
-    *               ) echo "${RED}ERROR${RESET}  Unknown rule: ${filter}"; exit 1 ;;
+    ""              ) _faa_ssh_config; _faa_git_signing; _faa_shell_startup; _faa_shell_functions; _faa_claude_config ;;
+    ssh-config      ) _faa_ssh_config ;;
+    git-signing     ) _faa_git_signing ;;
+    shell-startup   ) _faa_shell_startup ;;
+    shell-functions ) _faa_shell_functions ;;
+    claude-config   ) _faa_claude_config ;;
+    *               ) _fail "Unknown santa-faa rule: ${filter}"; return 1 ;;
   esac
-
-  echo ""
-  echo "${BOLD}── Summary ──${RESET}"
-  echo "${GREEN}${pass_count} passed${RESET}, ${RED}${fail_count} failed${RESET}, ${YELLOW}${skip_count} skipped${RESET}"
-
-  if (( fail_count > 0 )); then
-    exit 1
-  fi
 }
-
-main "$@"

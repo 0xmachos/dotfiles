@@ -1,0 +1,77 @@
+#!/bin/zsh
+# dotfiles/tests/lib
+#
+# Shared helpers for dotfiles test suites. Sourced by ./test and each
+# tests/<suite> fragment. Owns colour constants, pass/fail/skip counters,
+# and common expectation helpers.
+#
+# ShellCheck: lint with `shellcheck --shell=bash tests/lib`.
+# This file is sourced, not executed — chmod 644.
+
+readonly RED=$'\e[31m'
+readonly GREEN=$'\e[32m'
+readonly YELLOW=$'\e[33m'
+readonly BOLD=$'\e[1m'
+readonly RESET=$'\e[0m'
+
+typeset -gi pass_count=0
+typeset -gi fail_count=0
+typeset -gi skip_count=0
+
+function _pass {
+  echo "${GREEN}PASS${RESET}  $1"
+  (( pass_count += 1 ))
+}
+
+function _fail {
+  echo "${RED}FAIL${RESET}  $1"
+  (( fail_count += 1 ))
+}
+
+function _skip {
+  echo "${YELLOW}SKIP${RESET}  $1"
+  (( skip_count += 1 ))
+}
+
+function _section {
+  echo ""
+  echo "${BOLD}── $1 ──${RESET}"
+}
+
+# Expect a command to be BLOCKED (EPERM on open)
+function _expect_blocked {
+  local desc="$1"
+  shift
+  local err
+  if err="$("$@" 2>&1)"; then
+    _fail "${desc} — expected EPERM, got success"
+    return
+  fi
+  if [[ "${err}" == *"Operation not permitted"* ]]; then
+    _pass "${desc}"
+  else
+    _fail "${desc} — not EPERM: ${err}"
+  fi
+}
+
+# Expect a command to succeed (caller is allowlisted)
+function _expect_allowed {
+  local desc="$1"
+  shift
+  if "$@" >/dev/null 2>&1; then
+    _pass "${desc}"
+  else
+    _fail "${desc} — expected success, got denied"
+  fi
+}
+
+# Print the aggregated summary. Caller decides exit code via $?.
+function _print_summary {
+  echo ""
+  echo "────────────────────────────────────────"
+  echo "${GREEN}${pass_count} pass${RESET}, ${RED}${fail_count} fail${RESET}, ${YELLOW}${skip_count} skip${RESET}"
+  if (( fail_count > 0 )); then
+    return 1
+  fi
+  return 0
+}
