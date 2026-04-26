@@ -1,0 +1,99 @@
+#!/bin/zsh
+# dotfiles/tests/completions
+#
+# Asserts the bittersweet completion is in sync with its source of truth.
+#
+# Two checks:
+#   1. Parity: every entry in BITTERSWEET_SUBCOMMANDS has a matching dispatch
+#      case arm in `bittersweet`, and vice versa. Catches the developer who
+#      adds an arm without an array entry (or vice versa).
+#   2. Freshness: regenerating the completion into $TMPDIR yields a file
+#      byte-identical to .completions/_bittersweet. Catches edits to the
+#      array (or generator) that haven't been re-materialised.
+#
+# Run: ./test completions    (or ./test for the full suite)
+#
+# ShellCheck: lint with `shellcheck --shell=bash tests/completions`.
+# This file is sourced, not executed — chmod 644.
+#
+# shellcheck source=tests/lib
+
+function _completions_array_keys {
+  # Print BITTERSWEET_SUBCOMMANDS keys (the part before the first colon),
+  # one per line, in declaration order. Parses the static array literal
+  # rather than sourcing bittersweet (which would invoke main()).
+  /usr/bin/awk '
+    /^typeset -ra BITTERSWEET_SUBCOMMANDS=\(/ { in_arr = 1; next }
+    in_arr && /^\)/                           { in_arr = 0; next }
+    in_arr && /^[[:space:]]*'\''/ {
+      sub(/^[[:space:]]*'\''/, "")
+      sub(/:.*/, "")
+      print
+    }
+  ' "${SCRIPT_DIR}/bittersweet"
+}
+
+function _completions_dispatch_arms {
+  # Print case-arm names from main()'s dispatch, excluding the `*)` default.
+  # Pattern: 4-space indent, lowercase name, optional hyphen/digit, `)`.
+  /usr/bin/awk '
+    /case "\$\{cmd\}" in/ { in_case = 1; next }
+    in_case && /^  esac/  { in_case = 0; next }
+    in_case && /^    [a-z][a-z0-9-]*\)/ {
+      sub(/^    /, "")
+      sub(/\).*/, "")
+      print
+    }
+  ' "${SCRIPT_DIR}/bittersweet"
+}
+
+function _completions_check_parity {
+  local sot_keys arms only_in_sot only_in_arms
+  sot_keys="$(_completions_array_keys | /usr/bin/sort -u)"
+  arms="$(_completions_dispatch_arms | /usr/bin/sort -u)"
+
+  only_in_sot="$(/usr/bin/comm -23 <(print -r -- "${sot_keys}") <(print -r -- "${arms}"))"
+  only_in_arms="$(/usr/bin/comm -13 <(print -r -- "${sot_keys}") <(print -r -- "${arms}"))"
+
+  if [[ -z "${only_in_sot}" && -z "${only_in_arms}" ]]; then
+    _pass "BITTERSWEET_SUBCOMMANDS matches dispatch case arms"
+    return
+  fi
+
+  _fail "BITTERSWEET_SUBCOMMANDS is out of sync with dispatch case arms"
+  if [[ -n "${only_in_sot}" ]]; then
+    echo "      In SOT but missing dispatch arm:"
+    echo "${only_in_sot}" | /usr/bin/sed 's/^/        - /'
+  fi
+  if [[ -n "${only_in_arms}" ]]; then
+    echo "      In dispatch but missing SOT entry:"
+    echo "${only_in_arms}" | /usr/bin/sed 's/^/        - /'
+  fi
+}
+
+function _completions_check_freshness {
+  local committed="${SCRIPT_DIR}/.completions/_bittersweet"
+  local generated
+  generated="$(/usr/bin/mktemp "${TMPDIR}bittersweet-completion.XXXXXX")"
+  # shellcheck disable=SC2064  # expand path now, not on trap
+  trap "/bin/rm -f '${generated}'" EXIT
+
+  if ! "${SCRIPT_DIR}/bittersweet" completions "${generated}" >/dev/null; then
+    _fail "Freshness: \`bittersweet completions\` exited non-zero"
+    return
+  fi
+
+  if /usr/bin/diff -q "${committed}" "${generated}" >/dev/null 2>&1; then
+    _pass ".completions/_bittersweet matches generator output"
+  else
+    _fail ".completions/_bittersweet is stale — run: bittersweet completions && git add .completions/_bittersweet"
+    /usr/bin/diff "${committed}" "${generated}" | /usr/bin/sed 's/^/      /' | /usr/bin/head -20
+  fi
+}
+
+function run_completions {
+  _section "Bittersweet completion sync"
+
+  _completions_check_parity
+  _completions_check_freshness
+}

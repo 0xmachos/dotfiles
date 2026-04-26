@@ -32,3 +32,34 @@ if [[ -f "${pii_file}" ]]; then
     exit 1
   fi
 fi
+
+# When bittersweet is staged, keep .completions/_bittersweet locked to
+# BITTERSWEET_SUBCOMMANDS and hard-fail the commit on parity drift.
+#
+# Two-step enforcement:
+#  1. Regenerate the completion from the SOT array. Catches the dev who
+#     edited BITTERSWEET_SUBCOMMANDS without rerunning `bittersweet
+#     completions`. The regenerated file is auto-staged so the commit is
+#     internally consistent.
+#  2. Run `./test completions` for the parity check. The regen alone CANNOT
+#     detect a phantom dispatch arm without a matching SOT entry — the
+#     generator only reads the array, so a forgotten array entry produces
+#     a "complete" (with itself) but stale-vs-dispatch completion file.
+#     The parity assertion compares case arms against array keys directly.
+#
+# --no-verify still bypasses both. CI is the only unbypassable layer.
+completion_test_output=""
+if git diff --cached --name-only --diff-filter=d | grep -qx 'bittersweet'; then
+  if [[ -x ./bittersweet ]]; then
+    ./bittersweet completions >/dev/null
+    if ! git diff --quiet -- .completions/_bittersweet; then
+      git add .completions/_bittersweet
+      echo "[ℹ️ ] Regenerated and staged .completions/_bittersweet"
+    fi
+  fi
+  if ! completion_test_output=$(./test completions 2>&1); then
+    echo "[❌] bittersweet subcommand drift detected — commit blocked:"
+    echo "${completion_test_output}"
+    exit 1
+  fi
+fi
