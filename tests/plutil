@@ -1,0 +1,31 @@
+#!/bin/zsh
+# dotfiles/tests/plutil
+#
+# Validate plist and mobileconfig files with plutil(1).
+#
+# ShellCheck: lint with `shellcheck --shell=bash tests/plutil`.
+# This file is sourced, not executed — chmod 644.
+#
+# shellcheck source=tests/lib
+
+function run_plutil {
+  _section "Plutil"
+
+  local -a files
+  local file
+  while IFS=$'\n' read -r file; do
+    files+=("${file}")
+  done < <(/usr/bin/find . -maxdepth 4 \
+            -type f \
+            \( -name "*.plist" -o -name "*.mobileconfig" \))
+
+  local output
+  for file in "${files[@]}"; do
+    output=""
+    if output="$(/usr/bin/plutil -lint "${file}" 2>&1)"; then
+      _pass "$(/usr/bin/basename "${file}")"
+    else
+      _fail "$(/usr/bin/basename "${file}"): ${output}"
+    fi
+  done
+}

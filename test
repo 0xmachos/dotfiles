@@ -1,496 +1,75 @@
 #!/usr/bin/env zsh
 # dotfiles/test
-
-# test
-#   Find shell scripts and run shellcheck on them
-#   Adapted from jessfraz/dotfiles/bin/test.sh
-#   https://github.com/jessfraz/dotfiles/blob/master/test.sh
+#
+# Dispatcher for dotfiles test suites. Each suite lives in tests/<name>
+# (extensionless, sourced — not executed) so pass/fail/skip counters
+# aggregate into a single final summary.
+#
+# Usage:
+#   ./test                       # runs all suites
+#   ./test <suite>               # runs one suite
+#   ./test santa-faa <rule>      # suite-specific sub-filter
+#   ./test --help                # lists suites
 
 set -euo pipefail
 # -e exit if any command returns non-zero status code
 # -u prevent using undefined variables
 # -o pipefail force pipelines to fail on first non-zero status code
 
-/usr/bin/tput sgr0; 
-# reset colors
+/usr/bin/tput sgr0
 
+readonly SCRIPT_DIR="${0:A:h}"
+cd "${SCRIPT_DIR}"
 
-function check_shellcheck {
-  # check_shellcheck
-  #   Check if shellcheck is installed
+# SC1091: source path contains a variable; shellcheck follows it only with
+# `-x`. The `source=` directive documents the target for `shellcheck -x` runs.
+# shellcheck source=tests/lib disable=SC1091
+source "${SCRIPT_DIR}/tests/lib"
 
-  if ! [[ -x "$(command -v shellcheck)" ]]; then
-    echo "[FAIL] shellcheck not installed"
-    echo "[INFO] macOS: brew install shellcheck"
-    echo "[INFO] Linux: apt install shellcheck"
-    exit 1
-  fi
+readonly -a SUITES=(shellcheck extensions plutil santa-profile linkage jump santa-faa)
+
+function _usage {
+  echo "Usage: ./test [suite [arg]]"
+  echo "Suites: ${SUITES[*]}"
+  echo "  santa-faa accepts an optional rule filter (ssh-config, git-signing,"
+  echo "    shell-startup, shell-functions, claude-config)"
 }
 
-
-function find_files {
-  # find_files
-  #   Find all regular files in source directory, bin/ and .functions/
-
-  while IFS=$'\n' read -r file; do
-    FILES+=("${file}");
-  done < <(/usr/bin/find . ./.functions ./bin -maxdepth 1 -type f \
-            -not -iwholename '*.git*'   \
-            -not -iwholename '*venv*'   \
-            -not -iwholename '*.tar.xz' \
-            | /usr/bin/sort -u)
+function _run_suite {
+  local suite="$1"
+  shift
+  # shellcheck source=/dev/null
+  source "${SCRIPT_DIR}/tests/${suite}"
+  "run_${suite//-/_}" "$@"
 }
-
-
-function analyse_shell_scripts {
-  # analyse_shell_scripts
-  #   Iterate over $FILES to find bash and zsh scripts
-  #   Call shellcheck on them via analyse function
-
-  echo "── ShellCheck ────────────────────────────────"
-
-  for file in "${FILES[@]}"; do
-    if /usr/bin/file "${file}" | /usr/bin/grep --quiet "shell" || \
-       /usr/bin/file "${file}" | /usr/bin/grep --quiet "bash" ; then
-      # Find bash scripts
-      # Running file on a script with the shebang "#!/usr/bin/env bash" returns
-      #   "a /usr/bin/env bash script, ASCII text executable"
-      # Versus a script with the shebang "#!/bin/bash" which returns
-      #   "Bourne-Again shell script, ASCII text executable"
-      analyse "${file}" 
-
-    elif /usr/bin/file "${file}" | /usr/bin/grep --quiet "zsh"; then
-      # Find zsh scripts
-      # Running file on a script with shebang "#!/usr/bin/env zsh" returns
-      #   "a /usr/bin/env zsh script text executable"
-      analyse "${file}"
-    fi
-  done
-}
-
-
-function analyse {
-  # analyse
-  #   Wrapper for shellcheck to handle errors
-  #   Always invokes shellcheck in bash mode
-  #     as shellcheck does not support zsh
-
-  local shell_file=${1:?shell_file not passed to lint_shell_file}
-
-  if shellcheck --shell=bash "${shell_file}" ; then
-      # Run shellcheck on the file
-      # Always uses bash mode as bittersweet now has a zsh shebang
-      # Shelllcheck doesn't support zsh.
-      echo "[PASS] $(/usr/bin/basename "${shell_file}")"
-    else
-      echo "[FAIL] $(/usr/bin/basename "${shell_file}")"
-      ERRORS+=("${shell_file}")
-      # If shellcheck fails add failing file name to array
-    fi
-}
-
-function lint_plist_mobileconfig {
-
-  echo "── Plutil ────────────────────────────────────"
-
-  local -a FILES
-
-  while IFS=$'\n' read -r file; do
-   FILES+=("${file}");
-  done < <(/usr/bin/find . -maxdepth 4 \
-            -type f \
-            \( -name "*.plist" -o -name "*.mobileconfig" \))
-
-  local output
-
-  for file in "${FILES[@]}"; do
-    output=""
-    if output="$(/usr/bin/plutil -lint "${file}" 2>&1)"; then
-      echo "[PASS] $(/usr/bin/basename "${file}")"
-    else
-      echo "[FAIL] $(/usr/bin/basename "${file}")"
-      echo "       ${output}"
-      ERRORS+=("${file}")
-    fi
-  done
-}
-
-
-function test_santa_profile {
-  # test_santa_profile
-  #   Validate Santa BlockedPathRegex profile structure and regex coverage
-
-  echo "── Santa ─────────────────────────────────────"
-
-  local profile="profiles/com.northpolesec.santa.vault.mobileconfig"
-  local pb="/usr/libexec/PlistBuddy"
-
-  if ! [[ -x "${pb}" ]]; then
-    echo "[SKIP] PlistBuddy not found, skipping Santa profile tests"
-    return 0
-  fi
-
-  if ! [[ -f "${profile}" ]]; then
-    echo "[FAIL] Santa profile not found: ${profile}"
-    ERRORS+=("${profile}")
-    return 0
-  fi
-
-  local initial_error_count=${#ERRORS[@]}
-
-  # --- 1. Profile structure (PlistBuddy extraction) ---
-
-  local keypath expected actual
-
-  while IFS='|' read -r keypath expected; do
-    actual=""
-    actual="$("${pb}" -c "Print ${keypath}" "${profile}" 2>/dev/null)" || true
-    if [[ "${actual}" != "${expected}" ]]; then
-      echo "[FAIL] ${keypath}: expected '${expected}', got '${actual}'"
-      ERRORS+=("santa:${keypath}")
-    fi
-  done <<'CHECKS'
-:PayloadRemovalDisallowed|true
-:PayloadScope|System
-:TargetDeviceType|5
-:PayloadType|Configuration
-:PayloadContent:0:PayloadType|com.northpolesec.santa
-:PayloadEnabled|true
-:PayloadContent:0:PayloadEnabled|true
-CHECKS
-
-  # Top-level and nested PayloadUUIDs must differ
-  local top_uuid nested_uuid
-
-  top_uuid=""
-  top_uuid="$("${pb}" -c "Print :PayloadUUID" "${profile}" 2>/dev/null)" || true
-
-  nested_uuid=""
-  nested_uuid="$("${pb}" -c "Print :PayloadContent:0:PayloadUUID" "${profile}" 2>/dev/null)" || true
-
-  if [[ -z "${top_uuid}" ]] || [[ -z "${nested_uuid}" ]]; then
-    echo "[FAIL] PayloadUUID: could not extract one or both UUIDs"
-    ERRORS+=("santa:PayloadUUID")
-  elif [[ "${top_uuid}" == "${nested_uuid}" ]]; then
-    echo "[FAIL] PayloadUUID: top-level and nested UUIDs must differ"
-    ERRORS+=("santa:PayloadUUID")
-  fi
-
-  # BlockedPathRegex must be non-empty
-  local regex
-  regex=""
-  regex="$("${pb}" -c "Print :PayloadContent:0:BlockedPathRegex" "${profile}" 2>/dev/null)" || true
-
-  if [[ -z "${regex}" ]]; then
-    echo "[FAIL] BlockedPathRegex: empty or missing"
-    ERRORS+=("santa:BlockedPathRegex")
-    return 0
-  fi
-
-  # --- 2. Regex path coverage ---
-
-  local -a must_match=(
-    "/Volumes/Vault/malware.bin"
-    "/Volumes/Vault/subdir/file"
-    "/Volumes/Vault/.hidden"
-    "/Volumes/Vault/"
-    "/Volumes/dmg-cage/sample.exe"
-    "/Volumes/dmg-cage/deep/nested/path"
-    "/Users/testuser/Downloads/suspicious.app"
-    "/Users/testuser/Downloads/.test-exec"
-    "/Users/testuser/Downloads/path with spaces/file"
-  )
-
-  local -a must_not_match=(
-    "/Volumes/Vault"
-    "/Volumes/VaultExtra/file"
-    "/Volumes/dmg-cage"
-    "/Volumes/dmg-cages/file"
-    "/tmp/anything"
-    "/usr/bin/true"
-    "/Users/testuser/Desktop/file"
-    "/Users/other/Downloads/file"
-  )
-
-  local path
-
-  for path in "${must_match[@]}"; do
-    if ! /usr/bin/grep -Eq "${regex}" <<< "${path}"; then
-      echo "[FAIL] BlockedPathRegex must match: ${path}"
-      ERRORS+=("santa:must_match:${path}")
-    fi
-  done
-
-  for path in "${must_not_match[@]}"; do
-    if /usr/bin/grep -Eq "${regex}" <<< "${path}"; then
-      echo "[FAIL] BlockedPathRegex must NOT match: ${path}"
-      ERRORS+=("santa:must_not_match:${path}")
-    fi
-  done
-
-  # --- 3. Required path invariants ---
-  # Catches accidental deletion of an entire regex alternation branch
-
-  local -a required_substrings=(
-    "/Volumes/Vault/"
-    "/Volumes/dmg-cage/"
-    "/Users/testuser/Downloads/"
-  )
-
-  local stripped
-  stripped="${regex//\\/}"
-
-  local substr
-
-  for substr in "${required_substrings[@]}"; do
-    if [[ "${stripped}" != *"${substr}"* ]]; then
-      echo "[FAIL] BlockedPathRegex missing required path: ${substr}"
-      ERRORS+=("santa:invariant:${substr}")
-    fi
-  done
-
-  # --- Summary ---
-
-  if [[ ${#ERRORS[@]} -eq ${initial_error_count} ]]; then
-    echo "[PASS] Santa profile ($(/usr/bin/basename "${profile}"))"
-  fi
-}
-
-
-function test_dotfile_coverage {
-  # test_dotfile_coverage
-  #   Detect repo files not managed by any bittersweet subcommand.
-  #   Prevents "forgot to wire up" bugs — e.g. Ghostty config sat in the
-  #   repo without a symlink in install_dotfiles until it was caught manually.
-  #
-  #   Maintains a manifest of every repo file/dir and its owner. New files
-  #   that aren't in the manifest fail the test, forcing a conscious decision
-  #   about where the file should be installed.
-
-  echo "── Dotfile Coverage ──────────────────────────"
-
-  local initial_error_count=${#ERRORS[@]}
-
-  # Every top-level item → owning bittersweet subcommand.
-  # "repo" = docs, metadata, test infra — intentionally not installed.
-  local -A top_level=(
-    # Repo metadata
-    [CLAUDE.md]=repo
-    [LICENSE]=repo
-    [README.md]=repo
-    [SECURITY.md]=repo
-    [TODOs.md]=repo
-    [.gitignore]=repo
-    [.gitleaksignore]=repo
-
-    # Script + test infra
-    [bittersweet]=install_scripts
-    [test]=repo
-
-    # install_dotfiles — config files symlinked into HOME
-    [.zshrc]=install_dotfiles
-    [.aliases]=install_dotfiles
-    [.functions]=install_dotfiles
-    [.completions]=install_dotfiles
-    [.ssh]=install_dotfiles
-    [.config]=install_dotfiles
-    [config]=install_dotfiles              # Ghostty
-    [IDETemplateMacros.plist]=install_dotfiles  # Xcode
-    [claude]=install_dotfiles              # Dynamic (skills, rules, settings)
-    [.githooks]=install_dotfiles           # core.hooksPath
-
-    # Other bittersweet subcommands
-    [bin]=install_scripts
-    [profiles]=santa
-    [LaunchAgents]=install_launchagents
-    [LaunchDaemons]=install_launchagents
-    ["Sublime Text"]=sublimetext
-    [.extra]=extra
-    [.github]=repo
-    [internals]=repo
-    [templates]=repo
-
-  )
-
-  # .config/ subdirs must each be wired in install_dotfiles
-  local -A config_subdirs=(
-    [git]=install_dotfiles
-    [uv]=install_dotfiles
-    [npm]=install_dotfiles
-    [1Password]=install_dotfiles
-  )
-
-  # bin/ scripts → owning subcommand
-  local -A bin_scripts=(
-    # install_scripts → /usr/local/bin/
-    [dns]=install_scripts
-    [jump-user]=install_scripts
-    [jump-system]=install_scripts
-    [danger]=install_scripts
-    [mdview]=install_scripts
-    [npm-audit-check]=install_scripts
-    # install_dotfiles → ~/.local/bin/ (op wrappers)
-    [vt]=install_dotfiles
-    [urlscan]=install_dotfiles
-    # Test scripts — not installed
-    [test-jump]=repo
-    [test-santa-faa]=repo
-    # Manually-run scripts
-    [survey]=repo
-  )
-
-  # claude/ files → owning subcommand (rules/ and skills/ are dynamic)
-  local -A claude_items=(
-    [settings.json]=install_dotfiles
-    [global-claude.md]=install_dotfiles
-    [statusline-command.sh]=install_dotfiles
-    [lint-hook.sh]=install_dotfiles
-    [rules]=install_dotfiles                 # Dynamic (individual rules)
-    [skills]=install_dotfiles                # Dynamic (individual skills)
-  )
-
-  # LaunchAgent plists must each be in install_launchagents
-  local -A launchagent_plists=(
-    [com.0xmachos.jump-user.plist]=install_launchagents
-    [com.0xmachos.vault-guard.plist]=install_launchagents
-    [com.0xmachos.imageio-oop.plist]=install_launchagents
-  )
-
-  # LaunchDaemon plists
-  local -A launchdaemon_plists=(
-    [com.0xmachos.jump-system.plist]=install_launchagents
-  )
-
-  local name
-
-  # 1. Top-level items
-  local item
-  for item in ./* ./.[!.]*; do
-    [[ -e "${item}" ]] || continue
-    name="${item##*/}"
-    [[ "${name}" == ".git" || "${name}" == ".DS_Store" || "${name}" == ".claude" ]] && continue
-    if [[ -z "${top_level[${name}]+_}" ]]; then
-      echo "[FAIL] Untracked top-level: ${name}"
-      echo "       Add to install_dotfiles or top_level map in test_dotfile_coverage"
-      ERRORS+=("coverage:${name}")
-    fi
-  done
-
-  # 2. .config/ subdirectories
-  local subdir
-  for subdir in .config/*/; do
-    [[ -d "${subdir}" ]] || continue
-    name="${subdir%/}"
-    name="${name##*/}"
-    if [[ -z "${config_subdirs[${name}]+_}" ]]; then
-      echo "[FAIL] Untracked .config/ subdir: ${name}"
-      echo "       Add symlink to install_dotfiles and update config_subdirs map"
-      ERRORS+=("coverage:.config/${name}")
-    fi
-  done
-
-  # 3. bin/ scripts
-  local script
-  for script in bin/*; do
-    [[ -f "${script}" ]] || continue
-    name="${script##*/}"
-    if [[ -z "${bin_scripts[${name}]+_}" ]]; then
-      echo "[FAIL] Untracked bin/ script: ${name}"
-      echo "       Add to install_scripts or bin_scripts map in test_dotfile_coverage"
-      ERRORS+=("coverage:bin/${name}")
-    fi
-  done
-
-  # 4. LaunchAgent plists
-  local plist
-  for plist in LaunchAgents/*.plist; do
-    [[ -f "${plist}" ]] || continue
-    name="${plist##*/}"
-    if [[ -z "${launchagent_plists[${name}]+_}" ]]; then
-      echo "[FAIL] Untracked LaunchAgent: ${name}"
-      echo "       Add to install_launchagents and launchagent_plists map"
-      ERRORS+=("coverage:LaunchAgents/${name}")
-    fi
-  done
-
-  # 5. LaunchDaemon plists
-  for plist in LaunchDaemons/*.plist; do
-    [[ -f "${plist}" ]] || continue
-    name="${plist##*/}"
-    if [[ -z "${launchdaemon_plists[${name}]+_}" ]]; then
-      echo "[FAIL] Untracked LaunchDaemon: ${name}"
-      echo "       Add to install_launchagents and launchdaemon_plists map"
-      ERRORS+=("coverage:LaunchDaemons/${name}")
-    fi
-  done
-
-  # 6. claude/ items (files and subdirs, skip .DS_Store)
-  local claude_item
-  for claude_item in claude/*; do
-    [[ -e "${claude_item}" ]] || continue
-    name="${claude_item##*/}"
-    [[ "${name}" == ".DS_Store" ]] && continue
-    if [[ -z "${claude_items[${name}]+_}" ]]; then
-      echo "[FAIL] Untracked claude/ item: ${name}"
-      echo "       Add to claude_files in install_dotfiles and claude_items map"
-      ERRORS+=("coverage:claude/${name}")
-    fi
-  done
-
-  if [[ ${#ERRORS[@]} -eq ${initial_error_count} ]]; then
-    echo "[PASS] All repo files accounted for"
-  fi
-}
-
 
 function main {
-
-  typeset -a ERRORS
-  typeset -a FILES
-
   local filter="${1:-all}"
 
   case "${filter}" in
-    shellcheck)
-      check_shellcheck
-      find_files
-      analyse_shell_scripts
-      ;;
-    plutil)
-      lint_plist_mobileconfig
-      ;;
-    santa)
-      test_santa_profile
-      ;;
-    linkage)
-      test_dotfile_coverage
+    -h|--help)
+      _usage
+      exit 0
       ;;
     all)
-      check_shellcheck
-      find_files
-      analyse_shell_scripts
-      lint_plist_mobileconfig
-      test_santa_profile
-      test_dotfile_coverage
+      local s
+      for s in "${SUITES[@]}"; do
+        _run_suite "${s}"
+      done
       ;;
     *)
-      echo "[FAIL] Unknown test: ${filter}"
-      echo "[INFO] Valid tests: shellcheck, plutil, santa, linkage (or no argument for all)"
-      exit 1
+      # zsh: (Ie) returns the 1-based index of an exact match, 0 if missing.
+      if (( ${SUITES[(Ie)${filter}]} == 0 )); then
+        echo "[FAIL] Unknown suite: ${filter}"
+        _usage
+        exit 1
+      fi
+      shift
+      _run_suite "${filter}" "$@"
       ;;
   esac
 
-  echo "──────────────────────────────────────────────"
-
-  if [[ ${#ERRORS[@]} -eq 0 ]]; then
-    # If ERRORS empty then
-    echo "[PASS] No errors, hooray"
-    exit 0
-  else
-    # If ERRORS not empty, print the names of files which failed
-    echo "[FAIL] These files failed linting: ${ERRORS[*]}"
-    exit 1
-  fi
+  _print_summary
 }
 
 main "$@"
