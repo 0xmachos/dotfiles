@@ -24,6 +24,7 @@ subcommands=(
   'dcg:Install Destructive Command Guard (dcg)'
   'dcg-sync:Rotate dcg CDHash in Santa FAA policy after dcg upgrade'
   'danger-verify:Build and install danger-verify Swift helper'
+  'herald:Build and install herald (Bonjour/mDNS browser for Matter/Thread debugging)'
   'vault-guard:Build and install vault-guard DA mount approval daemon'
   'santa-faa:Install Santa FAA policy for dotfiles protection'
   'claude:Install Claude Code and dcg'
