@@ -74,6 +74,7 @@ typeset -ra BITTERSWEET_SUBCOMMANDS=(
   'dcg:Install Destructive Command Guard (dcg)'
   'dcg-sync:Rotate dcg CDHash in Santa FAA policy after dcg upgrade'
   'danger-verify:Build and install danger-verify Swift helper'
+  'herald:Build and install herald (Bonjour/mDNS browser for Matter/Thread debugging)'
   'vault-guard:Build and install vault-guard DA mount approval daemon'
   'santa-faa:Install Santa FAA policy for dotfiles protection'
   'claude:Install Claude Code and dcg'
@@ -1402,6 +1403,88 @@ function install_danger_verify {
 }
 
 
+function install_herald {
+  # install_herald
+  #   Clones / updates / builds / installs the herald Bonjour/mDNS browser CLI
+  #   macOS companion to the Herald iOS app (jessedc/herald-ios-bonjour-browser)
+  #   Used by Claude for Matter/Thread debugging in ridleys-shooting-party
+  #   Source: ~/Documents/Projects/herald-cli/HeraldCLI (subdir Package.swift)
+  #   Destination: ~/.local/bin/herald (symlink → .build/release/herald)
+  #
+  #   Actively maintained upstream. Full update cycle: clone (if missing),
+  #   fetch, fast-forward pull (refused if local diverged), build, re-sign.
+  #   Upstream commit range is logged before each pull — check the output
+  #   for what actually landed. No Sigstore/Homebrew attestation available.
+
+  local -r repo_url="https://github.com/jessedc/herald-ios-bonjour-browser.git"
+  local -r src_dir="${HOME}/Documents/Projects/herald-cli"
+  local -r pkg_dir="${src_dir}/HeraldCLI"
+  local -r binary="${HOME}/.local/bin/herald"
+  local -r build_output="${pkg_dir}/.build/release/herald"
+
+  # Clone if missing, otherwise fetch + fast-forward pull
+  if ! [[ -d "${src_dir}" ]]; then
+    echo "[🍺] Cloning herald to ${src_dir}"
+    if ! git clone --quiet "${repo_url}" "${src_dir}"; then
+      echo "[❌] Failed to clone herald"
+      return 1
+    fi
+    echo "[✅] Cloned herald at $(git -C "${src_dir}" rev-parse --short HEAD)"
+  elif [[ -n "$(git -C "${src_dir}" status --porcelain)" ]]; then
+    echo "[⚠️ ] Local uncommitted changes in ${src_dir} — skipping upstream sync"
+  elif ! git -C "${src_dir}" fetch --quiet 2>/dev/null; then
+    echo "[⚠️ ] git fetch failed (offline?) — building current checkout"
+  else
+    local ahead
+    ahead="$(git -C "${src_dir}" rev-list --count 'HEAD..@{u}' 2>/dev/null || echo 0)"
+    if [[ "${ahead}" -gt 0 ]]; then
+      echo "[🍺] ${ahead} new commit(s) upstream:"
+      git -C "${src_dir}" log --oneline 'HEAD..@{u}'
+      if ! git -C "${src_dir}" pull --ff-only --quiet; then
+        echo "[❌] git pull --ff-only failed — local branch may have diverged"
+        return 1
+      fi
+      echo "[✅] Pulled to $(git -C "${src_dir}" rev-parse --short HEAD)"
+    else
+      echo "[✅] Already at upstream HEAD ($(git -C "${src_dir}" rev-parse --short HEAD))"
+    fi
+  fi
+
+  if ! [[ -d "${pkg_dir}" ]]; then
+    echo "[❌] herald package dir not found at ${pkg_dir}"
+    return 1
+  fi
+
+  local head_sha
+  head_sha="$(git -C "${src_dir}" rev-parse --short HEAD 2>/dev/null || echo 'unknown')"
+  echo "[🍺] Building herald (source at ${head_sha})"
+
+  if ! swift build --package-path "${pkg_dir}" -c release --quiet 2>&1; then
+    echo "[❌] Failed to build herald"
+    return 1
+  fi
+
+  echo "[✅] Successfully built herald"
+
+  mkdir -p "${HOME}/.local/bin"
+
+  if ln -sf "${build_output}" "${binary}"; then
+    echo "[✅] Symlinked ${binary} → ${build_output}"
+  else
+    echo "[❌] Failed to symlink ${binary}"
+    return 1
+  fi
+
+  # Ad-hoc re-sign after each rebuild — swift build produces ad-hoc signed
+  # binaries but rebuilds can leave macOS Gatekeeper caching a stale hash.
+  if codesign --sign - --force "${build_output}" 2>/dev/null; then
+    echo "[✅] Ad-hoc signed herald"
+  else
+    echo "[⚠️ ] codesign --sign - failed (non-fatal; binary remains usable)"
+  fi
+}
+
+
 function install_vault_guard {
   # install_vault_guard
   #   Builds and installs the vault-guard DA mount approval daemon
@@ -1763,6 +1846,9 @@ function main {
       ;;
     danger-verify)
       install_danger_verify
+      ;;
+    herald)
+      install_herald
       ;;
     vault-guard)
       install_vault_guard
