@@ -1,0 +1,105 @@
+#!/usr/bin/env zsh
+# dotfiles/bin/npm-audit-check
+#
+# npm-audit-check
+#   Audit npm projects for vulnerabilities and verify package signatures.
+#   Scans projects with package-lock.json under ~/Documents/Projects/.
+#   Designed to be called from jump-user via run_and_log or interactively.
+#
+# Usage: npm-audit-check
+#
+# ShellCheck: Use `shellcheck --shell=bash` (no native Zsh support).
+
+set -uo pipefail
+IFS=$'\n\t'
+
+readonly NPM="/opt/homebrew/bin/npm"
+readonly PROJECTS_DIR="${HOME}/Documents/Projects"
+
+function audit_project {
+  local project_dir="$1"
+  local project_name="${project_dir##*/}"
+  local failures=0
+
+  echo "── ${project_name} ──"
+
+  # Production vulnerability audit (failure = error)
+  local prod_rc=0
+  "${NPM}" audit --omit=dev --package-lock-only \
+    --prefix="${project_dir}" 2>&1 || prod_rc=$?
+
+  if (( prod_rc != 0 )); then
+    echo "[ERROR] Production deps: known vulnerabilities"
+    (( failures += 1 ))
+  fi
+
+  # Dev-only vulnerability check (only when prod is clean)
+  if (( prod_rc == 0 )); then
+    local all_rc=0
+    "${NPM}" audit --package-lock-only \
+      --prefix="${project_dir}" 2>&1 || all_rc=$?
+
+    if (( all_rc != 0 )); then
+      echo "[WARN] Dev deps: known vulnerabilities"
+    fi
+  fi
+
+  # Signature/provenance verification (failure = error)
+  if [[ -d "${project_dir}/node_modules" ]]; then
+    local sig_rc=0
+    "${NPM}" audit signatures \
+      --prefix="${project_dir}" 2>&1 || sig_rc=$?
+
+    if (( sig_rc != 0 )); then
+      echo "[ERROR] Signature verification failed"
+      (( failures += 1 ))
+    fi
+  else
+    echo "[SKIP] Signatures: no node_modules (run npm install first)"
+  fi
+
+  echo ""
+  return "${failures}"
+}
+
+function main {
+  if ! [[ -x "${NPM}" ]]; then
+    echo "[FAIL] npm not found at ${NPM}"
+    return 1
+  fi
+
+  # Discover projects with lockfiles (exclude vendored node_modules)
+  local lockfiles=()
+  local lockfile
+  while IFS= read -r lockfile; do
+    lockfiles+=("${lockfile}")
+  done < <(/usr/bin/find "${PROJECTS_DIR}" -maxdepth 4 \
+            -name "package-lock.json" \
+            -not -path "*/node_modules/*" \
+            -type f 2>/dev/null | /usr/bin/sort)
+
+  if (( ${#lockfiles[@]} == 0 )); then
+    echo "No npm projects found under ${PROJECTS_DIR}"
+    return 0
+  fi
+
+  echo "Scanning ${#lockfiles[@]} npm project(s)"
+  echo ""
+
+  local total_failures=0
+  for lockfile in "${lockfiles[@]}"; do
+    local project_dir="${lockfile%/package-lock.json}"
+    local project_rc=0
+    audit_project "${project_dir}" || project_rc=$?
+    (( total_failures += project_rc ))
+  done
+
+  if (( total_failures > 0 )); then
+    echo "${total_failures} check(s) failed"
+    return 1
+  fi
+
+  echo "All checks passed"
+}
+
+main "$@"
