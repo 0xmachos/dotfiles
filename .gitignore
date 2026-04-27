@@ -15,5 +15,7 @@ oscrypto-ca-bundle.crt
 
 internals/
 
+poc/
+
 # PII patterns for pre-commit hook
 .githooks/pii-patterns
