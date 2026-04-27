@@ -574,9 +574,9 @@ function install_dotfiles {
   local -ar git_configs=(config ignore allowed_signers)
   local -ar claude_files=(
     "claude/settings.json:settings.json"
-    "claude/statusline-command.sh:statusline-command.sh"
+    "claude/statusline-command:statusline-command"
     "claude/global-claude.md:CLAUDE.md"
-    "claude/lint-hook.sh:lint-hook.sh"
+    "claude/lint-hook:lint-hook"
   )
   local -ar sensitive_files=(
     "${SCRIPT_DIR}/.ssh/config"
