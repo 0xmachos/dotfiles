@@ -85,8 +85,6 @@ function run_linkage {
     # install_dotfiles → ~/.local/bin/ (op wrappers)
     [vt]=install_dotfiles
     [urlscan]=install_dotfiles
-    # Manually-run scripts
-    [survey]=repo
   )
 
   # claude/ files → owning subcommand (rules/ and skills/ are dynamic)
