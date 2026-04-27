@@ -1,0 +1,51 @@
+# dcg configuration
+# https://github.com/Dicklesworthstone/destructive_command_guard
+#
+# Pack selection is driven by 90-day session frequency analysis from
+# `claude-session-audit`. Enabled packs only block destructive operations —
+# routine reads (e.g. `op read`, `chmod 600`, `ssh -V`) are explicit safe
+# patterns inside each pack and pass through untouched.
+#
+# Re-run `claude-session-audit` quarterly to re-justify this set.
+
+[packs]
+# core.filesystem and core.git are always-on implicitly.
+enabled = [
+    # SSH remote execution — 1,379 invocations / 90d.
+    # Blocks: `ssh ... rm -rf`, `ssh ... git reset --hard`, etc.
+    "remote.ssh",
+
+    # SCP to system paths — 121 invocations / 90d.
+    # Blocks: `scp ... /etc`, `/boot`, `/var`, `/`. Routine `scp file host:`
+    # passes through.
+    "remote.scp",
+
+    # Destructive package publishing — 904 routine package-manager calls / 90d
+    # but pack only fires on publish-side ops (`npm unpublish`, `cargo yank`,
+    # `gem yank`). Zero false-positive risk on `npm install`/`brew install`.
+    "package_managers",
+
+    # Disk-level destruction — 15 invocations / 90d but high stakes.
+    # Blocks: `dd of=/dev/sdX`, `mkfs`, partition-table writes.
+    "system.disk",
+
+    # Permission disasters — 43 invocations / 90d.
+    # Blocks: `chmod 777`, recursive chmod/chown on system dirs (/, /etc, /usr,
+    # etc.), `chmod u+s` setuid. Routine `chmod 600` and `chmod -h 755` (used
+    # everywhere by bittersweet) are not matched.
+    "system.permissions",
+
+    # 1Password CLI destructive ops — 173 invocations / 90d, almost all read.
+    # Blocks: `op item delete`, `op vault delete`, `op user delete`.
+    # `op read`, `op item get`, `op signin` pass through.
+    "secrets.onepassword",
+]
+
+# Self-heal hook registration in settings.json on every invocation.
+# Defends against Claude Code overwriting hooks mid-session.
+[general]
+self_heal_hook = true
+
+# Heredoc/inline-script scanning kept at defaults — fail-open on parse error
+# and timeout, 50ms timeout, 1MiB body limit. The hook itself is fail-open by
+# design, so the deny list in claude/settings.json remains the hard backstop.

@@ -69,6 +69,7 @@ function run_linkage {
     [uv]=install_dotfiles
     [npm]=install_dotfiles
     [1Password]=install_dotfiles
+    [dcg]=install_dotfiles
   )
 
   # bin/ scripts → owning subcommand
@@ -80,6 +81,7 @@ function run_linkage {
     [danger]=install_scripts
     [mdview]=install_scripts
     [npm-audit-check]=install_scripts
+    [claude-session-audit]=install_scripts
     # install_dotfiles → ~/.local/bin/ (op wrappers)
     [vt]=install_dotfiles
     [urlscan]=install_dotfiles

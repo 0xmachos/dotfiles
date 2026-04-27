@@ -72,6 +72,7 @@ typeset -ra BITTERSWEET_SUBCOMMANDS=(
   'blockblock:Install BlockBlock'
   'oversight:Install OverSight'
   'dcg:Install Destructive Command Guard (dcg)'
+  'dcg-sync:Rotate dcg CDHash in Santa FAA policy after dcg upgrade'
   'danger-verify:Build and install danger-verify Swift helper'
   'vault-guard:Build and install vault-guard DA mount approval daemon'
   'santa-faa:Install Santa FAA policy for dotfiles protection'
@@ -566,7 +567,7 @@ function install_dotfiles {
   local _harden_count=0
   local _error_count=0
 
-  local -ar dot_dirs=(.ssh .extra .config/git .config/uv .claude .claude/skills .claude/rules)
+  local -ar dot_dirs=(.ssh .extra .config/git .config/uv .config/dcg .claude .claude/skills .claude/rules)
   local -ar dot_files=(.zshrc .functions .completions .aliases)
   local -ar ssh_configs=(config .extra_ssh)
   local -ar git_configs=(config ignore allowed_signers)
@@ -620,6 +621,9 @@ function install_dotfiles {
 
   # Symlink npm config into $HOME/.npmrc (npm hardcodes ~/.npmrc)
   _symlink "${SCRIPT_DIR}/.config/npm/.npmrc" "${HOME}/.npmrc"
+
+  # Symlink dcg config into $HOME/.config/dcg/
+  _symlink "${SCRIPT_DIR}/.config/dcg/config.toml" "${HOME}/.config/dcg/config.toml"
 
   # Copy 1Password SSH agent config (1Password doesn't follow symlinks)
   _ensure_dir "${HOME}/.config/1Password/ssh"
@@ -694,7 +698,7 @@ function install_scripts {
   #   Create /usr/local/bin
   #   Symlink files in /usr/local/bin
   
-  local -ar bin_files=(dns jump-user danger mdview npm-audit-check)
+  local -ar bin_files=(dns jump-user danger mdview npm-audit-check claude-session-audit)
   local -ar macos_script_bin_files=(c0design)
   
   # Create /usr/local/bin
@@ -1168,6 +1172,94 @@ function install_oversight {
 } 
 
 
+function sync_dcg_cdhash {
+  # sync_dcg_cdhash
+  #   Reads the installed dcg binary's CDHash and patches it into the
+  #   Santa FAA policy plist, redeploying if changed. No-op if dcg is
+  #   not installed or the plist is already in sync.
+  #
+  #   Why: dcg is Rust linker-signed ad-hoc — no TeamID, and its
+  #   SigningID (dcg-<hex>) is derived from LC_UUID so it rotates per
+  #   rebuild. The ClaudeCodeConfigResolved rule pins dcg by BinaryPath
+  #   + CDHash, so the CDHash must be refreshed after every fresh
+  #   install or `sudo dcg update --verify`.
+  #
+  #   Called from: install_dcg (end of fresh install / early-return
+  #   path), bittersweet dcg-sync subcommand (run by jump and
+  #   jump-system after `dcg update --verify`).
+
+  local -r dcg_binary="/usr/local/bin/dcg"
+  local -r plist="${SCRIPT_DIR}/profiles/santa-faa-policy.plist"
+  local -r rule_path=":WatchItems:ClaudeCodeConfigResolved:Processes"
+
+  if [[ ! -x "${dcg_binary}" ]]; then
+    return 0
+  fi
+
+  if [[ ! -f "${plist}" ]]; then
+    echo "[❌] santa-faa-policy.plist not found at ${plist}"
+    return 1
+  fi
+
+  local current_cdhash
+  current_cdhash="$(codesign -dvvv "${dcg_binary}" 2>&1 | awk -F= '/^CDHash=/{print $2; exit}')"
+  if [[ -z "${current_cdhash}" ]]; then
+    echo "[❌] Failed to extract CDHash from ${dcg_binary}"
+    return 1
+  fi
+
+  # Walk the Processes array via PlistBuddy (read-only) to locate the dcg
+  # entry and read its current CDHash. PlistBuddy's `Set` would re-serialise
+  # the whole file (stripping XML comments and normalising indentation), so
+  # the write path below uses `sed` instead.
+  local i=0
+  local binary_path
+  local plist_cdhash=""
+  local dcg_found=""
+  while /usr/libexec/PlistBuddy -c "Print ${rule_path}:${i}" "${plist}" &>/dev/null; do
+    binary_path="$(/usr/libexec/PlistBuddy -c "Print ${rule_path}:${i}:BinaryPath" "${plist}" 2>/dev/null || true)"
+    if [[ "${binary_path}" == "${dcg_binary}" ]]; then
+      dcg_found="1"
+      plist_cdhash="$(/usr/libexec/PlistBuddy -c "Print ${rule_path}:${i}:CDHash" "${plist}" 2>/dev/null || true)"
+      break
+    fi
+    (( i += 1 ))
+  done
+
+  if [[ -z "${dcg_found}" ]]; then
+    echo "[❌] No Process entry with BinaryPath=${dcg_binary} in ${plist}"
+    return 1
+  fi
+
+  if [[ "${plist_cdhash}" == "${current_cdhash}" ]]; then
+    echo "[🍺] dcg CDHash already current in FAA policy"
+    return 0
+  fi
+
+  echo "[🍺] Rotating dcg CDHash in FAA policy"
+  echo "      Old: ${plist_cdhash:-<none>}"
+  echo "      New: ${current_cdhash}"
+
+  # Comment-preserving in-place edit: restrict the substitution to the
+  # range from the BinaryPath string to the next </dict>, which bounds the
+  # dcg entry. Within that range, replace the 40-hex CDHash value. The
+  # BinaryPath line itself contains the path (not 40 hex) so the regex
+  # skips it; only the CDHash <string> line matches.
+  #   \|...|       — custom | delimiter for the address so path slashes
+  #                  don't need escaping
+  #   [a-f0-9]{40} — CDHash is SHA-256 truncated to 160 bits (40 hex)
+  if ! sed -E -i '' "\\|<string>${dcg_binary}</string>|,/<\\/dict>/{
+    s|(<string>)[a-f0-9]{40}(</string>)|\\1${current_cdhash}\\2|
+  }" "${plist}"; then
+    echo "[❌] Failed to update CDHash in ${plist}"
+    return 1
+  fi
+  echo "[✅] Updated CDHash in ${plist}"
+
+  install_santa_faa
+}
+
+
 function install_dcg {
   # install_dcg
   #   Installs Destructive Command Guard (dcg) via GitHub releases API
@@ -1180,6 +1272,7 @@ function install_dcg {
   if [[ -x "${dcg_binary}" ]]; then
     # Upgrades handled by: sudo dcg update --verify (run by jump/jump-system)
     echo "[🍺] dcg already installed"
+    sync_dcg_cdhash
     return 0
   fi
 
@@ -1269,6 +1362,8 @@ function install_dcg {
 
   # Cleanup
   rm -f "${HOME}/Downloads/dcg" "${tarball_path}" "${sha_path}"
+
+  sync_dcg_cdhash
 }
 
 
@@ -1662,6 +1757,9 @@ function main {
       ;;
     dcg)
       install_dcg
+      ;;
+    dcg-sync)
+      sync_dcg_cdhash
       ;;
     danger-verify)
       install_danger_verify
