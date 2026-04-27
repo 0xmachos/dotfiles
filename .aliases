@@ -123,3 +123,6 @@ alias tailscale='/Applications/Tailscale.app/Contents/MacOS/Tailscale'
 # Skip permission prompts (dcg hook + settings.json deny rules remain active)
 alias claude='claude --dangerously-skip-permissions'
 
+# Skip approval prompts and sandbox
+alias codex='codex --dangerously-bypass-approvals-and-sandbox'
+
