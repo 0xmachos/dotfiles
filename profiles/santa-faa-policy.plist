@@ -648,6 +648,13 @@
           <key>PlatformBinary</key>
           <true/>
         </dict>
+        <!-- rsync (openrsync): sync-daisy pushes dotfiles to Daisy over Tailscale SSH -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.apple.rsync</string>
+          <key>PlatformBinary</key>
+          <true/>
+        </dict>
         <!-- grep, cp: dcg installer reads and updates hook config in settings.json -->
         <dict>
           <key>SigningID</key>
