@@ -22,6 +22,7 @@ subcommands=(
   'blockblock:Install BlockBlock'
   'oversight:Install OverSight'
   'dcg:Install Destructive Command Guard (dcg)'
+  'dcg-sync:Rotate dcg CDHash in Santa FAA policy after dcg upgrade'
   'danger-verify:Build and install danger-verify Swift helper'
   'vault-guard:Build and install vault-guard DA mount approval daemon'
   'santa-faa:Install Santa FAA policy for dotfiles protection'
