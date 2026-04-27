@@ -648,6 +648,33 @@
           <key>PlatformBinary</key>
           <true/>
         </dict>
+        <!-- grep, cp: dcg installer reads and updates hook config in settings.json -->
+        <dict>
+          <key>SigningID</key>
+          <string>com.apple.grep</string>
+          <key>PlatformBinary</key>
+          <true/>
+        </dict>
+        <dict>
+          <key>SigningID</key>
+          <string>com.apple.cp</string>
+          <key>PlatformBinary</key>
+          <true/>
+        </dict>
+        <!-- dcg: ad-hoc signed (Rust linker-signed), no TeamID and the
+             SigningID is derived from LC_UUID so it changes per rebuild.
+             Pin by BinaryPath + CDHash (AND-matched within one dict).
+             FAA policy does not support BinarySHA256 — use CDHash, which is
+             the SHA256 of the Mach-O code directory and equally per-build.
+             CDHash is rotated automatically by `bittersweet dcg-sync`, which
+             `.functions/jump` and `bin/jump-system` run after each
+             `sudo dcg update --verify`. -->
+        <dict>
+          <key>BinaryPath</key>
+          <string>/usr/local/bin/dcg</string>
+          <key>CDHash</key>
+          <string>19775ce63f35d2e8e30491e7da840c9f3d7e66d5</string>
+        </dict>
       </array>
     </dict>
 

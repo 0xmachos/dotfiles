@@ -2,7 +2,8 @@
 # dotfiles/bin/jump-user
 #
 # jump-user
-#   User-level update script for Homebrew
+#   User-level update script for Homebrew (and per-host extras
+#   from .extra/jump-user, if present)
 #   Designed to be run by LaunchAgent com.0xmachos.jump-user
 #   Can also be run manually
 #
@@ -77,6 +78,17 @@ function main {
   run_and_log "brew cleanup"    "${BREW_BINARY}" cleanup
   run_and_log "brew autoremove" "${BREW_BINARY}" autoremove
   run_and_log "brew doctor"     "${BREW_BINARY}" doctor
+
+  ## Local extras (gitignored, sourced if present) ##
+  # Per-host updaters that aren't part of the canonical user-level set
+  # live in dotfiles/.extra/jump-user. Matched by .gitignore's .extra*
+  # rule, so anything inside it stays local. Runs as the user inside
+  # main()'s scope; the sidecar may use run_and_log.
+  local -r EXTRA_JUMP_USER="${HOME}/Documents/Projects/dotfiles/.extra/jump-user"
+  if [[ -r "${EXTRA_JUMP_USER}" ]]; then
+    # shellcheck disable=SC1090
+    source "${EXTRA_JUMP_USER}"
+  fi
 }
 
 main "$@"

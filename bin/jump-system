@@ -3,7 +3,7 @@
 #
 # jump-system
 #   System-level update script (runs as root via LaunchDaemon)
-#   Updates: macOS, LaTeX (tlmgr), XProtect, REDACTED, dcg
+#   Updates: macOS, LaTeX (tlmgr), XProtect
 #   Designed to be run by LaunchDaemon com.0xmachos.jump-system
 #   Can also be run manually with sudo
 
@@ -58,7 +58,6 @@ function main {
   local -r TLMGR_BINARY="/Library/TeX/texbin/tlmgr"
   local -r XPROTECT_BINARY="/usr/bin/xprotect"
   local -r XPROTECT_APP="/Library/Apple/System/Library/CoreServices/XProtect.app/Contents/MacOS/XProtect"
-  local -r REDACTED_BINARY="/Applications/REDACTED EDR.app/Contents/Resources/REDACTED.app/Contents/MacOS/REDACTED"
 
   ## macOS ##
   if [[ -x "${SWUPDATE_BINARY}" ]]; then
@@ -80,17 +79,6 @@ function main {
 
   if [[ -x "${XPROTECT_APP}" ]]; then
     run_and_log "XProtect scan" "${XPROTECT_APP}"
-  fi
-
-  ## REDACTED / REDACTED ##
-  if [[ -x "${REDACTED_BINARY}" ]]; then
-    run_and_log "REDACTED" "${REDACTED_BINARY}"
-  fi
-
-  ## dcg ##
-  local -r DCG_BINARY="/usr/local/bin/dcg"
-  if [[ -x "${DCG_BINARY}" ]]; then
-    run_and_log "dcg update" "${DCG_BINARY}" update --verify --system
   fi
 }
 

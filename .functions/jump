@@ -47,6 +47,12 @@ function jump {
     "${SUDO_BINARY}" --prompt="[⚠️ ] Password required to update dcg: " -v
     echo "[🛡️] Updating dcg..."
     "${SUDO_BINARY}" "${DCG_BINARY}" update --verify --system
+    # dcg is ad-hoc signed; its CDHash changes per build. Refresh the
+    # Santa FAA policy entry so reads of claude/settings.json keep working.
+    local -r BITTERSWEET_BINARY="${HOME}/Documents/Projects/dotfiles/bittersweet"
+    if [[ -x "${BITTERSWEET_BINARY}" ]]; then
+      "${BITTERSWEET_BINARY}" dcg-sync
+    fi
   fi
 
 
@@ -58,6 +64,18 @@ function jump {
     echo "[📝] Updating LaTeX..."
     "${SUDO_BINARY}" "${TLMGR_BINARY}" --verify-repo=none update --self
     "${SUDO_BINARY}" "${TLMGR_BINARY}" --verify-repo=none update --all
+  fi
+
+
+  ## Local extras (gitignored, sourced if present) ##
+  # Per-host updaters or one-offs that aren't part of the canonical update
+  # set live in dotfiles/.extra/jump. The whole .extra/ directory is matched
+  # by .gitignore's .extra* rule, so anything inside it stays local. The
+  # sourced file runs inside this function's scope and may use ${SUDO_BINARY}.
+  local -r EXTRA_JUMP="${HOME}/Documents/Projects/dotfiles/.extra/jump"
+  if [[ -r "${EXTRA_JUMP}" ]]; then
+    # shellcheck disable=SC1090
+    source "${EXTRA_JUMP}"
   fi
 
 
