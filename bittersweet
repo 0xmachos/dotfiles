@@ -1064,20 +1064,35 @@ install_application "Texifier" "${dmg_download_path}"
 
 function install_basictex {
   # install_basictex
-  #   Installs the MacTeX BasicTeX distribution via Homebrew cask
+  #   Installs the MacTeX BasicTeX distribution via Homebrew cask and pins
+  #   the tlmgr package repository to a specific mirror
+
+  # Pin a named mirror, not the CTAN redirector (mirror.ctan.org). The
+  # redirector GeoIP-routes UK clients to Cambridge (mirror.apps.cam.ac.uk),
+  # unreachable since 2026-03. A fresh BasicTeX / annual TeX Live install
+  # resets this option to the http:// redirector default, so re-pin on every
+  # install. https:// also preserves transport integrity, the only remaining
+  # authenticity check once GPG verification is disabled (--verify-repo=none).
+  local -r TLMGR_REPOSITORY="https://mirror.ox.ac.uk/sites/ctan.org/systems/texlive/tlnet"
 
   if [[ -x "$(command -v tlmgr)" ]]; then
     echo "[🍺] MacTeX already installed"
-    return 0
+  else
+    echo "[🍺] Installing BasicTeX via Homebrew..."
+
+    if brew install --cask basictex; then
+      echo "[✅] Successfully installed BasicTeX"
+    else
+      echo "[❌] Failed to install BasicTeX"
+      exit 1
+    fi
   fi
 
-  echo "[🍺] Installing BasicTeX via Homebrew..."
-
-  if brew install --cask basictex; then
-    echo "[✅] Successfully installed BasicTeX"
+  get_sudo "to pin the tlmgr package repository mirror"
+  if sudo tlmgr option repository "${TLMGR_REPOSITORY}" >/dev/null; then
+    echo "[✅] Pinned tlmgr repository to ${TLMGR_REPOSITORY}"
   else
-    echo "[❌] Failed to install BasicTeX"
-    exit 1
+    echo "[❌] Failed to pin tlmgr repository"
   fi
 }
 
