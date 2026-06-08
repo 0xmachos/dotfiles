@@ -52,10 +52,12 @@ if [[ -d "/Applications/Secretive.app" ]]; then
   export SSH_AUTH_SOCK=$HOME/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh
 fi
 
-# Opt out of CLI tool telemetry
-# DO_NOT_TRACK is the cross-tool convention (consoledonottrack.com) honoured by
-# gh, Homebrew, Next.js, Turbo, Zola, etc. GH_TELEMETRY=false is belt-and-braces
-# for `gh` specifically — it checks both independently
+# Opt out of CLI tool telemetry. DO_NOT_TRACK is the cross-tool convention
+# (consoledonottrack.com) honoured by gh, Homebrew, Next.js, Turbo, Zola, etc.
+# NB: Claude Code treats its mere presence (any value) as a telemetry-disable
+# signal and silently disables Remote Control, so the `claude` alias in .aliases
+# scrubs it (env -u DO_NOT_TRACK) for that one command. GH_TELEMETRY=false opts
+# `gh` out independently.
 export DO_NOT_TRACK=true
 export GH_TELEMETRY=false
 
