@@ -120,8 +120,10 @@ alias unpack='pkgutil --expand-full'
 # https://tailscale.com/kb/1080/cli
 alias tailscale='/Applications/Tailscale.app/Contents/MacOS/Tailscale'
 
-# Skip permission prompts (dcg hook + settings.json deny rules remain active)
-alias claude='claude --dangerously-skip-permissions'
+# Skip permission prompts (dcg hook + settings.json deny rules remain active).
+# env -u DO_NOT_TRACK: its presence is read as telemetry-off and disables Remote
+# Control, so strip it for claude only — it stays exported for every other tool.
+alias claude='env -u DO_NOT_TRACK claude --dangerously-skip-permissions'
 
 # Skip approval prompts and sandbox
 alias codex='codex --dangerously-bypass-approvals-and-sandbox'
