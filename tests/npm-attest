@@ -1,0 +1,104 @@
+#!/bin/zsh
+# dotfiles/tests/npm-attest
+#
+# Behavioural test for claude/npm-attest-hook — the PreToolUse hook that gates
+# `wrangler deploy` on `npm audit signatures`.
+#
+# Hermetic by construction: every case is steered so the hook exits *before* it
+# would shell out to `npm audit signatures` (a network call), so the suite is
+# deterministic and runs offline. The real signature pass/fail is covered by the
+# manual run against a live tree, not here.
+#
+# Two probes, two axes:
+#   * Trigger boundary (GATED vs SKIP) — run in a dir with package.json but NO
+#     node_modules. A command the matcher ACCEPTS reaches the project stage and
+#     emits "node_modules absent" on stderr (warn + allow); a command it REJECTS
+#     exits silently before that. stderr-presence is therefore a precise probe
+#     of the matcher that never invokes npm. Guards against a tweak that started
+#     gating `wrangler deployments list`, or stopped honouring `--dry-run` /
+#     NPM_ATTEST_SKIP.
+#   * Allow/block (PASS vs BLOCK) — stdout: a deny JSON blocks, empty allows.
+#     Confirms the unverifiable paths allow rather than fail closed.
+#
+# Run: ./test npm-attest    (or ./test for the full suite)
+#
+# ShellCheck: lint with `shellcheck --shell=bash tests/npm-attest`.
+# This file is sourced, not executed — chmod 644.
+#
+# shellcheck source=tests/lib
+
+function _npm_attest_warns {
+  # True if the hook reaches the project stage for command $1 when run in dir $2
+  # (package.json, no node_modules) — i.e. the matcher accepted it. Signalled by
+  # the "node_modules absent" stderr warning; never calls npm.
+  local cmd="$1" dir="$2" err
+  err="$(jq -n --arg c "${cmd}" '{tool_name:"Bash", tool_input:{command:$c}}' \
+    | ( cd "${dir}" && /bin/zsh "${SCRIPT_DIR}/claude/npm-attest-hook" 2>&1 1>/dev/null ))"
+  [[ "${err}" == *"node_modules absent"* ]]
+}
+
+function _npm_attest_gate_expect {
+  local want="$1" cmd="$2" dir="$3" label="${4:-$2}" got
+  if _npm_attest_warns "${cmd}" "${dir}"; then got=GATED; else got=SKIP; fi
+  if [[ "${got}" == "${want}" ]]; then
+    _pass "${want}: ${label}"
+  else
+    _fail "${label} — expected ${want}, got ${got}"
+  fi
+}
+
+function _npm_attest_verdict_expect {
+  # PASS (allowed, empty stdout) vs BLOCK (deny JSON) for command $1 in dir $2.
+  local want="$1" cmd="$2" dir="$3" label="${4:-$2}" out got
+  out="$(jq -n --arg c "${cmd}" '{tool_name:"Bash", tool_input:{command:$c}}' \
+    | ( cd "${dir}" && /bin/zsh "${SCRIPT_DIR}/claude/npm-attest-hook" 2>/dev/null ))"
+  [[ "${out}" == *permissionDecision* ]] && got=BLOCK || got=PASS
+  if [[ "${got}" == "${want}" ]]; then
+    _pass "${want}: ${label}"
+  else
+    _fail "${label} — expected ${want}, got ${got}"
+  fi
+}
+
+function run_npm_attest {
+  _section "npm-attest deploy signature gate"
+
+  if ! [[ -x "$(command -v jq)" ]]; then
+    _skip "jq not installed (brew install jq)"
+    return
+  fi
+
+  local proj clean
+  proj="$(mktemp -d "${TMPDIR}npm-attest-proj.XXXXXX")"   # package.json, no node_modules
+  clean="$(mktemp -d "${TMPDIR}npm-attest-clean.XXXXXX")"  # no package.json in ancestry
+  printf '{"name":"t","version":"1.0.0"}\n' > "${proj}/package.json"
+
+  # Trigger boundary — GATED (matcher accepts → reaches project stage).
+  _npm_attest_gate_expect GATED 'wrangler deploy'                   "${proj}"
+  _npm_attest_gate_expect GATED 'npx wrangler pages deploy ./dist'  "${proj}" 'pages deploy'
+  _npm_attest_gate_expect GATED 'wrangler versions deploy'          "${proj}" 'versions deploy'
+
+  # Trigger boundary — SKIP (matcher rejects → exits before the project stage).
+  _npm_attest_gate_expect SKIP  'ls -la'                            "${proj}" 'non-wrangler command'
+  _npm_attest_gate_expect SKIP  'vercel deploy'                     "${proj}" 'deploy without wrangler'
+  _npm_attest_gate_expect SKIP  'wrangler tail'                     "${proj}" 'wrangler without deploy'
+  _npm_attest_gate_expect SKIP  'wrangler deployments list'         "${proj}" 'deployments (whole-word deploy)'
+  _npm_attest_gate_expect SKIP  'wrangler deploy --dry-run'         "${proj}" 'dry run (no egress)'
+  _npm_attest_gate_expect SKIP  'NPM_ATTEST_SKIP=1 wrangler deploy' "${proj}" 'override env var'
+
+  # Allow/block — unverifiable paths allow (warn), never fail closed.
+  _npm_attest_verdict_expect PASS 'wrangler deploy' "${proj}"  'matched, no node_modules → allow'
+  _npm_attest_verdict_expect PASS 'wrangler deploy' "${clean}" 'matched, no project → allow'
+
+  # Non-Bash tool → ignored before any matching.
+  local read_out
+  read_out="$(jq -n '{tool_name:"Read", tool_input:{command:"wrangler deploy"}}' \
+    | /bin/zsh "${SCRIPT_DIR}/claude/npm-attest-hook")"
+  if [[ -z "${read_out}" ]]; then
+    _pass "PASS: non-Bash tool ignored"
+  else
+    _fail "non-Bash tool not ignored"
+  fi
+
+  /bin/rm -rf "${proj}" "${clean}"
+}

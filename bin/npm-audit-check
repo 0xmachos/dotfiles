@@ -13,7 +13,7 @@
 set -uo pipefail
 IFS=$'\n\t'
 
-readonly NPM="/opt/homebrew/bin/npm"
+readonly NPM_BINARY="/opt/homebrew/bin/npm"
 readonly PROJECTS_DIR="${HOME}/Documents/Projects"
 
 function audit_project {
@@ -25,7 +25,7 @@ function audit_project {
 
   # Production vulnerability audit (failure = error)
   local prod_rc=0
-  "${NPM}" audit --omit=dev --package-lock-only \
+  "${NPM_BINARY}" audit --omit=dev --package-lock-only \
     --prefix="${project_dir}" 2>&1 || prod_rc=$?
 
   if (( prod_rc != 0 )); then
@@ -36,7 +36,7 @@ function audit_project {
   # Dev-only vulnerability check (only when prod is clean)
   if (( prod_rc == 0 )); then
     local all_rc=0
-    "${NPM}" audit --package-lock-only \
+    "${NPM_BINARY}" audit --package-lock-only \
       --prefix="${project_dir}" 2>&1 || all_rc=$?
 
     if (( all_rc != 0 )); then
@@ -45,10 +45,14 @@ function audit_project {
   fi
 
   # Signature/provenance verification (failure = error)
+  # --userconfig=/dev/null drops the global ~/.npmrc install-time hardening
+  # (min-release-age, prefer-offline) for the audit only. Those filters make npm
+  # re-resolve the installed tree and abort with ETARGET on any freshly-updated
+  # package, which would otherwise be reported here as a false signature failure.
   if [[ -d "${project_dir}/node_modules" ]]; then
     local sig_rc=0
-    "${NPM}" audit signatures \
-      --prefix="${project_dir}" 2>&1 || sig_rc=$?
+    "${NPM_BINARY}" audit signatures \
+      --prefix="${project_dir}" --userconfig=/dev/null 2>&1 || sig_rc=$?
 
     if (( sig_rc != 0 )); then
       echo "[ERROR] Signature verification failed"
@@ -63,8 +67,8 @@ function audit_project {
 }
 
 function main {
-  if ! [[ -x "${NPM}" ]]; then
-    echo "[FAIL] npm not found at ${NPM}"
+  if ! [[ -x "${NPM_BINARY}" ]]; then
+    echo "[FAIL] npm not found at ${NPM_BINARY}"
     return 1
   fi
 
