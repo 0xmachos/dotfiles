@@ -31,7 +31,11 @@ function jump {
   if [[ -x "${BREW_BINARY}" ]]; then
     echo "[🍺] Updating Homebrew..."
     if "${BREW_BINARY}" update; then
-      "${BREW_BINARY}" upgrade
+      # HOMEBREW_NO_ASK disables Homebrew 6.0's default "ask" mode, which
+      # prompts before upgrading dependents when run in an interactive TTY.
+      # jump runs unattended, so suppress it. (launchd jump-user has no TTY
+      # and is already unaffected.)
+      HOMEBREW_NO_ASK=1 "${BREW_BINARY}" upgrade
       "${BREW_BINARY}" cleanup
       "${BREW_BINARY}" autoremove
       "${BREW_BINARY}" doctor
