@@ -577,6 +577,7 @@ function install_dotfiles {
     "claude/statusline-command:statusline-command"
     "claude/global-claude.md:CLAUDE.md"
     "claude/lint-hook:lint-hook"
+    "claude/npm-attest-hook:npm-attest-hook"
   )
   local -ar sensitive_files=(
     "${SCRIPT_DIR}/.ssh/config"

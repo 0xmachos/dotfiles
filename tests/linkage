@@ -93,6 +93,7 @@ function run_linkage {
     [global-claude.md]=install_dotfiles
     [statusline-command]=install_dotfiles
     [lint-hook]=install_dotfiles
+    [npm-attest-hook]=install_dotfiles
     [rules]=install_dotfiles                 # Dynamic (individual rules)
     [skills]=install_dotfiles                # Dynamic (individual skills)
   )
