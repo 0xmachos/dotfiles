@@ -1,0 +1,89 @@
+#!/bin/zsh
+# dotfiles/tests/hook-links
+#
+# Guards against deploy skew between claude/settings.json and ~/.claude/: every
+# ~/.claude/<file> that settings.json invokes as a command (PreToolUse /
+# PostToolUse hooks + the statusline commands) must be
+#   1. registered in the bittersweet claude_files map, so `bittersweet dotfiles`
+#      will deploy it — hermetic, always runs; and
+#   2. actually present in ~/.claude/, so the running Claude Code process can
+#      open it — environment-gated, runs only when this repo is the active
+#      deployment (~/.claude/settings.json links back to claude/settings.json).
+#
+# Motivating bug (2026-06): ssh-redirect-hook was added to settings.json, the
+# bittersweet map, and the repo, but `bittersweet dotfiles` was never re-run, so
+# ~/.claude/ssh-redirect-hook never existed. Every tool call in every open
+# session logged `/bin/zsh: can't open input file: ~/.claude/ssh-redirect-hook`.
+# Settings.json and the map were already in sync, so a parity-only check would
+# have missed it — check 2 (live filesystem) is the one that catches it.
+#
+# The settings read uses `jq … < file` (the sourcing zsh opens the file), not
+# `jq … file` (jq opens it): the Documents TCC grant is attached to /bin/zsh's
+# signing identity, not jq's, so the redirect form reads cleanly under any caller.
+#
+# Run: ./test hook-links    (or ./test for the full suite)
+#
+# ShellCheck: lint with `shellcheck --shell=bash tests/hook-links`.
+# This file is sourced, not executed — chmod 644.
+#
+# shellcheck source=tests/lib
+
+function run_hook_links {
+  _section "Claude settings → ~/.claude link deployment"
+
+  if ! [[ -x "$(command -v jq)" ]]; then
+    _skip "jq not installed (brew install jq)"
+    return
+  fi
+
+  local settings="${SCRIPT_DIR}/claude/settings.json"
+  local bittersweet="${SCRIPT_DIR}/bittersweet"
+
+  # Collect every ~/.claude/<file> the settings invoke as a command, deduped.
+  # `jq … < file` lets the sourcing zsh open the file (TCC grant is on zsh, not
+  # jq). `|| true` absorbs grep's exit-1 on no match under `set -euo pipefail`.
+  local -a dests
+  local -A seen
+  local ref dest
+  while IFS= read -r ref; do
+    [[ -z "${ref}" ]] && continue
+    dest="${ref##*/}"
+    [[ -n "${seen[${dest}]+_}" ]] && continue
+    seen[${dest}]=1
+    dests+=("${dest}")
+  done < <(jq -r '.. | objects | .command // empty' < "${settings}" \
+            | /usr/bin/grep -oE '[~]/\.claude/[A-Za-z0-9._-]+' || true)
+
+  if (( ${#dests[@]} == 0 )); then
+    _fail "No ~/.claude command references found in settings.json (extraction broke?)"
+    return
+  fi
+
+  # 1. Registration parity (hermetic): each referenced file has a claude_files
+  #    map entry, so `bittersweet dotfiles` would deploy it.
+  for dest in "${dests[@]}"; do
+    if /usr/bin/grep -qE "\"claude/[^\"]+:${dest}\"" "${bittersweet}"; then
+      _pass "registered: ${dest} in bittersweet claude_files map"
+    else
+      _fail "${dest} invoked by settings.json but absent from bittersweet claude_files map — add it"
+    fi
+  done
+
+  # 2. Deployment (environment-gated): only meaningful when THIS repo is the
+  #    active deployment. Gate on ~/.claude/settings.json linking back here;
+  #    otherwise the symlinks live elsewhere (fresh checkout, CI, container).
+  if [[ "$(readlink "${HOME}/.claude/settings.json" 2>/dev/null)" != "${settings}" ]]; then
+    _skip "deployment: ~/.claude not linked to this repo (run: bittersweet dotfiles)"
+    return
+  fi
+
+  for dest in "${dests[@]}"; do
+    # -e follows the symlink: a broken link (dangling target) fails too, which
+    # is exactly the "/bin/zsh can't open input file" condition this guards.
+    if [[ -e "${HOME}/.claude/${dest}" ]]; then
+      _pass "deployed: ~/.claude/${dest}"
+    else
+      _fail "missing/broken: ~/.claude/${dest} — run: bittersweet dotfiles"
+    fi
+  done
+}
