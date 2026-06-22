@@ -1,0 +1,100 @@
+#!/bin/zsh
+# dotfiles/tests/ssh-redirect
+#
+# Behavioural test for claude/ssh-redirect-hook — the PreToolUse hook that denies
+# ssh/scp/sftp to a human alias or raw IP and points the model at the
+# `<host>-claude` (1Password + BatchMode) alias. Feeds commands to the hook as
+# stdin JSON and asserts DENY (redirect emitted) vs PASS (allowed through).
+#
+# Guards the command-position + host-extraction logic against silent regressions:
+# a tweak that started denying `ssh gucci-claude 'grep daisy …'` (alias name in
+# the remote payload), or stopped catching `cd /x && ssh gucci`, would fail here.
+#
+# Run: ./test ssh-redirect    (or ./test for the full suite)
+#
+# ShellCheck: lint with `shellcheck --shell=bash tests/ssh-redirect`.
+# This file is sourced, not executed — chmod 644.
+#
+# shellcheck source=tests/lib
+
+function _ssh_redirect_run {
+  # Echo the hook's stdout for Bash command $1.
+  jq -n --arg c "$1" '{tool_name:"Bash", tool_input:{command:$c}}' \
+    | /bin/zsh "${SCRIPT_DIR}/claude/ssh-redirect-hook"
+}
+
+function _ssh_redirect_expect {
+  local want="$1" cmd="$2" label="${3:-$2}" out got
+  out="$(_ssh_redirect_run "${cmd}")"
+  [[ "${out}" == *permissionDecision* ]] && got=DENY || got=PASS
+  if [[ "${got}" == "${want}" ]]; then
+    _pass "${want}: ${label}"
+  else
+    _fail "${label} — expected ${want}, got ${got}"
+  fi
+}
+
+function run_ssh_redirect {
+  _section "ssh → claude-alias redirect hook"
+
+  if ! [[ -x "$(command -v jq)" ]]; then
+    _skip "jq not installed (brew install jq)"
+    return
+  fi
+
+  # Human aliases (and tail-*/user@/port/options/compound forms) → DENY.
+  _ssh_redirect_expect DENY 'ssh daisy'
+  _ssh_redirect_expect DENY 'ssh tail-daisy uptime'
+  _ssh_redirect_expect DENY 'ssh mollie'
+  _ssh_redirect_expect DENY 'ssh tail-mollie'
+  _ssh_redirect_expect DENY 'ssh gucci'
+  _ssh_redirect_expect DENY 'ssh root@charlie'
+  _ssh_redirect_expect DENY 'ssh -p 2222 ha-green'
+  _ssh_redirect_expect DENY 'ssh -o User=root gucci uptime'
+  _ssh_redirect_expect DENY 'ssh -i ~/.ssh/k daisy'
+  _ssh_redirect_expect DENY 'cd /tmp && ssh gucci ls'
+  _ssh_redirect_expect DENY 'sftp daisy'
+  _ssh_redirect_expect DENY 'scp file.txt gucci:/tmp/'
+  _ssh_redirect_expect DENY 'scp -P 2222 -r dir ha-green:/srv'
+
+  # Raw IP literals (v4 + v6, RFC5737/RFC3849 docs ranges) → DENY.
+  _ssh_redirect_expect DENY 'ssh 192.0.2.1'
+  _ssh_redirect_expect DENY 'ssh user@198.51.100.11 uptime'
+  _ssh_redirect_expect DENY 'scp x 203.0.113.5:/tmp/'
+  _ssh_redirect_expect DENY 'ssh 2001:db8::1'
+  _ssh_redirect_expect DENY 'ssh user@2001:db8::1 uptime'
+
+  # Already-correct -claude aliases, the interactive unlock op, external hosts,
+  # ssh-as-argument, and out-of-scope tools → PASS.
+  _ssh_redirect_expect PASS 'ssh daisy-claude'
+  _ssh_redirect_expect PASS 'ssh gucci-claude uptime'
+  _ssh_redirect_expect PASS 'ssh ha-green-claude'
+  _ssh_redirect_expect PASS 'ssh gucci-claude grep daisy /etc/hosts'  # alias in payload
+  _ssh_redirect_expect PASS 'ssh daisy-unlock'
+  _ssh_redirect_expect PASS 'ssh github.com'
+  _ssh_redirect_expect PASS 'ssh git@github.com'
+  _ssh_redirect_expect PASS 'ssh -V'
+  _ssh_redirect_expect PASS 'echo ssh daisy'               # ssh is an argument
+  _ssh_redirect_expect PASS 'rsync -avz f daisy:/tmp/'     # rsync out of scope
+
+  # Escape hatch: SSH_REDIRECT_SKIP in the hook's environment suppresses it.
+  if [[ -z "$(jq -n --arg c 'ssh daisy' '{tool_name:"Bash", tool_input:{command:$c}}' | SSH_REDIRECT_SKIP=1 /bin/zsh "${SCRIPT_DIR}/claude/ssh-redirect-hook")" ]]; then
+    _pass "PASS: SSH_REDIRECT_SKIP=1 env override"
+  else
+    _fail "SSH_REDIRECT_SKIP=1 did not suppress the hook"
+  fi
+
+  # The deny message must name the CORRECT replacement alias for each host —
+  # a per-host check catches a CLAUDE_OF map typo (right DENY, wrong twin).
+  local pair twin
+  for pair in 'daisy:daisy-claude' 'tail-daisy:daisy-claude' 'mollie:mollie-claude' \
+              'tail-mollie:mollie-claude' 'gucci:gucci-claude' 'charlie:charlie-claude' \
+              'ha-green:ha-green-claude'; do
+    twin="${pair#*:}"
+    if [[ "$(_ssh_redirect_run "ssh ${pair%%:*}")" == *"${twin}"* ]]; then
+      _pass "deny reason names ${twin} for ${pair%%:*}"
+    else
+      _fail "deny reason for ${pair%%:*} does not name ${twin}"
+    fi
+  done
+}
