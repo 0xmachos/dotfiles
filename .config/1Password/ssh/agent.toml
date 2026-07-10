@@ -10,3 +10,7 @@
 item = "unifi-routers"
 vault = "homelab"
 
+[[ssh-keys]]
+item = "claude-ssh"
+vault = "homelab"
+
