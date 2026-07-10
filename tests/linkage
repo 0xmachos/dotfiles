@@ -94,6 +94,8 @@ function run_linkage {
     [statusline-command]=install_dotfiles
     [lint-hook]=install_dotfiles
     [npm-attest-hook]=install_dotfiles
+    [session-host-context]=install_dotfiles
+    [hosts]=install_dotfiles                 # Dynamic (per-host context files)
     [rules]=install_dotfiles                 # Dynamic (individual rules)
     [skills]=install_dotfiles                # Dynamic (individual skills)
   )

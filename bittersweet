@@ -578,6 +578,8 @@ function install_dotfiles {
     "claude/global-claude.md:CLAUDE.md"
     "claude/lint-hook:lint-hook"
     "claude/npm-attest-hook:npm-attest-hook"
+    "claude/session-host-context:session-host-context"
+    "claude/hosts:hosts"
   )
   local -ar sensitive_files=(
     "${SCRIPT_DIR}/.ssh/config"
@@ -591,6 +593,8 @@ function install_dotfiles {
     "${SCRIPT_DIR}/.aliases"
     "${SCRIPT_DIR}/claude/settings.json"
     "${SCRIPT_DIR}/.config/1Password/ssh/agent.toml"
+    "${SCRIPT_DIR}/claude/hosts/daisy.md"
+    "${SCRIPT_DIR}/claude/hosts/iratemonk0x2.md"
   )
 
   local dot_dir dot_file ssh_config git_config claude_file sensitive_file
