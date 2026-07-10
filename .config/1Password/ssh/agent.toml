@@ -10,3 +10,7 @@
 item = "net-devices"
 vault = "homelab"
 
+[[ssh-keys]]
+item = "claude-ssh"
+vault = "homelab"
+
