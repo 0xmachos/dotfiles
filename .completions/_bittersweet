@@ -34,7 +34,6 @@ subcommands=(
   'mdmprofile:Open System Preferences to install MDM Profile'
   'launchagents:Install and load LaunchAgents and LaunchDaemon'
   'completions:Regenerate .completions/_bittersweet from BITTERSWEET_SUBCOMMANDS'
-  'okf-index:Regenerate internals/index.md from OKF concept frontmatter'
   'test:Run test suite'
   'hailmary:Run every function in order'
 )
