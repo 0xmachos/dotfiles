@@ -1,0 +1,43 @@
+#!/bin/zsh
+# dotfiles/bin/op-homelab
+# Run op authenticated as the homelab-scoped 1Password Service Account
+# (0xmachos-claude-mbp) instead of the desktop-app integration. For
+# unattended use (Remote Control sessions, LaunchAgents) where nobody can
+# approve a Touch ID prompt.
+#
+# Token: login Keychain item (service op-sa-claude-mbp). Store/rotate with:
+#   security add-generic-password -U -s op-sa-claude-mbp -a 0xmachos-claude-mbp -w
+# (-w with no value prompts interactively, keeping the token out of shell
+# history and process arguments.)
+#
+# Never export OP_SERVICE_ACCOUNT_TOKEN ambiently — it overrides the
+# desktop-app biometric auth path for every op call in that environment.
+# Prefer `op-homelab run`/`inject` over `read`: run/inject deliver secrets
+# to the child process environment; read prints them to stdout (and into
+# Claude Code transcripts).
+
+set -euo pipefail
+IFS=$'\n\t'
+
+readonly KEYCHAIN_SERVICE="op-sa-claude-mbp"
+readonly KEYCHAIN_ACCOUNT="0xmachos-claude-mbp"
+readonly LOGIN_KEYCHAIN="${HOME}/Library/Keychains/login.keychain-db"
+
+token=""
+if ! token="$(/usr/bin/security find-generic-password -s "${KEYCHAIN_SERVICE}" \
+    -a "${KEYCHAIN_ACCOUNT}" -w "${LOGIN_KEYCHAIN}" 2>/dev/null)"; then
+  echo "[❌] No service-account token in login Keychain (${KEYCHAIN_SERVICE})" >&2
+  echo "     Store it: security add-generic-password -U -s ${KEYCHAIN_SERVICE} -a ${KEYCHAIN_ACCOUNT} -w" >&2
+  exit 1
+fi
+readonly token
+
+op_status=0
+OP_SERVICE_ACCOUNT_TOKEN="${token}" /opt/homebrew/bin/op "$@" || op_status=$?
+
+if (( op_status != 0 )); then
+  echo "[⚠️] op exited ${op_status}. If this was an auth error the token is expired or revoked." >&2
+  echo "     Rotate: 1password.com → Developer → Service accounts → ${KEYCHAIN_ACCOUNT} → Rotate Token," >&2
+  echo "     then re-store: security add-generic-password -U -s ${KEYCHAIN_SERVICE} -a ${KEYCHAIN_ACCOUNT} -w" >&2
+fi
+exit "${op_status}"
