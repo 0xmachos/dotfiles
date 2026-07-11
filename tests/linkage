@@ -26,6 +26,7 @@ function run_linkage {
   local -A top_level=(
     # Repo metadata
     [CLAUDE.md]=repo
+    [.mcp.json]=repo                         # Host-local MCP config (gitignored)
     [LICENSE]=repo
     [README.md]=repo
     [SECURITY.md]=repo
@@ -86,6 +87,7 @@ function run_linkage {
     [vt]=install_dotfiles
     [urlscan]=install_dotfiles
     [op-homelab]=install_dotfiles
+    [bao-mcp-env]=install_dotfiles
   )
 
   # claude/ files → owning subcommand (rules/ and skills/ are dynamic)
