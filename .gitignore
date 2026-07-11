@@ -21,3 +21,6 @@ poc/
 .githooks/pii-patterns
 # Host-local MCP server config (absolute per-user paths)
 .mcp.json
+
+# ripgrep/fd whitelist for gitignored local docs (advertises private paths)
+.ignore
