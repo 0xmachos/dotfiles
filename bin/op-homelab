@@ -5,10 +5,12 @@
 # unattended use (Remote Control sessions, LaunchAgents) where nobody can
 # approve a Touch ID prompt.
 #
-# Token: login Keychain item (service op-service-account). Store/rotate with:
-#   security add-generic-password -U -s op-service-account -a op-service-user -w ~/Library/Keychains/login.keychain-db
-# (-w with no value prompts interactively, keeping the token out of shell
-# history and process arguments.)
+# Token: login Keychain item (service op-service-account). Copy the ops_ token
+# to the clipboard, then store/rotate with:
+#   security add-generic-password -U -s op-service-account -a op-service-user -w "$(pbpaste)" ~/Library/Keychains/login.keychain-db
+# NB: add-generic-password's -w TAKES a value (unlike find-generic-password's
+# boolean -w), so the keychain path must stay positional — a bare "-w <path>"
+# silently stores the path as the token. Only $(pbpaste) reaches shell history.
 #
 # Never export OP_SERVICE_ACCOUNT_TOKEN ambiently — it overrides the
 # desktop-app biometric auth path for every op call in that environment.
@@ -22,7 +24,7 @@ IFS=$'\n\t'
 readonly KEYCHAIN_SERVICE="op-service-account"
 readonly KEYCHAIN_ACCOUNT="op-service-user"
 readonly LOGIN_KEYCHAIN="${HOME}/Library/Keychains/login.keychain-db"
-readonly STORE_HINT="security add-generic-password -U -s ${KEYCHAIN_SERVICE} -a ${KEYCHAIN_ACCOUNT} -w ${LOGIN_KEYCHAIN}"
+readonly STORE_HINT="security add-generic-password -U -s ${KEYCHAIN_SERVICE} -a ${KEYCHAIN_ACCOUNT} -w \"\$(pbpaste)\" ${LOGIN_KEYCHAIN}"
 
 token=""
 if ! token="$(/usr/bin/security find-generic-password -s "${KEYCHAIN_SERVICE}" \
