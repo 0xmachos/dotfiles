@@ -6,7 +6,7 @@
 # approve a Touch ID prompt.
 #
 # Token: login Keychain item (service op-sa-claude-mbp). Store/rotate with:
-#   security add-generic-password -U -s op-sa-claude-mbp -a 0xmachos-claude-mbp -w
+#   security add-generic-password -U -s op-sa-claude-mbp -a 0xmachos-claude-mbp -w ~/Library/Keychains/login.keychain-db
 # (-w with no value prompts interactively, keeping the token out of shell
 # history and process arguments.)
 #
@@ -22,22 +22,47 @@ IFS=$'\n\t'
 readonly KEYCHAIN_SERVICE="op-sa-claude-mbp"
 readonly KEYCHAIN_ACCOUNT="0xmachos-claude-mbp"
 readonly LOGIN_KEYCHAIN="${HOME}/Library/Keychains/login.keychain-db"
+readonly STORE_HINT="security add-generic-password -U -s ${KEYCHAIN_SERVICE} -a ${KEYCHAIN_ACCOUNT} -w ${LOGIN_KEYCHAIN}"
 
 token=""
 if ! token="$(/usr/bin/security find-generic-password -s "${KEYCHAIN_SERVICE}" \
     -a "${KEYCHAIN_ACCOUNT}" -w "${LOGIN_KEYCHAIN}" 2>/dev/null)"; then
-  echo "[❌] No service-account token in login Keychain (${KEYCHAIN_SERVICE})" >&2
-  echo "     Store it: security add-generic-password -U -s ${KEYCHAIN_SERVICE} -a ${KEYCHAIN_ACCOUNT} -w" >&2
+  # Rerun for diagnostics only — distinguish "item not found" from
+  # keychain access/tool failures (locked keychain, wrong path, etc.)
+  keychain_err="$(/usr/bin/security find-generic-password -s "${KEYCHAIN_SERVICE}" \
+    -a "${KEYCHAIN_ACCOUNT}" -w "${LOGIN_KEYCHAIN}" 2>&1 1>/dev/null || true)"
+  if [[ "${keychain_err}" == *"could not be found"* ]]; then
+    echo "[❌] No service-account token in login Keychain (${KEYCHAIN_SERVICE})" >&2
+    echo "     Store it: ${STORE_HINT}" >&2
+  else
+    echo "[❌] Keychain lookup failed (not a missing item): ${keychain_err}" >&2
+  fi
   exit 1
 fi
 readonly token
 
-op_status=0
-OP_SERVICE_ACCOUNT_TOKEN="${token}" /opt/homebrew/bin/op "$@" || op_status=$?
+# op run hands the child op's whole environment plus the resolved op://
+# values — including OP_SERVICE_ACCOUNT_TOKEN itself (confirmed empirically
+# 2026-07-11). Interpose env -u after `--` so children get the resolved
+# secrets but not the vault-unlocking token.
+args=("$@")
+if [[ "${1:-}" == "run" ]]; then
+  sep="${args[(i)--]}"
+  if (( sep < ${#args} )); then
+    # shellcheck disable=SC2296 # zsh-only ${(@)arr[a,b]} slice flags — no bash equivalent
+    args=("${(@)args[1,sep]}" /usr/bin/env -u OP_SERVICE_ACCOUNT_TOKEN "${(@)args[sep+1,-1]}")
+  fi
+fi
 
+op_status=0
+OP_SERVICE_ACCOUNT_TOKEN="${token}" /opt/homebrew/bin/op "${args[@]}" || op_status=$?
+
+# op exits 1 for auth and non-auth failures alike, and buffering stderr to
+# classify would break live log streaming for long-running MCP children —
+# so the hint stays conditional rather than classified.
 if (( op_status != 0 )); then
   echo "[⚠️] op exited ${op_status}. If this was an auth error the token is expired or revoked." >&2
   echo "     Rotate: 1password.com → Developer → Service accounts → ${KEYCHAIN_ACCOUNT} → Rotate Token," >&2
-  echo "     then re-store: security add-generic-password -U -s ${KEYCHAIN_SERVICE} -a ${KEYCHAIN_ACCOUNT} -w" >&2
+  echo "     then re-store: ${STORE_HINT}" >&2
 fi
 exit "${op_status}"
