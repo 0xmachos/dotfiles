@@ -5,3 +5,4 @@
 
 # GPG key fingerprint (public identifier, not a secret) in old .gitconfig
 8c5c7cd16110a316426880806b9fea748d4dbf03:.gitconfig:generic-api-key:6
+d43f09b2d5b20c94e945adf3a797b398d4270081:bin/op-homelab:generic-api-key:23
