@@ -84,6 +84,7 @@ typeset -ra BITTERSWEET_SUBCOMMANDS=(
   'mdmprofile:Open System Preferences to install MDM Profile'
   'launchagents:Install and load LaunchAgents and LaunchDaemon'
   'completions:Regenerate .completions/_bittersweet from BITTERSWEET_SUBCOMMANDS'
+  'okf-index:Regenerate internals/index.md from OKF concept frontmatter'
   'test:Run test suite'
   'hailmary:Run every function in order'
 )
@@ -568,16 +569,20 @@ function install_dotfiles {
   local _harden_count=0
   local _error_count=0
 
-  local -ar dot_dirs=(.ssh .extra .config/git .config/uv .config/dcg .claude .claude/skills .claude/rules)
+  local -ar dot_dirs=(.ssh .extra .codex .config/git .config/uv .config/dcg .claude .claude/skills .claude/rules)
   local -ar dot_files=(.zshrc .functions .completions .aliases)
   local -ar ssh_configs=(config .extra_ssh)
   local -ar git_configs=(config ignore allowed_signers)
   local -ar claude_files=(
     "claude/settings.json:settings.json"
     "claude/statusline-command:statusline-command"
+    "claude/subagent-statusline:subagent-statusline"
     "claude/global-claude.md:CLAUDE.md"
     "claude/lint-hook:lint-hook"
+    "claude/exa-redirect-hook:exa-redirect-hook"
+    "claude/rm-redirect-hook:rm-redirect-hook"
     "claude/npm-attest-hook:npm-attest-hook"
+    "claude/ssh-redirect-hook:ssh-redirect-hook"
     "claude/session-host-context:session-host-context"
     "claude/hosts:hosts"
   )
@@ -593,6 +598,7 @@ function install_dotfiles {
     "${SCRIPT_DIR}/.aliases"
     "${SCRIPT_DIR}/claude/settings.json"
     "${SCRIPT_DIR}/.config/1Password/ssh/agent.toml"
+    "${SCRIPT_DIR}/.codex/config.toml"
     "${SCRIPT_DIR}/claude/hosts/daisy.md"
     "${SCRIPT_DIR}/claude/hosts/iratemonk0x2.md"
   )
@@ -631,6 +637,9 @@ function install_dotfiles {
   # Symlink dcg config into $HOME/.config/dcg/
   _symlink "${SCRIPT_DIR}/.config/dcg/config.toml" "${HOME}/.config/dcg/config.toml"
 
+  # Symlink codex config into $HOME/.codex/
+  _symlink "${SCRIPT_DIR}/.codex/config.toml" "${HOME}/.codex/config.toml"
+
   # Copy 1Password SSH agent config (1Password doesn't follow symlinks)
   _ensure_dir "${HOME}/.config/1Password/ssh"
   cp "${SCRIPT_DIR}/.config/1Password/ssh/agent.toml" "${HOME}/.config/1Password/ssh/agent.toml"
@@ -662,7 +671,7 @@ function install_dotfiles {
   # Symlink API wrapper scripts into ~/.local/bin/ (ahead of /opt/homebrew/bin
   # on PATH, so wrappers shadow Homebrew binaries and inject 1Password keys)
   _ensure_dir "${HOME}/.local/bin"
-  local -ar op_wrapper_scripts=(vt urlscan op-homelab)
+  local -ar op_wrapper_scripts=(vt urlscan op-homelab bao-mcp-env)
   local wrapper
   for wrapper in "${op_wrapper_scripts[@]}"; do
     _symlink "${SCRIPT_DIR}/bin/${wrapper}" "${HOME}/.local/bin/${wrapper}"
@@ -906,6 +915,82 @@ case "${state}" in
     ;;
 esac
 EOF
+}
+
+
+function _okf_concept_row {
+  # _okf_concept_row FILE
+  #   Echo "type<TAB>title<TAB>filename<TAB>description" for one OKF concept,
+  #   parsed from its YAML frontmatter. Title falls back to the filename stem.
+  local file="${1}"
+  local name="${file##*/}"
+  local type="" title="" desc="" line key val
+  local -i fence=0
+  while IFS= read -r line; do
+    if [[ "${line}" == "---" ]]; then
+      (( ++fence >= 2 )) && break
+      continue
+    fi
+    (( fence == 1 )) || continue
+    key="${line%%:*}"
+    val="${line#*: }"
+    val="${val##[\"\']}"
+    val="${val%%[\"\']}"
+    case "${key}" in
+      type) type="${val}" ;;
+      title) title="${val}" ;;
+      description) desc="${val}" ;;
+    esac
+  done < "${file}"
+  [[ -n "${title}" ]] || title="${name%.md}"
+  printf '%s\t%s\t%s\t%s' "${type}" "${title}" "${name}" "${desc}"
+}
+
+
+function _generate_okf_index {
+  # _generate_okf_index OUTPUT_FILE
+  #   Regenerate the internals/ OKF bundle index from concept frontmatter.
+  #   Groups concepts by `type` (alphabetical), orders each group by title
+  #   (case-insensitive), and writes a progressive-disclosure index.md.
+  #   Source of truth is the frontmatter; `./test okf` enforces freshness.
+  local output_file="${1}"
+  local bundle="${SCRIPT_DIR}/internals"
+  local file name t rtitle rname rdesc
+  local -a rows=()
+
+  for file in "${bundle}"/*.md; do
+    [[ -f "${file}" ]] || continue
+    name="${file##*/}"
+    [[ "${name}" == "index.md" || "${name}" == "log.md" ]] && continue
+    rows+=("$(_okf_concept_row "${file}")")
+  done
+
+  cat > "${output_file}" <<'EOF'
+---
+okf_version: "0.1"
+---
+
+Internals knowledge bundle for the dotfiles repo, in Open Knowledge Format
+([OKF v0.1](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)).
+Each concept is one markdown file with YAML frontmatter; this index is the
+progressive-disclosure entry point. Grouped by `type`.
+EOF
+
+  (( ${#rows[@]} )) || return 0
+
+  while IFS= read -r t; do
+    printf '\n# %s\n\n' "${t}" >> "${output_file}"
+    printf '%s\n' "${rows[@]}" \
+      | /usr/bin/awk -F'\t' -v t="${t}" '$1 == t' \
+      | /usr/bin/sort -f -t$'\t' -k2 \
+      | while IFS=$'\t' read -r _ rtitle rname rdesc; do
+          if [[ -n "${rdesc}" ]]; then
+            printf '* [%s](%s) - %s\n' "${rtitle}" "${rname}" "${rdesc}" >> "${output_file}"
+          else
+            printf '* [%s](%s)\n' "${rtitle}" "${rname}" >> "${output_file}"
+          fi
+        done
+  done < <(printf '%s\n' "${rows[@]}" | /usr/bin/cut -f1 | /usr/bin/sort -u)
 }
 
 
@@ -1193,11 +1278,46 @@ function install_oversight {
 } 
 
 
+function _read_dcg_cdhash_from_plist {
+  # _read_dcg_cdhash_from_plist <plist_path>
+  #   Walks the ClaudeCodeConfigResolved:Processes array and prints the
+  #   CDHash of the entry whose BinaryPath matches /usr/local/bin/dcg.
+  #   Prints empty (and returns 0) if the file doesn't exist, isn't
+  #   readable, or has no matching entry — callers treat empty as "drift".
+  #
+  #   Why a helper: sync_dcg_cdhash needs to compare the binary's CDHash
+  #   against BOTH the repo plist (the source under git) AND the deployed
+  #   plist (/Library/Santa/faa-policy.plist, what Santa actually loads).
+  #   The two can drift independently — e.g. a previous run updated the
+  #   repo plist but install_santa_faa was skipped, or the deployed copy
+  #   was clobbered. A single comparison hides that.
+
+  local -r plist_path="$1"
+  local -r dcg_binary="/usr/local/bin/dcg"
+  local -r rule_path=":WatchItems:ClaudeCodeConfigResolved:Processes"
+  local i=0
+  local binary_path
+
+  if [[ ! -r "${plist_path}" ]]; then
+    return 0
+  fi
+
+  while /usr/libexec/PlistBuddy -c "Print ${rule_path}:${i}" "${plist_path}" &>/dev/null; do
+    binary_path="$(/usr/libexec/PlistBuddy -c "Print ${rule_path}:${i}:BinaryPath" "${plist_path}" 2>/dev/null || true)"
+    if [[ "${binary_path}" == "${dcg_binary}" ]]; then
+      /usr/libexec/PlistBuddy -c "Print ${rule_path}:${i}:CDHash" "${plist_path}" 2>/dev/null || true
+      return 0
+    fi
+    (( i += 1 ))
+  done
+}
+
+
 function sync_dcg_cdhash {
   # sync_dcg_cdhash
-  #   Reads the installed dcg binary's CDHash and patches it into the
-  #   Santa FAA policy plist, redeploying if changed. No-op if dcg is
-  #   not installed or the plist is already in sync.
+  #   Reads the installed dcg binary's CDHash and ensures both the repo
+  #   plist and the deployed Santa FAA plist match it. No-op if dcg is
+  #   not installed or both plists are already in sync.
   #
   #   Why: dcg is Rust linker-signed ad-hoc — no TeamID, and its
   #   SigningID (dcg-<hex>) is derived from LC_UUID so it rotates per
@@ -1205,20 +1325,26 @@ function sync_dcg_cdhash {
   #   + CDHash, so the CDHash must be refreshed after every fresh
   #   install or `sudo dcg update --verify`.
   #
+  #   Why two CDHash reads: the source plist under git and the deployed
+  #   plist at /Library/Santa/ are separate files. Santa enforces from
+  #   the deployed copy. A pure repo-comparison would say "already
+  #   current" while the deployed copy is silently stale (the case that
+  #   produced a real FAA deny window in 2026-05).
+  #
   #   Called from: install_dcg (end of fresh install / early-return
   #   path), bittersweet dcg-sync subcommand (run by jump and
   #   jump-system after `dcg update --verify`).
 
   local -r dcg_binary="/usr/local/bin/dcg"
-  local -r plist="${SCRIPT_DIR}/profiles/santa-faa-policy.plist"
-  local -r rule_path=":WatchItems:ClaudeCodeConfigResolved:Processes"
+  local -r repo_plist="${SCRIPT_DIR}/profiles/santa-faa-policy.plist"
+  local -r deployed_plist="/Library/Santa/faa-policy.plist"
 
   if [[ ! -x "${dcg_binary}" ]]; then
     return 0
   fi
 
-  if [[ ! -f "${plist}" ]]; then
-    echo "[❌] santa-faa-policy.plist not found at ${plist}"
+  if [[ ! -f "${repo_plist}" ]]; then
+    echo "[❌] santa-faa-policy.plist not found at ${repo_plist}"
     return 1
   fi
 
@@ -1229,37 +1355,38 @@ function sync_dcg_cdhash {
     return 1
   fi
 
-  # Walk the Processes array via PlistBuddy (read-only) to locate the dcg
-  # entry and read its current CDHash. PlistBuddy's `Set` would re-serialise
-  # the whole file (stripping XML comments and normalising indentation), so
-  # the write path below uses `sed` instead.
-  local i=0
-  local binary_path
-  local plist_cdhash=""
-  local dcg_found=""
-  while /usr/libexec/PlistBuddy -c "Print ${rule_path}:${i}" "${plist}" &>/dev/null; do
-    binary_path="$(/usr/libexec/PlistBuddy -c "Print ${rule_path}:${i}:BinaryPath" "${plist}" 2>/dev/null || true)"
-    if [[ "${binary_path}" == "${dcg_binary}" ]]; then
-      dcg_found="1"
-      plist_cdhash="$(/usr/libexec/PlistBuddy -c "Print ${rule_path}:${i}:CDHash" "${plist}" 2>/dev/null || true)"
-      break
-    fi
-    (( i += 1 ))
-  done
+  local repo_cdhash deployed_cdhash
+  repo_cdhash="$(_read_dcg_cdhash_from_plist "${repo_plist}")"
+  deployed_cdhash="$(_read_dcg_cdhash_from_plist "${deployed_plist}")"
 
-  if [[ -z "${dcg_found}" ]]; then
-    echo "[❌] No Process entry with BinaryPath=${dcg_binary} in ${plist}"
+  if [[ -z "${repo_cdhash}" ]]; then
+    echo "[❌] No Process entry with BinaryPath=${dcg_binary} in ${repo_plist}"
     return 1
   fi
 
-  if [[ "${plist_cdhash}" == "${current_cdhash}" ]]; then
-    echo "[🍺] dcg CDHash already current in FAA policy"
+  local repo_match="0" deployed_match="0"
+  [[ "${repo_cdhash}" == "${current_cdhash}" ]] && repo_match="1"
+  [[ "${deployed_cdhash}" == "${current_cdhash}" ]] && deployed_match="1"
+
+  if [[ "${repo_match}" == "1" && "${deployed_match}" == "1" ]]; then
+    echo "[🍺] dcg CDHash already current in FAA policy (repo and ${deployed_plist})"
     return 0
   fi
 
+  if [[ "${repo_match}" == "1" ]]; then
+    echo "[🍺] Repo plist current; deployed FAA policy stale — redeploying"
+    echo "      Binary:   ${current_cdhash}"
+    echo "      Deployed: ${deployed_cdhash:-<none>}"
+    install_santa_faa
+    return $?
+  fi
+
   echo "[🍺] Rotating dcg CDHash in FAA policy"
-  echo "      Old: ${plist_cdhash:-<none>}"
-  echo "      New: ${current_cdhash}"
+  echo "      Old (repo):     ${repo_cdhash}"
+  if [[ "${repo_cdhash}" != "${deployed_cdhash}" ]]; then
+    echo "      Old (deployed): ${deployed_cdhash:-<none>}"
+  fi
+  echo "      New:            ${current_cdhash}"
 
   # Comment-preserving in-place edit: restrict the substitution to the
   # range from the BinaryPath string to the next </dict>, which bounds the
@@ -1271,11 +1398,11 @@ function sync_dcg_cdhash {
   #   [a-f0-9]{40} — CDHash is SHA-256 truncated to 160 bits (40 hex)
   if ! sed -E -i '' "\\|<string>${dcg_binary}</string>|,/<\\/dict>/{
     s|(<string>)[a-f0-9]{40}(</string>)|\\1${current_cdhash}\\2|
-  }" "${plist}"; then
-    echo "[❌] Failed to update CDHash in ${plist}"
+  }" "${repo_plist}"; then
+    echo "[❌] Failed to update CDHash in ${repo_plist}"
     return 1
   fi
-  echo "[✅] Updated CDHash in ${plist}"
+  echo "[✅] Updated CDHash in ${repo_plist}"
 
   install_santa_faa
 }
@@ -1734,6 +1861,7 @@ function install_launchagents {
     com.0xmachos.jump-user
     com.0xmachos.vault-guard
     com.0xmachos.imageio-oop
+    com.0xmachos.second-brain-metrics
   )
 
   # LaunchAgents: copy into ~/Library/LaunchAgents/
@@ -1773,6 +1901,7 @@ function load_launchagents {
     com.0xmachos.jump-user
     com.0xmachos.vault-guard
     com.0xmachos.imageio-oop
+    com.0xmachos.second-brain-metrics
   )
 
   for plist in "${launchagent_plists[@]}"; do
@@ -1902,6 +2031,13 @@ function main {
       local out_path="${2:-${SCRIPT_DIR}/.completions/_bittersweet}"
       _generate_bittersweet_completion "${out_path}"
       echo "[✅] Regenerated ${out_path}"
+      ;;
+    okf-index)
+      # Optional second arg: alternate output path (used by tests/okf to
+      # generate into $TMPDIR without mutating the working-copy index.md).
+      local okf_out="${2:-${SCRIPT_DIR}/internals/index.md}"
+      _generate_okf_index "${okf_out}"
+      echo "[✅] Regenerated ${okf_out}"
       ;;
     test)
       run_test

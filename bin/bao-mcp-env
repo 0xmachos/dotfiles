@@ -1,0 +1,77 @@
+#!/bin/sh
+#
+# bao-mcp-env — launch a command with env vars from an OpenBao KV v2 secret.
+#
+# Usage: bao-mcp-env <kv-subpath> <command> [args...]
+#   kv-subpath  path under the kv/ mount, e.g. mcp/unifi-b8
+#   command     binary to exec with the secret's fields in its environment
+#
+# MBP port of Daisy's loader (ridleys-shooting-party, Daisy fs/ overlay
+# copy of bao-mcp-env) — identical except the two
+# connection constants: OpenBao lives on Daisy, reached over Tailscale, and
+# the listener cert chains to the step-ca root that `step ca bootstrap`
+# wrote locally. Authenticates with the claude-mbp AppRole (creds under
+# ~/.config/openbao/claude/, 0600 — Secrets-Architecture §6.6).
+# Reads the whole secret and exports every field verbatim as an
+# environment variable — kv/mcp/* entries store literal env-var names as
+# field keys (§7), so this loader has no per-server logic. Mirrors
+# `op run --env-file` semantics: per-process env only, nothing on disk,
+# never launchctl setenv.
+#
+# Re-authenticates every call with the §6.3 reusable-SecretID pattern.
+# The short-TTL token is revoked BEFORE exec — an EXIT trap would die
+# with the process image — and BAO_TOKEN is unset so the target command
+# never inherits it.
+
+set -eu
+
+BAO="/opt/homebrew/bin/bao"
+JQ="$(command -v jq || echo /opt/homebrew/bin/jq)"
+export BAO_ADDR="https://100.82.54.111:8200"
+export BAO_CACERT="${HOME}/.step/certs/root_ca.crt"
+
+if [ "$#" -lt 2 ]; then
+    echo "usage: bao-mcp-env <kv-subpath> <command> [args...]" >&2
+    exit 64
+fi
+
+path="$1"
+shift
+
+CRED_DIR="${HOME}/.config/openbao/claude"
+
+if [ ! -r "$CRED_DIR/role_id" ] || [ ! -r "$CRED_DIR/secret_id" ]; then
+    echo "bao-mcp-env: AppRole credentials missing or unreadable in $CRED_DIR" >&2
+    exit 1
+fi
+
+ROLE_ID="$(cat "$CRED_DIR/role_id")"
+SECRET_ID="$(cat "$CRED_DIR/secret_id")"
+
+if ! BAO_TOKEN="$("$BAO" write -field=token auth/approle/login \
+    role_id="$ROLE_ID" secret_id="$SECRET_ID" 2>/dev/null)"; then
+    echo "bao-mcp-env: AppRole login failed for claude-mbp (OpenBao sealed/down, or Tailscale path to Daisy broken?)" >&2
+    exit 1
+fi
+export BAO_TOKEN
+
+if ! secret_json="$("$BAO" kv get -format=json -mount=kv "$path")"; then
+    "$BAO" token revoke -self >/dev/null 2>&1 || true
+    echo "bao-mcp-env: read of kv/$path failed" >&2
+    exit 1
+fi
+
+"$BAO" token revoke -self >/dev/null 2>&1 || true
+unset BAO_TOKEN
+
+# Field keys become env var names verbatim; @sh single-quotes each value.
+# Keys are validated so a malformed kv entry fails loudly instead of
+# reaching eval.
+exports="$(printf '%s' "$secret_json" | "$JQ" -r '
+    .data.data | to_entries[]
+    | if (.key | test("^[A-Za-z_][A-Za-z0-9_]*$")) then .
+      else error("invalid env var name: \(.key)") end
+    | "export \(.key)=\(.value | @sh)"')"
+eval "$exports"
+
+exec "$@"
