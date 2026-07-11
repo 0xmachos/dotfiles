@@ -27,6 +27,7 @@ function run_linkage {
     # Repo metadata
     [CLAUDE.md]=repo
     [.mcp.json]=repo                         # Host-local MCP config (gitignored)
+    [.ignore]=repo                           # ripgrep whitelist for gitignored docs (gitignored)
     [LICENSE]=repo
     [README.md]=repo
     [SECURITY.md]=repo
