@@ -41,6 +41,13 @@ if ! token="$(/usr/bin/security find-generic-password -s "${KEYCHAIN_SERVICE}" \
 fi
 readonly token
 
+if [[ -z "${token}" ]]; then
+  echo "[❌] SA token item ${KEYCHAIN_SERVICE} is present but empty — op would" >&2
+  echo "     otherwise fall through to desktop biometric auth (authorization" >&2
+  echo "     timeout in an unattended session). Store it: ${STORE_HINT}" >&2
+  exit 1
+fi
+
 # op run hands the child op's whole environment plus the resolved op://
 # values — including OP_SERVICE_ACCOUNT_TOKEN itself (confirmed empirically
 # 2026-07-11). Interpose env -u after `--` so children get the resolved
