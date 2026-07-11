@@ -19,3 +19,5 @@ poc/
 
 # PII patterns for pre-commit hook
 .githooks/pii-patterns
+# Host-local MCP server config (absolute per-user paths)
+.mcp.json
