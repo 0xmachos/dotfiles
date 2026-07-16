@@ -5,8 +5,6 @@
 # connectivity checks, binary detection, and logging behaviour.
 #
 # ShellCheck: lint with `shellcheck --shell=bash tests/jump`.
-#   Zsh associative array iteration (${(@k)}) triggers SC2066/SC2296 —
-#   suppressed inline.
 # This file is sourced, not executed — chmod 644.
 #
 # shellcheck source=tests/lib
@@ -100,41 +98,65 @@ function _jump_test_reachability_patterns {
   done
 }
 
-# Verifies binaries referenced in the scripts exist on this system
+# Verifies every *_BINARY/*_APP path declared in the jump-suite scripts
+# exists on this system. The list is derived from the scripts themselves
+# rather than hand-maintained here — a parallel list drifts silently when
+# a script gains a new updater.
 function _jump_test_binary_paths {
-  _section "binary paths (jump-user)"
+  _section "binary paths (derived from scripts)"
 
+  # brew is the one hard requirement — jump-user aborts without it
   if [[ -x "/opt/homebrew/bin/brew" ]]; then
-    _pass "brew exists"
+    _pass "brew exists at /opt/homebrew/bin/brew"
   else
     _fail "brew not found at /opt/homebrew/bin/brew"
   fi
 
-  if [[ -x "/opt/homebrew/bin/npm" ]]; then
-    _pass "npm exists"
-  else
-    _skip "npm not found at /opt/homebrew/bin/npm"
-  fi
-
-  _section "binary paths (jump-system)"
-
-  local -A binaries=(
-    [softwareupdate]="/usr/sbin/softwareupdate"
-    [tlmgr]="/Library/TeX/texbin/tlmgr"
-    [xprotect]="/usr/bin/xprotect"
-    [dcg]="/usr/local/bin/dcg"
-  )
-
-  local name path
-  # shellcheck disable=SC2066,SC2296
-  for name in "${(@k)binaries}"; do
-    path="${binaries[$name]}"
+  local -a scripts=(bin/jump-user bin/jump-system bin/npm-audit-check .functions/jump)
+  local -A seen=()
+  local line name path
+  while IFS= read -r line; do
+    name="${line%%=*}"
+    name="${name##* }"
+    path="${line#*=}"
+    path="${path#\"}"
+    path="${path%\"}"
+    path="${path//\$\{HOME\}/${HOME}}"
+    if [[ -n "${seen[${path}]:-}" ]]; then
+      continue
+    fi
+    seen[${path}]=1
     if [[ -x "${path}" ]]; then
       _pass "${name} exists at ${path}"
     else
       _skip "${name} not found at ${path}"
     fi
+  done < <(/usr/bin/grep -hoE '(local -r|readonly) [A-Z_]+(_BINARY|_APP)="[^"]+"' "${scripts[@]}" | /usr/bin/sort -u)
+
+  if (( ${#seen[@]} == 0 )); then
+    _fail "no *_BINARY declarations extracted — pattern or scripts changed"
+  fi
+}
+
+# Verifies the scripts parse under real zsh — the shellcheck suite lints in
+# bash mode, which cannot catch zsh-only syntax errors.
+function _jump_test_zsh_syntax {
+  _section "zsh syntax"
+
+  local script
+  for script in bin/jump-user bin/jump-system bin/npm-audit-check; do
+    if /bin/zsh -n "${script}" 2>/dev/null; then
+      _pass "${script} parses (zsh -n)"
+    else
+      _fail "${script} has zsh syntax errors"
+    fi
   done
+
+  if /bin/zsh -c 'source .functions/jump && typeset -f jump >/dev/null' 2>/dev/null; then
+    _pass ".functions/jump sources and defines jump()"
+  else
+    _fail ".functions/jump failed to source or define jump()"
+  fi
 }
 
 function _jump_test_log_file {
@@ -156,49 +178,61 @@ function _jump_test_log_file {
   fi
 }
 
-# Verifies the logging function works by running a trivial command
+# Exercises the REAL run_and_log from each driver and asserts its RETURN CODE,
+# not just the log side-effect. The previous version reimplemented the function
+# body inline and only checked the log file, so it could not have caught a
+# run_and_log that swallowed a non-zero exit — the exact B1/B2 exit-swallow bug.
 function _jump_test_run_and_log {
-  _section "run_and_log"
+  _section "run_and_log (real functions)"
 
-  local test_log
-  test_log="${TMPDIR}test-jump-$$.log"
+  local script name test_log rc_true rc_false
+  for script in bin/jump-system bin/jump-user; do
+    name="${script##*/}"
+    test_log="${TMPDIR}test-jump-$$-${name}.log"
+    /bin/rm -f "${test_log}"
 
-  local description output
+    # Source the real function without triggering `main "$@"`, in a subshell so
+    # its definitions don't leak into the test shell, and capture the code it
+    # returns. `set +e` because the runner (test) uses `set -e` and the failure
+    # case below runs a command that returns non-zero on purpose — without it
+    # the subshell would abort before `echo "$?"`. LOG_FILE is redirected to a
+    # temp file the failure branch appends.
+    # SC2034: LOG_FILE is read by the sourced run_and_log; SC1090/SC1091: the
+    # source target is a dynamic process substitution.
+    # shellcheck disable=SC1090,SC1091,SC2034
+    rc_true=$(set +e; source <(/usr/bin/grep -v '^main "\$@"' "${script}"); LOG_FILE="${test_log}"; run_and_log "ok step" /usr/bin/true >/dev/null 2>&1; echo "$?")
+    if [[ "${rc_true}" == "0" ]]; then
+      _pass "${name}: run_and_log returns 0 on success"
+    else
+      _fail "${name}: run_and_log returned '${rc_true}' on success (expected 0)"
+    fi
+    if [[ ! -f "${test_log}" ]] || ! grep -q "ok step" "${test_log}" 2>/dev/null; then
+      _pass "${name}: success does not write to log file"
+    else
+      _fail "${name}: success should not write to log file"
+    fi
 
-  # Test success case
-  description="test true"
-  if output=$(/usr/bin/true 2>&1); then
-    : # success — would log to syslog, not file
-  else
-    { echo "[FAIL] ${description}"; echo "${output}"; } >> "${test_log}"
-  fi
+    # shellcheck disable=SC1090,SC1091,SC2034
+    rc_false=$(set +e; source <(/usr/bin/grep -v '^main "\$@"' "${script}"); LOG_FILE="${test_log}"; run_and_log "bad step" /usr/bin/false >/dev/null 2>&1; echo "$?")
+    if [[ "${rc_false}" != "0" ]]; then
+      _pass "${name}: run_and_log returns non-zero on failure"
+    else
+      _fail "${name}: run_and_log swallowed the failure (returned 0)"
+    fi
+    if grep -q "FAIL.*bad step" "${test_log}" 2>/dev/null; then
+      _pass "${name}: failure writes [FAIL] to log file"
+    else
+      _fail "${name}: failure should write [FAIL] to log file"
+    fi
 
-  if [[ ! -f "${test_log}" ]] || ! grep -q "test true" "${test_log}" 2>/dev/null; then
-    _pass "run_and_log: success does not write to log file"
-  else
-    _fail "run_and_log: success should not write to log file"
-  fi
-
-  # Test failure case
-  description="test false"
-  if output=$(/usr/bin/false 2>&1); then
-    : # success
-  else
-    { echo "[FAIL] ${description}"; echo "${output}"; } >> "${test_log}"
-  fi
-
-  if grep -q "FAIL.*test false" "${test_log}" 2>/dev/null; then
-    _pass "run_and_log: failure writes [FAIL] to log file"
-  else
-    _fail "run_and_log: failure should write [FAIL] to log file"
-  fi
-
-  /bin/rm -f "${test_log}"
+    /bin/rm -f "${test_log}"
+  done
 }
 
 function run_jump {
   _jump_test_scripts_exist
   _jump_test_shellcheck
+  _jump_test_zsh_syntax
   _jump_test_reachability_patterns
   _jump_test_binary_paths
   _jump_test_log_file

@@ -13,6 +13,13 @@ function jump {
   local -r XPROTECT_BINARY="/usr/bin/xprotect"
   local -r XPROTECT_APP="/Library/Apple/System/Library/CoreServices/XProtect.app/Contents/MacOS/XProtect"
   local -r DCG_BINARY="/usr/local/bin/dcg"
+  local -r CLAUDE_BINARY="${HOME}/.local/bin/claude"
+
+  # Accumulate failures across the update steps so `jump` exits non-zero when any
+  # step failed (honest status for `jump && …`). Advisory checks (brew doctor,
+  # the dcg lock skip, the IIO reminder) and skipped-because-absent binaries do
+  # NOT set this.
+  local rc=0
 
 
   ## macOS ##
@@ -24,7 +31,7 @@ function jump {
   echo "[🍎] Updating macOS..."
   # Apple Silicon requires volume owner auth, not sudo
   # https://support.apple.com/guide/deployment/dep24dbdcf9e/web
-  "${SWUPDATE_BINARY}" --install --all --include-config-data
+  "${SWUPDATE_BINARY}" --install --all --include-config-data || rc=1
 
 
   ## Homebrew ##
@@ -35,27 +42,57 @@ function jump {
       # prompts before upgrading dependents when run in an interactive TTY.
       # jump runs unattended, so suppress it. (launchd jump-user has no TTY
       # and is already unaffected.)
-      HOMEBREW_NO_ASK=1 "${BREW_BINARY}" upgrade
-      "${BREW_BINARY}" cleanup
-      "${BREW_BINARY}" autoremove
-      "${BREW_BINARY}" doctor
+      HOMEBREW_NO_ASK=1 "${BREW_BINARY}" upgrade || rc=1
+      "${BREW_BINARY}" cleanup || rc=1
+      "${BREW_BINARY}" autoremove || rc=1
+      "${BREW_BINARY}" doctor   # advisory — non-zero on benign warnings
     else
       echo "[❌] Failed to update Homebrew"
+      rc=1
     fi
   fi
 
 
 
+  ## Claude Code ##
+  # Native installer (not Homebrew): symlink at ~/.local/bin/claude into
+  # ~/.local/share/claude/versions/. User-writable — no sudo.
+  if [[ -x "${CLAUDE_BINARY}" ]]; then
+    echo "[🤖] Updating Claude Code..."
+    "${CLAUDE_BINARY}" update || rc=1
+  fi
+
+
   ## dcg ##
   if [[ -x "${DCG_BINARY}" ]]; then
-    "${SUDO_BINARY}" --prompt="[⚠️ ] Password required to update dcg: " -v
-    echo "[🛡️] Updating dcg..."
-    "${SUDO_BINARY}" "${DCG_BINARY}" update --verify --system
-    # dcg is ad-hoc signed; its CDHash changes per build. Refresh the
-    # Santa FAA policy entry so reads of claude/settings.json keep working.
-    local -r BITTERSWEET_BINARY="${HOME}/Documents/Projects/dotfiles/bittersweet"
-    if [[ -x "${BITTERSWEET_BINARY}" ]]; then
-      "${BITTERSWEET_BINARY}" dcg-sync
+    # dcg's upstream install.sh holds /tmp/dcg-install.lock.d as a mutex
+    # and writes its PID to lock.d/pid. If a live installer already holds
+    # the lock (e.g. a previous `jump` is still building from source under
+    # `--verify`), exit early with a clear message instead of letting dcg
+    # print "Installer failed with status exit status: 1". `ps -p` is used
+    # rather than `kill -0` because the installer runs as root and `kill -0`
+    # from a user context returns EPERM for cross-UID PIDs.
+    local -r DCG_LOCK="/tmp/dcg-install.lock.d"
+    local lock_pid=""
+    if [[ -r "${DCG_LOCK}/pid" ]]; then
+      lock_pid="$(<"${DCG_LOCK}/pid")"
+      if [[ -n "${lock_pid}" ]] && ! ps -p "${lock_pid}" >/dev/null 2>&1; then
+        lock_pid=""
+      fi
+    fi
+
+    if [[ -n "${lock_pid}" ]]; then
+      echo "[⏭️ ] dcg installer already running (PID ${lock_pid}); skipping update"
+    else
+      "${SUDO_BINARY}" --prompt="[⚠️ ] Password required to update dcg: " -v
+      echo "[🛡️] Updating dcg..."
+      "${SUDO_BINARY}" "${DCG_BINARY}" update --verify --system || rc=1
+      # dcg is ad-hoc signed; its CDHash changes per build. Refresh the
+      # Santa FAA policy entry so reads of claude/settings.json keep working.
+      local -r BITTERSWEET_BINARY="${HOME}/Documents/Projects/dotfiles/bittersweet"
+      if [[ -x "${BITTERSWEET_BINARY}" ]]; then
+        "${BITTERSWEET_BINARY}" dcg-sync
+      fi
     fi
   fi
 
@@ -66,8 +103,8 @@ function jump {
   if [[ -x "${TLMGR_BINARY}" ]]; then
     "${SUDO_BINARY}" --prompt="[⚠️ ] Password required to run tlmgr: " -v
     echo "[📝] Updating LaTeX..."
-    "${SUDO_BINARY}" "${TLMGR_BINARY}" --verify-repo=none update --self
-    "${SUDO_BINARY}" "${TLMGR_BINARY}" --verify-repo=none update --all
+    "${SUDO_BINARY}" "${TLMGR_BINARY}" --verify-repo=none update --self || rc=1
+    "${SUDO_BINARY}" "${TLMGR_BINARY}" --verify-repo=none update --all || rc=1
   fi
 
 
@@ -87,7 +124,7 @@ function jump {
   if [[ -x "${XPROTECT_BINARY}" ]]; then
     echo "[🛡️] Updating XProtect..."
     "${SUDO_BINARY}" --prompt="[⚠️ ] Password required to update XProtect: " -v
-    "${SUDO_BINARY}" "${XPROTECT_BINARY}" update --prerelease
+    "${SUDO_BINARY}" "${XPROTECT_BINARY}" update --prerelease || rc=1
   fi
 
   if [[ -x "${XPROTECT_APP}" ]]; then
@@ -102,4 +139,6 @@ function jump {
     echo "    Run: launchctl setenv IIOEnableOOP 1"
     echo "    Or:  bittersweet launchagents"
   fi
+
+  return "${rc}"
 }

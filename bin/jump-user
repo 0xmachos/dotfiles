@@ -2,8 +2,8 @@
 # dotfiles/bin/jump-user
 #
 # jump-user
-#   User-level update script for Homebrew (and per-host extras
-#   from .extra/jump-user, if present)
+#   User-level update script for Homebrew and Claude Code (and
+#   per-host extras from .extra/jump-user, if present)
 #   Designed to be run by LaunchAgent com.0xmachos.jump-user
 #   Can also be run manually
 #
@@ -16,10 +16,12 @@ LOG_FILE="${HOME}/Library/Logs/jump.log"
 function run_and_log {
   local description="$1"
   shift
-  local output
+  local output rc
   if output=$("$@" 2>&1); then
+    rc=0
     logger -t "com.0xmachos.jump" "[OK] ${description}"
   else
+    rc=$?
     logger -t "com.0xmachos.jump" "[FAIL] ${description}"
     {
       echo "[$(date '+%Y-%m-%d %H:%M:%S')] [FAIL] ${description}"
@@ -27,6 +29,31 @@ function run_and_log {
       echo ""
     } >> "${LOG_FILE}"
   fi
+  return "${rc}"
+}
+
+# brew-vulns exits 1 when vulnerabilities are found and 2 on scan errors.
+# Findings are logged as [VULN] so they aren't mistaken for a broken scan.
+function run_vulns_scan {
+  local vulns_binary="$1"
+  local output scan_status tag rc
+  output=$("${vulns_binary}" --severity high 2>&1)
+  scan_status=$?
+  case "${scan_status}" in
+    0)
+      logger -t "com.0xmachos.jump" "[OK] brew vulns"
+      return 0
+      ;;
+    1) tag="VULN"; rc=0 ;;   # vulnerabilities found — logged, not a scan failure
+    *) tag="FAIL"; rc=1 ;;   # scan itself broke — a real failure
+  esac
+  logger -t "com.0xmachos.jump" "[${tag}] brew vulns"
+  {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [${tag}] brew vulns --severity high"
+    echo "${output}"
+    echo ""
+  } >> "${LOG_FILE}"
+  return "${rc}"
 }
 
 function check_internet_connection {
@@ -73,11 +100,31 @@ function main {
     return 1
   fi
 
-  run_and_log "brew update"     "${BREW_BINARY}" update
-  run_and_log "brew upgrade"    "${BREW_BINARY}" upgrade
-  run_and_log "brew cleanup"    "${BREW_BINARY}" cleanup
-  run_and_log "brew autoremove" "${BREW_BINARY}" autoremove
+  local rc=0
+  run_and_log "brew update"     "${BREW_BINARY}" update     || rc=1
+  run_and_log "brew upgrade"    "${BREW_BINARY}" upgrade    || rc=1
+  run_and_log "brew cleanup"    "${BREW_BINARY}" cleanup    || rc=1
+  run_and_log "brew autoremove" "${BREW_BINARY}" autoremove || rc=1
+  # brew doctor is advisory — it exits non-zero on benign warnings, so its
+  # status is logged but deliberately not folded into the run's exit code.
   run_and_log "brew doctor"     "${BREW_BINARY}" doctor
+
+  # OSV.dev vulnerability scan (homebrew/brew-vulns tap), skipped if not
+  # installed. Only GitHub/GitLab/Codeberg-sourced formulae are checked.
+  local -r BREW_VULNS_BINARY="/opt/homebrew/bin/brew-vulns"
+  if [[ -x "${BREW_VULNS_BINARY}" ]]; then
+    run_vulns_scan "${BREW_VULNS_BINARY}" || rc=1
+  fi
+
+  ## Claude Code ##
+  # Native installer (not Homebrew): symlink at ~/.local/bin/claude into
+  # ~/.local/share/claude/versions/. User-writable, so this must run as
+  # the user — never from jump-system (root-owned files would break
+  # later updates).
+  local -r CLAUDE_BINARY="${HOME}/.local/bin/claude"
+  if [[ -x "${CLAUDE_BINARY}" ]]; then
+    run_and_log "claude update" "${CLAUDE_BINARY}" update || rc=1
+  fi
 
   ## Local extras (gitignored, sourced if present) ##
   # Per-host updaters that aren't part of the canonical user-level set
@@ -89,6 +136,8 @@ function main {
     # shellcheck disable=SC1090
     source "${EXTRA_JUMP_USER}"
   fi
+
+  return "${rc}"
 }
 
 main "$@"
