@@ -64,6 +64,31 @@ function run_ssh_redirect {
   _ssh_redirect_expect DENY 'ssh 2001:db8::1'
   _ssh_redirect_expect DENY 'ssh user@2001:db8::1 uptime'
 
+  # Wrapper-prefixed invocations → DENY. Automation is what adds the wrapper, so
+  # the hook was weakest in exactly the unattended case it exists to protect.
+  # Covers each wrapper's own arg grammar (timeout's DURATION, -k/-n values,
+  # env's VAR=val) and nesting.
+  _ssh_redirect_expect DENY 'timeout 12 ssh tail-daisy uptime'
+  _ssh_redirect_expect DENY 'timeout 12 ssh -o BatchMode=yes tail-daisy uptime'
+  _ssh_redirect_expect DENY 'timeout --preserve-status 5 ssh gucci'
+  _ssh_redirect_expect DENY 'timeout -k 5 10 ssh charlie'
+  _ssh_redirect_expect DENY 'nice -n 10 ssh mollie'
+  _ssh_redirect_expect DENY 'nohup scp f.txt daisy:/tmp/'
+  _ssh_redirect_expect DENY 'env FOO=1 ssh daisy uptime'
+  _ssh_redirect_expect DENY 'stdbuf -oL ssh gucci'
+  _ssh_redirect_expect DENY 'nohup timeout 5 ssh daisy'   # nested wrappers
+  _ssh_redirect_expect DENY 'timeout 5 ssh 192.0.2.1'     # raw IP behind a wrapper
+
+  # sudo is a wrapper too, but gets its own reason: root's ~/.ssh has no
+  # .extra_ssh, so "use daisy-claude" would be advice that cannot work.
+  _ssh_redirect_expect DENY 'sudo ssh daisy'
+  _ssh_redirect_expect DENY 'sudo timeout 5 ssh daisy'
+
+  # A bare `VAR=val` prefix is a wrapper by another name → DENY.
+  _ssh_redirect_expect DENY 'FOO=1 ssh daisy'
+  _ssh_redirect_expect DENY 'FOO=1 BAR=2 ssh tail-daisy uptime'
+  _ssh_redirect_expect DENY 'FOO=1 timeout 5 ssh daisy'
+
   # Already-correct -claude aliases, the interactive unlock op, external hosts,
   # ssh-as-argument, and out-of-scope tools → PASS.
   _ssh_redirect_expect PASS 'ssh daisy-claude'
@@ -76,6 +101,10 @@ function run_ssh_redirect {
   _ssh_redirect_expect PASS 'ssh -V'
   _ssh_redirect_expect PASS 'echo ssh daisy'               # ssh is an argument
   _ssh_redirect_expect PASS 'rsync -avz f daisy:/tmp/'     # rsync out of scope
+  _ssh_redirect_expect PASS 'timeout 12 ssh daisy-claude uptime'   # wrapped, already correct
+  _ssh_redirect_expect PASS 'timeout 12 ls'                # wrapper, no ssh
+  _ssh_redirect_expect PASS 'sudo ssh git@github.com'      # external host, as bare
+  _ssh_redirect_expect PASS 'ssh gucci-claude timeout 5 grep daisy'  # wrapper+alias in payload
 
   # Escape hatch: SSH_REDIRECT_SKIP in the hook's environment suppresses it.
   if [[ -z "$(jq -n --arg c 'ssh daisy' '{tool_name:"Bash", tool_input:{command:$c}}' | SSH_REDIRECT_SKIP=1 /bin/zsh "${SCRIPT_DIR}/claude/ssh-redirect-hook")" ]]; then
@@ -83,6 +112,13 @@ function run_ssh_redirect {
   else
     _fail "SSH_REDIRECT_SKIP=1 did not suppress the hook"
   fi
+
+  # …and as a command prefix. A PreToolUse hook is spawned with Claude Code's
+  # env, never the command's, so the prefix form is the only override usable
+  # from the Bash tool — and it must survive the `VAR=val` closure above, which
+  # would otherwise swallow it and silently break the documented escape hatch.
+  _ssh_redirect_expect PASS 'SSH_REDIRECT_SKIP=1 ssh daisy'
+  _ssh_redirect_expect PASS 'SSH_REDIRECT_SKIP=1 timeout 5 ssh daisy'
 
   # The deny message must name the CORRECT replacement alias for each host —
   # a per-host check catches a CLAUDE_OF map typo (right DENY, wrong twin).
@@ -97,4 +133,13 @@ function run_ssh_redirect {
       _fail "deny reason for ${pair%%:*} does not name ${twin}"
     fi
   done
+
+  # sudo must get its own reason. Without this, a right-DENY-wrong-message
+  # regression (telling the user to run `sudo ssh daisy-claude`, an alias that
+  # does not exist in root's ~/.ssh) would pass the DENY assertion above.
+  if [[ "$(_ssh_redirect_run 'sudo ssh daisy')" == *'Drop the'* ]]; then
+    _pass "sudo deny reason says to drop the sudo"
+  else
+    _fail "sudo deny reason does not say to drop the sudo"
+  fi
 }
