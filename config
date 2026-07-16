@@ -1,31 +1,76 @@
 # Configuration file for Ghostty
 # dotfiles/config
-# Symlinked into 
+# Symlinked into
 #  $HOME/Library/Application\ Support/com.mitchellh.ghostty/config
 
-# Update 
+# Update
+# Stage updates on disk for next launch (default null defers to install method)
 auto-update = download
+# Lags 'latest' by ~1-2 weeks
 auto-update-channel = stable
 
 # Shell
+# Force zsh; default 'detect' picks via $SHELL
 shell-integration = zsh
+# All integration features on (cursor/title/path/sudo/ssh-env/ssh-terminfo)
+shell-integration-features = true
 
 # Appearance
 theme = Solarized Dark Higher Contrast
 
 # macOS Specific Settings
+# Secure Event Input — keystrokes only to foreground app (anti-keylogger; matches default)
 macos-auto-secure-input = true
+# Hide lock-icon indicator (default true shows it)
 macos-secure-input-indication = false
-
-# Keybinds
-keybind = super+l=jump_to_prompt:-1
+# Safari-style merged tab bar (default 'transparent')
+macos-titlebar-style = tabs
+# Folder proxy icon for Cmd-drag to Finder (matches default)
+macos-titlebar-proxy-icon = visible
+# Block AppleScript control of Ghostty (default true)
+macos-applescript = false
+# Block macOS Shortcuts.app integration (default 'ask')
+macos-shortcuts = deny
 
 # Claude Code
+# Shift+Enter sends ESC+CR — Claude Code's newline binding
 keybind = shift+enter=text:\x1b\r
 macos-option-as-alt = left
 # Left Option sends Alt/Meta for Claude Code keybindings (e.g. alt+t)
-# Right Option retains macOS special character input
+# Right Option retains macOS special character input (default null = system handles Option)
 
 # Copy/ Paste
+# Clear selection after copy (default false)
 selection-clear-on-copy = true
-copy-on-select = true
+# Clear selection on typing (matches default)
+selection-clear-on-typing = true
+# Auto-copy to system pasteboard; default macOS uses selection clipboard with fallback
+copy-on-select = clipboard
+# OSC 52 reads require approval (matches default)
+clipboard-read = ask
+# OSC 52 writes allowed (matches default)
+clipboard-write = allow
+# Confirm bracketed paste with control chars/newlines (matches default)
+clipboard-paste-protection = true
+# Strip trailing whitespace on copy (matches default)
+clipboard-trim-trailing-spaces = true
+
+# Window
+# Always restore tabs/windows (default 'default' = system restoration)
+window-save-state = always
+
+# Cursor & Mouse
+# Bar (|) cursor (default 'block')
+cursor-style = bar
+# Disable blink (default null respects DEC Mode 12)
+cursor-style-blink = false
+# Click in input line moves shell cursor via OSC 133 (matches default)
+cursor-click-to-move = true
+# Hide mouse cursor while typing (default false)
+mouse-hide-while-typing = true
+
+# Notifications
+# Toast on slow command finish in unfocused tabs (default 'never')
+notify-on-command-finish = unfocused
+# Minimum runtime threshold (default 5s)
+notify-on-command-finish-after = 10s
