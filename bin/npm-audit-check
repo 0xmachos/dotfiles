@@ -72,6 +72,14 @@ function main {
     return 1
   fi
 
+  # A missing/unreadable projects dir is "couldn't scan" (error), NOT "no
+  # projects" (clean pass) — without this guard find returns nothing and the
+  # empty-lockfiles branch below reports a false success.
+  if [[ ! -d "${PROJECTS_DIR}" || ! -r "${PROJECTS_DIR}" ]]; then
+    echo "[FAIL] Projects directory missing or unreadable: ${PROJECTS_DIR}"
+    return 1
+  fi
+
   # Discover projects with lockfiles (exclude vendored node_modules)
   local lockfiles=()
   local lockfile
