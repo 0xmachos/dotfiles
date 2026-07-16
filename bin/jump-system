@@ -20,10 +20,12 @@ fi
 function run_and_log {
   local description="$1"
   shift
-  local output
+  local output rc
   if output=$("$@" 2>&1); then
+    rc=0
     logger -t "com.0xmachos.jump" "[OK] ${description}"
   else
+    rc=$?
     logger -t "com.0xmachos.jump" "[FAIL] ${description}"
     {
       echo "[$(date '+%Y-%m-%d %H:%M:%S')] [FAIL] ${description}"
@@ -31,6 +33,7 @@ function run_and_log {
       echo ""
     } >> "${LOG_FILE}"
   fi
+  return "${rc}"
 }
 
 function check_internet_connection {
@@ -59,27 +62,33 @@ function main {
   local -r XPROTECT_BINARY="/usr/bin/xprotect"
   local -r XPROTECT_APP="/Library/Apple/System/Library/CoreServices/XProtect.app/Contents/MacOS/XProtect"
 
+  # Accumulate step failures — main runs steps sequentially, so without this it
+  # would exit with only the LAST step's status and mask an earlier failure.
+  local rc=0
+
   ## macOS ##
   if [[ -x "${SWUPDATE_BINARY}" ]]; then
-    run_and_log "softwareupdate" "${SWUPDATE_BINARY}" --install --all --include-config-data --no-restart
+    run_and_log "softwareupdate" "${SWUPDATE_BINARY}" --install --all --include-config-data --no-restart || rc=1
   fi
 
   ## LaTeX ##
   # GPG repo verification disabled: gnupg not installed, SHA-512 checksums
   # and HTTPS transport still protect package integrity. See TODOs.md.
   if [[ -x "${TLMGR_BINARY}" ]]; then
-    run_and_log "tlmgr update --self" "${TLMGR_BINARY}" --verify-repo=none update --self
-    run_and_log "tlmgr update --all"  "${TLMGR_BINARY}" --verify-repo=none update --all
+    run_and_log "tlmgr update --self" "${TLMGR_BINARY}" --verify-repo=none update --self || rc=1
+    run_and_log "tlmgr update --all"  "${TLMGR_BINARY}" --verify-repo=none update --all || rc=1
   fi
 
   ## XProtect ##
   if [[ -x "${XPROTECT_BINARY}" ]]; then
-    run_and_log "xprotect update" "${XPROTECT_BINARY}" update --prerelease
+    run_and_log "xprotect update" "${XPROTECT_BINARY}" update --prerelease || rc=1
   fi
 
   if [[ -x "${XPROTECT_APP}" ]]; then
-    run_and_log "XProtect scan" "${XPROTECT_APP}"
+    run_and_log "XProtect scan" "${XPROTECT_APP}" || rc=1
   fi
+
+  return "${rc}"
 }
 
 main "$@"
