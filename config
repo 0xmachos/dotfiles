@@ -6,8 +6,10 @@
 # Update
 # Stage updates on disk for next launch (default null defers to install method)
 auto-update = download
-# Lags 'latest' by ~1-2 weeks
-auto-update-channel = stable
+# Tip while on the macOS 27 beta — stable 1.3.1 predates the tabs-titlebar
+# fix for 27 (ghostty-org/ghostty#13001, fixed by #13069). Revert to stable
+# once a release ships with it.
+auto-update-channel = tip
 
 # Shell
 # Force zsh; default 'detect' picks via $SHELL
