@@ -52,6 +52,13 @@ alias unlink='/opt/homebrew/opt/macos-trash/bin/trash'
 alias shred='/opt/homebrew/opt/macos-trash/bin/trash'
 alias gshred='/opt/homebrew/opt/macos-trash/bin/trash'
 
+# brew: resolve real gh ahead of the Claude Code gh-cli plugin shim.
+# HOMEBREW_VERIFY_ATTESTATIONS spawns `gh attestation verify`; brew resolves
+# gh from the launch PATH (shim first in Claude sessions) but execs it under
+# superenv's stripped PATH, so the shim's fallback walk fails with exit 127.
+# Remove once trailofbits/skills#145 lands a shim fallback.
+alias brew='PATH="/opt/homebrew/bin:${PATH}" brew'
+
 
 #   -----------------------------
 #   2. MAP CUSTOM COMMANDS
