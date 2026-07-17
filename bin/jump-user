@@ -32,21 +32,24 @@ function run_and_log {
   return "${rc}"
 }
 
-# brew-vulns exits 1 when vulnerabilities are found and 2 on scan errors.
-# Findings are logged as [VULN] so they aren't mistaken for a broken scan.
+# Native brew vulns (Homebrew >= 6.0) exits 1 for both findings and scan
+# errors, so the two are split on the "Found N vulnerabilities" summary line
+# brew prints only when a scan completes with findings. Findings are logged
+# as [VULN] so they aren't mistaken for a broken scan.
 function run_vulns_scan {
-  local vulns_binary="$1"
+  local brew_binary="$1"
   local output scan_status tag rc
-  output=$("${vulns_binary}" --severity high 2>&1)
+  output=$("${brew_binary}" vulns --severity high 2>&1)
   scan_status=$?
-  case "${scan_status}" in
-    0)
-      logger -t "com.0xmachos.jump" "[OK] brew vulns"
-      return 0
-      ;;
-    1) tag="VULN"; rc=0 ;;   # vulnerabilities found — logged, not a scan failure
-    *) tag="FAIL"; rc=1 ;;   # scan itself broke — a real failure
-  esac
+  if [[ "${scan_status}" -eq 0 ]]; then
+    logger -t "com.0xmachos.jump" "[OK] brew vulns"
+    return 0
+  fi
+  if grep -q '^Found .* vulnerabilit' <<< "${output}"; then
+    tag="VULN"; rc=0   # vulnerabilities found — logged, not a scan failure
+  else
+    tag="FAIL"; rc=1   # scan itself broke — a real failure
+  fi
   logger -t "com.0xmachos.jump" "[${tag}] brew vulns"
   {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [${tag}] brew vulns --severity high"
@@ -109,12 +112,11 @@ function main {
   # status is logged but deliberately not folded into the run's exit code.
   run_and_log "brew doctor"     "${BREW_BINARY}" doctor
 
-  # OSV.dev vulnerability scan (homebrew/brew-vulns tap), skipped if not
-  # installed. Only GitHub/GitLab/Codeberg-sourced formulae are checked.
-  local -r BREW_VULNS_BINARY="/opt/homebrew/bin/brew-vulns"
-  if [[ -x "${BREW_VULNS_BINARY}" ]]; then
-    run_vulns_scan "${BREW_VULNS_BINARY}" || rc=1
-  fi
+  # OSV.dev vulnerability scan (native brew vulns, Homebrew >= 6.0). Only
+  # GitHub/GitLab/Codeberg-sourced formulae are checked. Deliberately not
+  # gated on command existence — if brew vulns ever disappears, the run
+  # logs [FAIL] rather than silently skipping the scan.
+  run_vulns_scan "${BREW_BINARY}" || rc=1
 
   ## Claude Code ##
   # Native installer (not Homebrew): symlink at ~/.local/bin/claude into
