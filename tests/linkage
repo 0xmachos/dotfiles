@@ -51,6 +51,7 @@ function run_linkage {
     [IDETemplateMacros.plist]=install_dotfiles  # Xcode
     [claude]=install_dotfiles              # Dynamic (skills, rules, settings)
     [.githooks]=install_dotfiles           # core.hooksPath
+    [.extra_gitexclude]=install_dotfiles   # .git/info/exclude (gitignored source)
 
     # Other bittersweet subcommands
     [bin]=install_scripts

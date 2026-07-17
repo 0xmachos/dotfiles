@@ -554,6 +554,59 @@ function _harden {
   fi
 }
 
+function _install_git_exclude {
+  # Merge the gitignored .extra_gitexclude list into the repo's git exclude
+  # file (info/exclude), so private filenames are ignored per-clone WITHOUT
+  # entering the tracked, public .gitignore. Idempotent: a marker-delimited
+  # block is rewritten each run. Entries outside the markers (e.g. Claude
+  # Code's own) are preserved.
+  local extra="${SCRIPT_DIR}/.extra_gitexclude"
+  [[ -f "${extra}" ]] || return 0
+
+  # Resolve info/exclude via git so it is correct for worktrees and
+  # --separate-git-dir clones (where .git is a file, not a directory).
+  local exclude
+  if ! exclude="$(git -C "${SCRIPT_DIR}" rev-parse --git-path info/exclude 2>/dev/null)"; then
+    echo "[❌] Not a git repo: cannot resolve info/exclude"
+    (( _error_count += 1 ))
+    return 0
+  fi
+  [[ "${exclude}" == /* ]] || exclude="${SCRIPT_DIR}/${exclude}"
+  local info_dir="${exclude%/*}"
+  mkdir -p "${info_dir}"
+
+  local begin="# >>> bittersweet private excludes (from .extra_gitexclude) — do not edit >>>"
+  local end="# <<< bittersweet private excludes <<<"
+  local tmp
+  # Temp file inside info/ keeps the final mv on one filesystem (atomic replace).
+  tmp="$(mktemp "${info_dir}/.exclude.XXXXXX")" || { (( _error_count += 1 )); return 0; }
+
+  # Keep everything except any previous managed block.
+  if [[ -f "${exclude}" ]]; then
+    awk -v b="${begin}" -v e="${end}" '
+      $0 == b { skip=1; next }
+      $0 == e { skip=0; next }
+      !skip   { print }
+    ' "${exclude}" > "${tmp}"
+  fi
+
+  # Append a fresh block (comments and blanks stripped; `|| true` so an empty
+  # or all-comment list does not trip set -e).
+  {
+    printf '%s\n' "${begin}"
+    grep -vE '^[[:space:]]*(#|$)' "${extra}" || true
+    printf '%s\n' "${end}"
+  } >> "${tmp}"
+
+  if mv "${tmp}" "${exclude}"; then
+    echo "[✅] Synced .extra_gitexclude → ${exclude#"${SCRIPT_DIR}"/} (private, untracked)"
+  else
+    echo "[❌] Failed to write ${exclude}"
+    (( _error_count += 1 ))
+    rm -f "${tmp}"
+  fi
+}
+
 ### END Dotfile Helpers ###
 
 
@@ -683,6 +736,10 @@ function install_dotfiles {
     echo "[❌] Failed to set core.hooksPath"
     (( _error_count += 1 ))
   fi
+
+  # Merge private per-clone git excludes (keeps these filenames out of the
+  # tracked, public .gitignore — they live only in .git/info/exclude)
+  _install_git_exclude
 
   # Harden file permissions
   # git clone sets 644 by default; enforce 600 on sensitive files
