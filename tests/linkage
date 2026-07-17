@@ -145,6 +145,9 @@ function run_linkage {
   local script
   for script in bin/*; do
     [[ -f "${script}" ]] || continue
+    # Skip gitignored files: a private, per-clone tool must never be forced
+    # into the tracked manifest — doing so would leak the private filename.
+    if git check-ignore -q "${script}"; then continue; fi
     name="${script##*/}"
     if [[ -z "${bin_scripts[${name}]+_}" ]]; then
       _fail "Untracked bin/ script: ${name} (add to install_scripts or bin_scripts map)"
@@ -155,6 +158,7 @@ function run_linkage {
   local plist
   for plist in LaunchAgents/*.plist; do
     [[ -f "${plist}" ]] || continue
+    if git check-ignore -q "${plist}"; then continue; fi  # skip gitignored private agents
     name="${plist##*/}"
     if [[ -z "${launchagent_plists[${name}]+_}" ]]; then
       _fail "Untracked LaunchAgent: ${name} (add to install_launchagents and launchagent_plists map)"
