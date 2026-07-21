@@ -34,6 +34,7 @@ function run_linkage {
     [TODOs.md]=repo
     [.gitignore]=repo
     [.gitleaksignore]=repo
+    [.pii-allowlist]=repo                    # Read in-place by the global pre-commit hook
 
     # Script + test infra
     [bittersweet]=install_scripts
