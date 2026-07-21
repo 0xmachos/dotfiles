@@ -1,0 +1,376 @@
+#!/bin/zsh
+# dotfiles/tests/pii-hook
+#
+# Exercises the global pre-commit scanner (.config/git/hooks/pre-commit) and
+# the hook-forward stub in a sandbox repo: literal denylist (content +
+# filename), MAC/UUID token detector (colon + dash forms, placeholder and
+# staged-.pii-allowlist exemptions, adjacency + cross-layer-bleed
+# regressions), SSH-alias derivation, PII_HOOK_BYPASS, invalid-regex
+# hard-blocks, TMPDIR normalisation, and the .git/hooks chain (direct,
+# linked-worktree, and forwarder).
+#
+# Real-looking fixture tokens are ASSEMBLED AT RUN TIME (string concatenation)
+# so this file never contains a regex-shaped token — otherwise committing the
+# test itself would trip the detector it tests.
+#
+# The PII_HOOK_PATTERNS / PII_HOOK_SSH_CONFIG seams isolate every case from
+# the machine's real pattern list and ssh config, keeping results
+# deterministic on any host.
+#
+# ShellCheck: lint with `shellcheck --shell=bash tests/pii-hook`.
+# This file is sourced, not executed — chmod 644.
+#
+# shellcheck source=tests/lib
+
+function _pii_hook_run {
+  # Stage the sandbox working tree, then run the global hook from inside it.
+  # Extra KEY=VALUE args are appended to the env AFTER the default seams, so
+  # a caller-supplied seam overrides the default (env: last value wins).
+  # Results in hook_rc / hook_out globals.
+  git -C "${pii_sandbox}" add -A
+  hook_rc=0
+  hook_out="$(cd "${pii_sandbox}" && \
+    env PII_HOOK_PATTERNS="${pii_seam_patterns}" PII_HOOK_SSH_CONFIG=/dev/null \
+        "$@" "${pii_hook}" 2>&1)" || hook_rc=$?
+}
+
+function _pii_reset {
+  # Unstage everything and empty the sandbox working tree (keep .git).
+  git -C "${pii_sandbox}" reset -q
+  /usr/bin/find "${pii_sandbox}" -mindepth 1 -maxdepth 1 -not -name '.git' \
+    -exec /bin/rm -rf {} +
+}
+
+function _pii_expect_block {
+  local desc="$1" needle="$2"
+  if (( hook_rc == 0 )); then
+    _fail "${desc} — expected block, hook passed"
+    return
+  fi
+  if [[ "${hook_out}" == *"${needle}"* ]]; then
+    _pass "${desc}"
+  else
+    _fail "${desc} — blocked, but output missing '${needle}'"
+  fi
+}
+
+function _pii_expect_pass {
+  local desc="$1"
+  if (( hook_rc == 0 )); then
+    _pass "${desc}"
+  else
+    _fail "${desc} — expected pass, hook blocked: ${hook_out}"
+  fi
+}
+
+function run_pii_hook {
+  _section "Global PII Hook"
+
+  if ! command -v gitleaks &>/dev/null; then
+    _fail "gitleaks not installed (brew install gitleaks)"
+    return
+  fi
+
+  # SC2154: SCRIPT_DIR is set by the ./test dispatcher.
+  # shellcheck disable=SC2154
+  pii_hook="${SCRIPT_DIR}/.config/git/hooks/pre-commit"
+  if [[ ! -x "${pii_hook}" ]]; then
+    _fail "global hook missing or not executable: ${pii_hook}"
+    return
+  fi
+
+  pii_sandbox="$(mktemp -d "${TMPDIR:-/tmp}/pii-hook-test.XXXXXX")"
+  pii_seam_patterns="$(mktemp "${TMPDIR:-/tmp}/pii-hook-patterns.XXXXXX")"
+  echo "zorblefrobnicate" > "${pii_seam_patterns}"
+
+  git -C "${pii_sandbox}" init -q
+  git -C "${pii_sandbox}" config commit.gpgsign false
+  git -C "${pii_sandbox}" config user.name test
+  git -C "${pii_sandbox}" config user.email test@example.invalid
+  git -C "${pii_sandbox}" commit -q --allow-empty --no-verify -m init
+
+  # Regex-shaped fixtures, assembled so they never appear in this source file
+  local mac="0f:1e:2d:3c:4b" uuid="cafe0123-4567-89ab"
+  mac="${mac}:5a"
+  uuid="${uuid}-cdef-0123456789ab"
+
+  # 1. Clean content passes
+  echo "hello world" > "${pii_sandbox}/notes.md"
+  _pii_hook_run
+  _pii_expect_pass "clean staged content passes"
+  _pii_reset
+
+  # 2. Denylist match in content blocks
+  echo "deployed at zorblefrobnicate today" > "${pii_sandbox}/notes.md"
+  _pii_hook_run
+  _pii_expect_block "denylist match in content blocks" "PII pattern"
+  _pii_reset
+
+  # 3. Denylist match in a staged FILENAME blocks (content clean)
+  echo "clean" > "${pii_sandbox}/zorblefrobnicate-notes.md"
+  _pii_hook_run
+  _pii_expect_block "denylist match in filename blocks" "PII pattern"
+  _pii_reset
+
+  # 4. Invalid denylist regex hard-blocks (must not silently disable the scan)
+  local bad_patterns
+  bad_patterns="$(mktemp "${TMPDIR:-/tmp}/pii-hook-bad.XXXXXX")"
+  echo "([" > "${bad_patterns}"
+  echo "anything" > "${pii_sandbox}/notes.md"
+  _pii_hook_run PII_HOOK_PATTERNS="${bad_patterns}"
+  _pii_expect_block "invalid denylist regex hard-blocks" "invalid grep -E"
+  /bin/rm -f "${bad_patterns}"
+  _pii_reset
+
+  # 5. Real-looking MAC token blocks
+  echo "mgmt iface at ${mac} on vlan" > "${pii_sandbox}/notes.md"
+  _pii_hook_run
+  _pii_expect_block "MAC-shaped token blocks" "MAC/UUID"
+  _pii_reset
+
+  # 6. Documentation MAC placeholder passes
+  echo "example: aa:bb:cc:dd:ee:ff" > "${pii_sandbox}/notes.md"
+  _pii_hook_run
+  _pii_expect_pass "placeholder MAC passes"
+  _pii_reset
+
+  # 7. Real-looking UUID token blocks
+  echo "resource id ${uuid} returned" > "${pii_sandbox}/notes.md"
+  _pii_hook_run
+  _pii_expect_block "UUID-shaped token blocks" "MAC/UUID"
+  _pii_reset
+
+  # 8. Documentation UUID placeholder passes
+  echo "example: 01234567-89ab-cdef-0123-456789abcdef" > "${pii_sandbox}/notes.md"
+  _pii_hook_run
+  _pii_expect_pass "placeholder UUID passes"
+  _pii_reset
+
+  # 8b. Adjacency regression: a real token ONE separator char after a
+  #     placeholder must still block (the old guard-class extraction
+  #     consumed the boundary and skipped it)
+  echo "ids: 01234567-89ab-cdef-0123-456789abcdef,${uuid}" > "${pii_sandbox}/notes.md"
+  _pii_hook_run
+  _pii_expect_block "real token adjacent to placeholder blocks" "MAC/UUID"
+  _pii_reset
+
+  # 8c. Dash-separated MAC blocks (Windows ipconfig form)
+  local dmac="0f-1e-2d-3c-4b"
+  dmac="${dmac}-5a"
+  echo "device at ${dmac}" > "${pii_sandbox}/notes.md"
+  _pii_hook_run
+  _pii_expect_block "dash-separated MAC blocks" "MAC/UUID"
+  _pii_reset
+
+  # 8d. Dash-separated placeholder MAC passes
+  echo "example: aa-bb-cc-dd-ee-ff" > "${pii_sandbox}/notes.md"
+  _pii_hook_run
+  _pii_expect_pass "dash-separated placeholder MAC passes"
+  _pii_reset
+
+  # 8d2. Mixed-separator MAC blocks (evaded the two single-separator
+  #      regexes — round-2 review finding)
+  local mmac="0f:1e-2d:3c"
+  mmac="${mmac}-4b:5a"
+  echo "device at ${mmac}" > "${pii_sandbox}/notes.md"
+  _pii_hook_run
+  _pii_expect_block "mixed-separator MAC blocks" "MAC/UUID"
+  _pii_reset
+
+  # 8e. TMPDIR without a trailing slash must not break the hook
+  echo "hello again" > "${pii_sandbox}/notes.md"
+  _pii_hook_run TMPDIR=/tmp
+  _pii_expect_pass "TMPDIR without trailing slash works"
+  _pii_reset
+
+  # 8f. Labeled identifiers block — maximal-run tokenisation rejected
+  #     mac:<mac> / id:<uuid> forms (round-2 review finding)
+  {
+    echo "id:${uuid}"
+    echo "mac:${mac}"
+  } > "${pii_sandbox}/notes.md"
+  _pii_hook_run
+  _pii_expect_block "labeled MAC/UUID identifiers block" "MAC/UUID"
+  _pii_reset
+
+  # 8g. Repo-local color.ui=always must not empty the scan target
+  #     (round-2 review finding: coloured diff broke the awk anchors)
+  git -C "${pii_sandbox}" config color.ui always
+  echo "device at ${mac}" > "${pii_sandbox}/notes.md"
+  _pii_hook_run
+  _pii_expect_block "color.ui=always does not disable content scanning" "MAC/UUID"
+  git -C "${pii_sandbox}" config --unset color.ui
+  _pii_reset
+
+  # 8h. A pattern file whose final line has no trailing newline keeps that
+  #     last pattern active (round-2 review finding: read dropped it)
+  local nl_patterns
+  nl_patterns="$(mktemp "${TMPDIR:-/tmp}/pii-hook-nonl.XXXXXX")"
+  printf 'unusedfirst\nzorblefrobnicate' > "${nl_patterns}"
+  echo "hit zorblefrobnicate here" > "${pii_sandbox}/notes.md"
+  _pii_hook_run PII_HOOK_PATTERNS="${nl_patterns}"
+  _pii_expect_block "unterminated final pattern line still scans" "PII pattern"
+  /bin/rm -f "${nl_patterns}"
+  _pii_reset
+
+  # 9. .pii-allowlist exempts a token (the allowlist itself is staged too and
+  #    must exempt its own content)
+  echo "mgmt iface at ${mac}" > "${pii_sandbox}/notes.md"
+  echo "${mac}" > "${pii_sandbox}/.pii-allowlist"
+  _pii_hook_run
+  _pii_expect_pass ".pii-allowlist exempts a token"
+  _pii_reset
+
+  # 10. .pii-allowlist exempts a denylist hit — only via an explicit
+  #     full-line pattern (bare substrings no longer match, see 10b)
+  echo "deployed at zorblefrobnicate today" > "${pii_sandbox}/notes.md"
+  echo ".*zorble.*" > "${pii_sandbox}/.pii-allowlist"
+  _pii_hook_run
+  _pii_expect_pass ".pii-allowlist full-line pattern exempts a denylist hit"
+  _pii_reset
+
+  # 10b. Cross-layer bleed regression: a bare allowlisted token must NOT
+  #      launder a denylist hit sharing its line
+  local pubuuid="c5c2bc3f-b8bd-49a2"
+  pubuuid="${pubuuid}-af7f-feecbffc6411"
+  echo "zorblefrobnicate was at ${pubuuid}" > "${pii_sandbox}/notes.md"
+  echo "${pubuuid}" > "${pii_sandbox}/.pii-allowlist"
+  _pii_hook_run
+  _pii_expect_block "allowlisted token does not launder a denylist hit" "PII pattern"
+  _pii_reset
+
+  # 10c. Unstaged .pii-allowlist is ignored (read from the index, not the
+  #      working tree)
+  echo "mgmt iface at ${mac}" > "${pii_sandbox}/notes.md"
+  git -C "${pii_sandbox}" add notes.md
+  echo ".*" > "${pii_sandbox}/.pii-allowlist"
+  hook_rc=0
+  hook_out="$(cd "${pii_sandbox}" && \
+    env PII_HOOK_PATTERNS="${pii_seam_patterns}" PII_HOOK_SSH_CONFIG=/dev/null \
+        "${pii_hook}" 2>&1)" || hook_rc=$?
+  _pii_expect_block "unstaged .pii-allowlist is ignored" "MAC/UUID"
+  _pii_reset
+
+  # 11. Invalid .pii-allowlist regex hard-blocks
+  echo "clean" > "${pii_sandbox}/notes.md"
+  echo "([" > "${pii_sandbox}/.pii-allowlist"
+  _pii_hook_run
+  _pii_expect_block "invalid .pii-allowlist regex hard-blocks" ".pii-allowlist (staged) has an invalid"
+  _pii_reset
+
+  # 11b. Sentinel is repo-scoped: a sentinel inherited from ANOTHER repo's
+  #      hook run must not skip this repo's scan (round-2 review finding)…
+  echo "mgmt iface at ${mac}" > "${pii_sandbox}/notes.md"
+  _pii_hook_run GIT_GLOBAL_HOOKS_SEEN=" pre-commit@/somewhere/else/.git "
+  _pii_expect_block "foreign-repo sentinel does not skip the scan" "MAC/UUID"
+  _pii_reset
+
+  # 11c. …while same-repo re-entry still short-circuits (recursion guard)
+  local own_sentinel
+  own_sentinel="pre-commit@$(git -C "${pii_sandbox}" rev-parse --absolute-git-dir)"
+  echo "mgmt iface at ${mac}" > "${pii_sandbox}/notes.md"
+  _pii_hook_run GIT_GLOBAL_HOOKS_SEEN=" ${own_sentinel} "
+  _pii_expect_pass "same-repo sentinel short-circuits re-entry"
+  _pii_reset
+
+  # 12. PII_HOOK_BYPASS=1 skips PII layers, loudly
+  echo "zorblefrobnicate and ${mac}" > "${pii_sandbox}/notes.md"
+  _pii_hook_run PII_HOOK_BYPASS=1
+  _pii_expect_pass "PII_HOOK_BYPASS=1 passes"
+  if [[ "${hook_out}" == *"SKIPPED"* ]]; then
+    _pass "bypass warns loudly"
+  else
+    _fail "bypass warns loudly — no SKIPPED warning in output"
+  fi
+  _pii_reset
+
+  # 13. SSH Host aliases derived from the ssh-config seam block
+  local ssh_seam
+  ssh_seam="$(mktemp "${TMPDIR:-/tmp}/pii-hook-ssh.XXXXXX")"
+  printf 'Host zorblehost otherhost\n  HostName ignored\n' > "${ssh_seam}"
+  echo "ssh zorblehost uptime" > "${pii_sandbox}/notes.md"
+  _pii_hook_run PII_HOOK_SSH_CONFIG="${ssh_seam}"
+  _pii_expect_block "derived SSH alias blocks" "PII pattern"
+  /bin/rm -f "${ssh_seam}"
+  _pii_reset
+
+  # 14. Chain: the repo's own .git/hooks/pre-commit runs, and its exit status
+  #     propagates (exec — the global hook BECOMES the chained hook)
+  mkdir -p "${pii_sandbox}/.git/hooks"
+  printf '#!/bin/zsh\ntouch chained-marker\n' > "${pii_sandbox}/.git/hooks/pre-commit"
+  chmod 755 "${pii_sandbox}/.git/hooks/pre-commit"
+  echo "clean" > "${pii_sandbox}/notes.md"
+  _pii_hook_run
+  if [[ -f "${pii_sandbox}/chained-marker" ]]; then
+    _pass "chains to the repo's .git/hooks/pre-commit"
+  else
+    _fail "chains to the repo's .git/hooks/pre-commit — marker not created"
+  fi
+  printf '#!/bin/zsh\nexit 7\n' > "${pii_sandbox}/.git/hooks/pre-commit"
+  _pii_hook_run
+  if (( hook_rc == 7 )); then
+    _pass "chained hook exit status propagates"
+  else
+    _fail "chained hook exit status propagates — expected 7, got ${hook_rc}"
+  fi
+  # 14b. Content the chained hook stages is scanned (chain runs FIRST;
+  #      round-2 review finding: post-scan staging entered commits unscanned)
+  # SC2016: single quotes deliberate — expansion happens when the generated
+  # hook runs.
+  # shellcheck disable=SC2016
+  printf '#!/bin/zsh\nm="0f:1e:2d:3c:4b"\necho "late leak ${m}:5a" > late.txt\ngit add late.txt\n' \
+    > "${pii_sandbox}/.git/hooks/pre-commit"
+  chmod 755 "${pii_sandbox}/.git/hooks/pre-commit"
+  echo "clean" > "${pii_sandbox}/notes.md"
+  _pii_hook_run
+  _pii_expect_block "content staged by the chained hook is scanned" "MAC/UUID"
+  /bin/rm -f "${pii_sandbox}/.git/hooks/pre-commit"
+  _pii_reset
+
+  # 15. Chain works from a linked worktree (--git-common-dir; --git-dir
+  #     would point at .git/worktrees/<name>, whose hooks/ doesn't exist)
+  # SC2016: single quotes deliberate — $(git …) must expand when the
+  # generated hook RUNS, not when this test writes it.
+  # shellcheck disable=SC2016
+  printf '#!/bin/zsh\ntouch "$(git rev-parse --show-toplevel)/wt-marker"\n' \
+    > "${pii_sandbox}/.git/hooks/pre-commit"
+  chmod 755 "${pii_sandbox}/.git/hooks/pre-commit"
+  git -C "${pii_sandbox}" worktree add -q "${pii_sandbox}/wt" -b pii-wt 2>/dev/null
+  echo "clean" > "${pii_sandbox}/wt/notes.md"
+  git -C "${pii_sandbox}/wt" add -A
+  hook_rc=0
+  hook_out="$(cd "${pii_sandbox}/wt" && \
+    env PII_HOOK_PATTERNS="${pii_seam_patterns}" PII_HOOK_SSH_CONFIG=/dev/null \
+        "${pii_hook}" 2>&1)" || hook_rc=$?
+  if [[ -f "${pii_sandbox}/wt/wt-marker" ]]; then
+    _pass "chain reaches the common-dir hook from a linked worktree"
+  else
+    _fail "chain reaches the common-dir hook from a linked worktree — marker missing (rc=${hook_rc})"
+  fi
+
+  # 16. hook-forward forwards args and exit status for non-pre-commit hooks,
+  #     and exits 0 when the repo has no such hook
+  local fwd_dir
+  fwd_dir="$(mktemp -d "${TMPDIR:-/tmp}/pii-fwd.XXXXXX")"
+  ln -s "${SCRIPT_DIR}/.config/git/hooks/hook-forward" "${fwd_dir}/commit-msg"
+  printf '#!/bin/zsh\ntouch fwd-marker\nexit 3\n' > "${pii_sandbox}/.git/hooks/commit-msg"
+  chmod 755 "${pii_sandbox}/.git/hooks/commit-msg"
+  hook_rc=0
+  (cd "${pii_sandbox}" && "${fwd_dir}/commit-msg" MSGFILE >/dev/null 2>&1) || hook_rc=$?
+  if [[ -f "${pii_sandbox}/fwd-marker" ]] && (( hook_rc == 3 )); then
+    _pass "hook-forward runs the repo hook and propagates its exit"
+  else
+    _fail "hook-forward runs the repo hook — marker=$([[ -f ${pii_sandbox}/fwd-marker ]] && echo yes || echo no) rc=${hook_rc}"
+  fi
+  /bin/rm -f "${pii_sandbox}/.git/hooks/commit-msg" "${pii_sandbox}/fwd-marker"
+  hook_rc=0
+  (cd "${pii_sandbox}" && "${fwd_dir}/commit-msg" >/dev/null 2>&1) || hook_rc=$?
+  if (( hook_rc == 0 )); then
+    _pass "hook-forward exits 0 when the repo has no hook"
+  else
+    _fail "hook-forward exits 0 when the repo has no hook — rc=${hook_rc}"
+  fi
+
+  /bin/rm -rf "${pii_sandbox}" "${fwd_dir}"
+  /bin/rm -f "${pii_seam_patterns}"
+}
