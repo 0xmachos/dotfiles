@@ -1,0 +1,262 @@
+#!/usr/bin/env zsh
+# .config/git/hooks/pre-commit
+#
+# Global pre-commit scanner for EVERY repo, activated by the global
+# core.hooksPath declared in .config/git/config — which points directly at
+# this directory in the dotfiles repo, so a sync delivers hooks and config
+# atomically with no install step. The dotfiles repo itself keeps a local
+# core.hooksPath (.githooks/), which shadows the global one; its pre-commit
+# chains to this file explicitly. Sibling hook types are pass-through
+# symlinks to hook-forward (see that file's header).
+#
+# Order: the repo's own default-location pre-commit runs FIRST — hooks
+# commonly format/generate and `git add` the result, and anything staged
+# after scanning would enter the commit unscanned (round-2 review finding).
+# Scanning always sees the final index.
+#
+#   0. Chain           — run the repo's own .git/hooks/pre-commit (common
+#                        dir, worktree-correct); its failure aborts with its
+#                        exit status
+#   1. gitleaks        — secret scan of the staged diff
+#   2. PII denylist    — literal grep -E patterns from the gitignored,
+#                        per-clone dotfiles .githooks/pii-patterns list, plus
+#                        SSH Host aliases derived from ~/.ssh/.extra_ssh at
+#                        run time (private hostnames are deanonymisers)
+#   3. Token detector  — MAC- (colon/dash/mixed separators) and UUID-shaped
+#                        tokens in staged additions block by DEFAULT, even
+#                        embedded in labels/URLs; only documentation
+#                        placeholders (aa:bb:cc:dd:ee:ff and dash form,
+#                        RFC 7042 00:00:5e:00:53:xx, broadcast/nil MAC,
+#                        01234567-89ab-cdef-0123-456789abcdef, nil/max UUID)
+#                        and per-repo .pii-allowlist entries pass. A false
+#                        positive means "use a placeholder".
+#
+# Per-repo allowlist: <repo>/.pii-allowlist — read from the INDEX (the staged
+# version), so an unstaged edit cannot exempt anything without appearing in
+# the commit. One case-insensitive grep -E pattern per line (# comments and
+# blanks skipped). A pattern exempts a layer-3 token by matching the WHOLE
+# token, or a layer-2 hit by matching the WHOLE hit line ("lineno:content" —
+# in practice, write line exemptions as `.*<pattern>.*`). A bare token
+# therefore never launders a different hit that shares its line. A single
+# `.*` line opts the repo out of layers 2+3. In a public repo keep
+# name-shaped entries OUT of this file (an allowlist of deanonymisers is
+# itself a leak) — placeholder-shaped tokens that are already public are
+# fine.
+#
+# Known gaps: files git classifies as binary produce no diff hunks, so their
+# CONTENT passes layers 1–3 unscanned (only the pathname is checked); the
+# reference-transaction and post-index-change hook types are deliberately
+# not forwarded (hook-forward header has the rationale).
+#
+# Bypass: PII_HOOK_BYPASS=1 git commit …  skips layers 2+3 loudly; gitleaks
+# still runs (--no-verify skips the whole hook, silently).
+# Test seams: PII_HOOK_PATTERNS / PII_HOOK_SSH_CONFIG override the pattern
+# list and ssh-config paths (used by ./test pii-hook); both warn when active
+# so a seam can never quietly stand in for the real lists.
+
+set -euo pipefail
+
+# Re-entry guard, shared with hook-forward: if a chained hook dispatches back
+# into the global hooks (e.g. `git hook run pre-commit`), this run already
+# covers it — exit instead of looping. Scoped to hook name AND repo: a
+# repo-A hook that commits in repo B must not skip B's scan (round-2 review
+# finding). Spaces in the git-dir path are folded to `_` so the token stays
+# one word in the space-delimited list (a collision only over-skips within
+# an already-pathological pair of paths; a split token would break the guard
+# and allow a loop).
+sentinel="pre-commit@$(git rev-parse --absolute-git-dir)"
+sentinel="${sentinel// /_}"
+case " ${GIT_GLOBAL_HOOKS_SEEN:-} " in
+  (*" ${sentinel} "*) exit 0 ;;
+esac
+export GIT_GLOBAL_HOOKS_SEEN="${GIT_GLOBAL_HOOKS_SEEN:-} ${sentinel}"
+
+# --- Layer 0: chain to the repo's own default-location hook -----------------
+
+# Runs BEFORE scanning so anything the repo hook stages is scanned too.
+# Hooks live in the COMMON git dir (linked worktrees share the main repo's
+# .git/hooks), hence --git-common-dir. Deliberately not `git rev-parse
+# --git-path hooks` — that resolves core.hooksPath and would re-enter this
+# script forever; the sentinel above is the belt to this brace.
+repo_hook="$(git rev-parse --git-common-dir)/hooks/pre-commit"
+if [[ -x "${repo_hook}" && "${repo_hook:A}" != "${0:A}" ]]; then
+  # In `cmd || exit $?`, $? on the right of || is cmd's own status.
+  "${repo_hook}" || exit $?
+fi
+
+# --- Layer 1: gitleaks ------------------------------------------------------
+
+if ! command -v gitleaks &>/dev/null; then
+  echo "[❌] gitleaks not found. Install via: brew install gitleaks"
+  exit 1
+fi
+
+gitleaks protect --staged --verbose
+
+# Resolve the dotfiles checkout from this script's own location so the
+# per-clone pattern list needs no per-host configuration. If :A ever fails to
+# resolve (EACCES on a parent), the pattern list reads as missing and the
+# denylist warns loudly below instead of silently passing.
+DOTFILES="${0:A:h:h:h:h}"
+repo_root="$(git rev-parse --show-toplevel)"
+
+# ${TMPDIR:-/tmp}/ not the house ${TMPDIR}… idiom: macOS guarantees the
+# trailing slash, but this hook runs wherever git does, and a slashless
+# TMPDIR would otherwise turn the template into /tmppii-… and block every
+# commit.
+pii_scan="$(mktemp "${TMPDIR:-/tmp}/pii-scan.XXXXXX")"
+pii_allow="$(mktemp "${TMPDIR:-/tmp}/pii-allow.XXXXXX")"
+trap '/bin/rm -f "${pii_scan}" "${pii_allow}"' EXIT
+
+if [[ "${PII_HOOK_BYPASS:-0}" == "1" ]]; then
+  echo "[⚠️ ] PII_HOOK_BYPASS=1 — PII denylist and token scans SKIPPED for this commit." >&2
+else
+  # Target = added CONTENT (hunk-aware; leading `+` stripped so a line whose
+  # content begins with `++` is not mistaken for the `+++` file header) plus
+  # the staged PATHNAMES (a private filename added via `git add -f` is caught
+  # even when its content is clean). Materialised into a file, not piped into
+  # `grep -q`: under pipefail an early match SIGPIPEs `git diff` (141) and a
+  # real match would read as no-match — a fail-OPEN leak.
+  # The diff output must be config-invariant: repo-local color.ui=always,
+  # diff.external, or textconv would silently break the awk anchors and empty
+  # the scan target (round-2 review finding) — hence the -c override and
+  # --no-* flags.
+  {
+    git -c color.ui=false diff --cached --no-color --no-ext-diff --no-textconv \
+        --diff-filter=d -U0 | awk '
+      /^diff --git/   { inhunk = 0; next }
+      /^@@/           { inhunk = 1; next }
+      inhunk && /^\+/ { print substr($0, 2) }
+    '
+    git -c color.ui=false diff --cached --no-color --name-only --diff-filter=d
+  } > "${pii_scan}"
+
+  # Per-repo allowlist, read from the INDEX (git show :path), never the
+  # working tree — an unstaged `.*` must not disable scanning invisibly.
+  # Comments/blanks stripped, then the patterns are validated once: an
+  # invalid regex must hard-block, or a later grep rc >= 2 would read as
+  # "nothing exempted".
+  allow_active=0
+  if git show :.pii-allowlist 2>/dev/null \
+       | grep -vE '^[[:space:]]*(#|$)' > "${pii_allow}"; then
+    set +e
+    grep -qiE -f "${pii_allow}" /dev/null
+    allow_rc=$?
+    set -e
+    if (( allow_rc >= 2 )); then
+      echo "[❌] .pii-allowlist (staged) has an invalid grep -E pattern (exit ${allow_rc}). Fix it before committing." >&2
+      exit 1
+    fi
+    allow_active=1
+  fi
+
+  # --- Layer 2: literal PII denylist ----------------------------------------
+
+  if [[ -n "${PII_HOOK_PATTERNS:-}" ]]; then
+    echo "[⚠️ ] PII_HOOK_PATTERNS seam active — denylist is NOT the real pattern list." >&2
+  fi
+  pii_file="${PII_HOOK_PATTERNS:-${DOTFILES}/.githooks/pii-patterns}"
+  pii_patterns=""
+  if [[ ! -r "${pii_file}" ]]; then
+    # Fail loud, not silent: a missing/unreadable list (e.g. a failed private
+    # sync) drops the whole deanonymisation backstop. Warn — but do not block,
+    # or a fresh clone could never make its first commit.
+    echo "[⚠️ ] PII pattern list unreadable (${pii_file}); denylist scan degraded." >&2
+  else
+    # `|| [[ -n ]]`: process a final line with no trailing newline — read
+    # fills the variable but returns non-zero, and the newest pattern would
+    # otherwise be silently dropped (round-2 review finding).
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+      [[ -z "${line}" || "${line}" == \#* ]] && continue
+      pii_patterns="${pii_patterns:+${pii_patterns}|}${line}"
+    done < "${pii_file}"
+    if [[ -z "${pii_patterns}" ]]; then
+      # Checked here, independent of the SSH aliases below — an empty list
+      # must warn even when aliases would make the combined pattern non-empty.
+      echo "[⚠️ ] PII pattern list has no active patterns (${pii_file})." >&2
+    fi
+  fi
+
+  # SSH Host aliases are deanonymisers too — derive them from the live ssh
+  # config so a newly added host is covered without touching the pattern
+  # list. Tokens are word-bounded; anything containing characters outside
+  # [A-Za-z0-9_-] (wildcard patterns, regex metacharacters) is skipped.
+  if [[ -n "${PII_HOOK_SSH_CONFIG:-}" ]]; then
+    echo "[⚠️ ] PII_HOOK_SSH_CONFIG seam active — alias derivation is NOT reading the real ssh config." >&2
+  fi
+  ssh_config="${PII_HOOK_SSH_CONFIG:-${HOME}/.ssh/.extra_ssh}"
+  if [[ -r "${ssh_config}" ]]; then
+    while read -r key rest || [[ -n "${key}" ]]; do
+      [[ "${key:l}" == "host" ]] || continue
+      for host_alias in ${=rest}; do
+        [[ "${host_alias}" == *[^[:alnum:]_-]* ]] && continue
+        pii_patterns="${pii_patterns:+${pii_patterns}|}(^|[^[:alnum:]_])${host_alias}([^[:alnum:]_]|$)"
+      done
+    done < "${ssh_config}"
+  fi
+
+  if [[ -z "${pii_patterns}" ]]; then
+    echo "[⚠️ ] No active PII patterns at all; denylist scan SKIPPED." >&2
+  else
+    # grep exit: 0 = match; 1 = clean; >= 2 = invalid regex (block, so a
+    # malformed pattern cannot silently disable the scanner). set +e keeps
+    # the non-match exit 1 from tripping errexit.
+    set +e
+    pii_hits="$(grep -inE -e "${pii_patterns}" "${pii_scan}")"
+    pii_rc=$?
+    set -e
+    if (( pii_rc >= 2 )); then
+      echo "[❌] PII scan aborted: ${pii_file} has an invalid grep -E pattern (exit ${pii_rc}). Fix it before committing." >&2
+      exit 1
+    fi
+    if (( pii_rc == 0 )); then
+      if (( allow_active )); then
+        # -x: an allowlist pattern must match the WHOLE hit line to exempt
+        # it. A bare allowlisted token (e.g. a public UUID) can therefore
+        # never launder an unrelated denylist hit sharing its line — line
+        # exemptions have to be spelled `.*<pattern>.*`, a visible decision.
+        pii_hits="$(grep -vixE -f "${pii_allow}" <<< "${pii_hits}" || true)"
+      fi
+      if [[ -n "${pii_hits}" ]]; then
+        echo "[❌] Staged changes (content or filename) contain a PII pattern. Redact before committing:"
+        head -5 <<< "${pii_hits}"
+        exit 1
+      fi
+      echo "[ℹ️ ] PII denylist hits exempted by .pii-allowlist"
+    fi
+  fi
+
+  # --- Layer 3: regex-shaped token detector (allowlist-by-default) ----------
+
+  # Plain grep -o extraction, no word-boundary guards and no tokenisation:
+  # POSIX ERE guard classes CONSUME their boundary char (a real token one
+  # separator after a placeholder was skipped), and maximal-run tokenisation
+  # rejected identifiers joined to labels (mac:<mac>, id:<uuid>, urn:uuid:…)
+  # — both round-2 review findings. Unanchored -o finds every embedded
+  # exact-shape occurrence; the cost is occasional extraction from longer
+  # hex runs, which errs toward blocking — the designed direction (use a
+  # placeholder / allowlist the value).
+  # [:-] in one alternation covers colon, dash, AND mixed-separator MACs.
+  mac_re='([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}'
+  uuid_re='[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}'
+  # grep rc 1 (no tokens) is the normal clean case; the patterns are static
+  # constants, so rc >= 2 cannot occur and || true is safe.
+  tokens="$(grep -oE -e "${mac_re}" -e "${uuid_re}" "${pii_scan}" \
+              | sort -fu || true)"
+
+  if [[ -n "${tokens}" ]]; then
+    placeholder_re='^(aa([:-]bb)([:-]cc)([:-]dd)([:-]ee)([:-]ff)|ff([:-]ff){5}|00([:-]00){5}|00[:-]00[:-]5e[:-]00[:-]53[:-][0-9A-Fa-f]{2}|01234567-89ab-cdef-0123-456789abcdef|0{8}-0{4}-0{4}-0{4}-0{12}|[Ff]{8}-[Ff]{4}-[Ff]{4}-[Ff]{4}-[Ff]{12})$'
+    tokens="$(grep -viE "${placeholder_re}" <<< "${tokens}" || true)"
+  fi
+  if [[ -n "${tokens}" ]] && (( allow_active )); then
+    # -x again: whole-token exemption only.
+    tokens="$(grep -vixE -f "${pii_allow}" <<< "${tokens}" || true)"
+  fi
+  if [[ -n "${tokens}" ]]; then
+    echo "[❌] Staged additions contain real-looking MAC/UUID tokens. Replace with"
+    echo "     placeholders (aa:bb:cc:dd:ee:ff, 01234567-89ab-cdef-0123-456789abcdef)"
+    echo "     or add known-public values to ${repo_root}/.pii-allowlist (staged):"
+    head -5 <<< "${tokens}"
+    exit 1
+  fi
+fi

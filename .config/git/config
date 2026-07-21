@@ -10,6 +10,16 @@
 	#   2. OpenSSH adds ML-DSA signature support (currently only ML-KEM for key exchange)
 	#   3. GitHub accepts ML-DSA SSH keys for commit signature verification
 
+[core]
+	hooksPath = ~/Documents/Projects/dotfiles/.config/git/hooks
+	# Global hooks for every repo: pre-commit scanner (gitleaks + PII denylist
+	# + MAC/UUID token detector) plus forwarder stubs for the other hook types,
+	# each of which execs the repo's own .git/hooks/<name> — so no repo hook is
+	# shadowed. Deliberately the repo path, not a ~/.config symlink: a sync
+	# delivers hooks and this config together, with no install step or window
+	# where hooksPath points at nothing. A repo-local core.hooksPath (e.g.
+	# dotfiles' .githooks/) still wins over this.
+
 [commit]
 	gpgsign = true
 

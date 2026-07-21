@@ -1,72 +1,8 @@
 #!/usr/bin/env zsh
 # .githooks/pre-commit
-# Scan staged changes for secrets before allowing commit
+# Scan staged changes for secrets/PII, then enforce bittersweet parity
 
 set -euo pipefail
-
-if ! command -v gitleaks &>/dev/null; then
-  echo "[❌] gitleaks not found. Install via: brew install gitleaks"
-  exit 1
-fi
-
-gitleaks protect --staged --verbose
-
-# Block commits whose staged additions — content OR filename — match a PII
-# pattern (one grep -E pattern per line in the gitignored, per-clone list).
-pii_file="$(git rev-parse --show-toplevel)/.githooks/pii-patterns"
-
-if [[ ! -r "${pii_file}" ]]; then
-  # Fail loud, not silent: a missing/unreadable list (e.g. a failed private
-  # sync) drops the whole deanonymisation backstop. Warn — but do not block,
-  # or a fresh clone could never make its first commit.
-  echo "[⚠️ ] PII pattern list unreadable (${pii_file##*/}); PII scan SKIPPED." >&2
-else
-  pii_patterns=""
-  while IFS= read -r line; do
-    [[ -z "${line}" || "${line}" == \#* ]] && continue
-    pii_patterns="${pii_patterns:+${pii_patterns}|}${line}"
-  done < "${pii_file}"
-
-  if [[ -z "${pii_patterns}" ]]; then
-    echo "[⚠️ ] PII pattern list has no active patterns; PII scan SKIPPED." >&2
-  else
-    # Materialise the scan target into a temp file instead of piping into
-    # `grep -q`: under `set -o pipefail` an early match makes grep exit and
-    # SIGPIPE the upstream `git diff` (141), so the pipeline returns non-zero
-    # and the `if` reads a real match as "no match" — a fail-OPEN leak.
-    # Target = added CONTENT (hunk-aware, leading `+` stripped so a line whose
-    # content begins with `++` is not mistaken for the `+++` file header) plus
-    # the staged pathnames (so a private filename added via `git add -f` is
-    # caught even when the file content is clean).
-    pii_scan="$(mktemp "${TMPDIR:-/tmp/}pii-scan.XXXXXX")"
-    trap 'rm -f "${pii_scan}"' EXIT
-    {
-      git diff --cached --diff-filter=d -U0 | awk '
-        /^diff --git/   { inhunk = 0; next }
-        /^@@/           { inhunk = 1; next }
-        inhunk && /^\+/ { print substr($0, 2) }
-      '
-      git diff --cached --name-only --diff-filter=d
-    } > "${pii_scan}"
-
-    # grep exit: 0 = match (block); 1 = clean; >=2 = invalid regex (block, so a
-    # malformed pattern cannot silently disable the scanner). set +e keeps the
-    # non-match exit 1 from tripping errexit.
-    set +e
-    pii_hits="$(grep -inE -e "${pii_patterns}" "${pii_scan}")"
-    pii_rc=$?
-    set -e
-    if (( pii_rc >= 2 )); then
-      echo "[❌] PII scan aborted: ${pii_file##*/} has an invalid grep -E pattern (exit ${pii_rc}). Fix it before committing." >&2
-      exit 1
-    fi
-    if (( pii_rc == 0 )); then
-      echo "[❌] Staged changes (content or filename) contain a PII pattern. Redact before committing:"
-      head -5 <<< "${pii_hits}"
-      exit 1
-    fi
-  fi
-fi
 
 # When bittersweet is staged, keep .completions/_bittersweet locked to
 # BITTERSWEET_SUBCOMMANDS and hard-fail the commit on parity drift.
@@ -98,3 +34,11 @@ if git diff --cached --name-only --diff-filter=d | grep -qx 'bittersweet'; then
     exit 1
   fi
 fi
+
+# Scanning layers (gitleaks, PII literal denylist, MAC/UUID token detector)
+# live in the shared global hook — one implementation for every repo. This
+# repo's local core.hooksPath (.githooks/) shadows the global one, so run the
+# global scanner explicitly via the repo-relative path (works on a fresh
+# clone with no configuration). Runs LAST, after the completions regen above,
+# so content this hook auto-stages is scanned too.
+"$(git rev-parse --show-toplevel)/.config/git/hooks/pre-commit"
