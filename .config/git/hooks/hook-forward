@@ -1,0 +1,45 @@
+#!/usr/bin/env zsh
+# .config/git/hooks/hook-forward
+#
+# Generic forwarder for the global core.hooksPath. A global hooksPath makes
+# git look ONLY in this directory for EVERY hook type, silently shadowing any
+# hook a repo installed into .git/hooks (Git LFS's post-checkout being the
+# classic casualty). Every supported hook name in this directory is a symlink
+# to this script; it forwards to the repo's own default-location hook — args,
+# stdin, and exit status intact — or exits 0 if the repo has none.
+#
+# ${0:t} is the INVOKED name (the symlink), which is the hook type git ran.
+# Hooks live in the COMMON git dir (linked worktrees share the main repo's
+# .git/hooks), hence --git-common-dir rather than --git-dir. Deliberately not
+# `git rev-parse --git-path hooks` — that resolves core.hooksPath and would
+# re-enter this script forever.
+#
+# Recursion guard: if a forwarded hook dispatches back into the global hooks
+# (e.g. `git hook run <name>`), GIT_GLOBAL_HOOKS_SEEN already carries this
+# hook name and the re-entry exits 0 instead of looping. Trade-off: a
+# forwarded hook that runs the same git operation in ANOTHER repo skips the
+# global layer there for that nested operation.
+#
+# Not forwarded (no symlink installed): reference-transaction and
+# post-index-change — they fire on every ref/index write, and a fork per
+# firing would tax every git command on the machine for hook types nothing
+# here uses.
+
+set -euo pipefail
+
+hook_name="${0:t}"
+
+# Sentinel scoped to hook name AND repo (see the scanner's comment): a hook
+# in repo A running git operations in repo B must not skip B's hooks.
+sentinel="${hook_name}@$(git rev-parse --absolute-git-dir)"
+sentinel="${sentinel// /_}"
+case " ${GIT_GLOBAL_HOOKS_SEEN:-} " in
+  (*" ${sentinel} "*) exit 0 ;;
+esac
+export GIT_GLOBAL_HOOKS_SEEN="${GIT_GLOBAL_HOOKS_SEEN:-} ${sentinel}"
+
+repo_hook="$(git rev-parse --git-common-dir)/hooks/${hook_name}"
+if [[ -x "${repo_hook}" && "${repo_hook:A}" != "${0:A}" ]]; then
+  exec "${repo_hook}" "$@"
+fi
+exit 0

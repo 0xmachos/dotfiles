@@ -675,6 +675,15 @@ function install_dotfiles {
     _symlink "${SCRIPT_DIR}/.config/git/${git_config}" "${HOME}/.config/git/${git_config}"
   done
 
+  # The global pre-commit scanner needs no install step: core.hooksPath in
+  # .config/git/config points straight at the repo's .config/git/hooks/, so
+  # the config symlink above activates it and a sync delivers hook + config
+  # atomically. Warn if the per-clone PII pattern list is absent — the
+  # denylist layer silently loses coverage without it.
+  if [[ ! -s "${SCRIPT_DIR}/.githooks/pii-patterns" ]]; then
+    echo "[⚠️ ] .githooks/pii-patterns missing or empty — PII denylist has no patterns (sync it from another clone)"
+  fi
+
   # Symlink uv config into $HOME/.config/uv/
   _symlink "${SCRIPT_DIR}/.config/uv/uv.toml" "${HOME}/.config/uv/uv.toml"
 
