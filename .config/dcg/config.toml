@@ -49,3 +49,21 @@ self_heal_hook = true
 # Heredoc/inline-script scanning kept at defaults — fail-open on parse error
 # and timeout, 50ms timeout, 1MiB body limit. The hook itself is fail-open by
 # design, so the deny list in claude/settings.json remains the hard backstop.
+
+# Command history — opt-in upstream, enabled here 2026-07-26 so the pack set
+# above can be re-justified from dcg's own data instead of transcript
+# archaeology. While the DB is empty, `dcg history analyze` and
+# `suggest-allowlist` emit confident zero-data advice (they recommended
+# disabling secrets.onepassword, remote.scp and package_managers purely because
+# an empty DB shows no triggers) — that failure mode is the reason this is on.
+# `pattern` redaction masks secret-shaped tokens; note dcg separately stores
+# unredacted `command_raw` in ~/.config/dcg/pending_exceptions.jsonl, which was
+# chmod 600-ed 2026-07-26 — the mode survives dcg rewriting the file (it
+# appends rather than recreating under a fresh umask, verified by triggering a
+# block). Wipe with `dcg allow-once clear --pending --yes`. The DB lives beside
+# it in ~/.config/dcg/, outside this repo — only config.toml is symlinked in,
+# so no gitignore entry is needed.
+[history]
+enabled = true
+redaction_mode = "pattern"
+retention_days = 90
