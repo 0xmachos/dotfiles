@@ -58,11 +58,14 @@ function run_vulns_scan {
     tag="FAIL"; rc=1   # scan itself broke — a real failure
   fi
   logger -t "com.0xmachos.jump" "[${tag}] brew vulns"
-  {
+  # Same silent-redirect hazard as run_and_log — see the comment there.
+  if ! {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [${tag}] brew vulns --severity high"
     echo "${output}"
     echo ""
-  } >> "${LOG_FILE}"
+  } >> "${LOG_FILE}" 2>/dev/null; then
+    logger -t "com.0xmachos.jump" "[FAIL] cannot write ${LOG_FILE} — brew vulns detail lost"
+  fi
   return "${rc}"
 }
 
