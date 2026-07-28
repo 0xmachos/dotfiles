@@ -234,6 +234,115 @@ function _jump_test_run_and_log {
   done
 }
 
+# The two launchd-path tests below guard a class, not an instance: a program
+# invoked by launchd that resolves under ~/Documents/ cannot be exec'd once the
+# TCC grant resets. launchd reports a bare 127 — indistinguishable from
+# "command not found" — and the program dies before it can log anything, so the
+# failure is near-silent. Hit live by jump-user 2026-07-28 (5 runs, 5 failures,
+# 0 log lines) via /usr/local/bin/jump-user symlinked into the repo.
+# These generalise past jump; promote to their own suite when `test` is free to
+# edit (its SUITES array is hardcoded).
+
+# Static half: catches reintroduction at edit time, needs nothing installed, so
+# it works on a fresh clone or an unprovisioned machine.
+function _jump_test_launchd_not_in_symlink_array {
+  _section "launchd programs vs install_scripts symlink array"
+
+  local raw
+  raw=$(/usr/bin/grep -oE 'local -ar bin_files=\([^)]*\)' bittersweet 2>/dev/null)
+  if [[ -z "${raw}" ]]; then
+    _fail "could not extract bin_files from bittersweet — pattern changed"
+    return
+  fi
+  raw="${raw#*\(}"
+  raw="${raw%\)}"
+  # SC2296/SC2206: zsh word-splitting flag, not valid bash.
+  # shellcheck disable=SC2296,SC2206
+  local -a bin_files=(${=raw})
+
+  local plist prog base
+  for plist in LaunchAgents/*.plist LaunchDaemons/*.plist; do
+    [[ -f "${plist}" ]] || continue
+    prog=$(/usr/libexec/PlistBuddy -c "Print :ProgramArguments:0" "${plist}" 2>/dev/null) || continue
+    base="${prog##*/}"
+    if (( ${bin_files[(Ie)${base}]} )); then
+      _fail "${plist##*/}: ${base} is launchd-invoked but in install_scripts' symlink array — must be copied, not symlinked"
+    else
+      _pass "${plist##*/}: ${base} not in the symlink array"
+    fi
+  done
+}
+
+# Live half: catches installed-state drift the static check cannot see, e.g. a
+# stale symlink left by a bittersweet run that predates the copy change.
+function _jump_test_launchd_program_outside_documents {
+  _section "launchd programs resolve outside ~/Documents"
+
+  local plist prog real
+  local -i checked=0
+  for plist in LaunchAgents/*.plist LaunchDaemons/*.plist; do
+    [[ -f "${plist}" ]] || continue
+    prog=$(/usr/libexec/PlistBuddy -c "Print :ProgramArguments:0" "${plist}" 2>/dev/null) || continue
+    if [[ ! -e "${prog}" ]]; then
+      _skip "${plist##*/}: ${prog} not installed"
+      continue
+    fi
+    checked+=1
+    # SC2296: zsh :A resolves symlinks, not valid bash.
+    # shellcheck disable=SC2296
+    real="${prog:A}"
+    if [[ "${real}" == "${HOME}/Documents/"* ]]; then
+      _fail "${plist##*/}: ${prog} resolves to ${real} — under ~/Documents, launchd exec fails with 127"
+    else
+      _pass "${plist##*/}: ${prog} resolves outside ~/Documents"
+    fi
+  done
+
+  if (( checked == 0 )); then
+    _skip "no launchd programs installed to check"
+  fi
+}
+
+# Exercises the branch added 2026-07-28. `logger` is shadowed by a shell
+# function so the syslog call is captured rather than emitted. On the
+# pre-hardening code the failed redirect was completely silent, so the
+# "cannot write" assertion below fails there — which is the point.
+function _jump_test_run_and_log_unwritable {
+  _section "run_and_log reports an unwritable log"
+
+  local script name locked capture rc
+  for script in bin/jump-system bin/jump-user; do
+    name="${script##*/}"
+    locked="${TMPDIR}test-jump-$$-${name}-locked.log"
+    capture="${TMPDIR}test-jump-$$-${name}-logger.txt"
+    /bin/rm -f "${locked}" "${capture}"
+    : > "${locked}"
+    chmod 444 "${locked}"
+
+    # SC1090/SC1091: dynamic source target. SC2034: LOG_FILE is read by the
+    # sourced function. SC2329: the logger shim IS invoked, but only from the
+    # sourced run_and_log, which shellcheck cannot follow — that indirection is
+    # the whole mechanism of this test.
+    # shellcheck disable=SC1090,SC1091,SC2034,SC2329
+    rc=$(set +e; source <(/usr/bin/grep -v '^main "\$@"' "${script}"); LOG_FILE="${locked}"; logger() { echo "$@" >> "${capture}"; }; run_and_log "bad step" /usr/bin/false >/dev/null 2>&1; echo "$?")
+
+    if [[ "${rc}" != "0" ]]; then
+      _pass "${name}: preserves the command's exit code when the log is unwritable"
+    else
+      _fail "${name}: swallowed the failure (returned 0) when the log was unwritable"
+    fi
+
+    if grep -q "cannot write" "${capture}" 2>/dev/null; then
+      _pass "${name}: reports the failed log write to syslog"
+    else
+      _fail "${name}: failed log write was silent — detail lost with no signal"
+    fi
+
+    chmod 644 "${locked}"
+    /bin/rm -f "${locked}" "${capture}"
+  done
+}
+
 function run_jump {
   _jump_test_scripts_exist
   _jump_test_shellcheck
@@ -242,4 +351,7 @@ function run_jump {
   _jump_test_binary_paths
   _jump_test_log_file
   _jump_test_run_and_log
+  _jump_test_run_and_log_unwritable
+  _jump_test_launchd_not_in_symlink_array
+  _jump_test_launchd_program_outside_documents
 }
