@@ -46,6 +46,14 @@ enabled = [
 [general]
 self_heal_hook = true
 
+# Full evaluation of long compound commands takes ~250-470ms on this M1 Max
+# (measured 2026-07-28 on 0.7.1; 0.6.7 was ~200ms on the same input) — over
+# the 200ms default, which surfaces as an "ask" prompt per command (upstream
+# #213: pre-0.6.9 the same overrun silently failed OPEN, so the prompts are
+# the visible replacement for an invisible allow). 500ms covers the worst
+# observed case; only commands needing full evaluation pay it.
+hook_timeout_ms = 500
+
 # Heredoc/inline-script scanning kept at defaults — fail-open on parse error
 # and timeout, 50ms timeout, 1MiB body limit. The hook itself is fail-open by
 # design, so the deny list in claude/settings.json remains the hard backstop.
