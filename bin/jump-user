@@ -23,11 +23,18 @@ function run_and_log {
   else
     rc=$?
     logger -t "com.0xmachos.jump" "[FAIL] ${description}"
-    {
+    # A failed redirect is silent here: there is no errexit, and the redirect's
+    # status does not reach rc. An unwritable LOG_FILE would discard every
+    # failure detail while syslog still showed [FAIL], so report the write
+    # failure itself to the sink that cannot fail. Hit live 2026-07-28: root
+    # created the shared log, so this script's appends were dropped silently.
+    if ! {
       echo "[$(date '+%Y-%m-%d %H:%M:%S')] [FAIL] ${description}"
       echo "${output}"
       echo ""
-    } >> "${LOG_FILE}"
+    } >> "${LOG_FILE}" 2>/dev/null; then
+      logger -t "com.0xmachos.jump" "[FAIL] cannot write ${LOG_FILE} — detail for '${description}' lost"
+    fi
   fi
   return "${rc}"
 }
