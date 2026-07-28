@@ -171,10 +171,15 @@ function _jump_test_log_file {
     return
   fi
 
-  if [[ -w "${log_file}" || "$(stat -f '%u' "${log_file}")" == "0" ]]; then
-    _pass "jump.log is writable (or root-owned for jump-system)"
+  # This is the SHARED log: jump-system (root) and jump-user (the console user)
+  # both append to it. Root writes it regardless of owner, so only the user's
+  # access is ever in question — a root-owned file silently drops every
+  # jump-user append. The previous assertion accepted uid 0 here and therefore
+  # passed for the whole time that bug was live (found 2026-07-28).
+  if [[ -w "${log_file}" ]]; then
+    _pass "jump.log is writable by the console user"
   else
-    _fail "jump.log exists but not writable"
+    _fail "jump.log not writable by console user — jump-user appends are dropped"
   fi
 }
 
