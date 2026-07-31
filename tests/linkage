@@ -102,6 +102,7 @@ function run_linkage {
     [npm-attest-hook]=install_dotfiles
     [session-host-context]=install_dotfiles
     [hosts]=install_dotfiles                 # Dynamic (per-host context files)
+    [output-styles]=install_dotfiles         # Dynamic (custom output styles)
     [rules]=install_dotfiles                 # Dynamic (individual rules)
     [skills]=install_dotfiles                # Dynamic (individual skills)
   )
