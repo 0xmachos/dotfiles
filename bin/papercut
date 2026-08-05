@@ -1,0 +1,73 @@
+#!/bin/zsh
+set -euo pipefail
+IFS=$'\n\t'
+
+# papercut — log a small friction hit during agent work
+#
+# Appends a one-line entry (UTC timestamp, host, repo or directory context,
+# message) to ~/.claude/papercuts.md. For frictions worked around in the
+# moment — dead-end tool calls, misleading errors, undocumented setup steps —
+# that individually never earn a memory entry but in aggregate show where the
+# tooling needs sanding down. The log is drained during /wrap or on an
+# explicit "fix the papercuts" ask.
+#
+# Usage: papercut <one or two sentences of friction>
+#
+# ShellCheck: shellcheck --shell=bash (zsh script, ~95% overlap)
+
+umask 077
+
+readonly LOG_FILE="${HOME}/.claude/papercuts.md"
+
+usage() {
+  printf 'Usage: papercut <one or two sentences of friction>\n' >&2
+  printf "\nExample: papercut 'while wiring X, the Y hook blocked Z — guess: stale cache'\n" >&2
+  # shellcheck disable=SC2016  # non-expansion is the point of this advice
+  printf 'Single-quote the message: $, backticks, and $(…) expand before papercut runs.\n' >&2
+  exit 1
+}
+
+ensure_log() {
+  [[ -f "${LOG_FILE}" ]] && return
+
+  mkdir -p "${HOME}/.claude"
+
+  {
+    printf '# Papercuts\n\n'
+    printf 'Small frictions hit during agent work, logged in the moment by\n'
+    # shellcheck disable=SC2016  # backticks are markdown literals, not expansion
+    printf '`papercut`. Raw friction, no dedup bar — drained during /wrap or\n'
+    printf 'on an explicit "fix the papercuts" ask. Delete entries once fixed\n'
+    printf 'or deliberately dropped.\n\n'
+  } > "${LOG_FILE}"
+}
+
+main() {
+  [[ $# -eq 0 ]] && usage
+
+  # "$*" joins on the first char of IFS — restore space so unquoted
+  # multi-word messages stay on one line
+  local IFS=' '
+  local message="$*"
+  [[ -n "${message// /}" ]] || usage
+
+  # Repo name if inside a git repo, else the current directory name
+  local context
+  if context="$(git rev-parse --show-toplevel 2>/dev/null)"; then
+    context="${context:t}"
+  else
+    context="${PWD:t}"
+  fi
+
+  local timestamp host
+  timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  host="$({ scutil --get LocalHostName 2>/dev/null || hostname -s; } \
+    | tr '[:upper:]' '[:lower:]')"
+
+  ensure_log
+  printf -- '- %s · %s · %s · %s\n' \
+    "${timestamp}" "${host}" "${context}" "${message}" >> "${LOG_FILE}"
+  printf 'Logged papercut to %s\n' "${LOG_FILE}"
+}
+
+main "$@"

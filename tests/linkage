@@ -86,6 +86,7 @@ function run_linkage {
     [mdview]=install_scripts
     [npm-audit-check]=install_scripts
     [claude-session-audit]=install_scripts
+    [papercut]=install_scripts
     # install_dotfiles → ~/.local/bin/ (op wrappers)
     [vt]=install_dotfiles
     [urlscan]=install_dotfiles
