@@ -771,7 +771,7 @@ function install_scripts {
   #   Create /usr/local/bin
   #   Symlink files in /usr/local/bin
   
-  local -ar bin_files=(dns jump-user danger mdview npm-audit-check claude-session-audit)
+  local -ar bin_files=(dns jump-user danger mdview npm-audit-check claude-session-audit papercut)
   local -ar macos_script_bin_files=(c0design)
   
   # Create /usr/local/bin
