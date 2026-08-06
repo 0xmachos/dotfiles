@@ -1,0 +1,133 @@
+#!/bin/zsh
+# git-sign-unpushed — re-sign the current branch's unpushed commits.
+#
+# Counterpart to claude/git-sign-hook: commits made while the screen was
+# locked are unsigned (signing would have blocked on Touch ID); this re-signs
+# them in one pass when the user is back at the machine. Secretive prompts
+# per signature by default (empirically confirmed 2026-08-06: three
+# back-to-back signs = three taps); choosing "stay unlocked" on the FIRST
+# prompt collapses the batch to one tap — an explicit opt-in each time, and
+# a deliberate trade: that window signs silently for any process until it
+# expires, so keep it short.
+#
+# A signature lives inside the commit object, so re-signing is a rewrite —
+# every re-signed commit gets a new SHA. Only the UNPUSHED range is touched;
+# the base (upstream, or the deepest commit already on a remote) is never
+# rewritten. The claude/git-sign-hook push gate holds pushes until this has
+# run, so the rewrite never needs a force-push.
+#
+# Committer dates: a bare `--amend` stamps "now" (and GitHub displays the
+# committer date), and the rebase replay itself re-stamps commits 2..N before
+# --exec runs — so BOTH mechanisms below are needed:
+#   * --committer-date-is-author-date pins the replay's committer date, and
+#   * the GIT_COMMITTER_DATE wrapper pins the amend's (reading %cI of the
+#     just-replayed commit, which the rebase flag has already set correctly).
+# For commits authored in one sitting (author == committer) this preserves
+# the original timestamps exactly.
+#
+# Run: git-sign-unpushed   (inside the repo, screen unlocked, worktree clean)
+
+set -euo pipefail
+IFS=$'\n\t'
+
+function die {
+  print -u2 "[❌] $1"
+  exit 1
+}
+
+# Echo the SHA of every commit in the given rev-list range that has no
+# signature. Presence of a `gpgsig` header in the raw commit object, not
+# `%G?`: verification status reads N for a *signed* SSH commit whenever
+# gpg.ssh.allowedSignersFile is missing (verified 2026-08-06), so it cannot
+# distinguish "unsigned" from "unverifiable".
+function _unsigned_shas {
+  local sha
+  for sha in $(git rev-list "$@"); do
+    git cat-file commit "${sha}" | grep -q '^gpgsig' || print -r -- "${sha}"
+  done
+}
+
+function main {
+  git rev-parse --show-toplevel &>/dev/null || die "not inside a git repository"
+  git symbolic-ref -q HEAD >/dev/null || die "detached HEAD — check out a branch first"
+  if ! { git diff --quiet && git diff --cached --quiet; }; then
+    die "worktree not clean — commit or stash first (rebase refuses a dirty tree)"
+  fi
+
+  # Base = newest commit that is already on a remote. @{upstream} when set;
+  # otherwise walk HEAD --not --remotes (covers branches with no upstream —
+  # the first-push case). merge-base guards a diverged upstream.
+  local base="" deepest
+  if git rev-parse -q --verify '@{upstream}' >/dev/null 2>&1; then
+    base="$(git merge-base HEAD '@{upstream}')"
+  else
+    deepest="$(git rev-list HEAD --not --remotes | tail -1)"
+    if [[ -z "${deepest}" ]]; then
+      echo "[✅] No unpushed commits — nothing to re-sign"
+      return 0
+    fi
+    if git rev-parse -q --verify "${deepest}^" >/dev/null 2>&1; then
+      base="$(git rev-parse "${deepest}^")"
+    else
+      base="--root"
+    fi
+  fi
+
+  local -a range
+  if [[ "${base}" == "--root" ]]; then
+    range=(HEAD)
+  else
+    range=("${base}..HEAD")
+  fi
+
+  # A plain rebase linearises merges (and signing during merge replay has had
+  # real bugs) — refuse rather than mangle history.
+  if [[ -n "$(git rev-list --merges "${range[@]}")" ]]; then
+    die "merge commits in the unpushed range — re-sign manually with --rebase-merges"
+  fi
+
+  local unsigned
+  unsigned="$(_unsigned_shas "${range[@]}")"
+  if [[ -z "${unsigned}" ]]; then
+    echo "[✅] All unpushed commits are signed — nothing to do"
+    return 0
+  fi
+
+  local sha
+  local -a ulist=()
+  while IFS= read -r sha; do ulist+=("${sha}"); done <<< "${unsigned}"
+  echo "[ℹ️ ] Unsigned commits to re-sign:"
+  git log --no-walk --format='  %h %s' "${ulist[@]}"
+
+  # The exec skips commits that still carry a signature: an already-signed
+  # commit whose ancestry is untouched fast-forwards through the rebase and
+  # keeps its SHA (ECDSA signatures are randomised, so a needless re-sign
+  # would churn the SHA); a commit invalidated by an earlier rewrite is
+  # replayed WITHOUT its old signature, so the presence test still catches it.
+  # shellcheck disable=SC2016  # deliberate: $(…) must expand per replayed commit inside rebase's shell, not here
+  local -a rebase_args=(
+    --committer-date-is-author-date
+    --exec 'git cat-file commit HEAD | grep -q "^gpgsig" || GIT_COMMITTER_DATE="$(git show -s --format=%cI HEAD)" git commit --amend --no-edit -n -S'
+  )
+  if [[ "${base}" == "--root" ]]; then
+    rebase_args+=(--root)
+  else
+    rebase_args+=("${base}")
+  fi
+
+  if ! git rebase "${rebase_args[@]}"; then
+    print -u2 "[❌] Rebase stopped. If signing failed mid-run (Secretive can drop"
+    print -u2 "     rapid back-to-back requests — maxgoedjen/secretive#577), retry:"
+    print -u2 "       git commit --amend --no-edit -n -S && git rebase --continue"
+    print -u2 "     or abort with: git rebase --abort"
+    exit 1
+  fi
+
+  if [[ -n "$(_unsigned_shas "${range[@]}")" ]]; then
+    die "unsigned commits remain after rebase — inspect: git log --format='%h %G? %s' ${range[*]}"
+  fi
+  echo "[✅] Re-signed:"
+  git log --format='  %h %s' "${range[@]}"
+}
+
+main "$@"
