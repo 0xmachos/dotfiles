@@ -8,8 +8,8 @@ IFS=$'\n\t'
 # message) to ~/.claude/papercuts.md. For frictions worked around in the
 # moment — dead-end tool calls, misleading errors, undocumented setup steps —
 # that individually never earn a memory entry but in aggregate show where the
-# tooling needs sanding down. The log is drained during /wrap or on an
-# explicit "fix the papercuts" ask.
+# tooling needs sanding down. The log is drained only on an explicit
+# "fix the papercuts" ask; /wrap notes entries without prompting.
 #
 # Usage: papercut <one or two sentences of friction>
 #
@@ -36,8 +36,8 @@ ensure_log() {
     printf '# Papercuts\n\n'
     printf 'Small frictions hit during agent work, logged in the moment by\n'
     # shellcheck disable=SC2016  # backticks are markdown literals, not expansion
-    printf '`papercut`. Raw friction, no dedup bar — drained during /wrap or\n'
-    printf 'on an explicit "fix the papercuts" ask. Delete entries once fixed\n'
+    printf '`papercut`. Raw friction, no dedup bar — drained only on an\n'
+    printf 'explicit "fix the papercuts" ask. Delete entries once fixed\n'
     printf 'or deliberately dropped.\n\n'
   } > "${LOG_FILE}"
 }
