@@ -16,6 +16,14 @@
 # rewritten. The claude/git-sign-hook push gate holds pushes until this has
 # run, so the rewrite never needs a force-push.
 #
+# Cost model, which is why the hook nudges you to run this early: rewriting a
+# commit invalidates every descendant, and a rebase replay re-signs each
+# replayed commit (commit.gpgsign is honoured without -S — measured
+# 2026-08-08). So the bill is one tap for the deepest unsigned commit plus one
+# for every commit above it, signed or not. Commits BELOW it fast-forward and
+# keep their SHAs. Measured: one unsigned commit at the base of a 5-commit
+# range = 5 taps and 5 rewritten SHAs; the same commit alone at the tip = 1.
+#
 # Committer dates: a bare `--amend` stamps "now" (and GitHub displays the
 # committer date), and the rebase replay itself re-stamps commits 2..N before
 # --exec runs — so BOTH mechanisms below are needed:
@@ -24,6 +32,17 @@
 #     just-replayed commit, which the rebase flag has already set correctly).
 # For commits authored in one sitting (author == committer) this preserves
 # the original timestamps exactly.
+#
+# LIMITATION, stated plainly because the test used to imply otherwise: author
+# dates survive a re-sign untouched, but on the REBASE path a committer date
+# that genuinely differed from its author date is NORMALISED to the author
+# date — `--committer-date-is-author-date` overwrites it, and the --exec
+# wrapper then reads the already-overwritten value, so it cannot restore the
+# original. Only the amend fast path preserves a differing committer date. The
+# rebase behaviour is deliberate (it is git's standard idiom for stable dates
+# through a replay, and re-signing IS a re-commit), but it is a normalisation,
+# not preservation. Fixtures in tests/git-sign now set author != committer so
+# the assertion pins what actually happens rather than passing vacuously.
 #
 # Run: git-sign-unpushed   (inside the repo, screen unlocked, worktree clean)
 
@@ -40,11 +59,34 @@ function die {
 # `%G?`: verification status reads N for a *signed* SSH commit whenever
 # gpg.ssh.allowedSignersFile is missing (verified 2026-08-06), so it cannot
 # distinguish "unsigned" from "unverifiable".
+# Exit 0 signed, 1 unsigned, 2 unreadable.
+#
+# `grep '^gpgsig' >/dev/null`, never `grep -q`: this script sets pipefail, and
+# an early-exiting grep SIGPIPEs `git cat-file`, so the pipeline reports 141
+# and a SIGNED commit reads as unsigned — which then triggers a pointless
+# rewrite and a bogus "unsigned commits remain" failure. Reproduced 2026-08-08
+# on a 300 KB commit (PIPE_BUF here is 512 bytes, so the bar is low). Same
+# class as the pii-patterns fail-open in the project CLAUDE.md.
+function _is_signed {
+  local out
+  out="$(git cat-file commit "$1" 2>/dev/null)" || return 2
+  print -r -- "${out}" | grep '^gpgsig' >/dev/null
+}
+
 function _unsigned_shas {
-  local sha
+  local sha rc
   for sha in $(git rev-list "$@"); do
-    git cat-file commit "${sha}" | grep -q '^gpgsig' || print -r -- "${sha}"
+    rc=0
+    _is_signed "${sha}" || rc=$?
+    (( rc == 2 )) && die "cannot read commit object ${sha}"
+    (( rc == 0 )) || print -r -- "${sha}"
   done
+}
+
+# True when $1 is reachable from any remote-tracking ref, i.e. already
+# published. `rev-list -1 <sha> --not --remotes` prints nothing in that case.
+function _is_published {
+  [[ -z "$(git rev-list -1 "$1" --not --remotes 2>/dev/null)" ]]
 }
 
 function main {
@@ -54,36 +96,20 @@ function main {
     die "worktree not clean — commit or stash first (rebase refuses a dirty tree)"
   fi
 
-  # Base = newest commit that is already on a remote. @{upstream} when set;
-  # otherwise walk HEAD --not --remotes (covers branches with no upstream —
-  # the first-push case). merge-base guards a diverged upstream.
-  local base="" deepest
-  if git rev-parse -q --verify '@{upstream}' >/dev/null 2>&1; then
-    base="$(git merge-base HEAD '@{upstream}')"
-  else
-    deepest="$(git rev-list HEAD --not --remotes | tail -1)"
-    if [[ -z "${deepest}" ]]; then
-      echo "[✅] No unpushed commits — nothing to re-sign"
-      return 0
-    fi
-    if git rev-parse -q --verify "${deepest}^" >/dev/null 2>&1; then
-      base="$(git rev-parse "${deepest}^")"
-    else
-      base="--root"
-    fi
-  fi
+  # Candidates ALWAYS come from `HEAD --not --remotes`, never from
+  # `merge-base(HEAD, @{upstream})..HEAD`. The merge-base form excludes only
+  # the upstream's history, so a commit already published on a SECOND remote
+  # sat inside the range and was rewritten. Reproduced 2026-08-08 (Codex
+  # adversarial review): upstream origin/main at A, unsigned B already pushed
+  # to backup/topic, unsigned C local — the rebase started at A and rewrote
+  # the published B. `--not --remotes` excludes every remote-tracking ref, and
+  # since a published commit has all its ancestors published, nothing above an
+  # unpublished commit can be published either.
+  local -a range=(HEAD --not --remotes)
 
-  local -a range
-  if [[ "${base}" == "--root" ]]; then
-    range=(HEAD)
-  else
-    range=("${base}..HEAD")
-  fi
-
-  # A plain rebase linearises merges (and signing during merge replay has had
-  # real bugs) — refuse rather than mangle history.
-  if [[ -n "$(git rev-list --merges "${range[@]}")" ]]; then
-    die "merge commits in the unpushed range — re-sign manually with --rebase-merges"
+  if [[ -z "$(git rev-list "${range[@]}")" ]]; then
+    echo "[✅] No unpushed commits — nothing to re-sign"
+    return 0
   fi
 
   local unsigned
@@ -99,6 +125,71 @@ function main {
   echo "[ℹ️ ] Unsigned commits to re-sign:"
   git log --no-walk --format='  %h %s' "${ulist[@]}"
 
+  # Fast path: HEAD is the only unsigned commit. Amend in place — one
+  # signature, no descendant to invalidate, no sequencer. Running the rebase
+  # below would replay the same single commit for no gain, and its failure
+  # modes (stopped rebase, detached state to recover) are the expensive part.
+  if (( ${#ulist} == 1 )) && [[ "${ulist[1]}" == "$(git rev-parse HEAD)" ]]; then
+    _is_published HEAD && die "HEAD is already published on a remote — refusing to amend it"
+    GIT_COMMITTER_DATE="$(git show -s --format=%cI HEAD)" \
+      git commit --amend --no-edit -n -S \
+      || die "amend failed to sign — is the machine unlocked? (Secretive refuses while locked)"
+    if [[ -n "$(_unsigned_shas -1 HEAD)" ]]; then
+      die "HEAD still unsigned after amend — inspect: git log -1 --format='%h %G? %s'"
+    fi
+    echo "[✅] Re-signed:"
+    git log --no-walk --format='  %h %s' HEAD
+    return 0
+  fi
+
+  # Rebase from the parent of the DEEPEST UNSIGNED commit, not from the pushed
+  # base. Commits below it are already signed and unaffected by the rewrite, so
+  # replaying them re-signs each for nothing. This matters most in a repo with
+  # NO remote, where `--not --remotes` excludes nothing and every commit counts
+  # as unpushed: measured 2026-08-08, two unsigned commits at the tip of a
+  # 12-commit no-remote history rebased from --root and re-signed all 12 —
+  # 10 wasted taps. rev-list is newest-first, so the last entry is the deepest.
+  local deepest_unsigned rebase_base
+  deepest_unsigned="${ulist[-1]}"
+  if git rev-parse -q --verify "${deepest_unsigned}^" >/dev/null 2>&1; then
+    rebase_base="$(git rev-parse "${deepest_unsigned}^")"
+  else
+    rebase_base="--root"
+  fi
+
+  local -a rebase_range
+  if [[ "${rebase_base}" == "--root" ]]; then
+    rebase_range=(HEAD)
+  else
+    rebase_range=("${rebase_base}..HEAD")
+  fi
+
+  # A plain rebase linearises merges (and signing during merge replay has had
+  # real bugs) — refuse rather than mangle history. Scoped to the commits the
+  # rebase will actually replay; a merge below the deepest unsigned commit is
+  # never touched and must not block the re-sign.
+  if [[ -n "$(git rev-list --merges "${rebase_range[@]}")" ]]; then
+    die "merge commits in the replay range — re-sign manually with --rebase-merges"
+  fi
+
+  # A rebase already in progress means someone else (or an earlier aborted run)
+  # owns the tree. Starting a second one detaches HEAD and confuses both.
+  local gitdir
+  gitdir="$(git rev-parse --git-dir)"
+  if [[ -d "${gitdir}/rebase-merge" || -d "${gitdir}/rebase-apply" ]]; then
+    die "a rebase is already in progress — finish it (git rebase --continue) or abort it first"
+  fi
+
+  # Belt to the `--not --remotes` brace above: nothing about to be rewritten
+  # may already be published. A pushed SHA is permanent.
+  local s
+  for s in $(git rev-list "${rebase_range[@]}"); do
+    _is_published "${s}" \
+      && die "refusing to rewrite ${s} — already reachable from a remote-tracking ref"
+  done
+
+  echo "[ℹ️ ] Replaying $(git rev-list --count "${rebase_range[@]}") commit(s) — expect one Touch ID tap each."
+
   # The exec skips commits that still carry a signature: an already-signed
   # commit whose ancestry is untouched fast-forwards through the rebase and
   # keeps its SHA (ECDSA signatures are randomised, so a needless re-sign
@@ -107,12 +198,12 @@ function main {
   # shellcheck disable=SC2016  # deliberate: $(…) must expand per replayed commit inside rebase's shell, not here
   local -a rebase_args=(
     --committer-date-is-author-date
-    --exec 'git cat-file commit HEAD | grep -q "^gpgsig" || GIT_COMMITTER_DATE="$(git show -s --format=%cI HEAD)" git commit --amend --no-edit -n -S'
+    --exec 'git cat-file commit HEAD | grep "^gpgsig" >/dev/null || GIT_COMMITTER_DATE="$(git show -s --format=%cI HEAD)" git commit --amend --no-edit -n -S'
   )
-  if [[ "${base}" == "--root" ]]; then
+  if [[ "${rebase_base}" == "--root" ]]; then
     rebase_args+=(--root)
   else
-    rebase_args+=("${base}")
+    rebase_args+=("${rebase_base}")
   fi
 
   if ! git rebase "${rebase_args[@]}"; then

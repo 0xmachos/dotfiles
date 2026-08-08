@@ -8,6 +8,10 @@
 # to this script; it forwards to the repo's own default-location hook — args,
 # stdin, and exit status intact — or exits 0 if the repo has none.
 #
+# Two names are NOT symlinks to here, because they are real global hooks that
+# chain onward themselves: pre-commit (the secret/PII scanner) and pre-push
+# (the commit-signature gate, added 2026-08-08).
+#
 # ${0:t} is the INVOKED name (the symlink), which is the hook type git ran.
 # Hooks live in the COMMON git dir (linked worktrees share the main repo's
 # .git/hooks), hence --git-common-dir rather than --git-dir. Deliberately not
