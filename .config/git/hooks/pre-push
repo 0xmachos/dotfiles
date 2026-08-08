@@ -41,10 +41,19 @@ IFS=$'\n\t'
 
 # Sentinel scoped to hook name AND repo (see hook-forward): a hook in repo A
 # running git operations in repo B must not skip B's hooks.
+#
+# On re-entry the sentinel suppresses the CHAINING ONLY — never the scan
+# (Codex finding, 2026-08-08). It used to `exit 0` here, which meant a repo
+# pre-push hook that itself pushed the same repo inherited the exported
+# sentinel and published unsigned commits unexamined; reproduced by invoking
+# the hook with the sentinel pre-set (exit 0 against an unsigned tip that
+# otherwise exits 1). The scan is read-only and runs no hooks, so repeating it
+# cannot recurse.
 sentinel="pre-push@$(git rev-parse --absolute-git-dir)"
 sentinel="${sentinel// /_}"
+typeset -i reentered=0
 case " ${GIT_GLOBAL_HOOKS_SEEN:-} " in
-  (*" ${sentinel} "*) exit 0 ;;
+  (*" ${sentinel} "*) reentered=1 ;;
 esac
 export GIT_GLOBAL_HOOKS_SEEN="${GIT_GLOBAL_HOOKS_SEEN:-} ${sentinel}"
 
@@ -54,9 +63,15 @@ UPDATES="$(cat)"
 # --- Layer 0: chain to the repo's own default-location hook -----------------
 
 repo_hook="$(git rev-parse --git-common-dir)/hooks/pre-push"
-if [[ -x "${repo_hook}" && "${repo_hook:A}" != "${0:A}" ]]; then
-  # In `cmd || exit $?`, $? on the right of || is cmd's own status.
-  print -r -- "${UPDATES}" | "${repo_hook}" "$@" || exit $?
+if (( ! reentered )) && [[ -x "${repo_hook}" && "${repo_hook:A}" != "${0:A}" ]]; then
+  # Here-string, never a pipeline: under `pipefail` a chained hook that exits
+  # without draining a large ref stream SIGPIPEs the producer, the pipeline
+  # reports 141, and a push the repo hook ALLOWED is blocked. Reproduced
+  # 2026-08-08 with 4000 refs (462 KB) and a repo hook of `exit 0` — global
+  # hook 141 with it enabled, 0 with it disabled. A here-string is a file, so
+  # an unread stream is free. `$?` is then the hook's own status, no `||`
+  # needed to unwrap it.
+  "${repo_hook}" "$@" <<< "${UPDATES}" || exit $?
 fi
 
 # --- Layer 1: signature gate ------------------------------------------------
@@ -69,33 +84,117 @@ fi
 # Only gate repos that sign. `--bool` normalises yes/on/1/true; a literal
 # string compare read `yes` as "not signing" and let the push through
 # (Codex finding, 2026-08-08).
-if [[ "$(git config --bool --get commit.gpgsign 2>/dev/null || true)" != "true" ]]; then
-  exit 0
-fi
+typeset -i sign_commits=0 sign_tags=0
+[[ "$(git config --bool --get commit.gpgsign 2>/dev/null || true)" == "true" ]] && sign_commits=1
+[[ "$(git config --bool --get tag.gpgsign 2>/dev/null || true)" == "true" ]] && sign_tags=1
+(( sign_commits || sign_tags )) || exit 0
 
 # Presence of a `gpgsig` header in the raw commit object, not `%G?`: `%G?`
 # prints N for a *signed* SSH commit whenever gpg.ssh.allowedSignersFile is
 # missing (verified 2026-08-06), so it cannot tell unsigned from unverifiable.
 #
-# `grep '^gpgsig' >/dev/null`, never `grep -q`: under `set -o pipefail` an
-# early-exiting grep SIGPIPEs `git cat-file`, the pipeline reports 141, and a
-# SIGNED commit is misread as unsigned. Reproduced 2026-08-08 on a 300 KB
-# commit (PIPE_BUF here is 512 bytes, so the threshold is low). Same class of
-# bug as the pii-patterns fail-open documented in the project CLAUDE.md.
+# Header-block only: `git cat-file commit` prints headers, a blank line, then
+# the MESSAGE, and scanning all of it meant an unsigned commit whose message
+# contained a line starting `gpgsig` read as signed (found by both reviewers,
+# reproduced 2026-08-08: `git verify-commit` failed and `%G?` printed N while
+# this gate exited 0). `${out%%$'\n\n'*}` truncates at the boundary, and the
+# trailing space is required so only a real header line matches.
+#
+# NO PIPELINE, deliberately. Under `set -o pipefail` ANY early-exiting consumer
+# — `grep -q`, and equally `sed '/^$/q'` — SIGPIPEs the producer, the pipeline
+# reports 141, and a SIGNED commit is misread as unsigned. Reproduced twice:
+# 2026-08-08 on a 300 KB commit via `grep -q` (PIPE_BUF here is 512 bytes, so
+# the threshold is low), and again the same day when the header-block fix was
+# first written as `| sed '/^$/q' | grep`, which reintroduced it through sed's
+# `q` and failed the very 300 KB regression test that pins it. Zsh pattern
+# matching needs no subprocess at all, so the class is gone rather than dodged.
+# The leading newline lets one pattern match a `gpgsig` header on the first
+# line as well as a later one. Same class of bug as the pii-patterns fail-open
+# documented in the project CLAUDE.md.
 function _is_signed {
   local out
   out="$(git cat-file commit "$1" 2>/dev/null)" || return 2
-  print -r -- "${out}" | grep '^gpgsig' >/dev/null
+  [[ $'\n'"${out%%$'\n\n'*}" == *$'\n'gpgsig\ * ]]
 }
 
-typeset -a unsigned=()
+# Annotated tags carry their signature in the tag OBJECT, appended after the
+# message rather than as a header, so the commit walk below can never see it:
+# an unsigned tag over a signed commit passed the gate while `git tag -v` said
+# "error: no signature found" (verified 2026-08-08). Exit 0 signed, 1 unsigned,
+# 2 unreadable — same contract as _is_signed.
+function _tag_is_signed {
+  local out
+  out="$(git cat-file tag "$1" 2>/dev/null)" || return 2
+  [[ $'\n'"${out}" == *$'\n'-----BEGIN*SIGNATURE-----* ]]
+}
+
+typeset -a unsigned=() unsigned_tags=()
 typeset -i unreadable=0
 
-# shellcheck disable=SC2034  # local_ref/remote_ref are positional placeholders in git's quad
+# Gate the tag OBJECT when the ref being pushed is an annotated tag. Peeling to
+# commits (below) cannot see a tag's own signature.
+function _check_tag {
+  local ref="$1" obj="$2" objtype rc=0
+  objtype="$(git cat-file -t "${obj}" 2>/dev/null || true)"
+  if [[ "${objtype}" != tag ]]; then
+    return 0
+  fi
+  _tag_is_signed "${obj}" || rc=$?
+  if (( rc == 2 )); then
+    unreadable=1
+  elif (( rc != 0 )); then
+    unsigned_tags+=("${ref}")
+  fi
+  return 0
+}
+
+# Walk a rev range and record every unsigned commit.
+#
+# The walk's exit status is captured, NOT discarded. `for sha in $(git rev-list
+# …)` swallowed it: an empty expansion ran the loop zero times and the hook
+# exited 0, so any failed walk was a silent PASS in the one hook documented as
+# fail-closed. git computes remote_sha from the remote's LIVE advertised refs,
+# not the remote-tracking cache, so a push whose remote tip is not held locally
+# yields `fatal: bad object` — reproduced 2026-08-08: exit 0 for an unsigned
+# tip that exits 1 in both controls (force-push over a diverged remote is the
+# live case; --force-with-lease is safe because the lease requires the object).
+function _scan_range {
+  local revs sha rc rl_rc=0
+  # shellcheck disable=SC2034  # read via `${=revs}`, zsh word-splitting that --shell=bash cannot see
+  revs="$(git rev-list "$@" 2>/dev/null)" || rl_rc=$?
+  if (( rl_rc )); then
+    unreadable=1
+    return 0
+  fi
+  # `cmd || rc=$?`, not `if ! cmd`: after `if ! cmd`, `$?` holds the NEGATED
+  # status, so the fail-closed rc==2 arm could never fire. It is also the form
+  # that is safe under `set -e`.
+  for sha in ${=revs}; do
+    rc=0
+    _is_signed "${sha}" || rc=$?
+    if (( rc == 2 )); then
+      unreadable=1
+    elif (( rc != 0 )); then
+      unsigned+=("${sha}")
+    fi
+  done
+  return 0
+}
+
+# shellcheck disable=SC2034  # remote_ref is a positional placeholder in git's quad
 while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
   [[ -n "${local_sha:-}" ]] || continue
   # All-zero local sha = branch deletion; nothing is being published.
   [[ "${local_sha}" == *[^0]* ]] || continue
+
+  # Scoped to refs/tags/*: the object-type probe is a fork per ref, and git
+  # only ever puts a tag object under refs/tags. Measured 2026-08-08 at ~55 ms
+  # per ref end to end, so an unconditional probe doubled the cost of a
+  # many-ref push (`--mirror`, `--all`) for refs that can never be tags.
+  if (( sign_tags )) && [[ "${local_ref}" == refs/tags/* ]]; then
+    _check_tag "${local_ref}" "${local_sha}"
+  fi
+  (( sign_commits )) || continue
 
   typeset -a range
   if [[ "${remote_sha}" == *[^0]* ]]; then
@@ -106,24 +205,24 @@ while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
     range=("${local_sha}" --not --remotes)
   fi
 
-  # `cmd || rc=$?`, not `if ! cmd`: after `if ! cmd`, `$?` holds the NEGATED
-  # status, so the fail-closed rc==2 arm could never fire. It is also the form
-  # that is safe under `set -e`.
-  typeset sha rc
-  for sha in $(git rev-list "${range[@]}" 2>/dev/null); do
-    rc=0
-    _is_signed "${sha}" || rc=$?
-    if (( rc == 2 )); then
-      unreadable=1
-    elif (( rc != 0 )); then
-      unsigned+=("${sha}")
-    fi
-  done
+  _scan_range "${range[@]}"
 done <<< "${UPDATES}"
 
 if (( unreadable )); then
-  print -u2 "[❌] pre-push: a commit object could not be read — refusing to push."
-  print -u2 "     This gate fails closed; a pushed SHA is permanent."
+  print -u2 "[❌] pre-push: an object could not be read, or a revision walk failed."
+  print -u2 "     Refusing to push. This gate fails closed; a pushed SHA is permanent."
+  print -u2 "     If the remote tip is simply not held locally, run \`git fetch\` first."
+  exit 1
+fi
+
+if (( ${#unsigned_tags} )); then
+  print -u2 "[❌] pre-push: ${#unsigned_tags} annotated tag(s) in this push carry no signature:"
+  typeset t
+  for t in "${unsigned_tags[@]}"; do
+    print -u2 "       ${t}"
+  done
+  print -u2 "     Re-create with \`git tag -s -f <name> <commit>\`, then push again."
+  print -u2 "     Override: GIT_SIGN_SKIP=1 git push …   (or git push --no-verify)"
   exit 1
 fi
 

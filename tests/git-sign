@@ -83,9 +83,17 @@ function _gs_commit_signed {
 
 function _gs_unsigned_count {
   # Count commits in HEAD's unpushed range lacking a gpgsig header.
-  local sha n=0
+  #
+  # Uses the SAME pipeline-free predicate as the code under test. The oracle
+  # previously used the bare `grep -q '^gpgsig'` that pre-push and
+  # git-sign-unpushed each spend a comment block forbidding: this harness sets
+  # pipefail (see `test`), so an early-exiting consumer SIGPIPEs the producer
+  # and a signed commit reads as unsigned. An oracle that disagrees with the
+  # code it validates can only mask a real defect (2026-08-08).
+  local sha out n=0
   for sha in $(git rev-list HEAD --not --remotes); do
-    git cat-file commit "${sha}" | grep -q '^gpgsig' || n=$(( n + 1 ))
+    out="$(git cat-file commit "${sha}")"
+    [[ $'\n'"${out%%$'\n\n'*}" == *$'\n'gpgsig\ * ]] || n=$(( n + 1 ))
   done
   echo "${n}"
 }
@@ -139,6 +147,46 @@ function _gs_prepush_repo {
     git push -qu origin main 2>/dev/null
   )
   echo "${sb}/repo"
+}
+
+function _gs_quad_expect {
+  # Drive the global pre-push directly with a crafted ref quad. Needed for the
+  # cases `git push` cannot be made to produce on demand: a remote_sha the
+  # local repo does not hold, a re-entry sentinel already exported, or a ref
+  # stream larger than a pipe buffer. git hands the hook exactly these quads,
+  # so this is the hook's real input, not a stand-in.
+  # $1 want (ALLOWED|BLOCKED), $2 label, $3 repo, $4 quad file or text,
+  # rest = extra env assignments.
+  local want="$1" label="$2" dir="$3" quad="$4"
+  shift 4
+  # `|| rc=$?`, never a bare subshell: the harness runs under `set -e`, so a
+  # BLOCKED case (the whole point of half these assertions) would abort the
+  # suite mid-run rather than fail one test. That is exactly how the first
+  # draft of this block silently truncated the run at 60 lines with no summary.
+  #
+  # `env -u … "${GS_ENV[@]}"`, options BEFORE assignments: env stops parsing
+  # options at the first `VAR=val`, so `env A=1 -u X cmd` execs `-u` and exits
+  # 127. Written the wrong way round, every BLOCKED assertion here passed on a
+  # 127 that never reached the hook — a green test measuring nothing. Only the
+  # ALLOWED cases exposed it, which is the argument for pairing each block with
+  # its allow-side control.
+  local rc=0 got
+  if [[ -f "${quad}" ]]; then
+    ( cd "${dir}" && env -u GIT_GLOBAL_HOOKS_SEEN "${GS_ENV[@]}" "$@" \
+        /bin/zsh "${SCRIPT_DIR}/.config/git/hooks/pre-push" origin "${dir}" < "${quad}" \
+    ) >/dev/null 2>&1 || rc=$?
+  else
+    ( cd "${dir}" && print -r -- "${quad}" \
+      | env -u GIT_GLOBAL_HOOKS_SEEN "${GS_ENV[@]}" "$@" \
+        /bin/zsh "${SCRIPT_DIR}/.config/git/hooks/pre-push" origin "${dir}" \
+    ) >/dev/null 2>&1 || rc=$?
+  fi
+  if (( rc == 0 )); then got=ALLOWED; else got=BLOCKED; fi
+  if [[ "${got}" == "${want}" ]]; then
+    _pass "pre-push ${want}: ${label}"
+  else
+    _fail "pre-push ${label} — expected ${want}, got ${got} (exit ${rc})"
+  fi
 }
 
 function _gs_push_expect {
@@ -544,6 +592,117 @@ fatal: failed to write commit object'
   _gs_push_expect BLOCKED "repo-local hooksPath still reaches the gate via the stub" \
     "${shadow}" git push origin main
   /bin/rm -rf "${shadow:h}"
+
+  # --- Bypasses found by the 2026-08-08 dual review (Codex + Opus subagent) ---
+  # Every case below was a live PASS through the gate before that review. They
+  # are grouped because they share one root cause: the gate trusted a git
+  # invocation's *output* without checking its *status*, or matched a pattern
+  # too loosely to be a signature.
+  local zero=0000000000000000000000000000000000000000
+  local ghost=0000000000000000000000000000000000000001
+
+  # A failed revision walk must not read as "no unsigned commits". git derives
+  # remote_sha from the remote's LIVE advertised refs, not the local
+  # remote-tracking cache, so a diverged force-push hands the hook a range
+  # whose left side it does not hold: `fatal: bad object` → empty output →
+  # loop body never ran → exit 0.
+  local walk walktip
+  walk="$(_gs_prepush_repo "$(mktemp -d "${TMPDIR}git-sign-walk.XXXXXX")")"
+  ( cd "${walk}" && _gs_commit unsigned-tip '2026-02-02T10:00:00+00:00' )
+  walktip="$(env "${GS_ENV[@]}" git -C "${walk}" rev-parse HEAD)"
+  _gs_quad_expect BLOCKED "a revision walk that fails is not a silent pass" \
+    "${walk}" "refs/heads/main ${walktip} refs/heads/main ${ghost}"
+  _gs_quad_expect BLOCKED "control: the same unsigned tip with a resolvable range" \
+    "${walk}" "refs/heads/main ${walktip} refs/heads/main ${zero}"
+
+  # `gpgsig` in the commit MESSAGE is not a signature. `git cat-file commit`
+  # prints headers, a blank line, then the message; an unanchored match over
+  # the whole object let an unsigned commit forge its own verdict.
+  local spoof spooftip
+  spoof="$(_gs_prepush_repo "$(mktemp -d "${TMPDIR}git-sign-spoof.XXXXXX")")"
+  (
+    cd "${spoof}" || exit 1
+    echo body >> f
+    git add f
+    env "${GS_ENV[@]}" git commit -qn --no-gpg-sign \
+      -m 'innocent subject' -m 'gpgsig -----BEGIN SSH SIGNATURE-----'
+  )
+  spooftip="$(env "${GS_ENV[@]}" git -C "${spoof}" rev-parse HEAD)"
+  _gs_quad_expect BLOCKED "a gpgsig line in the commit message is not a signature" \
+    "${spoof}" "refs/heads/main ${spooftip} refs/heads/main ${zero}"
+
+  # An annotated tag carries its signature in the TAG object, appended after
+  # the message rather than as a header, so peeling to commits cannot see it.
+  local tagr tagobj tagbase
+  tagr="$(_gs_prepush_repo "$(mktemp -d "${TMPDIR}git-sign-tag.XXXXXX")")"
+  env "${GS_ENV[@]}" git -C "${tagr}" config tag.gpgsign true
+  tagbase="$(env "${GS_ENV[@]}" git -C "${tagr}" rev-parse HEAD)"
+  env "${GS_ENV[@]}" git -C "${tagr}" -c tag.gpgsign=false tag -a v1 -m unsigned-tag "${tagbase}"
+  tagobj="$(env "${GS_ENV[@]}" git -C "${tagr}" rev-parse v1)"
+  _gs_quad_expect BLOCKED "an unsigned annotated tag over a signed commit is gated" \
+    "${tagr}" "refs/tags/v1 ${tagobj} refs/tags/v1 ${zero}"
+  env "${GS_ENV[@]}" git -C "${tagr}" -c tag.gpgsign=true -c "user.signingkey=${tagr:h}/key" \
+    -c gpg.format=ssh tag -s -f v2 -m signed-tag "${tagbase}" 2>/dev/null || true
+  tagobj="$(env "${GS_ENV[@]}" git -C "${tagr}" rev-parse v2)"
+  _gs_quad_expect ALLOWED "a signed annotated tag passes" \
+    "${tagr}" "refs/tags/v2 ${tagobj} refs/tags/v2 ${zero}"
+  _gs_quad_expect ALLOWED "a lightweight tag on a signed commit passes" \
+    "${tagr}" "refs/tags/lw ${tagbase} refs/tags/lw ${zero}"
+
+  # Re-entry must suppress the CHAINED hook only, never the scan. The sentinel
+  # is exported before the scan runs, so a repo pre-push hook that pushed the
+  # same repo inherited it and published unsigned commits unexamined.
+  local reent reenttip reentdir
+  reent="$(_gs_prepush_repo "$(mktemp -d "${TMPDIR}git-sign-reent.XXXXXX")")"
+  ( cd "${reent}" && _gs_commit reentrant '2026-02-03T10:00:00+00:00' )
+  reenttip="$(env "${GS_ENV[@]}" git -C "${reent}" rev-parse HEAD)"
+  reentdir="$(env "${GS_ENV[@]}" git -C "${reent}" rev-parse --absolute-git-dir)"
+  _gs_quad_expect BLOCKED "an already-exported sentinel does not skip the scan" \
+    "${reent}" "refs/heads/main ${reenttip} refs/heads/main ${zero}" \
+    "GIT_GLOBAL_HOOKS_SEEN=pre-push@${reentdir}"
+
+  # stdin replay to the chained hook must not be a pipeline: under pipefail a
+  # repo hook that exits 0 without draining a large ref stream SIGPIPEs the
+  # producer and the gate returned 141 — blocking a push the repo hook allowed.
+  # All-zero local shas (branch deletions) keep this to the replay path with no
+  # per-ref git forks, so the case stays fast.
+  # `--absolute-git-dir`, NOT `--git-common-dir`: the latter answers `.git`
+  # RELATIVE to the repo, so building a fixture path from it outside the repo
+  # wrote this very repo's `.git/hooks/pre-push` instead. That is not a
+  # cosmetic slip — the global gate chains to `$(git rev-parse
+  # --git-common-dir)/hooks/pre-push`, which `core.hooksPath = .githooks` does
+  # NOT shadow, so an `exit 7` fixture there would have failed every push from
+  # the dotfiles repo itself (caught and removed 2026-08-08).
+  local replay replaydir stream
+  replay="$(_gs_prepush_repo "$(mktemp -d "${TMPDIR}git-sign-replay.XXXXXX")")"
+  replaydir="$(env "${GS_ENV[@]}" git -C "${replay}" rev-parse --absolute-git-dir)"
+  mkdir -p "${replaydir}/hooks"
+  printf '#!/bin/zsh\nexit 0\n' > "${replaydir}/hooks/pre-push"
+  chmod 755 "${replaydir}/hooks/pre-push"
+  stream="${replay:h}/stream"
+  awk -v z="${zero}" -v b="$(env "${GS_ENV[@]}" git -C "${replay}" rev-parse HEAD)" \
+    'BEGIN{for(i=1;i<=800;i++) printf "refs/heads/b%d %s refs/heads/b%d %s\n", i, z, i, b}' \
+    > "${stream}"
+  _gs_quad_expect ALLOWED "a chained hook that ignores a 90 KB ref stream still allows the push" \
+    "${replay}" "${stream}"
+  printf '#!/bin/zsh\nexit 7\n' > "${replaydir}/hooks/pre-push"
+  _gs_quad_expect BLOCKED "a chained hook's non-zero status still propagates" \
+    "${replay}" "${stream}"
+
+  # --- The declared global hooksPath must actually resolve ----------------
+  # A core.hooksPath pointing at a missing directory disables EVERY hook —
+  # the signature gate and the PII/gitleaks scanner together — and git says
+  # nothing at all: the commit simply succeeds with no hooks run.
+  local declared
+  declared="$(env "${GS_ENV[@]}" git config --file "${SCRIPT_DIR}/.config/git/config" \
+    --path --get core.hooksPath 2>/dev/null || true)"
+  if [[ -z "${declared}" ]]; then
+    _fail "core.hooksPath is not declared in .config/git/config — no repo gets the global hooks"
+  elif [[ -x "${declared}/pre-push" && -x "${declared}/pre-commit" ]]; then
+    _pass "declared global core.hooksPath resolves to executable hooks"
+  else
+    _fail "core.hooksPath resolves to ${declared} — pre-push/pre-commit missing or not executable"
+  fi
 
   # --- Compound commands are never reproduced with signing disabled ---
   local refusal_resp compound simple
