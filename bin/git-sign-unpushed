@@ -61,21 +61,36 @@ function die {
 # distinguish "unsigned" from "unverifiable".
 # Exit 0 signed, 1 unsigned, 2 unreadable.
 #
-# `grep '^gpgsig' >/dev/null`, never `grep -q`: this script sets pipefail, and
-# an early-exiting grep SIGPIPEs `git cat-file`, so the pipeline reports 141
-# and a SIGNED commit reads as unsigned — which then triggers a pointless
-# rewrite and a bogus "unsigned commits remain" failure. Reproduced 2026-08-08
-# on a 300 KB commit (PIPE_BUF here is 512 bytes, so the bar is low). Same
-# class as the pii-patterns fail-open in the project CLAUDE.md.
+# Header-block only: `git cat-file commit` prints headers, a blank line, then
+# the MESSAGE, so scanning all of it meant an unsigned commit whose message
+# held a line starting `gpgsig` read as signed (2026-08-08, same defect in all
+# three copies of this predicate). `${out%%$'\n\n'*}` truncates at the
+# boundary; the trailing space keeps it to real header lines.
+#
+# NO PIPELINE, deliberately. This script sets pipefail, so ANY early-exiting
+# consumer — `grep -q`, and equally `sed '/^$/q'` — SIGPIPEs the producer, the
+# pipeline reports 141, and a SIGNED commit reads as unsigned, triggering a
+# pointless rewrite and a bogus "unsigned commits remain" failure. Reproduced
+# on a 300 KB commit (PIPE_BUF here is 512 bytes, so the bar is low). Zsh
+# pattern matching forks nothing, so the class is gone rather than dodged; the
+# leading newline lets one pattern match a first-line header too. Same class as
+# the pii-patterns fail-open in the project CLAUDE.md.
 function _is_signed {
   local out
   out="$(git cat-file commit "$1" 2>/dev/null)" || return 2
-  print -r -- "${out}" | grep '^gpgsig' >/dev/null
+  [[ $'\n'"${out%%$'\n\n'*}" == *$'\n'gpgsig\ * ]]
 }
 
+# The walk's exit status is captured, not discarded by `for sha in $(git
+# rev-list …)`: an empty expansion made a FAILED walk indistinguishable from
+# "no unsigned commits", so a broken range reported success and re-signed
+# nothing. Same defect as the pre-push gate's (2026-08-08).
 function _unsigned_shas {
-  local sha rc
-  for sha in $(git rev-list "$@"); do
+  local revs sha rc rl_rc=0
+  # shellcheck disable=SC2034  # read via `${=revs}`, zsh word-splitting that --shell=bash cannot see
+  revs="$(git rev-list "$@")" || rl_rc=$?
+  (( rl_rc == 0 )) || die "revision walk failed for range: $*"
+  for sha in ${=revs}; do
     rc=0
     _is_signed "${sha}" || rc=$?
     (( rc == 2 )) && die "cannot read commit object ${sha}"
@@ -89,58 +104,35 @@ function _is_published {
   [[ -z "$(git rev-list -1 "$1" --not --remotes 2>/dev/null)" ]]
 }
 
-function main {
-  git rev-parse --show-toplevel &>/dev/null || die "not inside a git repository"
-  git symbolic-ref -q HEAD >/dev/null || die "detached HEAD — check out a branch first"
-  if ! { git diff --quiet && git diff --cached --quiet; }; then
-    die "worktree not clean — commit or stash first (rebase refuses a dirty tree)"
+# Candidates ALWAYS come from `HEAD --not --remotes`, never from
+# `merge-base(HEAD, @{upstream})..HEAD`. The merge-base form excludes only
+# the upstream's history, so a commit already published on a SECOND remote
+# sat inside the range and was rewritten. Reproduced 2026-08-08 (Codex
+# adversarial review): upstream origin/main at A, unsigned B already pushed
+# to backup/topic, unsigned C local — the rebase started at A and rewrote
+# the published B. `--not --remotes` excludes every remote-tracking ref, and
+# since a published commit has all its ancestors published, nothing above an
+# unpublished commit can be published either.
+typeset -ga RANGE=(HEAD --not --remotes)
+
+# Fast path: HEAD is the only unsigned commit. Amend in place — one
+# signature, no descendant to invalidate, no sequencer. Running the rebase
+# below would replay the same single commit for no gain, and its failure
+# modes (stopped rebase, detached state to recover) are the expensive part.
+function _amend_head {
+  _is_published HEAD && die "HEAD is already published on a remote — refusing to amend it"
+  GIT_COMMITTER_DATE="$(git show -s --format=%cI HEAD)" \
+    git commit --amend --no-edit -n -S \
+    || die "amend failed to sign — is the machine unlocked? (Secretive refuses while locked)"
+  if [[ -n "$(_unsigned_shas -1 HEAD)" ]]; then
+    die "HEAD still unsigned after amend — inspect: git log -1 --format='%h %G? %s'"
   fi
+  echo "[✅] Re-signed:"
+  git log --no-walk --format='  %h %s' HEAD
+}
 
-  # Candidates ALWAYS come from `HEAD --not --remotes`, never from
-  # `merge-base(HEAD, @{upstream})..HEAD`. The merge-base form excludes only
-  # the upstream's history, so a commit already published on a SECOND remote
-  # sat inside the range and was rewritten. Reproduced 2026-08-08 (Codex
-  # adversarial review): upstream origin/main at A, unsigned B already pushed
-  # to backup/topic, unsigned C local — the rebase started at A and rewrote
-  # the published B. `--not --remotes` excludes every remote-tracking ref, and
-  # since a published commit has all its ancestors published, nothing above an
-  # unpublished commit can be published either.
-  local -a range=(HEAD --not --remotes)
-
-  if [[ -z "$(git rev-list "${range[@]}")" ]]; then
-    echo "[✅] No unpushed commits — nothing to re-sign"
-    return 0
-  fi
-
-  local unsigned
-  unsigned="$(_unsigned_shas "${range[@]}")"
-  if [[ -z "${unsigned}" ]]; then
-    echo "[✅] All unpushed commits are signed — nothing to do"
-    return 0
-  fi
-
-  local sha
-  local -a ulist=()
-  while IFS= read -r sha; do ulist+=("${sha}"); done <<< "${unsigned}"
-  echo "[ℹ️ ] Unsigned commits to re-sign:"
-  git log --no-walk --format='  %h %s' "${ulist[@]}"
-
-  # Fast path: HEAD is the only unsigned commit. Amend in place — one
-  # signature, no descendant to invalidate, no sequencer. Running the rebase
-  # below would replay the same single commit for no gain, and its failure
-  # modes (stopped rebase, detached state to recover) are the expensive part.
-  if (( ${#ulist} == 1 )) && [[ "${ulist[1]}" == "$(git rev-parse HEAD)" ]]; then
-    _is_published HEAD && die "HEAD is already published on a remote — refusing to amend it"
-    GIT_COMMITTER_DATE="$(git show -s --format=%cI HEAD)" \
-      git commit --amend --no-edit -n -S \
-      || die "amend failed to sign — is the machine unlocked? (Secretive refuses while locked)"
-    if [[ -n "$(_unsigned_shas -1 HEAD)" ]]; then
-      die "HEAD still unsigned after amend — inspect: git log -1 --format='%h %G? %s'"
-    fi
-    echo "[✅] Re-signed:"
-    git log --no-walk --format='  %h %s' HEAD
-    return 0
-  fi
+function _resign_by_rebase {
+  local -a ulist=("$@")
 
   # Rebase from the parent of the DEEPEST UNSIGNED commit, not from the pushed
   # base. Commits below it are already signed and unaffected by the rewrite, so
@@ -198,7 +190,7 @@ function main {
   # shellcheck disable=SC2016  # deliberate: $(…) must expand per replayed commit inside rebase's shell, not here
   local -a rebase_args=(
     --committer-date-is-author-date
-    --exec 'git cat-file commit HEAD | grep "^gpgsig" >/dev/null || GIT_COMMITTER_DATE="$(git show -s --format=%cI HEAD)" git commit --amend --no-edit -n -S'
+    --exec 'git cat-file commit HEAD | awk "/^\$/{exit} /^gpgsig /{f=1} END{exit !f}" || GIT_COMMITTER_DATE="$(git show -s --format=%cI HEAD)" git commit --amend --no-edit -n -S'
   )
   if [[ "${rebase_base}" == "--root" ]]; then
     rebase_args+=(--root)
@@ -214,11 +206,44 @@ function main {
     exit 1
   fi
 
-  if [[ -n "$(_unsigned_shas "${range[@]}")" ]]; then
-    die "unsigned commits remain after rebase — inspect: git log --format='%h %G? %s' ${range[*]}"
+  if [[ -n "$(_unsigned_shas "${RANGE[@]}")" ]]; then
+    die "unsigned commits remain after rebase — inspect: git log --format='%h %G? %s' ${RANGE[*]}"
   fi
   echo "[✅] Re-signed:"
-  git log --format='  %h %s' "${range[@]}"
+  git log --format='  %h %s' "${RANGE[@]}"
+}
+
+function main {
+  git rev-parse --show-toplevel &>/dev/null || die "not inside a git repository"
+  git symbolic-ref -q HEAD >/dev/null || die "detached HEAD — check out a branch first"
+  if ! { git diff --quiet && git diff --cached --quiet; }; then
+    die "worktree not clean — commit or stash first (rebase refuses a dirty tree)"
+  fi
+
+  if [[ -z "$(git rev-list "${RANGE[@]}")" ]]; then
+    echo "[✅] No unpushed commits — nothing to re-sign"
+    return 0
+  fi
+
+  local unsigned
+  unsigned="$(_unsigned_shas "${RANGE[@]}")"
+  if [[ -z "${unsigned}" ]]; then
+    echo "[✅] All unpushed commits are signed — nothing to do"
+    return 0
+  fi
+
+  local sha
+  local -a ulist=()
+  while IFS= read -r sha; do ulist+=("${sha}"); done <<< "${unsigned}"
+  echo "[ℹ️ ] Unsigned commits to re-sign:"
+  git log --no-walk --format='  %h %s' "${ulist[@]}"
+
+  if (( ${#ulist} == 1 )) && [[ "${ulist[1]}" == "$(git rev-parse HEAD)" ]]; then
+    _amend_head
+    return 0
+  fi
+
+  _resign_by_rebase "${ulist[@]}"
 }
 
 main "$@"
