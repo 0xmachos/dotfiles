@@ -32,6 +32,7 @@ function run_linkage {
     [README.md]=repo
     [SECURITY.md]=repo
     [TODOs.md]=repo
+    [History.md]=repo                        # Completed-work ledger; TODOs.md holds only open items
     [.gitignore]=repo
     [.gitleaksignore]=repo
     [.pii-allowlist]=repo                    # Read in-place by the global pre-commit hook
