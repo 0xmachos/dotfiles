@@ -1,0 +1,25 @@
+#!/usr/bin/env zsh
+# .githooks/pre-push
+#
+# This repo sets a repo-local core.hooksPath (.githooks/), and a repo-local
+# hooksPath SHADOWS the global one entirely — so the global signature gate at
+# .config/git/hooks/pre-push never fires here unless this stub chains to it.
+# Same reason, and same repo-relative pattern, as .githooks/pre-commit
+# chaining to the global secret/PII scanner (works on a fresh clone, no
+# configuration step).
+#
+# Found 2026-08-08 immediately after building the global gate: the one repo it
+# did not protect was the repo it was written in. This is the "a repo that
+# sets its own local core.hooksPath silently opts out" gap already documented
+# in the project CLAUDE.md — it applies to pre-push exactly as it does to the
+# pre-commit scanner.
+#
+# `exec` hands over stdin (git's <local-ref> <local-sha> <remote-ref>
+# <remote-sha> quads), argv, and the exit status untouched; the global hook
+# materialises and replays stdin to any repo-level hook of its own.
+#
+# ShellCheck: lint with `shellcheck --shell=bash .githooks/pre-push`.
+
+set -euo pipefail
+
+exec "$(git rev-parse --show-toplevel)/.config/git/hooks/pre-push" "$@"

@@ -1,1 +1,142 @@
-hook-forward
+#!/usr/bin/env zsh
+# .config/git/hooks/pre-push
+#
+# Global pre-push signature gate for EVERY repo, activated by the global
+# core.hooksPath declared in .config/git/config. Blocks a push that would
+# publish a commit with no `gpgsig` header, in any repo where commit.gpgsign
+# is on.
+#
+# WHY THIS EXISTS RATHER THAN THE CLAUDE HOOK ALONE (2026-08-08). The
+# PreToolUse `claude/git-sign-hook` used to be the only barrier. A Codex
+# adversarial review showed a command-string parser cannot hold that line, and
+# every case reproduced:
+#   * `'git' push`, `git 'push'`, `g\it push`, `{ git push; }`, `! git push`
+#     and `if true; then git push; fi` all sailed past the matcher, while a
+#     heredoc body containing the words `git push` was falsely denied.
+#   * `git -C <other-repo> push` was judged against the WRONG repository.
+#   * A signing failure on `git commit -m x && git push` produced a retry that
+#     recreated the whole compound command with signing disabled: the gate saw
+#     a still-clean range, then the same shell made the unsigned commit and
+#     pushed it before any hook ran again.
+# git hands this hook the exact <local-ref> <local-sha> <remote-ref>
+# <remote-sha> quads on stdin, after all argument parsing, refspec expansion
+# and `-C` resolution. There is no spelling to get wrong and no state to race:
+# what is on stdin is what is about to be transferred. The Claude hook stays
+# as early guidance; THIS is the invariant.
+#
+# Order mirrors the pre-commit scanner: chain to the repo's own
+# default-location pre-push FIRST (it may run tests or amend refs), then scan.
+# stdin is consumable once, so it is materialised and replayed to both.
+#
+# Fail-CLOSED on an unreadable commit, unlike the rest of the hook stack: this
+# is the last barrier before a permanent, public SHA. Everything else here
+# fails open.
+#
+# Bypass: GIT_SIGN_SKIP=1 (loud) or `git push --no-verify` (silent, git-level).
+#
+# ShellCheck: lint with `shellcheck --shell=bash .config/git/hooks/pre-push`.
+
+set -euo pipefail
+IFS=$'\n\t'
+
+# Sentinel scoped to hook name AND repo (see hook-forward): a hook in repo A
+# running git operations in repo B must not skip B's hooks.
+sentinel="pre-push@$(git rev-parse --absolute-git-dir)"
+sentinel="${sentinel// /_}"
+case " ${GIT_GLOBAL_HOOKS_SEEN:-} " in
+  (*" ${sentinel} "*) exit 0 ;;
+esac
+export GIT_GLOBAL_HOOKS_SEEN="${GIT_GLOBAL_HOOKS_SEEN:-} ${sentinel}"
+
+# stdin is a stream, and both the chained hook and the scan below need it.
+UPDATES="$(cat)"
+
+# --- Layer 0: chain to the repo's own default-location hook -----------------
+
+repo_hook="$(git rev-parse --git-common-dir)/hooks/pre-push"
+if [[ -x "${repo_hook}" && "${repo_hook:A}" != "${0:A}" ]]; then
+  # In `cmd || exit $?`, $? on the right of || is cmd's own status.
+  print -r -- "${UPDATES}" | "${repo_hook}" "$@" || exit $?
+fi
+
+# --- Layer 1: signature gate ------------------------------------------------
+
+if [[ -n "${GIT_SIGN_SKIP:-}" ]]; then
+  print -u2 "[⚠️ ] GIT_SIGN_SKIP=1 — pre-push signature gate skipped"
+  exit 0
+fi
+
+# Only gate repos that sign. `--bool` normalises yes/on/1/true; a literal
+# string compare read `yes` as "not signing" and let the push through
+# (Codex finding, 2026-08-08).
+if [[ "$(git config --bool --get commit.gpgsign 2>/dev/null || true)" != "true" ]]; then
+  exit 0
+fi
+
+# Presence of a `gpgsig` header in the raw commit object, not `%G?`: `%G?`
+# prints N for a *signed* SSH commit whenever gpg.ssh.allowedSignersFile is
+# missing (verified 2026-08-06), so it cannot tell unsigned from unverifiable.
+#
+# `grep '^gpgsig' >/dev/null`, never `grep -q`: under `set -o pipefail` an
+# early-exiting grep SIGPIPEs `git cat-file`, the pipeline reports 141, and a
+# SIGNED commit is misread as unsigned. Reproduced 2026-08-08 on a 300 KB
+# commit (PIPE_BUF here is 512 bytes, so the threshold is low). Same class of
+# bug as the pii-patterns fail-open documented in the project CLAUDE.md.
+function _is_signed {
+  local out
+  out="$(git cat-file commit "$1" 2>/dev/null)" || return 2
+  print -r -- "${out}" | grep '^gpgsig' >/dev/null
+}
+
+typeset -a unsigned=()
+typeset -i unreadable=0
+
+# shellcheck disable=SC2034  # local_ref/remote_ref are positional placeholders in git's quad
+while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
+  [[ -n "${local_sha:-}" ]] || continue
+  # All-zero local sha = branch deletion; nothing is being published.
+  [[ "${local_sha}" == *[^0]* ]] || continue
+
+  typeset -a range
+  if [[ "${remote_sha}" == *[^0]* ]]; then
+    range=("${remote_sha}..${local_sha}")
+  else
+    # New ref on the remote: exclude everything already known on any remote,
+    # so a fresh branch off pushed history does not rescan all of it.
+    range=("${local_sha}" --not --remotes)
+  fi
+
+  # `cmd || rc=$?`, not `if ! cmd`: after `if ! cmd`, `$?` holds the NEGATED
+  # status, so the fail-closed rc==2 arm could never fire. It is also the form
+  # that is safe under `set -e`.
+  typeset sha rc
+  for sha in $(git rev-list "${range[@]}" 2>/dev/null); do
+    rc=0
+    _is_signed "${sha}" || rc=$?
+    if (( rc == 2 )); then
+      unreadable=1
+    elif (( rc != 0 )); then
+      unsigned+=("${sha}")
+    fi
+  done
+done <<< "${UPDATES}"
+
+if (( unreadable )); then
+  print -u2 "[❌] pre-push: a commit object could not be read — refusing to push."
+  print -u2 "     This gate fails closed; a pushed SHA is permanent."
+  exit 1
+fi
+
+if (( ${#unsigned} )); then
+  print -u2 "[❌] pre-push: ${#unsigned} commit(s) in this push carry no signature:"
+  typeset s
+  for s in "${unsigned[@]}"; do
+    print -u2 "       $(git log --no-walk --format='%h %s' "${s}" 2>/dev/null || print -r -- "${s}")"
+  done
+  print -u2 "     Re-signing rewrites SHAs and a pushed SHA is permanent, so this is"
+  print -u2 "     blocked. Run \`git-sign-unpushed\` in the repo, then push again."
+  print -u2 "     Override: GIT_SIGN_SKIP=1 git push …   (or git push --no-verify)"
+  exit 1
+fi
+
+exit 0
