@@ -45,11 +45,11 @@ if [ ! -r "$CRED_DIR/role_id" ] || [ ! -r "$CRED_DIR/secret_id" ]; then
     exit 1
 fi
 
-ROLE_ID="$(cat "$CRED_DIR/role_id")"
-SECRET_ID="$(cat "$CRED_DIR/secret_id")"
-
+# Pass the credentials by @file, not by value: an argv-borne secret is readable
+# by any local user via ps(1) for the lifetime of the call. bao's own arg parser
+# loads a value from a file when it begins with "@".
 if ! BAO_TOKEN="$("$BAO" write -field=token auth/approle/login \
-    role_id="$ROLE_ID" secret_id="$SECRET_ID" 2>/dev/null)"; then
+    role_id="@$CRED_DIR/role_id" secret_id="@$CRED_DIR/secret_id" 2>/dev/null)"; then
     echo "bao-mcp-env: AppRole login failed for claude-mbp (OpenBao sealed/down, or Tailscale path to Daisy broken?)" >&2
     exit 1
 fi
