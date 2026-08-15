@@ -1,0 +1,1394 @@
+#!/usr/bin/env python3
+# bin/agent-reset
+#
+# Backup -> verify -> wipe of coding-agent state (Claude Code + Codex), as a
+# repeatable ritual: archive everything with a per-file sha256 manifest,
+# re-read and verify the archives byte-for-byte, and only then allow a gated
+# wipe in which every deleted file must re-hash to a value present in the
+# verified manifest. Design notes and scope rationale live in
+# internals/agent-reset.md.
+#
+# Python 3 stdlib only (macOS CLT python3, >=3.9). Deliberately no third-party
+# deps and no network use outside the explicit `offsite` subcommand: a wipe
+# ritual must not depend on a toolchain download to run.
+#
+# Machine-local configuration (never committed; no hostnames in this file):
+#   ~/.config/agent-reset/exclude        one absolute repo path per line —
+#                                        repos whose in-repo artifacts are
+#                                        skipped (already reset by hand)
+#   ~/.config/agent-reset/offsite-remote first line: rsync/ssh destination
+#   $AGENT_RESET_REMOTE                  overrides offsite-remote
+#   $AGENT_RESET_HOME                    overrides $HOME (test seam)
+#
+# Subcommands: plan backup verify wipe restore offsite self-test
+
+import argparse
+import fnmatch
+import hashlib
+import json
+import os
+import shlex
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+VERSION = "1.0.0"
+
+HOME = Path(os.environ.get("AGENT_RESET_HOME") or Path.home()).resolve()
+CONFIG_DIR = HOME / ".config" / "agent-reset"
+BACKUP_ROOT = HOME / "Backups" / "claude-resets"
+
+CLAUDE_DIR = HOME / ".claude"
+CODEX_DIR = HOME / ".codex"
+AGENTS_DIR = HOME / ".agents"
+CLAUDE_JSON = HOME / ".claude.json"
+VSCODE_DIR = (HOME / "Library" / "Application Support" / "Code" / "User"
+              / "globalStorage" / "anthropic.claude-code")
+DOWNLOADS_DIR = HOME / "Downloads"
+PROJECTS_DIR = HOME / "Documents" / "Projects"
+SANTA_FAA_PLIST = "/Library/Santa/faa-policy.plist"
+SANTA_FAA_RULES = ("ClaudeCodeConfig", "ClaudeCodeConfigResolved")
+
+# ~/.claude entries to wipe. Anything not in WIPE and not matching KEEP is
+# UNKNOWN: protected and reported, never deleted (fail-closed for new state
+# the CLI grows between ritual runs).
+CLAUDE_WIPE = {
+    "projects", "file-history", "plugins", "session-env", "history.jsonl",
+    "agent-mining", "usage-data", "backups", "tasks", "cache", "paste-cache",
+    "jobs", "teams", "sessions", "shell-snapshots", "skills", "agents",
+    "plans", "uploads", "downloads", "debug", "rules", "telemetry", "metrics",
+    "logs", "stats-cache.json", "chrome", "daemon.log", "daemon",
+    "daemon-auth-cooldown", "daemon-auth-status.json", "settings.json",
+    ".last-cleanup", ".last-update-result.json", ".DS_Store",
+}
+# Keep patterns: *.env are credentials; the rest are the owner's own notes or
+# cosmetic files with zero model-context cost.
+CLAUDE_KEEP_PATTERNS = ("*.env", "papercuts.md", "statusline-command*", "ide")
+
+# ~/.codex uses a keep-list (the dir has grown entries between censuses; a
+# keep-list fails safe). Everything NOT listed here is wiped.
+CODEX_KEEP = {"auth.json", "config.toml", "mcp-oauth-locks", "installation_id",
+              "version.json"}
+
+# Per-project keys preserved by the ~/.claude.json surgical rewrite.
+PROJECT_KEEP_KEYS = ("mcpServers", "enabledMcpjsonServers",
+                     "disabledMcpjsonServers", "disabledMcpServers")
+
+# In-repo artifacts. .mcp.json is backed up but NEVER wiped.
+REPO_ARTIFACTS = ("CLAUDE.md", "CLAUDE.local.md", ".claude", "AGENTS.md",
+                  ".agents", ".codex", ".cursorrules", ".cursor/rules")
+REPO_BACKUP_ONLY = (".mcp.json",)
+
+GIT_COMMIT_MESSAGE = "Reset agent instruction state (2026-08 ablation)"
+
+# Census at spec time (2026-08-15). `plan` diffs live discovery against this;
+# differences are findings, not errors — runtime discovery is authoritative.
+CENSUS = {"memory_dirs": 13, "downloads_zips": 6}
+
+SCOPES = ("global-claude", "claude-json", "codex", "agents-home", "vscode",
+          "repos")
+
+
+def log(msg):
+    print("[agent-reset] %s" % msg)
+
+
+def fail(msg, code=1):
+    print("[agent-reset] ERROR: %s" % msg, file=sys.stderr)
+    sys.exit(code)
+
+
+def utc_stamp():
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def sha256_file(path, chunk=1024 * 1024):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        while True:
+            b = f.read(chunk)
+            if not b:
+                break
+            h.update(b)
+    return h.hexdigest()
+
+
+def sha256_bytes(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def sha256_link(path):
+    # Symlinks are hashed on the readlink target STRING, never the target's
+    # content — several in-scope links dangle or point into live repos.
+    return sha256_bytes(os.readlink(str(path)).encode("utf-8", "surrogateescape"))
+
+
+class _HashingReader(object):
+    # Wraps a file object so tarfile's single read of the content also feeds
+    # the hash — "hash of the bytes as archived", one read, no TOCTOU gap
+    # between what was hashed and what was stored.
+    def __init__(self, fileobj, hasher):
+        self._f = fileobj
+        self._h = hasher
+
+    def read(self, n=-1):
+        b = self._f.read(n)
+        if b:
+            self._h.update(b)
+        return b
+
+
+def is_agent_process(comm, args):
+    # basename(argv[0]) match ONLY — never substring-of-argv. A long-running
+    # local agent legitimately carries ".../claude/..." inside an argument
+    # path; it must neither block the wipe nor ever be killed.
+    base = os.path.basename(comm)
+    if base in ("claude", "codex"):
+        return True
+    if base in ("node", "bun"):
+        tokens = args.split()
+        if len(tokens) >= 2 and os.path.basename(tokens[1]) in ("claude", "codex"):
+            return True
+    return False
+
+
+def scan_agent_processes():
+    # AGENT_RESET_PS_FILE substitutes a canned ps listing (test seam: lets the
+    # suite exercise the gate even though the suite itself runs under a live
+    # claude process). Real runs never set it.
+    override = os.environ.get("AGENT_RESET_PS_FILE")
+    if override is not None:
+        out = Path(override).read_text() if override else ""
+    else:
+        out = subprocess.run(["/bin/ps", "-axo", "pid=,comm=,args="],
+                             capture_output=True, text=True).stdout
+    hits = []
+    for line in out.splitlines():
+        parts = line.strip().split(None, 2)
+        if len(parts) < 2:
+            continue
+        pid, comm = parts[0], parts[1]
+        args = parts[2] if len(parts) > 2 else ""
+        if is_agent_process(comm, args):
+            hits.append((pid, comm, args))
+    return hits
+
+
+def _assert_scope_roots_not_symlinks():
+    # A symlinked scope root would make backup (archives the link string) and
+    # wipe (iterates THROUGH the link) disagree about what is in scope.
+    # Refuse outright — resolve the setup by hand first.
+    for root in (CLAUDE_DIR, CODEX_DIR, AGENTS_DIR, VSCODE_DIR):
+        if root.is_symlink():
+            fail("scope root is a symlink: %s — backup and wipe would "
+                 "disagree on its contents; materialise it first" % root)
+
+
+def check_config_dir_env():
+    # CLAUDE_CONFIG_DIR relocates ~/.claude wholesale; this ritual's scope
+    # would silently miss the real state. Asserted at backup AND wipe time.
+    val = os.environ.get("CLAUDE_CONFIG_DIR")
+    if val and Path(val).expanduser().resolve() != CLAUDE_DIR.resolve():
+        fail("CLAUDE_CONFIG_DIR is set to %s (not %s) — scope would be wrong; "
+             "unset it or fix it before running" % (val, CLAUDE_DIR))
+
+
+def read_exclusions():
+    path = CONFIG_DIR / "exclude"
+    if not path.is_file():
+        return set()
+    lines = path.read_text().splitlines()
+    return {os.path.realpath(ln.strip().rstrip("/")) for ln in lines
+            if ln.strip() and not ln.strip().startswith("#")}
+
+
+def claude_entry_action(name):
+    for pat in CLAUDE_KEEP_PATTERNS:
+        if fnmatch.fnmatch(name, pat):
+            return "keep"
+    if name in CLAUDE_WIPE:
+        return "wipe"
+    return "unknown"
+
+
+def codex_entry_action(name):
+    if name == ".DS_Store":
+        return "wipe"
+    return "keep" if name in CODEX_KEEP else "wipe"
+
+
+# ---------------------------------------------------------------- discovery
+
+def discover_repos():
+    """Union of ~/.claude.json project keys, decoded transcript slugs, and a
+    depth-2 artifact sweep of ~/Documents/Projects. Returns
+    {repo_path: {"artifacts": [paths], "backup_only": [paths],
+                 "git": bool, "stale": bool}}."""
+    candidates = set()
+    if CLAUDE_JSON.is_file():
+        try:
+            data = json.loads(CLAUDE_JSON.read_text())
+            candidates.update(data.get("projects", {}).keys())
+        except (ValueError, OSError):
+            log("WARNING: could not parse %s for repo discovery" % CLAUDE_JSON)
+    proj_root = CLAUDE_DIR / "projects"
+    if proj_root.is_dir():
+        for slug_dir in proj_root.iterdir():
+            # Slug decode is lossy ("-" is ambiguous); try the naive decode
+            # and keep it only if the directory exists.
+            decoded = slug_dir.name.replace("-", "/")
+            if decoded.startswith("/") and Path(decoded).is_dir():
+                candidates.add(decoded)
+    if PROJECTS_DIR.is_dir():
+        for child in PROJECTS_DIR.iterdir():
+            if child.is_dir() and not child.is_symlink():
+                candidates.add(str(child))
+                for sub in child.iterdir():
+                    if sub.is_dir() and not sub.is_symlink():
+                        candidates.add(str(sub))
+
+    excluded = read_exclusions()
+    projects_real = os.path.realpath(str(PROJECTS_DIR))
+    scope_roots = {os.path.realpath(str(p))
+                   for p in (HOME, CLAUDE_DIR, CODEX_DIR, AGENTS_DIR,
+                             VSCODE_DIR, BACKUP_ROOT)}
+    repos, skipped = {}, []
+    # Canonicalize: ~/.claude.json keys may be non-canonical (/var vs
+    # /private/var, symlinked prefixes) — HOME-relative arcnames need real
+    # paths, and dedup must not double-count aliases of one repo.
+    for cand in sorted({os.path.realpath(c) for c in candidates}):
+        root = Path(cand)
+        if not root.is_dir():
+            continue
+        root_str = str(root).rstrip("/")
+        # HOME itself (or any scope root) must never be treated as a repo:
+        # its "artifacts" would be ~/.claude, ~/.codex, ~/.agents wholesale,
+        # bypassing every keep-list. Running `claude` once from ~ creates
+        # exactly such a projects key. (Adversarial-review finding, verified
+        # live on this machine 2026-08-15.)
+        if root_str in scope_roots:
+            continue
+        artifacts, backup_only = [], []
+        for rel in REPO_ARTIFACTS:
+            p = root / rel
+            if p.exists() or p.is_symlink():
+                artifacts.append(p)
+        for rel in REPO_BACKUP_ONLY:
+            p = root / rel
+            if p.exists():
+                backup_only.append(p)
+        if not artifacts and not backup_only:
+            continue
+        if any(root_str == e or root_str.startswith(e + "/")
+               for e in excluded):
+            continue
+        # Only repos under ~/Documents/Projects are handled; anything else
+        # (a clone in ~/Desktop, an old /opt path in ~/.claude.json) is
+        # skip-and-report — never a mid-ritual abort.
+        if not (root_str == projects_real
+                or root_str.startswith(projects_real + "/")):
+            skipped.append((root_str, "outside " + str(PROJECTS_DIR)))
+            continue
+        # Monorepo member (a subdir of a git repo with its own artifacts but
+        # no own .git): attach its artifacts to the enclosing repo so the
+        # dirty gate and git handling apply, instead of raw-deleting.
+        owner = root_str
+        if not (root / ".git").exists():
+            r = subprocess.run(["git", "-C", root_str, "rev-parse",
+                                "--show-toplevel"],
+                               capture_output=True, text=True)
+            if r.returncode == 0 and r.stdout.strip():
+                owner = os.path.realpath(r.stdout.strip())
+                if any(owner == e or owner.startswith(e + "/")
+                       for e in excluded):
+                    skipped.append((root_str, "inside excluded repo"))
+                    continue
+        entry = repos.setdefault(owner, {
+            "artifacts": [], "backup_only": [],
+            "git": (Path(owner) / ".git").exists()})
+        entry["artifacts"].extend(
+            a for a in artifacts if a not in entry["artifacts"])
+        entry["backup_only"].extend(
+            b for b in backup_only if b not in entry["backup_only"])
+    return repos, skipped
+
+
+def discover_memory_dirs():
+    proj_root = CLAUDE_DIR / "projects"
+    if not proj_root.is_dir():
+        return []
+    return sorted(str(p) for p in proj_root.glob("*/memory") if p.is_dir())
+
+
+def discover_downloads():
+    """Manual pre-ritual artifacts in ~/Downloads (agent-named zips plus any
+    loose agent-instruction files). Copied into the backup, never moved."""
+    if not DOWNLOADS_DIR.is_dir():
+        return [], []
+    zips, loose = [], []
+    for child in sorted(DOWNLOADS_DIR.iterdir()):
+        name_lower = child.name.lower()
+        if not child.is_file():
+            continue
+        if "claude" in name_lower or "uncommitted" in name_lower:
+            if name_lower.endswith(".zip"):
+                zips.append(child)
+            else:
+                loose.append(child)
+    return zips, loose
+
+
+def scope_targets():
+    """Everything each scope covers on disk right now (for backup: keep-listed
+    files included — the backup is the record; the wipe list is separate)."""
+    targets = {}
+    targets["global-claude"] = [CLAUDE_DIR] if CLAUDE_DIR.exists() else []
+    cj = [CLAUDE_JSON] if CLAUDE_JSON.is_file() else []
+    cj += sorted(HOME.glob(".claude.json.backup*"))
+    targets["claude-json"] = cj
+    targets["codex"] = [CODEX_DIR] if CODEX_DIR.exists() else []
+    targets["agents-home"] = [AGENTS_DIR] if AGENTS_DIR.exists() else []
+    targets["vscode"] = [VSCODE_DIR] if VSCODE_DIR.exists() else []
+    repos, skipped = discover_repos()
+    repo_paths = []
+    for info in repos.values():
+        repo_paths.extend(info["artifacts"])
+        repo_paths.extend(info["backup_only"])
+    targets["repos"] = repo_paths
+    return targets, repos, skipped
+
+
+# ------------------------------------------------------------------- backup
+
+def _add_tree(tar, manifest_entries, top):
+    """Add a file/dir tree to the tar with single-read hashing; symlinks are
+    stored as links (never followed)."""
+    def add_one(path):
+        arcname = os.path.relpath(str(path), str(HOME))
+        if arcname.startswith(".."):
+            fail("refusing to archive path outside HOME: %s" % path)
+        ti = tar.gettarinfo(str(path), arcname=arcname)
+        if ti is None:
+            return
+        entry = {"abspath": str(path), "mtime": ti.mtime}
+        if path.is_symlink():
+            entry["type"] = "symlink"
+            entry["size"] = 0
+            entry["sha256"] = sha256_link(path)
+            tar.addfile(ti)
+        elif path.is_dir():
+            entry["type"] = "dir"
+            entry["size"] = 0
+            tar.addfile(ti)
+        elif ti.islnk():
+            # Second occurrence of a hardlinked inode: tar stores it as an
+            # in-archive link with no payload. Hash the on-disk content
+            # (separate read) so gate 4 compares like-for-like.
+            entry["type"] = "hardlink"
+            entry["size"] = 0
+            entry["sha256"] = sha256_file(path)
+            tar.addfile(ti)
+        elif not ti.isfile():
+            # FIFOs / device nodes: archive the metadata only — opening a
+            # live daemon FIFO for content would block the whole backup.
+            # (Sockets never even reach here: gettarinfo returns None.)
+            entry["type"] = "special"
+            entry["size"] = 0
+            tar.addfile(ti)
+        else:
+            entry["type"] = "file"
+            entry["size"] = ti.size
+            h = hashlib.sha256()
+            with open(str(path), "rb") as f:
+                tar.addfile(ti, fileobj=_HashingReader(f, h))
+            entry["sha256"] = h.hexdigest()
+        manifest_entries[arcname] = entry
+
+    top = Path(top)
+    if top.is_symlink() or top.is_file():
+        add_one(top)
+        return
+    add_one(top)
+    for dirpath, dirnames, filenames in os.walk(str(top), topdown=True,
+                                                followlinks=False):
+        # Symlinked dirs must be archived as links, not descended into.
+        for d in sorted(dirnames):
+            p = Path(dirpath) / d
+            if p.is_symlink():
+                add_one(p)
+        dirnames[:] = sorted(d for d in dirnames
+                             if not (Path(dirpath) / d).is_symlink())
+        for d in dirnames:
+            add_one(Path(dirpath) / d)
+        for fn in sorted(filenames):
+            add_one(Path(dirpath) / fn)
+
+
+def cmd_backup(args):
+    check_config_dir_env()
+    _assert_scope_roots_not_symlinks()
+    stamp = utc_stamp()
+    bdir = BACKUP_ROOT / stamp
+    # Tighten modes only on directories this script creates — a pre-existing
+    # ~/Backups may serve other tools with deliberate broader modes.
+    if not BACKUP_ROOT.parent.exists():
+        BACKUP_ROOT.parent.mkdir(mode=0o700)
+    if not BACKUP_ROOT.exists():
+        BACKUP_ROOT.mkdir(mode=0o700)
+    os.chmod(str(BACKUP_ROOT), 0o700)
+    bdir.mkdir(mode=0o700)
+    log("backup dir: %s" % bdir)
+
+    targets, repos, skipped = scope_targets()
+    for path, why in skipped:
+        log("SKIP (report-only, untouched): %s — %s" % (path, why))
+    manifest = {"version": VERSION, "stamp": stamp, "home": str(HOME),
+                "scopes": {}, "downloads_manual": {}}
+
+    for scope in SCOPES:
+        tops = targets.get(scope, [])
+        archive = bdir / ("%s.tar.gz" % scope)
+        entries = {}
+        with tarfile.open(str(archive), "w:gz") as tar:
+            for top in tops:
+                _add_tree(tar, entries, top)
+        manifest["scopes"][scope] = {
+            "archive": archive.name,
+            "archive_sha256": sha256_file(archive),
+            "file_count": len(entries),
+            "entries": entries,
+        }
+        log("archived %-13s %6d entries" % (scope, len(entries)))
+
+    # Manual Downloads artifacts: copy (never move) — they are part of the
+    # record and must sit under the manifest, not outside it.
+    zips, loose = discover_downloads()
+    if zips or loose:
+        dl_dir = bdir / "downloads-manual"
+        dl_dir.mkdir(mode=0o700)
+        for src in zips + loose:
+            dst = dl_dir / src.name
+            shutil.copy2(str(src), str(dst))
+            manifest["downloads_manual"][src.name] = {
+                "size": dst.stat().st_size, "sha256": sha256_file(dst)}
+        log("ingested %d downloads artifacts (%d zips)"
+            % (len(zips) + len(loose), len(zips)))
+    if len(zips) != CENSUS["downloads_zips"]:
+        msg = ("downloads zip count %d != expected %d"
+               % (len(zips), CENSUS["downloads_zips"]))
+        if args.strict_downloads:
+            fail(msg)
+        log("WARNING: %s (use --strict-downloads to make this fatal)" % msg)
+
+    meta = {
+        "host": os.uname().nodename,
+        "created_utc": stamp,
+        "script_version": VERSION,
+        "memory_dirs": discover_memory_dirs(),
+        "skipped_repos": [{"path": p, "why": w} for p, w in skipped],
+        "repo_heads": {},
+    }
+    for repo, info in repos.items():
+        if info["git"]:
+            r = subprocess.run(["git", "-C", repo, "rev-parse", "HEAD"],
+                               capture_output=True, text=True)
+            meta["repo_heads"][repo] = (r.stdout.strip() if r.returncode == 0
+                                        else "ERROR")
+    _write_json_atomic(bdir / "meta.json", meta)
+    _write_json_atomic(bdir / "MANIFEST.json", manifest)
+    log("backup complete: %s" % bdir)
+    log("next: agent-reset verify %s" % bdir)
+    print(str(bdir))
+
+
+def _write_json_atomic(path, obj):
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".tmp-")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(obj, f, indent=1, sort_keys=True)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, str(path))
+        # Durability matters most for the topup-updated manifest written
+        # moments before deletion — fsync the directory entry too.
+        dfd = os.open(str(path.parent), os.O_RDONLY)
+        try:
+            os.fsync(dfd)
+        finally:
+            os.close(dfd)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
+# ------------------------------------------------------------------- verify
+
+def load_backup(bdir):
+    bdir = Path(bdir)
+    mpath = bdir / "MANIFEST.json"
+    if not mpath.is_file():
+        fail("no MANIFEST.json in %s" % bdir)
+    return bdir, json.loads(mpath.read_text())
+
+
+def cmd_verify(args):
+    bdir, manifest = load_backup(args.backup_dir)
+    problems = []
+    totals = {}
+    for scope, sinfo in manifest["scopes"].items():
+        archive = bdir / sinfo["archive"]
+        if not archive.is_file():
+            problems.append("%s: archive missing" % scope)
+            continue
+        if sha256_file(archive) != sinfo["archive_sha256"]:
+            problems.append("%s: archive sha256 mismatch" % scope)
+            continue
+        seen, byte_total = 0, 0
+        with tarfile.open(str(archive), "r:gz") as tar:
+            for member in tar:
+                entry = sinfo["entries"].get(member.name)
+                if entry is None:
+                    problems.append("%s: %s in archive but not manifest"
+                                    % (scope, member.name))
+                    continue
+                seen += 1
+                if member.issym():
+                    got = sha256_bytes(member.linkname.encode(
+                        "utf-8", "surrogateescape"))
+                    if got != entry.get("sha256"):
+                        problems.append("%s: symlink hash mismatch %s"
+                                        % (scope, member.name))
+                elif member.isfile():
+                    h = hashlib.sha256()
+                    f = tar.extractfile(member)
+                    while True:
+                        b = f.read(1024 * 1024)
+                        if not b:
+                            break
+                        h.update(b)
+                        byte_total += len(b)
+                    if h.hexdigest() != entry.get("sha256"):
+                        problems.append("%s: content hash mismatch %s"
+                                        % (scope, member.name))
+        if seen != sinfo["file_count"]:
+            problems.append("%s: member count %d != manifest %d"
+                            % (scope, seen, sinfo["file_count"]))
+        totals[scope] = {"entries": seen, "bytes": byte_total}
+        log("verified %-13s %6d entries %12d bytes" % (scope, seen, byte_total))
+    for name, dinfo in manifest.get("downloads_manual", {}).items():
+        p = bdir / "downloads-manual" / name
+        if not p.is_file() or sha256_file(p) != dinfo["sha256"]:
+            problems.append("downloads-manual: %s missing or hash mismatch"
+                            % name)
+    if problems:
+        for p in problems:
+            print("[agent-reset] MISMATCH: %s" % p, file=sys.stderr)
+        fail("verify FAILED: %d problem(s)" % len(problems))
+    _write_json_atomic(bdir / "verify-stamp.json", {
+        "stamp": manifest["stamp"],
+        "verified_utc": utc_stamp(),
+        "totals": totals, "ok": True})
+    log("verify OK — verify-stamp.json written")
+
+
+# --------------------------------------------------------------------- plan
+
+def _tree_size(path):
+    total = 0
+    path = Path(path)
+    if path.is_symlink():
+        return 0
+    if path.is_file():
+        return path.stat().st_size
+    for dirpath, dirnames, filenames in os.walk(str(path), followlinks=False):
+        for fn in filenames:
+            p = Path(dirpath) / fn
+            if not p.is_symlink():
+                try:
+                    total += p.stat().st_size
+                except OSError:
+                    pass
+    return total
+
+
+def _human(n):
+    for unit in ("B", "K", "M", "G"):
+        if n < 1024 or unit == "G":
+            return "%.1f%s" % (n, unit) if unit != "B" else "%d%s" % (n, unit)
+        n /= 1024.0
+    return "%d" % n
+
+
+def cmd_plan(_args):
+    check_config_dir_env()
+    log("read-only plan — nothing is written or deleted")
+    findings = []
+
+    print("\n== ~/.claude ==")
+    if CLAUDE_DIR.is_dir():
+        for child in sorted(CLAUDE_DIR.iterdir()):
+            action = claude_entry_action(child.name)
+            if action == "unknown":
+                findings.append("unknown ~/.claude entry (protected): %s"
+                                % child.name)
+            print("  %-8s %-28s %s" % (action.upper(), child.name,
+                                       _human(_tree_size(child))))
+    mem = discover_memory_dirs()
+    print("\n== memory dirs (wipe; census expects %d) ==" % CENSUS["memory_dirs"])
+    for m in mem:
+        print("  WIPE     %s" % m)
+    if len(mem) != CENSUS["memory_dirs"]:
+        findings.append("memory dir count %d != census %d"
+                        % (len(mem), CENSUS["memory_dirs"]))
+
+    print("\n== ~/.codex ==")
+    if CODEX_DIR.is_dir():
+        for child in sorted(CODEX_DIR.iterdir()):
+            print("  %-8s %-28s %s" % (codex_entry_action(child.name).upper(),
+                                       child.name, _human(_tree_size(child))))
+
+    print("\n== other scopes ==")
+    print("  %-8s %s" % ("WIPE" if AGENTS_DIR.exists() else "ABSENT", AGENTS_DIR))
+    print("  %-8s %s" % ("WIPE" if VSCODE_DIR.exists() else "ABSENT", VSCODE_DIR))
+    print("  %-8s %s (surgical rewrite: per-project keys %s)"
+          % ("REWRITE" if CLAUDE_JSON.is_file() else "ABSENT",
+             CLAUDE_JSON, ",".join(PROJECT_KEEP_KEYS)))
+
+    repos, skipped = discover_repos()
+    print("\n== repos (%d) ==" % len(repos))
+    for repo, info in sorted(repos.items()):
+        arts = ", ".join(p.name if p.parent == Path(repo) else
+                         str(p.relative_to(repo)) for p in info["artifacts"])
+        keep = ", ".join(p.name for p in info["backup_only"])
+        line = "  %s%s" % (repo, " [git]" if info["git"] else " [no-git]")
+        print(line)
+        if arts:
+            print("      wipe: %s" % arts)
+        if keep:
+            print("      backup-only: %s" % keep)
+
+    zips, loose = discover_downloads()
+    print("\n== downloads-manual ingest ==")
+    for p in zips + loose:
+        print("  COPY     %s" % p.name)
+    if len(zips) != CENSUS["downloads_zips"]:
+        findings.append("downloads zip count %d != census %d"
+                        % (len(zips), CENSUS["downloads_zips"]))
+
+    excl = read_exclusions()
+    if excl:
+        print("\n== excluded repos (from %s) ==" % (CONFIG_DIR / "exclude"))
+        for e in sorted(excl):
+            print("  SKIP     %s" % e)
+    if skipped:
+        print("\n== out-of-scope agent state (report-only, never touched) ==")
+        for path, why in skipped:
+            print("  SKIP     %s (%s)" % (path, why))
+            findings.append("out-of-scope agent state: %s (%s)" % (path, why))
+
+    print("\n== findings ==")
+    if findings:
+        for f in findings:
+            print("  ! %s" % f)
+    else:
+        print("  none — discovery matches census")
+
+
+# --------------------------------------------------------------------- wipe
+
+def _under_allowed_roots(path):
+    roots = [CLAUDE_DIR, CODEX_DIR, AGENTS_DIR, VSCODE_DIR, PROJECTS_DIR]
+    p = Path(path)
+    # Lexical containment of the unresolved path (we never follow the final
+    # symlink), plus the resolved PARENT must stay under HOME so a symlinked
+    # ancestor cannot teleport a delete outside the allowlist. A path that IS
+    # a root is rejected: whole scope roots are never deletion targets
+    # (AGENTS_DIR, wiped in full, is passed as its children's parent case
+    # below and carved out explicitly here).
+    for root in roots:
+        try:
+            rel = p.relative_to(root)
+        except ValueError:
+            continue
+        if str(rel) == "." and root != AGENTS_DIR:
+            return False
+        parent_real = Path(os.path.realpath(str(p.parent)))
+        home_real = Path(os.path.realpath(str(HOME)))
+        try:
+            parent_real.relative_to(home_real)
+        except ValueError:
+            return False
+        return True
+    return False
+
+
+def _delete_path(path):
+    path = Path(path)
+    if not _under_allowed_roots(path):
+        fail("refusing to delete outside allowed roots: %s" % path)
+    if path.is_symlink() or path.is_file():
+        os.unlink(str(path))
+    elif path.is_dir():
+        shutil.rmtree(str(path))
+
+
+def _hash_now(path):
+    path = Path(path)
+    if path.is_symlink():
+        return sha256_link(path)
+    if path.is_file():
+        return sha256_file(path)
+    return None  # dirs have no hash
+
+
+def _collect_wipe_paths(repos):
+    """Top-level deletion targets, each tagged with its manifest scope."""
+    out = []
+    if CLAUDE_DIR.is_dir():
+        for child in sorted(CLAUDE_DIR.iterdir()):
+            if claude_entry_action(child.name) == "wipe":
+                out.append(("global-claude", child))
+    if CODEX_DIR.is_dir():
+        for child in sorted(CODEX_DIR.iterdir()):
+            if codex_entry_action(child.name) == "wipe":
+                out.append(("codex", child))
+    if AGENTS_DIR.exists():
+        out.append(("agents-home", AGENTS_DIR))
+    if VSCODE_DIR.exists():
+        for child in sorted(VSCODE_DIR.iterdir()):
+            out.append(("vscode", child))
+    for repo, info in sorted(repos.items()):
+        for p in info["artifacts"]:
+            out.append(("repos", p))
+    return out
+
+
+def _iter_files_under(top):
+    top = Path(top)
+    if top.is_symlink() or top.is_file():
+        yield top
+        return
+    for dirpath, dirnames, filenames in os.walk(str(top), followlinks=False):
+        for d in list(dirnames):
+            p = Path(dirpath) / d
+            if p.is_symlink():
+                yield p
+                dirnames.remove(d)
+        for fn in filenames:
+            yield Path(dirpath) / fn
+
+
+def _manifest_entries(manifest, path):
+    """All manifest entries for a path, across every scope (a topup adds a
+    second, fresher entry for an arcname — any match means archived)."""
+    arcname = os.path.relpath(str(path), str(HOME))
+    out = []
+    for sinfo in manifest["scopes"].values():
+        entry = sinfo["entries"].get(arcname)
+        if entry is not None:
+            out.append(entry)
+    return out
+
+
+def _faa_unlink(path):
+    """Delete a path that Santa FAA protects from unlink. Requires sudo:
+    flips the watch rules to AuditOnly in the DEPLOYED plist, waits for the
+    reload window, unlinks, then ALWAYS restores the original policy."""
+    if not Path(SANTA_FAA_PLIST).is_file():
+        fail("unlink of %s denied but %s not present — resolve manually"
+             % (path, SANTA_FAA_PLIST))
+    log("Santa FAA denies unlink of %s — temporarily flipping %s to AuditOnly "
+        "(sudo)" % (path, "/".join(SANTA_FAA_RULES)))
+    # Refresh the sudo timestamp up front: the wait loop below can outlive
+    # the 5-minute cache, and the restore in `finally` must never stall on a
+    # password prompt.
+    subprocess.run(["sudo", "-v"], check=True)
+    saved = tempfile.mkdtemp(prefix="agent-reset-faa-")
+    saved_plist = os.path.join(saved, "faa-policy.plist")
+    subprocess.run(["sudo", "/bin/cp", SANTA_FAA_PLIST, saved_plist], check=True)
+    pb = "/usr/libexec/PlistBuddy"
+    try:
+        for rule in SANTA_FAA_RULES:
+            for keypath in (":WatchItems:%s:Options:AuditOnly" % rule,
+                            ":WatchItems:%s:AuditOnly" % rule):
+                r = subprocess.run(["sudo", pb, "-c",
+                                    "Set %s true" % keypath, SANTA_FAA_PLIST],
+                                   capture_output=True, text=True)
+                if r.returncode == 0:
+                    break
+            else:
+                fail("could not flip AuditOnly for rule %s" % rule)
+        deadline = time.time() + 90  # reload interval is 60s
+        while True:
+            try:
+                os.unlink(str(path))
+                log("unlinked %s" % path)
+                break
+            except PermissionError:
+                if time.time() > deadline:
+                    fail("FAA still denying unlink after 90s — policy reload "
+                         "did not land; original policy will be restored")
+                time.sleep(5)
+    finally:
+        # The restore must survive anything — including Ctrl-C and an
+        # expired sudo cache. Retry, and if it STILL fails, print recovery
+        # instructions loudly: an un-restored policy leaves Santa AuditOnly.
+        restored = False
+        for _attempt in range(3):
+            try:
+                subprocess.run(["sudo", "/bin/cp", saved_plist,
+                                SANTA_FAA_PLIST], check=True)
+                subprocess.run(["sudo", "/bin/chmod", "644",
+                                SANTA_FAA_PLIST], check=True)
+                restored = True
+                break
+            except (subprocess.CalledProcessError, KeyboardInterrupt):
+                time.sleep(2)
+        if restored:
+            log("restored original FAA policy (re-enforces within the "
+                "reload window)")
+        else:
+            banner = "*" * 72
+            print(banner, file=sys.stderr)
+            print("FAA POLICY NOT RESTORED — Santa rules are still "
+                  "AuditOnly!", file=sys.stderr)
+            print("Restore NOW:  sudo cp %s %s" % (saved_plist,
+                                                   SANTA_FAA_PLIST),
+                  file=sys.stderr)
+            print(banner, file=sys.stderr)
+
+
+def _rewrite_claude_json():
+    if not CLAUDE_JSON.is_file():
+        return
+    data = json.loads(CLAUDE_JSON.read_text())
+    new_projects = {}
+    for path, entry in data.get("projects", {}).items():
+        if not isinstance(entry, dict):
+            # Unknown shape: preserve verbatim (fail-closed for state this
+            # script does not understand) rather than crash or drop.
+            new_projects[path] = entry
+            continue
+        kept = {k: entry[k] for k in PROJECT_KEEP_KEYS
+                if k in entry and entry[k]}
+        if kept:
+            new_projects[path] = kept
+    data["projects"] = new_projects
+    _write_json_atomic(CLAUDE_JSON, data)
+    log("~/.claude.json rewritten: projects entries kept=%d (MCP keys only)"
+        % len(new_projects))
+
+
+def _porcelain_unrelated(lines, art_rel):
+    """Porcelain-v1 status lines NOT fully explained by the artifact set.
+    Rename lines count as unrelated unless BOTH sides are artifacts — a
+    staged rename out of an artifact is a user's in-flight refactor, never
+    something a neutral reset commit may absorb."""
+    def is_art(path):
+        path = path.strip().strip('"')
+        return any(path == a or path.startswith(a + "/") for a in art_rel)
+
+    unrelated = []
+    for line in lines:
+        if not line.strip():
+            continue
+        body = line[3:]
+        sides = body.split(" -> ", 1) if " -> " in body else [body]
+        if not all(is_art(s) for s in sides):
+            unrelated.append(line)
+    return unrelated
+
+
+def _repo_git_wipe(repo, artifacts, report):
+    art_rel = {os.path.relpath(str(p), repo) for p in artifacts}
+    # Dirty gate first, tracked or not: a dirty repo is skipped wholesale
+    # (multi-session index discipline — never sweep someone else's work).
+    r = subprocess.run(["git", "-C", repo, "status", "--porcelain"],
+                       capture_output=True, text=True)
+    unrelated = _porcelain_unrelated(r.stdout.splitlines(), art_rel)
+    if unrelated:
+        report["skipped_repos"][repo] = ("unrelated dirty state (%d paths)"
+                                         % len(unrelated))
+        log("SKIP %s: unrelated dirty state — artifacts untouched" % repo)
+        return
+    tracked, untracked = [], []
+    for p in artifacts:
+        r = subprocess.run(["git", "-C", repo, "ls-files", "--error-unmatch",
+                            "--", str(p)], capture_output=True, text=True)
+        (tracked if r.returncode == 0 else untracked).append(p)
+    if tracked:
+        try:
+            for p in tracked:
+                # -f: an artifact's own uncommitted edits must not block its
+                # deletion — gate 4 already archived the current bytes.
+                subprocess.run(["git", "-C", repo, "rm", "-r", "-f", "-q",
+                                "--", str(p)], check=True,
+                               capture_output=True, text=True)
+        except subprocess.CalledProcessError as exc:
+            report["skipped_repos"][repo] = ("git rm failed: %s"
+                                             % (exc.stderr or "").strip()[:200])
+            log("SKIP %s: git rm failed — resolve manually" % repo)
+            return
+        r = subprocess.run(["git", "-C", repo, "commit", "-q", "-m",
+                            GIT_COMMIT_MESSAGE], capture_output=True, text=True)
+        if r.returncode != 0:
+            report["commit_failures"][repo] = r.stderr.strip()
+            log("WARNING %s: artifacts removed but commit failed (%s) — "
+                "commit manually" % (repo, r.stderr.strip()[:120]))
+        else:
+            report["committed_repos"].append(repo)
+        # git rm removes tracked members only: gitignored/untracked files
+        # inside a tracked artifact DIR (settings.local.json is the canonical
+        # case) survive on disk — sweep the remainder; gate 4 archived it.
+        for p in tracked:
+            if p.exists() or p.is_symlink():
+                _delete_path(p)
+                report["leftovers_deleted"].append(str(p))
+    for p in untracked:
+        _delete_path(p)
+    report["wiped_repos"].append(repo)
+
+
+def _process_gate(args):
+    hits = scan_agent_processes()
+    if not hits:
+        return
+    for pid, comm, cargs in hits:
+        print("  running: pid %s %s %s" % (pid, comm, cargs[:100]))
+    if not args.force:
+        fail("claude/codex processes are running — exit all agent "
+             "sessions first (--force to override after review)")
+    try:
+        resp = input("Type PROCEED to wipe despite running processes: ")
+    except EOFError:
+        fail("aborted (no interactive stdin for --force confirmation)")
+    if resp.strip() != "PROCEED":
+        fail("aborted")
+
+
+def _changed_since_backup(manifest, targets):
+    """Gate 4: every file about to be deleted must hash to a value present in
+    the verified manifest. ~/.claude.json is included — the surgical rewrite
+    destroys the on-disk version, so drift since backup needs topup too."""
+    changed = []
+    for _scope, top in targets:
+        for f in _iter_files_under(top):
+            now = _hash_now(f)
+            if now is None:
+                continue
+            entries = _manifest_entries(manifest, f)
+            if not any(e.get("sha256") == now for e in entries):
+                changed.append(f)
+    if CLAUDE_JSON.is_file():
+        now = sha256_file(CLAUDE_JSON)
+        entries = _manifest_entries(manifest, CLAUDE_JSON)
+        if not any(e.get("sha256") == now for e in entries):
+            changed.append(CLAUDE_JSON)
+    return changed
+
+
+def _write_topup(bdir, manifest, changed):
+    topup = bdir / ("topup-%s.tar.gz" % utc_stamp())
+    entries = {}
+    with tarfile.open(str(topup), "w:gz") as tar:
+        for f in changed:
+            _add_tree(tar, entries, f)
+    # verify the topup immediately, then fold into the manifest
+    with tarfile.open(str(topup), "r:gz") as tar:
+        for member in tar:
+            if member.isfile():
+                h = hashlib.sha256()
+                fobj = tar.extractfile(member)
+                for chunk in iter(lambda: fobj.read(1024 * 1024), b""):
+                    h.update(chunk)
+                if h.hexdigest() != entries[member.name]["sha256"]:
+                    fail("topup verify failed for %s" % member.name)
+    manifest["scopes"]["topup"] = {
+        "archive": topup.name, "archive_sha256": sha256_file(topup),
+        "file_count": len(entries), "entries": entries}
+    _write_json_atomic(bdir / "MANIFEST.json", manifest)
+    log("topup archived + verified: %s (%d entries)"
+        % (topup.name, len(entries)))
+
+
+def cmd_wipe(args):
+    check_config_dir_env()                                   # gate 0
+    _assert_scope_roots_not_symlinks()
+    if os.geteuid() == 0:                                    # gate 1
+        fail("refusing to run as root")
+    _process_gate(args)                                      # gate 2
+    bdir, manifest = load_backup(args.backup_dir)            # gate 3
+    if manifest.get("home") != str(HOME):
+        fail("backup home %s != current home %s — wrong backup or wrong "
+             "AGENT_RESET_HOME" % (manifest.get("home"), HOME))
+    stamp_path = bdir / "verify-stamp.json"
+    if not stamp_path.is_file():
+        fail("no verify-stamp.json in %s — run `agent-reset verify` first" % bdir)
+    stamp = json.loads(stamp_path.read_text())
+    if not stamp.get("ok") or stamp.get("stamp") != manifest["stamp"]:
+        fail("verify-stamp.json does not attest this manifest")
+    # Archives can rot between verify and wipe (a gap of days): re-hash them
+    # now, before deleting the only other copy of the data.
+    for scope, sinfo in manifest["scopes"].items():
+        archive = bdir / sinfo["archive"]
+        if not archive.is_file() \
+                or sha256_file(archive) != sinfo["archive_sha256"]:
+            fail("archive drifted since verify: %s — re-run verify" % archive)
+
+    repos, skipped = discover_repos()
+    for path, why in skipped:
+        log("SKIP (report-only, untouched): %s — %s" % (path, why))
+    targets = _collect_wipe_paths(repos)
+
+    mem = discover_memory_dirs()                             # gate 7
+    print("\nThis wipe will delete, permanently (backup: %s):" % bdir)
+    print("  - %d top-level targets across %d scopes" %
+          (len(targets), len({s for s, _ in targets})))
+    print("  - ALL %d agent memory directories:" % len(mem))
+    for m in mem:
+        print("      %s" % m)
+    print("  - ~/.claude.json project state (MCP entries preserved)")
+    if not args.yes:
+        try:
+            resp = input("Type WIPE to proceed: ")
+        except EOFError:
+            fail("aborted (no interactive stdin; use --yes deliberately)")
+        if resp.strip() != "WIPE":
+            fail("aborted")
+
+    # The prompt above can sit for an unbounded time — everything time-
+    # sensitive (process gate, gate-4 hashing, topup) runs AFTER the last
+    # human pause so the check-to-delete window is as small as possible.
+    _process_gate(args)
+    changed = _changed_since_backup(manifest, targets)       # gate 4
+    if changed:
+        log("%d file(s) changed or appeared since backup" % len(changed))
+        if not args.topup:
+            for f in changed[:20]:
+                print("  changed: %s" % f)
+            fail("re-run with --topup to archive them, or take a fresh backup")
+        _write_topup(bdir, manifest, changed)
+        if _changed_since_backup(manifest, targets):
+            fail("files changed again DURING the topup — the system is not "
+                 "quiescent; close whatever is writing and re-run")
+
+    if CLAUDE_JSON.is_file():
+        shutil.copy2(str(CLAUDE_JSON), str(bdir / "claude.json.pre-wipe"))
+
+    report = {"backup": str(bdir), "completed": False, "wiped": [],
+              "wiped_repos": [], "committed_repos": [], "skipped_repos": {},
+              "commit_failures": {}, "leftovers_deleted": [], "errors": [],
+              "skipped_outside": [{"path": p, "why": w} for p, w in skipped],
+              "faa_step": False}
+    try:
+        for scope, top in targets:
+            if scope == "repos":
+                continue  # handled per-repo below
+            try:
+                _delete_path(top)
+            except PermissionError as exc:
+                if top == CLAUDE_DIR / "settings.json":
+                    _faa_unlink(top)
+                    report["faa_step"] = True
+                else:
+                    # Leave-behind is the safe direction: record and go on.
+                    report["errors"].append("EPERM: %s (%s)" % (top, exc))
+                    continue
+            report["wiped"].append(str(top))
+        for repo, info in sorted(repos.items()):
+            try:
+                if info["git"]:
+                    _repo_git_wipe(repo, info["artifacts"], report)
+                else:
+                    for p in info["artifacts"]:
+                        _delete_path(p)
+                    report["wiped_repos"].append(repo)
+            except SystemExit:
+                raise
+            except Exception as exc:  # noqa: BLE001 — reported, not hidden
+                report["errors"].append("repo %s: %s" % (repo, exc))
+        _rewrite_claude_json()
+        report["completed"] = not report["errors"]
+    finally:
+        _write_json_atomic(bdir / "wipe-report.json", report)
+    if report["errors"]:
+        for e in report["errors"]:
+            print("[agent-reset] ERROR (left in place): %s" % e,
+                  file=sys.stderr)
+        fail("wipe finished with %d error(s) — report: %s"
+             % (len(report["errors"]), bdir / "wipe-report.json"))
+    log("wipe complete — report: %s" % (bdir / "wipe-report.json"))
+    print("""
+Post-wipe checklist:
+  1. Remove BOTH bypass aliases from ~/.aliases (claude + codex lines);
+     new sessions then start on default auto mode — set no defaultMode.
+  2. `claude doctor` — confirm clean state.
+  3. First session: `/context` — no memory files, no CLAUDE.md, no skills
+     beyond built-ins. Optionally preview first with `claude --safe-mode`.
+  4. Re-add instructions only after the model REPEATEDLY stumbles
+     (prefer a gate/test/hook over a CLAUDE.md sentence).
+  5. Consider an explicit cleanupPeriodDays in fresh settings (default
+     30-day transcript auto-delete).
+""")
+
+
+# ------------------------------------------------------------------ restore
+
+def _safe_member(member):
+    name = member.name
+    return not (name.startswith("/") or name.startswith("..")
+                or "/../" in name)
+
+
+def cmd_restore(args):
+    bdir, manifest = load_backup(args.backup_dir)
+    if manifest.get("home") != str(HOME):
+        fail("backup home %s != current home %s — refusing cross-home "
+             "restore" % (manifest.get("home"), HOME))
+    scopes = args.scope or list(manifest["scopes"].keys())
+    prefixes = args.path or []
+    restored = skipped = 0
+    for scope in scopes:
+        sinfo = manifest["scopes"].get(scope)
+        if sinfo is None:
+            fail("no such scope in manifest: %s" % scope)
+        with tarfile.open(str(bdir / sinfo["archive"]), "r:gz") as tar:
+            for member in tar:
+                if not _safe_member(member):
+                    fail("unsafe member name in archive: %s" % member.name)
+                if prefixes and not any(member.name.startswith(p)
+                                        for p in prefixes):
+                    continue
+                dest = HOME / member.name
+                entry = sinfo["entries"].get(member.name, {})
+                # Newer-on-disk guard via lstat: never follow a symlink at
+                # dest, and a missing manifest mtime means "restore anyway".
+                if not args.force and not member.isdir():
+                    try:
+                        st = os.lstat(str(dest))
+                    except OSError:
+                        st = None
+                    mman = entry.get("mtime")
+                    if st is not None and mman is not None \
+                            and st.st_mtime > mman:
+                        log("skip (disk newer): %s" % member.name)
+                        skipped += 1
+                        continue
+                if member.isdir():
+                    if dest.exists() and not dest.is_dir():
+                        fail("cannot restore dir over non-dir: %s" % dest)
+                    dest.mkdir(parents=True, exist_ok=True)
+                    os.chmod(str(dest), member.mode & 0o777)
+                elif member.issym():
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    if os.path.lexists(str(dest)):
+                        os.unlink(str(dest))
+                    os.symlink(member.linkname, str(dest))
+                elif member.isfile() or member.islnk():
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    # Unlink first: writing through an on-disk symlink at
+                    # dest would truncate the symlink's TARGET.
+                    if os.path.lexists(str(dest)):
+                        os.unlink(str(dest))
+                    src = tar.extractfile(member)
+                    if src is None:
+                        log("skip (no payload): %s" % member.name)
+                        skipped += 1
+                        continue
+                    with src, open(str(dest), "wb") as out:
+                        shutil.copyfileobj(src, out)
+                    os.chmod(str(dest), member.mode & 0o777)
+                    os.utime(str(dest), (member.mtime, member.mtime))
+                else:
+                    log("skip (special member): %s" % member.name)
+                    skipped += 1
+                    continue
+                restored += 1
+    log("restore: %d restored, %d skipped (disk newer/special; --force to "
+        "override the newer guard)" % (restored, skipped))
+
+
+# ------------------------------------------------------------------ offsite
+
+def offsite_remote():
+    remote = os.environ.get("AGENT_RESET_REMOTE")
+    if remote:
+        return remote
+    path = CONFIG_DIR / "offsite-remote"
+    if path.is_file():
+        for line in path.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                return line
+    fail("no offsite remote: set $AGENT_RESET_REMOTE or write %s"
+         % (CONFIG_DIR / "offsite-remote"))
+
+
+def cmd_offsite(args):
+    bdir = Path(args.backup_dir).resolve()
+    if not (bdir / "MANIFEST.json").is_file():
+        fail("not a backup dir: %s" % bdir)
+    remote = offsite_remote()
+    dest = "%s:Backups/claude-resets/" % remote
+    # macOS ships an rsync without --mkpath: pre-create the remote dir.
+    subprocess.run(["ssh", remote, "mkdir", "-p", "Backups/claude-resets"],
+                   check=False)
+    log("rsync %s -> %s" % (bdir, dest))
+    # Stock macOS rsync (2.6.9/openrsync) has no --info=progress2; --partial
+    # alone keeps resume-on-interrupt, which is what actually matters here.
+    r = subprocess.run(["rsync", "-a", "--partial", str(bdir), dest])
+    if r.returncode != 0:
+        fail("rsync exited %d (re-run: --partial resumes)" % r.returncode)
+    if args.check:
+        manifest = json.loads((bdir / "MANIFEST.json").read_text())
+        biggest = max(manifest["scopes"].values(),
+                      key=lambda s: (bdir / s["archive"]).stat().st_size)
+        rel = "Backups/claude-resets/%s/%s" % (bdir.name, biggest["archive"])
+        # shasum on macOS remotes, sha256sum on Linux remotes.
+        check_cmd = ("shasum -a 256 %s 2>/dev/null || sha256sum %s"
+                     % (shlex.quote(rel), shlex.quote(rel)))
+        r = subprocess.run(["ssh", remote, check_cmd],
+                           capture_output=True, text=True)
+        remote_hash = r.stdout.split()[0] if r.returncode == 0 and r.stdout \
+            else None
+        if remote_hash != biggest["archive_sha256"]:
+            fail("offsite spot-check FAILED for %s" % biggest["archive"])
+        log("offsite spot-check OK (%s)" % biggest["archive"])
+    log("offsite complete")
+
+
+# ---------------------------------------------------------------- self-test
+
+def cmd_self_test(_args):
+    failures = []
+    ran = []
+
+    def check(name, cond):
+        ran.append(name)
+        if cond:
+            print("  ok   %s" % name)
+        else:
+            failures.append(name)
+            print("  FAIL %s" % name)
+
+    # Process matcher: basename-only, never substring-of-argv. The local
+    # key-agent case is the named regression: "claude" appears inside an
+    # ARGUMENT path but the basename is not an agent CLI.
+    check("matcher: claude comm",
+          is_agent_process("claude", "claude --resume"))
+    check("matcher: codex comm", is_agent_process("codex", "codex"))
+    check("matcher: node-wrapped claude",
+          is_agent_process("node", "node /opt/tools/claude --print"))
+    check("matcher: key agent with claude in argv path is NOT matched",
+          not is_agent_process(
+              "sep-agent",
+              "sep-agent serve --blob /h/.config/openbao/claude/blob.bin"))
+    check("matcher: substring in unrelated argv is NOT matched",
+          not is_agent_process("tail", "tail -f /var/log/claude-thing.log"))
+
+    check("keep: env files", claude_entry_action("some-server.env") == "keep")
+    check("keep: papercuts", claude_entry_action("papercuts.md") == "keep")
+    check("keep: statusline",
+          claude_entry_action("statusline-command.sh") == "keep")
+    check("wipe: projects", claude_entry_action("projects") == "wipe")
+    check("unknown is protected",
+          claude_entry_action("some-new-cli-dir") == "unknown")
+    check("codex keep-list", codex_entry_action("auth.json") == "keep")
+    check("codex default-wipe", codex_entry_action("memories") == "wipe")
+
+    sample = {"projects": {
+        "/a": {"mcpServers": {"x": {}}, "allowedTools": ["Bash"],
+               "hasTrustDialogAccepted": True},
+        "/b": {"allowedTools": ["Bash"]}},
+        "mcpServers": {"global": {}}, "oauthAccount": {"id": 1}}
+    kept = {}
+    for path, entry in sample["projects"].items():
+        k = {k2: entry[k2] for k2 in PROJECT_KEEP_KEYS
+             if k2 in entry and entry[k2]}
+        if k:
+            kept[path] = k
+    check("claude.json rewrite keeps MCP-only project",
+          kept == {"/a": {"mcpServers": {"x": {}}}})
+
+    class _M(object):
+        def __init__(self, name):
+            self.name = name
+    check("restore rejects absolute member", not _safe_member(_M("/etc/x")))
+    check("restore rejects traversal", not _safe_member(_M("a/../../x")))
+    check("restore accepts normal member", _safe_member(_M(".claude/x.json")))
+
+    art = {"CLAUDE.md", ".claude"}
+    check("porcelain: artifact-dirty is related",
+          _porcelain_unrelated([" M CLAUDE.md"], art) == [])
+    check("porcelain: artifact-dir content is related",
+          _porcelain_unrelated(["?? .claude/settings.local.json"], art) == [])
+    check("porcelain: unrelated file is dirty",
+          _porcelain_unrelated([" M src/main.c"], art) != [])
+    check("porcelain: rename OUT of an artifact is dirty",
+          _porcelain_unrelated(["R  CLAUDE.md -> docs.md"], art) != [])
+    check("porcelain: rename between artifacts is related",
+          _porcelain_unrelated(["R  CLAUDE.md -> .claude/old.md"], art) == [])
+
+    if failures:
+        fail("self-test: %d failure(s)" % len(failures))
+    log("self-test OK (%d checks)" % len(ran))
+
+
+# --------------------------------------------------------------------- main
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="agent-reset",
+        description="Backup, verify, and wipe Claude Code + Codex agent state "
+                    "(see internals/agent-reset.md).")
+    parser.add_argument("--version", action="version", version=VERSION)
+    sub = parser.add_subparsers(dest="command")
+
+    sub.add_parser("plan", help="read-only keep/wipe manifest + census diff")
+    p_backup = sub.add_parser("backup", help="archive all scopes with manifest")
+    p_backup.add_argument("--strict-downloads", action="store_true",
+                          help="fail if the manual Downloads zip census "
+                               "does not match")
+    p_verify = sub.add_parser("verify", help="re-read archives, check hashes")
+    p_verify.add_argument("backup_dir")
+    p_wipe = sub.add_parser("wipe", help="gated wipe (verified backup required)")
+    p_wipe.add_argument("backup_dir")
+    p_wipe.add_argument("--yes", action="store_true",
+                        help="skip typed confirmation (list still printed)")
+    p_wipe.add_argument("--topup", action="store_true",
+                        help="archive files changed since backup, then wipe")
+    p_wipe.add_argument("--force", action="store_true",
+                        help="allow wipe despite running agent processes "
+                             "(typed confirmation still required)")
+    p_restore = sub.add_parser("restore", help="selective restore from backup")
+    p_restore.add_argument("backup_dir")
+    p_restore.add_argument("--scope", action="append",
+                           help="restore only this scope (repeatable)")
+    p_restore.add_argument("--path", action="append",
+                           help="restore only members with this prefix "
+                                "(repeatable, HOME-relative)")
+    p_restore.add_argument("--force", action="store_true",
+                           help="overwrite even if disk copy is newer")
+    p_offsite = sub.add_parser("offsite", help="rsync a backup to the "
+                                               "configured remote")
+    p_offsite.add_argument("backup_dir")
+    p_offsite.add_argument("--check", action="store_true",
+                           help="spot-check one remote archive hash via ssh")
+    sub.add_parser("self-test", help="run internal unit checks")
+
+    args = parser.parse_args()
+    cmd = args.command or "plan"
+    {"plan": cmd_plan, "backup": cmd_backup, "verify": cmd_verify,
+     "wipe": cmd_wipe, "restore": cmd_restore, "offsite": cmd_offsite,
+     "self-test": cmd_self_test}[cmd](args)
+
+
+if __name__ == "__main__":
+    main()

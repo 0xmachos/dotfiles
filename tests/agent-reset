@@ -1,0 +1,404 @@
+#!/bin/zsh
+# tests/agent-reset
+#
+# Hermetic tests for bin/agent-reset (the backup -> verify -> wipe ritual,
+# spec: internals/agent-reset.md). Builds a synthetic $HOME fixture in
+# $TMPDIR and drives the script through its AGENT_RESET_HOME and
+# AGENT_RESET_PS_FILE seams, so no real agent state, no network, and no
+# Santa involvement. Fixture repos use a real `git` with GIT_CONFIG_GLOBAL
+# pinned inside the fixture (no signing, no global hooks, no identity leak).
+#
+# Sourced by ./test (chmod 644) — never executed, so: return, never exit.
+# Lint: shellcheck --shell=bash tests/agent-reset
+# shellcheck source=tests/lib
+
+# Counters and helpers (_pass/_fail/_skip/_section) come from tests/lib.
+# shellcheck disable=SC2154
+
+_ar_mkfix() {
+  # Builds a fixture home and prints its path. PII discipline: every value
+  # here is synthetic — no real hostnames, repo names, or tokens.
+  local fix
+  fix="$(mktemp -d "${TMPDIR:-/tmp}/agent-reset-test.XXXXXX")" || return 1
+
+  mkdir -p "${fix}/.claude/projects/-fix-proj/memory" \
+           "${fix}/.claude/file-history" \
+           "${fix}/.claude/skills" \
+           "${fix}/.codex/sessions" \
+           "${fix}/.codex/memories" \
+           "${fix}/Downloads" \
+           "${fix}/liverepo" \
+           "${fix}/Documents/Projects"
+
+  echo '{"role":"user"}' > "${fix}/.claude/projects/-fix-proj/session.jsonl"
+  echo '# fixture memory' > "${fix}/.claude/projects/-fix-proj/memory/MEMORY.md"
+  echo 'blob' > "${fix}/.claude/file-history/blob"
+  echo 'keep me' > "${fix}/.claude/papercuts.md"
+  echo 'SECRET=1' > "${fix}/.claude/fake-server.env"
+  echo '#!/bin/zsh' > "${fix}/.claude/statusline-command.sh"
+  echo '{}' > "${fix}/.claude/history.jsonl"
+  echo 'live skill body' > "${fix}/liverepo/skillfile"
+  ln -s "${fix}/liverepo/skillfile" "${fix}/.claude/skills/extskill"
+
+  echo '{"token":"fixture"}' > "${fix}/.codex/auth.json"
+  echo 'session' > "${fix}/.codex/sessions/s1.jsonl"
+  echo 'memory' > "${fix}/.codex/memories/m.md"
+
+  local i
+  for i in 1 2 3 4 5 6; do
+    echo "zip${i}" > "${fix}/Downloads/claude-backup-${i}.zip"
+  done
+  echo '# loose instructions' > "${fix}/Downloads/CLAUDE.md"
+
+  cat > "${fix}/gitconfig" <<EOF
+[user]
+	name = Fixture
+	email = fixture@example.invalid
+[core]
+	# The machine's real ~/.config/git/ignore has *claude* — it would block
+	# the fixture's own CLAUDE.md adds (GIT_CONFIG_GLOBAL replaces the config
+	# file, not the XDG ignore path).
+	excludesFile = /dev/null
+	hooksPath = /dev/null
+[commit]
+	gpgsign = false
+[tag]
+	gpgsign = false
+[init]
+	defaultBranch = main
+EOF
+
+  # The fixture-building git calls below need the same isolation as the
+  # script under test; local -x scopes the export to this function.
+  local -x GIT_CONFIG_GLOBAL="${fix}/gitconfig" GIT_CONFIG_NOSYSTEM=1
+
+  local repo="${fix}/Documents/Projects/fixrepo"
+  mkdir -p "${repo}/.claude"
+  git -C "${repo}" init -q &&
+    echo '# tracked instructions' > "${repo}/CLAUDE.md" &&
+    echo '{"mcpServers":{}}' > "${repo}/.mcp.json" &&
+    echo '{"hooks":{}}' > "${repo}/.claude/settings.json" &&
+    echo 'settings.local.json' > "${repo}/.gitignore" &&
+    git -C "${repo}" add CLAUDE.md .mcp.json .gitignore .claude/settings.json &&
+    git -C "${repo}" commit -q -m 'fixture' || return 1
+  echo '# untracked instructions' > "${repo}/AGENTS.md"
+  # gitignored file inside the tracked .claude/ dir: git rm leaves it behind;
+  # the leftover sweep must delete it (adversarial-review finding).
+  echo '{"grants":[]}' > "${repo}/.claude/settings.local.json"
+
+  local dirty="${fix}/Documents/Projects/dirtyrepo"
+  mkdir -p "${dirty}"
+  git -C "${dirty}" init -q &&
+    echo '# tracked instructions' > "${dirty}/CLAUDE.md" &&
+    echo 'v1' > "${dirty}/other.txt" &&
+    git -C "${dirty}" add CLAUDE.md other.txt &&
+    git -C "${dirty}" commit -q -m 'fixture' || return 1
+  echo 'v2' > "${dirty}/other.txt"
+
+  # Artifact-dirty repo: the ONLY dirt is an edited tracked artifact — must
+  # proceed (git rm -f), not crash and not skip.
+  local modrepo="${fix}/Documents/Projects/modrepo"
+  mkdir -p "${modrepo}"
+  git -C "${modrepo}" init -q &&
+    echo '# v1' > "${modrepo}/CLAUDE.md" &&
+    git -C "${modrepo}" add CLAUDE.md &&
+    git -C "${modrepo}" commit -q -m 'fixture' || return 1
+  echo '# v2 uncommitted' >> "${modrepo}/CLAUDE.md"
+
+  # Agent state OUTSIDE ~/Documents/Projects: skip-and-report, never touched.
+  mkdir -p "${fix}/Desktop/strayrepo"
+  echo '# stray instructions' > "${fix}/Desktop/strayrepo/CLAUDE.md"
+
+  # NOTE the "${fix}" (HOME itself) project key: the critical review finding
+  # — HOME must never be discovered as a repo whose artifacts are ~/.claude
+  # and ~/.codex wholesale.
+  cat > "${fix}/.claude.json" <<EOF
+{
+  "projects": {
+    "${fix}": {
+      "mcpServers": {"hm": {"command": "h"}},
+      "allowedTools": ["Bash"]
+    },
+    "${fix}/Documents/Projects/fixrepo": {
+      "mcpServers": {"m1": {"command": "x"}},
+      "allowedTools": ["Bash"],
+      "hasTrustDialogAccepted": true
+    },
+    "${fix}/Documents/Projects/dirtyrepo": {
+      "allowedTools": ["Read"]
+    },
+    "${fix}/Desktop/strayrepo": {
+      "allowedTools": ["Read"]
+    }
+  },
+  "mcpServers": {"g": {"command": "y"}},
+  "oauthAccount": {"id": "fixture"},
+  "someTopLevel": 1
+}
+EOF
+
+  # Canned ps listings for the process gate. The second line of ps-quiet is
+  # the named regression: an unrelated daemon carrying "claude" inside an
+  # ARGUMENT path must not block the wipe.
+  cat > "${fix}/ps-quiet" <<'EOF'
+  845 sep-agent        sep-agent serve --blob /h/.config/openbao/claude/blob.bin
+  900 zsh              -zsh
+EOF
+  cat > "${fix}/ps-busy" <<'EOF'
+  845 sep-agent        sep-agent serve --blob /h/.config/openbao/claude/blob.bin
+  999 claude           claude --resume
+EOF
+
+  echo "${fix}"
+}
+
+_ar_run() {
+  # _ar_run <fix> <psfile> <args...>
+  local fix="$1" psfile="$2"
+  shift 2
+  env AGENT_RESET_HOME="${fix}" \
+      AGENT_RESET_PS_FILE="${psfile}" \
+      GIT_CONFIG_GLOBAL="${fix}/gitconfig" \
+      GIT_CONFIG_NOSYSTEM=1 \
+      ./bin/agent-reset "$@"
+}
+
+run_agent_reset() {
+  _section "agent-reset"
+
+  if ! command -v python3 > /dev/null 2>&1; then
+    _skip "agent-reset: python3 not available"
+    return 0
+  fi
+  if ! command -v git > /dev/null 2>&1; then
+    _skip "agent-reset: git not available"
+    return 0
+  fi
+
+  local fix
+  if ! fix="$(_ar_mkfix)"; then
+    _fail "agent-reset: fixture build failed"
+    return 0
+  fi
+  local quiet="${fix}/ps-quiet" busy="${fix}/ps-busy"
+  local out rc
+
+  # 1. self-test
+  if _ar_run "${fix}" "${quiet}" self-test > /dev/null 2>&1; then
+    _pass "self-test passes"
+  else
+    _fail "self-test failed"
+  fi
+
+  # 2. plan is read-only and mentions the memory dirs
+  local before after
+  before="$(find "${fix}" | sort)"
+  rc=0
+  out="$(_ar_run "${fix}" "${quiet}" plan 2>&1)" || rc=$?
+  after="$(find "${fix}" | sort)"
+  if [[ ${rc} -eq 0 && "${out}" == *"memory dirs"* ]]; then
+    _pass "plan runs and lists memory dirs"
+  else
+    _fail "plan failed (rc=${rc})"
+  fi
+  if [[ "${before}" == "${after}" ]]; then
+    _pass "plan is read-only (fixture unchanged)"
+  else
+    _fail "plan modified the fixture"
+  fi
+
+  # 3. backup, then wipe must refuse without a verify stamp
+  local bdir=""
+  bdir="$(_ar_run "${fix}" "${quiet}" backup --strict-downloads 2> /dev/null | tail -1)" || true
+  if [[ -f "${bdir}/MANIFEST.json" ]]; then
+    _pass "backup produces MANIFEST.json"
+  else
+    _fail "backup produced no manifest (got: ${bdir})"
+    return 0
+  fi
+  if [[ "$(find "${bdir}/downloads-manual" -name '*.zip' | wc -l | tr -d ' ')" == "6" ]]; then
+    _pass "backup ingested six downloads zips"
+  else
+    _fail "downloads ingest wrong"
+  fi
+  rc=0
+  out="$(_ar_run "${fix}" "${quiet}" wipe "${bdir}" --yes 2>&1)" || rc=$?
+  if [[ ${rc} -ne 0 && "${out}" == *"verify"* ]]; then
+    _pass "wipe refuses without verify-stamp"
+  else
+    _fail "wipe did not refuse unverified backup (rc=${rc})"
+  fi
+
+  # 4. verify passes and writes the stamp
+  if _ar_run "${fix}" "${quiet}" verify "${bdir}" > /dev/null 2>&1 \
+      && [[ -f "${bdir}/verify-stamp.json" ]]; then
+    _pass "verify passes and writes verify-stamp.json"
+  else
+    _fail "verify failed on clean backup"
+    return 0
+  fi
+
+  # 5. process gate: a claude row in ps must refuse; the sep-agent-shaped row
+  #    alone (ps-quiet) must not (proven by every later case passing).
+  rc=0
+  out="$(_ar_run "${fix}" "${busy}" wipe "${bdir}" --yes 2>&1)" || rc=$?
+  if [[ ${rc} -ne 0 && "${out}" == *"processes are running"* ]]; then
+    _pass "wipe refuses while an agent CLI process runs"
+  else
+    _fail "process gate did not trigger (rc=${rc})"
+  fi
+
+  # 6. tamper detection: corrupt one archive byte in a COPY of the backup
+  local tdir="${bdir}-tampered"
+  cp -R "${bdir}" "${tdir}"
+  rm -f "${tdir}/verify-stamp.json"
+  printf '\x00' | dd of="${tdir}/codex.tar.gz" bs=1 seek=12 conv=notrunc 2> /dev/null
+  rc=0
+  _ar_run "${fix}" "${quiet}" verify "${tdir}" > /dev/null 2>&1 || rc=$?
+  if [[ ${rc} -ne 0 ]]; then
+    _pass "verify detects a tampered archive"
+  else
+    _fail "verify passed a tampered archive"
+  fi
+
+  # 7. change a file after backup: wipe aborts without --topup
+  echo '{"more":true}' >> "${fix}/.claude/history.jsonl"
+  rc=0
+  out="$(_ar_run "${fix}" "${quiet}" wipe "${bdir}" --yes 2>&1)" || rc=$?
+  if [[ ${rc} -ne 0 && "${out}" == *"topup"* ]]; then
+    _pass "wipe aborts on changed files without --topup"
+  else
+    _fail "changed-file gate did not trigger (rc=${rc})"
+  fi
+
+  # 8. happy-path wipe with --topup
+  rc=0
+  out="$(_ar_run "${fix}" "${quiet}" wipe "${bdir}" --yes --topup 2>&1)" || rc=$?
+  if [[ ${rc} -eq 0 ]]; then
+    _pass "wipe completes with --topup"
+  else
+    _fail "wipe failed (rc=${rc}): $(echo "${out}" | tail -3)"
+    return 0
+  fi
+  if [[ "${out}" == *"-fix-proj/memory"* ]]; then
+    _pass "wipe confirmation lists the memory dir"
+  else
+    _fail "memory dir missing from wipe output"
+  fi
+  if ls "${bdir}"/topup-*.tar.gz > /dev/null 2>&1; then
+    _pass "topup archive written"
+  else
+    _fail "no topup archive"
+  fi
+
+  # keep-list survivors
+  if [[ -f "${fix}/.claude/papercuts.md" && -f "${fix}/.claude/fake-server.env" \
+     && -f "${fix}/.claude/statusline-command.sh" ]]; then
+    _pass "keep-listed ~/.claude files survive"
+  else
+    _fail "a keep-listed file was deleted"
+  fi
+  # wipe-list gone
+  if [[ ! -e "${fix}/.claude/projects" && ! -e "${fix}/.claude/history.jsonl" \
+     && ! -e "${fix}/.claude/file-history" && ! -e "${fix}/.claude/skills" ]]; then
+    _pass "wipe-listed ~/.claude entries removed"
+  else
+    _fail "a wipe-listed entry survived"
+  fi
+  # symlink removed as a link — its target must be intact
+  if [[ -f "${fix}/liverepo/skillfile" ]]; then
+    _pass "symlink target outside scope untouched"
+  else
+    _fail "wipe followed a symlink into a live target"
+  fi
+  # codex keep-list
+  if [[ -f "${fix}/.codex/auth.json" && ! -e "${fix}/.codex/sessions" \
+     && ! -e "${fix}/.codex/memories" ]]; then
+    _pass "codex keep-list honoured"
+  else
+    _fail "codex keep-list violated"
+  fi
+  # surgical ~/.claude.json rewrite
+  if env AGENT_RESET_HOME="${fix}" python3 - "${fix}" <<'EOF' > /dev/null 2>&1
+import json, sys
+fix = sys.argv[1]
+d = json.load(open(fix + "/.claude.json"))
+assert d["someTopLevel"] == 1
+assert d["mcpServers"] == {"g": {"command": "y"}}
+assert d["oauthAccount"] == {"id": "fixture"}
+p = d["projects"]
+assert set(p) == {fix, fix + "/Documents/Projects/fixrepo"}, p
+assert p[fix] == {"mcpServers": {"hm": {"command": "h"}}}
+assert p[fix + "/Documents/Projects/fixrepo"] == {"mcpServers": {"m1": {"command": "x"}}}
+EOF
+  then
+    _pass "claude.json surgical rewrite (MCP kept, grants dropped)"
+  else
+    _fail "claude.json rewrite wrong"
+  fi
+  # clean repo: artifacts removed via a neutral commit; .mcp.json kept;
+  # the gitignored settings.local.json inside tracked .claude/ swept too
+  local msg
+  msg="$(env GIT_CONFIG_GLOBAL="${fix}/gitconfig" GIT_CONFIG_NOSYSTEM=1 \
+        git -C "${fix}/Documents/Projects/fixrepo" log -1 --format=%s 2> /dev/null)"
+  if [[ ! -e "${fix}/Documents/Projects/fixrepo/CLAUDE.md" \
+     && ! -e "${fix}/Documents/Projects/fixrepo/AGENTS.md" \
+     && -f "${fix}/Documents/Projects/fixrepo/.mcp.json" \
+     && "${msg}" == "Reset agent instruction state (2026-08 ablation)" ]]; then
+    _pass "clean repo: artifacts wiped, neutral commit, .mcp.json kept"
+  else
+    _fail "clean-repo handling wrong (last commit: ${msg})"
+  fi
+  if [[ ! -e "${fix}/Documents/Projects/fixrepo/.claude" ]]; then
+    _pass "gitignored leftover inside tracked .claude/ swept"
+  else
+    _fail "settings.local.json-style leftover survived"
+  fi
+  # artifact-dirty repo: proceeds via git rm -f with the neutral commit
+  msg="$(env GIT_CONFIG_GLOBAL="${fix}/gitconfig" GIT_CONFIG_NOSYSTEM=1 \
+        git -C "${fix}/Documents/Projects/modrepo" log -1 --format=%s 2> /dev/null)"
+  if [[ ! -e "${fix}/Documents/Projects/modrepo/CLAUDE.md" \
+     && "${msg}" == "Reset agent instruction state (2026-08 ablation)" ]]; then
+    _pass "artifact-dirty repo wiped (git rm -f), not crashed or skipped"
+  else
+    _fail "artifact-dirty repo mishandled (last commit: ${msg})"
+  fi
+  # dirty repo: skipped entirely
+  if [[ -f "${fix}/Documents/Projects/dirtyrepo/CLAUDE.md" ]]; then
+    _pass "dirty repo skipped (artifacts untouched)"
+  else
+    _fail "dirty repo was swept"
+  fi
+  # HOME-as-project + out-of-scope stray: the critical review findings —
+  # HOME never becomes a repo (keep-survivor checks above prove ~/.claude
+  # was not rmtree'd) and out-of-scope state is report-only.
+  if [[ -f "${fix}/Desktop/strayrepo/CLAUDE.md" ]]; then
+    _pass "out-of-scope repo untouched (skip-and-report)"
+  else
+    _fail "out-of-scope repo was touched"
+  fi
+  if [[ "${out}" == *"SKIP (report-only"* ]]; then
+    _pass "wipe reported the out-of-scope skip"
+  else
+    _fail "out-of-scope skip not reported"
+  fi
+  if [[ -f "${bdir}/wipe-report.json" ]]; then
+    _pass "wipe-report.json written"
+  else
+    _fail "no wipe report"
+  fi
+
+  # 9. restore round-trip: bring projects/ back from the archive
+  rc=0
+  _ar_run "${fix}" "${quiet}" restore "${bdir}" --scope global-claude \
+      --path .claude/projects > /dev/null 2>&1 || rc=$?
+  if [[ ${rc} -eq 0 \
+     && -f "${fix}/.claude/projects/-fix-proj/session.jsonl" \
+     && -f "${fix}/.claude/projects/-fix-proj/memory/MEMORY.md" ]]; then
+    _pass "restore brings transcripts + memory back from the archive"
+  else
+    _fail "restore failed (rc=${rc})"
+  fi
+
+  rm -rf "${fix}"
+}
