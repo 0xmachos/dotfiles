@@ -7,6 +7,39 @@ elsewhere. One entry per change, newest first. Explanatory content belongs in
 
 `TODOs.md` holds only open items.
 
+## 2026-08-16 — Uninstall dcg; remove all its repo tooling
+
+Claude now runs in automode, so the dcg pre-exec guard was retired wholesale
+(reinstall later would be a fresh decision, not repair). Repo side: the `dcg`
+subcommand + `install_dcg` + case arm, the `claude` subcommand's mandatory
+`install_dcg` coupling, `.config/dcg/config.toml` (tracked) + its `dot_dirs`/
+symlink wiring, the Codex `hooks.json` deploy block (that file was dcg's
+PreToolUse hook; never synced to this machine — delete the server Mac's
+gitignored `.codex/hooks.json` at next sync rather than re-deploying it), the `jump`
+dcg-update block (lock-skip machinery included), the `.zshrc` XDG
+site-functions FPATH block (existed only for `_dcg`), the `tests/linkage`
+`config_subdirs` row, completions regenerated. Live side: `dcg doctor`
+confirmed the hook was NOT registered in Claude settings and no allowlists
+existed, so no settings surgery; `/usr/local/bin/dcg` removed with `sudo rm`
+(regenerable from GitHub releases); `~/.config/dcg/` (incl. 23 MB
+`history.db`) and `~/Library/Application Support/dcg/` trashed;
+`~/.local/share/zsh/site-functions/_dcg` + emptied dir removed. Leftover:
+root-owned `~/Library/Caches/dcg/version_check.json` (sudo cache expired
+mid-run) — inert, remove by hand. `internals/hooks.md` dcg sections and older
+History/TODO entries stay as historical record. The server Mac (dcg 0.10.0)
+was cleaned the same day over the restricted Claude SSH alias:
+`~/.config/dcg/` + `~/Library/Application Support/dcg/` trashed, `_dcg` +
+emptied site-functions dir removed, and the dangling `~/.codex/hooks.json`
+symlink deleted (its clone-side target never existed — the Codex hook was
+inert there; its Claude `settings.json` symlink dangles too, so no hook was
+registered). The root-owned leftovers (`/usr/local/bin/dcg` +
+`~/Library/Caches/dcg` on the server Mac, `~/Library/Caches/dcg` on the
+MacBook) were removed by hand with sudo the same evening — verified gone; no
+dcg artifacts remain on either machine. The server Mac's clone keeps the old
+dcg wiring until the next out-of-band push — a `bittersweet dotfiles` run
+there before then recreates `~/.config/dcg` as a dangling symlink dir
+(transient, not damage).
+
 ## 2026-08-16 — Remove the research-vault (`danger`) tooling
 
 Built for one malware RE project and never used since, so the whole client

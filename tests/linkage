@@ -76,7 +76,6 @@ function run_linkage {
     [uv]=install_dotfiles
     [npm]=install_dotfiles
     [1Password]=install_dotfiles
-    [dcg]=install_dotfiles
   )
 
   # bin/ scripts → owning subcommand
