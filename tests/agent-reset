@@ -4,8 +4,8 @@
 # Hermetic tests for bin/agent-reset (the backup -> verify -> wipe ritual,
 # spec: internals/agent-reset.md). Builds a synthetic $HOME fixture in
 # $TMPDIR and drives the script through its AGENT_RESET_HOME and
-# AGENT_RESET_PS_FILE seams, so no real agent state, no network, and no
-# Santa involvement. Fixture repos use a real `git` with GIT_CONFIG_GLOBAL
+# AGENT_RESET_PS_FILE seams, so no real agent state and no network.
+# Fixture repos use a real `git` with GIT_CONFIG_GLOBAL
 # pinned inside the fixture (no signing, no global hooks, no identity leak).
 #
 # Sourced by ./test (chmod 644) — never executed, so: return, never exit.

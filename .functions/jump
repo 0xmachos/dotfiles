@@ -89,12 +89,6 @@ function jump {
       # RUSTUP_INIT_SKIP=1 makes the installer's build-from-source fallback (no
       # macOS artifact, #238) fail loudly instead of curl|sh-ing rustup as root.
       "${SUDO_BINARY}" RUSTUP_INIT_SKIP=1 "${DCG_BINARY}" update --verify --system || rc=1
-      # dcg is ad-hoc signed; its CDHash changes per build. Refresh the
-      # Santa FAA policy entry so reads of claude/settings.json keep working.
-      local -r BITTERSWEET_BINARY="${HOME}/Documents/Projects/dotfiles/bittersweet"
-      if [[ -x "${BITTERSWEET_BINARY}" ]]; then
-        "${BITTERSWEET_BINARY}" dcg-sync
-      fi
     fi
   fi
 

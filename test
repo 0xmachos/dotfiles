@@ -8,7 +8,6 @@
 # Usage:
 #   ./test                       # runs all suites
 #   ./test <suite>               # runs one suite
-#   ./test santa-faa <rule>      # suite-specific sub-filter
 #   ./test --help                # lists suites
 
 set -euo pipefail
@@ -26,13 +25,11 @@ cd "${SCRIPT_DIR}"
 # shellcheck source=tests/lib disable=SC1091
 source "${SCRIPT_DIR}/tests/lib"
 
-readonly -a SUITES=(shellcheck extensions plutil santa-profile linkage completions jump santa-faa npm-attest hook-links pii-hook)
+readonly -a SUITES=(shellcheck extensions plutil linkage completions jump npm-attest hook-links pii-hook)
 
 function _usage {
   echo "Usage: ./test [suite [arg]]"
   echo "Suites: ${SUITES[*]}"
-  echo "  santa-faa accepts an optional rule filter (ssh-config, git-signing,"
-  echo "    shell-startup, shell-functions, claude-config)"
 }
 
 function _run_suite {

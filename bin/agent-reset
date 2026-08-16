@@ -33,7 +33,6 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -51,8 +50,6 @@ VSCODE_DIR = (HOME / "Library" / "Application Support" / "Code" / "User"
               / "globalStorage" / "anthropic.claude-code")
 DOWNLOADS_DIR = HOME / "Downloads"
 PROJECTS_DIR = HOME / "Documents" / "Projects"
-SANTA_FAA_PLIST = "/Library/Santa/faa-policy.plist"
-SANTA_FAA_RULES = ("ClaudeCodeConfig", "ClaudeCodeConfigResolved")
 
 # ~/.claude entries to wipe. Anything not in WIPE and not matching KEEP is
 # UNKNOWN: protected and reported, never deleted (fail-closed for new state
@@ -797,74 +794,6 @@ def _manifest_entries(manifest, path):
     return out
 
 
-def _faa_unlink(path):
-    """Delete a path that Santa FAA protects from unlink. Requires sudo:
-    flips the watch rules to AuditOnly in the DEPLOYED plist, waits for the
-    reload window, unlinks, then ALWAYS restores the original policy."""
-    if not Path(SANTA_FAA_PLIST).is_file():
-        fail("unlink of %s denied but %s not present — resolve manually"
-             % (path, SANTA_FAA_PLIST))
-    log("Santa FAA denies unlink of %s — temporarily flipping %s to AuditOnly "
-        "(sudo)" % (path, "/".join(SANTA_FAA_RULES)))
-    # Refresh the sudo timestamp up front: the wait loop below can outlive
-    # the 5-minute cache, and the restore in `finally` must never stall on a
-    # password prompt.
-    subprocess.run(["sudo", "-v"], check=True)
-    saved = tempfile.mkdtemp(prefix="agent-reset-faa-")
-    saved_plist = os.path.join(saved, "faa-policy.plist")
-    subprocess.run(["sudo", "/bin/cp", SANTA_FAA_PLIST, saved_plist], check=True)
-    pb = "/usr/libexec/PlistBuddy"
-    try:
-        for rule in SANTA_FAA_RULES:
-            for keypath in (":WatchItems:%s:Options:AuditOnly" % rule,
-                            ":WatchItems:%s:AuditOnly" % rule):
-                r = subprocess.run(["sudo", pb, "-c",
-                                    "Set %s true" % keypath, SANTA_FAA_PLIST],
-                                   capture_output=True, text=True)
-                if r.returncode == 0:
-                    break
-            else:
-                fail("could not flip AuditOnly for rule %s" % rule)
-        deadline = time.time() + 90  # reload interval is 60s
-        while True:
-            try:
-                os.unlink(str(path))
-                log("unlinked %s" % path)
-                break
-            except PermissionError:
-                if time.time() > deadline:
-                    fail("FAA still denying unlink after 90s — policy reload "
-                         "did not land; original policy will be restored")
-                time.sleep(5)
-    finally:
-        # The restore must survive anything — including Ctrl-C and an
-        # expired sudo cache. Retry, and if it STILL fails, print recovery
-        # instructions loudly: an un-restored policy leaves Santa AuditOnly.
-        restored = False
-        for _attempt in range(3):
-            try:
-                subprocess.run(["sudo", "/bin/cp", saved_plist,
-                                SANTA_FAA_PLIST], check=True)
-                subprocess.run(["sudo", "/bin/chmod", "644",
-                                SANTA_FAA_PLIST], check=True)
-                restored = True
-                break
-            except (subprocess.CalledProcessError, KeyboardInterrupt):
-                time.sleep(2)
-        if restored:
-            log("restored original FAA policy (re-enforces within the "
-                "reload window)")
-        else:
-            banner = "*" * 72
-            print(banner, file=sys.stderr)
-            print("FAA POLICY NOT RESTORED — Santa rules are still "
-                  "AuditOnly!", file=sys.stderr)
-            print("Restore NOW:  sudo cp %s %s" % (saved_plist,
-                                                   SANTA_FAA_PLIST),
-                  file=sys.stderr)
-            print(banner, file=sys.stderr)
-
-
 def _rewrite_claude_json():
     if not CLAUDE_JSON.is_file():
         return
@@ -1085,8 +1014,7 @@ def cmd_wipe(args):
     report = {"backup": str(bdir), "completed": False, "wiped": [],
               "wiped_repos": [], "committed_repos": [], "skipped_repos": {},
               "commit_failures": {}, "leftovers_deleted": [], "errors": [],
-              "skipped_outside": [{"path": p, "why": w} for p, w in skipped],
-              "faa_step": False}
+              "skipped_outside": [{"path": p, "why": w} for p, w in skipped]}
     try:
         for scope, top in targets:
             if scope == "repos":
@@ -1094,13 +1022,9 @@ def cmd_wipe(args):
             try:
                 _delete_path(top)
             except PermissionError as exc:
-                if top == CLAUDE_DIR / "settings.json":
-                    _faa_unlink(top)
-                    report["faa_step"] = True
-                else:
-                    # Leave-behind is the safe direction: record and go on.
-                    report["errors"].append("EPERM: %s (%s)" % (top, exc))
-                    continue
+                # Leave-behind is the safe direction: record and go on.
+                report["errors"].append("EPERM: %s (%s)" % (top, exc))
+                continue
             report["wiped"].append(str(top))
         for repo, info in sorted(repos.items()):
             try:
