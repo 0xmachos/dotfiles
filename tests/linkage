@@ -57,7 +57,7 @@ function run_linkage {
 
     # Other bittersweet subcommands
     [bin]=install_scripts
-    [profiles]=santa
+    [profiles]=mdmprofile
     [LaunchAgents]=install_launchagents
     [LaunchDaemons]=install_launchagents
     ["Sublime Text"]=sublimetext
