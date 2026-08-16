@@ -1,0 +1,416 @@
+#!/bin/zsh
+# dotfiles/tests/gh-publish
+#
+# Behavioural test for claude/gh-publish-hook — the PreToolUse gate on public
+# GitHub writes (gh issue/pr/release create|edit|comment, gh api writes).
+# Feeds commands as stdin JSON and asserts DENY vs PASS across the five check
+# layers: secrets (gitleaks), PII denylist + SSH aliases, hard-wrap, .reviewed
+# sidecar, and the issue '## Environment' section.
+#
+# Fixture tokens are assembled at run time so this file never contains a
+# PII-shaped or secret-shaped literal (same convention as tests/pii-hook).
+# The PII/ssh sources are injected via the hook's GH_PUBLISH_PATTERNS /
+# GH_PUBLISH_SSH_CONFIG seams; gitleaks is disabled via GH_PUBLISH_NO_GITLEAKS
+# except in the dedicated gitleaks cases.
+#
+# Run: ./test gh-publish    (or ./test for the full suite)
+#
+# ShellCheck: lint with `shellcheck --shell=bash tests/gh-publish`.
+# This file is sourced, not executed — chmod 644.
+#
+# shellcheck source=tests/lib
+# shellcheck disable=SC2154  # SCRIPT_DIR is set by the sourcing dispatcher
+
+function _gp_test_run {
+  # Hook stdout for Bash command $1; $2 optionally overrides the pattern file,
+  # $3 the NO_GITLEAKS seam, $4 the NO_IDENTITY seam (defaults isolate both).
+  jq -n --arg c "$1" '{tool_name:"Bash", tool_input:{command:$c}}' \
+    | GH_PUBLISH_PATTERNS="${2:-${_gp_dir}/patterns}" \
+      GH_PUBLISH_SSH_CONFIG="${_gp_dir}/sshcfg" \
+      GH_PUBLISH_NO_GITLEAKS="${3-1}" \
+      GH_PUBLISH_NO_IDENTITY="${4-1}" \
+      GH_PUBLISH_OS="7.7:99Z999z" \
+      /bin/zsh "${SCRIPT_DIR}/claude/gh-publish-hook"
+}
+
+function _gp_test_review {
+  # Write a hash-bound review sidecar for body file $1.
+  printf 'reviewed-by: test 2026-08-03 sha256:%s\n' \
+    "$(shasum -a 256 "$1" | cut -d' ' -f1)" > "$1.reviewed"
+}
+
+function _gp_test_expect {
+  local want="$1" cmd="$2" label="$3" out got
+  out="$(_gp_test_run "${cmd}" "${4:-}" "${5-1}" "${6-1}")"
+  [[ "${out}" == *permissionDecision* ]] && got=DENY || got=PASS
+  if [[ "${got}" == "${want}" ]]; then
+    _pass "${want}: ${label}"
+  else
+    _fail "${label} — expected ${want}, got ${got}"
+  fi
+}
+
+function _gp_test_reason_has {
+  local cmd="$1" needle="$2" label="$3"
+  if [[ "$(_gp_test_run "${cmd}")" == *"${needle}"* ]]; then
+    _pass "reason names ${label}"
+  else
+    _fail "deny reason for '${label}' does not mention '${needle}'"
+  fi
+}
+
+function run_gh_publish {
+  _section "gh publish gate hook"
+
+  # claude/ is gitignored and synced out of band — absent hook means the sync
+  # hasn't reached this machine, not a regression. Skip, don't die.
+  if [[ ! -f "${SCRIPT_DIR}/claude/gh-publish-hook" ]]; then
+    _skip "claude/gh-publish-hook absent — claude/ not yet synced to this machine"
+    return 0
+  fi
+
+  if ! [[ -x "$(command -v jq)" ]]; then
+    _skip "jq not installed (brew install jq)"
+    return
+  fi
+
+  local _gp_dir
+  _gp_dir="$(mktemp -d "${TMPDIR:-/tmp}/gh-publish-test.XXXXXX")"
+  trap '/bin/rm -rf "${_gp_dir}"' EXIT
+
+  # Runtime-assembled fixtures: the PII token and ssh alias never appear
+  # verbatim in this file.
+  local fixture_token fixture_alias
+  fixture_token="FIXTURE_$(printf 'P%s' II)_TOKEN"
+  fixture_alias="testalias$(( 90 + 9 ))"
+  printf '%s\n' "${fixture_token}" > "${_gp_dir}/patterns"
+  printf 'Host %s\n' "${fixture_alias}" > "${_gp_dir}/sshcfg"
+
+  # A clean, reviewed, env-carrying body.
+  printf 'One full-width paragraph, no wrapping at all.\n\n## Environment\n\n- test hardware, test OS build\n' \
+    > "${_gp_dir}/good.md"
+  _gp_test_review "${_gp_dir}/good.md"
+
+  # --- PASS: reads, non-gh, proper publishes ------------------------------
+  _gp_test_expect PASS 'ls -la' 'non-gh command'
+  _gp_test_expect PASS 'gh issue view 268 --repo o/r' 'gh issue view (read)'
+  _gp_test_expect PASS 'gh issue list' 'gh issue list (read)'
+  _gp_test_expect PASS 'gh api repos/o/r/issues/268' 'gh api read'
+  _gp_test_expect PASS 'gh repo clone o/r' 'gh repo clone'
+  _gp_test_expect PASS "gh issue create -t t --body-file ${_gp_dir}/good.md" \
+    'issue create: reviewed body with env section'
+  _gp_test_expect PASS "gh issue edit 5 --add-label bug" 'issue edit: label only'
+  _gp_test_expect PASS 'gh issue create --web' 'issue create --web (human flow)'
+  _gp_test_expect PASS "GH_PUBLISH_BYPASS=1 gh issue create -t t --body inline" \
+    'bypass prefix'
+
+  # PR and comment bodies do not need an Environment section.
+  printf 'No env section here, one line.\n' > "${_gp_dir}/noenv.md"
+  _gp_test_review "${_gp_dir}/noenv.md"
+  _gp_test_expect PASS "gh pr create -t t --body-file ${_gp_dir}/noenv.md" \
+    'pr create: no env section required'
+  _gp_test_expect PASS "gh issue comment 5 --body-file ${_gp_dir}/noenv.md" \
+    'issue comment: no env section required'
+
+  # --- DENY: review-artifact layer ----------------------------------------
+  _gp_test_expect DENY 'gh issue create -t t --body "inline body"' 'inline --body'
+  _gp_test_expect DENY 'gh release create v1 --notes "inline notes"' 'inline --notes'
+  _gp_test_expect DENY 'gh release create v1 --generate-notes' '--generate-notes'
+  _gp_test_expect DENY 'gh issue create -t t' 'create with editor flow (no body-file)'
+  _gp_test_expect DENY 'gh issue comment 5' 'comment with editor flow'
+  cp "${_gp_dir}/good.md" "${_gp_dir}/nosidecar.md"
+  _gp_test_expect DENY "gh issue create -t t --body-file ${_gp_dir}/nosidecar.md" \
+    'missing .reviewed sidecar'
+
+  # --- DENY: content layers ------------------------------------------------
+  printf 'Contains %s in prose.\n\n## Environment\n\n- b\n' "${fixture_token}" \
+    > "${_gp_dir}/pii.md"
+  _gp_test_review "${_gp_dir}/pii.md"
+  _gp_test_expect DENY "gh issue create -t t --body-file ${_gp_dir}/pii.md" \
+    'PII token in body'
+
+  printf 'Mentions %s host.\n\n## Environment\n\n- b\n' "${fixture_alias}" \
+    > "${_gp_dir}/alias.md"
+  _gp_test_review "${_gp_dir}/alias.md"
+  _gp_test_expect DENY "gh issue create -t t --body-file ${_gp_dir}/alias.md" \
+    'SSH alias in body'
+
+  _gp_test_expect DENY \
+    "gh issue edit 5 --title 'about ${fixture_token}'" 'PII token in title'
+
+  printf 'This paragraph is wrapped\nacross two lines badly.\n\n## Environment\n\n- b\n' \
+    > "${_gp_dir}/wrap.md"
+  _gp_test_review "${_gp_dir}/wrap.md"
+  _gp_test_expect DENY "gh issue create -t t --body-file ${_gp_dir}/wrap.md" \
+    'hard-wrapped paragraph'
+
+  # Wrapped text inside a code fence is fine.
+  printf 'Intro line.\n\n\x60\x60\x60\nwrapped\ninside fence\n\x60\x60\x60\n\n## Environment\n\n- b\n' \
+    > "${_gp_dir}/fence.md"
+  _gp_test_review "${_gp_dir}/fence.md"
+  _gp_test_expect PASS "gh issue create -t t --body-file ${_gp_dir}/fence.md" \
+    'wrap inside code fence tolerated'
+
+  _gp_test_expect DENY "gh issue create -t t --body-file ${_gp_dir}/noenv.md" \
+    'issue create without env section'
+
+  # --- Review binding and GFM footguns -------------------------------------
+  # The append must form its own paragraph (leading blank line): appended
+  # prose directly after the env bullet trips the WRAP check and would mask a
+  # broken hash check — found by mutation testing 2026-08-03.
+  cp "${_gp_dir}/good.md" "${_gp_dir}/stale.md"
+  _gp_test_review "${_gp_dir}/stale.md"
+  printf '\nEdited after review.\n' >> "${_gp_dir}/stale.md"
+  _gp_test_expect DENY "gh issue create -t t --body-file ${_gp_dir}/stale.md" \
+    'sidecar stale after post-review edit'
+
+  printf 'Please ping @octocat about this.\n\n## Environment\n\n- b\n' \
+    > "${_gp_dir}/mention.md"
+  _gp_test_review "${_gp_dir}/mention.md"
+  _gp_test_expect DENY "gh issue create -t t --body-file ${_gp_dir}/mention.md" \
+    'bare @-mention'
+
+  printf 'The \x60@property\x60 decorator and <a@b.com> are fine.\n\n## Environment\n\n- b\n' \
+    > "${_gp_dir}/mentionok.md"
+  _gp_test_review "${_gp_dir}/mentionok.md"
+  _gp_test_expect PASS "gh issue create -t t --body-file ${_gp_dir}/mentionok.md" \
+    'backticked mention and email tolerated'
+
+  {
+    printf 'Log dump below.\n\n\x60\x60\x60\n'
+    local i
+    for i in {1..70}; do printf 'log line %d\n' "${i}"; done
+    printf '\x60\x60\x60\n\n## Environment\n\n- b\n'
+  } > "${_gp_dir}/biglog.md"
+  _gp_test_review "${_gp_dir}/biglog.md"
+  _gp_test_expect DENY "gh issue create -t t --body-file ${_gp_dir}/biglog.md" \
+    'oversized fence outside <details>'
+
+  {
+    printf '<details><summary>log</summary>\n\n\x60\x60\x60\n'
+    for i in {1..70}; do printf 'log line %d\n' "${i}"; done
+    printf '\x60\x60\x60\n</details>\n\n## Environment\n\n- b\n'
+  } > "${_gp_dir}/biglogok.md"
+  _gp_test_review "${_gp_dir}/biglogok.md"
+  _gp_test_expect PASS "gh issue create -t t --body-file ${_gp_dir}/biglogok.md" \
+    'oversized fence collapsed in <details>'
+
+  if [[ -n "${USER:-}" && "${USER}" != *[^[:alnum:]_-]* ]]; then
+    printf 'Log at /Users/%s/Library/Logs/x.log\n\n## Environment\n\n- b\n' \
+      "${USER}" > "${_gp_dir}/ident.md"
+    _gp_test_review "${_gp_dir}/ident.md"
+    _gp_test_expect DENY "gh issue create -t t --body-file ${_gp_dir}/ident.md" \
+      'runtime identity watchlist catches USER' '' 1 ''
+  else
+    _skip "USER unset or regex-unsafe — identity-watchlist case skipped"
+  fi
+
+  # --- Identifier tokens and env ground truth ------------------------------
+  local real_uuid real_mac
+  real_uuid="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+  real_mac="$(printf '0a%s1b%s2c%s3d%s4e%s5f' : : : : :)"
+  printf 'Quarantine entry %s seen.\n\n## Environment\n\n- b\n' "${real_uuid}" \
+    > "${_gp_dir}/uuid.md"
+  _gp_test_review "${_gp_dir}/uuid.md"
+  _gp_test_expect DENY "gh issue create -t t --body-file ${_gp_dir}/uuid.md" \
+    'real-shaped UUID in body'
+
+  printf 'Interface at %s reported.\n\n## Environment\n\n- b\n' "${real_mac}" \
+    > "${_gp_dir}/mac.md"
+  _gp_test_review "${_gp_dir}/mac.md"
+  _gp_test_expect DENY "gh issue create -t t --body-file ${_gp_dir}/mac.md" \
+    'real-shaped MAC in body'
+
+  printf 'Placeholder %s and %s pass.\n\n## Environment\n\n- b\n' \
+    '00000000-0000-0000-0000-000000000000' 'aa:bb:cc:dd:ee:ff' \
+    > "${_gp_dir}/placeholder.md"
+  _gp_test_review "${_gp_dir}/placeholder.md"
+  _gp_test_expect PASS "gh issue create -t t --body-file ${_gp_dir}/placeholder.md" \
+    'documentation placeholders tolerated'
+
+  printf 'Body.\n\n## Environment\n\n- MacBook, macOS 6.6 (88X8888)\n' \
+    > "${_gp_dir}/wrongos.md"
+  _gp_test_review "${_gp_dir}/wrongos.md"
+  _gp_test_expect DENY "gh issue create -t t --body-file ${_gp_dir}/wrongos.md" \
+    'env macOS version does not match live sw_vers'
+
+  printf 'Body.\n\n## Environment\n\n- MacBook, macOS 7.7 (99Z999z)\n' \
+    > "${_gp_dir}/rightos.md"
+  _gp_test_review "${_gp_dir}/rightos.md"
+  _gp_test_expect PASS "gh issue create -t t --body-file ${_gp_dir}/rightos.md" \
+    'env macOS version matches live sw_vers'
+
+  # --- DENY: escape hatches and fail-closed --------------------------------
+  _gp_test_expect DENY 'gh api repos/o/r/issues -f title=x' 'gh api POST via -f'
+  _gp_test_expect DENY 'gh api -X PATCH repos/o/r/issues/5 -f body=x' 'gh api PATCH'
+  _gp_test_expect DENY 'cd /tmp && gh issue create -t t --body x' \
+    'gh after && separator'
+  _gp_test_expect DENY "gh issue create -t t --body-file ${_gp_dir}/good.md" \
+    'unreadable pattern list fails closed' "${_gp_dir}/does-not-exist"
+
+  # --- Secrets layer (gitleaks), skipped when not installed ----------------
+  if command -v gitleaks &>/dev/null; then
+    local tok_prefix="ghp_"
+    local tok_body
+    tok_body="$(openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | head -c 36)"
+    printf 'Log excerpt: token=%s%s\n\n## Environment\n\n- b\n' \
+      "${tok_prefix}" "${tok_body}" > "${_gp_dir}/secret.md"
+    _gp_test_review "${_gp_dir}/secret.md"
+    _gp_test_expect DENY "gh issue create -t t --body-file ${_gp_dir}/secret.md" \
+      'gitleaks catches a token shape' '' ''
+  else
+    _skip "gitleaks not installed — secrets-layer case skipped"
+  fi
+
+  # --- Review-round regressions (adversarial review 2026-08-03) ------------
+  # F1: backslash continuation must be joined before parsing.
+  _gp_test_expect DENY "gh issue edit 5 \\"$'\n'"  --body-file ${_gp_dir}/pii.md" \
+    'continued edit --body-file is scanned (F1)'
+  _gp_test_expect PASS "gh issue create -t t \\"$'\n'"  --body-file ${_gp_dir}/good.md" \
+    'continued create with clean body passes (F1)'
+
+  # F2: joined short flags.
+  _gp_test_expect DENY "gh issue edit 5 -b${fixture_token}" \
+    'joined -bBODY inline is denied (F2)'
+  _gp_test_expect DENY "gh issue create -t${fixture_token} --body-file ${_gp_dir}/good.md" \
+    'joined -tTITLE is PII-scanned (F2)'
+
+  # F3: leading global flags before the subcommand.
+  _gp_test_expect DENY 'gh -R o/r issue create -t t --body x' \
+    'global -R before subcommand still dispatched (F3)'
+
+  # F4/F5: gh api option values must not steal the path; graphql is covered.
+  _gp_test_expect DENY "gh api -H 'Accept: application/vnd.github+json' repos/o/r/issues -f title=x" \
+    'gh api with -H header before path (F4)'
+  _gp_test_expect DENY "gh api graphql -f query=x" 'gh api graphql write (F5)'
+
+  # F6: pr review publishes a body.
+  _gp_test_expect DENY 'gh pr review 5 --approve --body lgtm' \
+    'pr review inline body denied (F6)'
+  _gp_test_expect PASS 'gh pr review 5 --approve' \
+    'bare pr review --approve passes (F6)'
+
+  # F8: an emptied PII denylist must fail closed even with ssh aliases present.
+  : > "${_gp_dir}/empty-patterns"
+  _gp_test_expect DENY "gh issue create -t t --body-file ${_gp_dir}/good.md" \
+    'empty PII denylist fails closed despite ssh aliases (F8)' \
+    "${_gp_dir}/empty-patterns"
+
+  # F10: a directory as --body-file must deny, not slip through unhashed.
+  mkdir -p "${_gp_dir}/dirbody.md"
+  printf 'r\n' > "${_gp_dir}/dirbody.md.reviewed"
+  _gp_test_expect DENY "gh pr create -t t --body-file ${_gp_dir}/dirbody.md" \
+    'directory body-file denied (F10)'
+
+  # P1/P2/P4/P5: legitimate markdown must not deny.
+  printf -- '- top item\n  - nested item\n    continuation is a wrap though\n\n## Environment\n\n- b\n' \
+    > "${_gp_dir}/nested.md"
+  _gp_test_review "${_gp_dir}/nested.md"
+  _gp_test_expect DENY "gh issue create -t t --body-file ${_gp_dir}/nested.md" \
+    'wrapped list continuation still denied (P1 guard)'
+  printf -- '- top item\n  - nested item\n  - second nested\n\n## Environment\n\n- b\n' \
+    > "${_gp_dir}/nested2.md"
+  _gp_test_review "${_gp_dir}/nested2.md"
+  _gp_test_expect PASS "gh issue create -t t --body-file ${_gp_dir}/nested2.md" \
+    'nested bullets pass (P1)'
+
+  printf '<details>\n<summary>Full log</summary>\n\nOne line inside.\n\n</details>\n\n## Environment\n\n- b\n' \
+    > "${_gp_dir}/details.md"
+  _gp_test_review "${_gp_dir}/details.md"
+  _gp_test_expect PASS "gh issue create -t t --body-file ${_gp_dir}/details.md" \
+    'multi-line details/summary block passes (P2)'
+
+  printf 'Intro.\n\n~~~\nwrapped\ninside tilde fence\n~~~\n\n## Environment\n\n- b\n' \
+    > "${_gp_dir}/tilde.md"
+  _gp_test_review "${_gp_dir}/tilde.md"
+  _gp_test_expect PASS "gh issue create -t t --body-file ${_gp_dir}/tilde.md" \
+    'tilde fence recognised (P4)'
+
+  printf 'Setext Title\n============\n\nOne paragraph line.\n\n## Environment\n\n- b\n' \
+    > "${_gp_dir}/setext.md"
+  _gp_test_review "${_gp_dir}/setext.md"
+  _gp_test_expect PASS "gh issue create -t t --body-file ${_gp_dir}/setext.md" \
+    'setext heading underline passes (P5)'
+
+  # --- Coverage round 2: parse forms, error paths, seams -------------------
+  # Equals-joined flag forms; discriminators chosen so a parse failure flips
+  # the verdict (an unparsed -t= on edit would PASS, not DENY differently).
+  _gp_test_expect DENY "gh issue create --title=${fixture_token} --body-file ${_gp_dir}/good.md" \
+    '--title= equals form is PII-scanned'
+  _gp_test_expect DENY "gh issue edit 5 -t=${fixture_token}" \
+    '-t= joined equals form is PII-scanned'
+  _gp_test_reason_has "gh issue create -t t --body-file=${_gp_dir}/pii.md" \
+    'PII pattern hit' '--body-file= equals form resolves the file'
+  _gp_test_expect DENY 'gh api -XPOST repos/o/r/issues' '-XPOST joined method'
+  _gp_test_expect DENY $'cd /tmp\ngh issue create -t t --body x' \
+    'gh on a later real-newline line'
+
+  # Release happy path: notes-file + sidecar, no env section required.
+  _gp_test_expect PASS "gh release create v1.0 --notes-file ${_gp_dir}/noenv.md" \
+    'release create with reviewed notes-file'
+
+  # Env build-string branch in isolation (product version correct).
+  printf 'Body.\n\n## Environment\n\n- MacBook, macOS 7.7 (88X8888)\n' \
+    > "${_gp_dir}/wrongbuild.md"
+  _gp_test_review "${_gp_dir}/wrongbuild.md"
+  _gp_test_expect DENY "gh issue create -t t --body-file ${_gp_dir}/wrongbuild.md" \
+    'env build string does not match live build'
+
+  # Invalid ERE in the denylist must fail closed, not silently disable.
+  printf 'a{3,1}\n' > "${_gp_dir}/bad-regex"
+  _gp_test_expect DENY "gh issue create -t t --body-file ${_gp_dir}/good.md" \
+    'invalid ERE in denylist fails closed' "${_gp_dir}/bad-regex"
+
+  # A gitleaks ERROR (exit not 0/9) must fail closed — distinct from a finding.
+  mkdir -p "${_gp_dir}/stubbin"
+  printf '#!/bin/zsh\nexit 3\n' > "${_gp_dir}/stubbin/gitleaks"
+  chmod +x "${_gp_dir}/stubbin/gitleaks"
+  local out
+  out="$(jq -n --arg c "gh issue create -t t --body-file ${_gp_dir}/good.md" \
+      '{tool_name:"Bash", tool_input:{command:$c}}' \
+    | PATH="${_gp_dir}/stubbin:${PATH}" \
+      GH_PUBLISH_PATTERNS="${_gp_dir}/patterns" \
+      GH_PUBLISH_SSH_CONFIG="${_gp_dir}/sshcfg" \
+      GH_PUBLISH_NO_GITLEAKS='' GH_PUBLISH_NO_IDENTITY=1 \
+      GH_PUBLISH_OS="7.7:99Z999z" \
+      /bin/zsh "${SCRIPT_DIR}/claude/gh-publish-hook")"
+  if [[ "${out}" == *'gitleaks error'* ]]; then
+    _pass "DENY: gitleaks error exit fails closed"
+  else
+    _fail "gitleaks error exit did not fail closed"
+  fi
+
+  # Session-env bypass form (the string-prefix form is tested above).
+  out="$(jq -n --arg c 'gh issue create -t t --body inline' \
+      '{tool_name:"Bash", tool_input:{command:$c}}' \
+    | GH_PUBLISH_BYPASS=1 GH_PUBLISH_PATTERNS="${_gp_dir}/patterns" \
+      GH_PUBLISH_SSH_CONFIG="${_gp_dir}/sshcfg" \
+      /bin/zsh "${SCRIPT_DIR}/claude/gh-publish-hook")"
+  if [[ "${out}" != *permissionDecision* ]]; then
+    _pass "PASS: session-env bypass"
+  else
+    _fail "session-env GH_PUBLISH_BYPASS=1 did not bypass"
+  fi
+
+  # Hostname half of the identity watchlist (guarded: needs scutil + a
+  # regex-safe local hostname).
+  local host_ident
+  host_ident="$(scutil --get LocalHostName 2>/dev/null)"
+  if [[ -n "${host_ident}" && "${host_ident}" != *[^[:alnum:]._-]* ]]; then
+    printf 'Seen on %s today.\n\n## Environment\n\n- b\n' "${host_ident}" \
+      > "${_gp_dir}/hostident.md"
+    _gp_test_review "${_gp_dir}/hostident.md"
+    _gp_test_expect DENY "gh issue create -t t --body-file ${_gp_dir}/hostident.md" \
+      'runtime identity watchlist catches hostname' '' 1 ''
+  else
+    _skip "no regex-safe LocalHostName — hostname-watchlist case skipped"
+  fi
+
+  # Deny reasons must teach the fix.
+  _gp_test_reason_has 'gh issue create -t t --body x' '.reviewed' 'the sidecar workflow'
+  _gp_test_reason_has "gh issue create -t t --body-file ${_gp_dir}/noenv.md" \
+    '## Environment' 'the env-section shape'
+
+  /bin/rm -rf "${_gp_dir}"
+  trap - EXIT
+}

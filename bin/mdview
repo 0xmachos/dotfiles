@@ -1,0 +1,128 @@
+#!/bin/zsh
+set -euo pipefail
+IFS=$'\n\t'
+
+# mdview — render a markdown file as GitHub-styled HTML and open in browser
+#
+# Uses pandoc for GFM conversion and the GitHub Primer CSS extracted from
+# Sublime Text's MarkdownPreview plugin for identical styling.
+#
+# Usage: mdview [-o output.html] <file.md>
+#
+# The CSS is cached at ~/.config/mdview/github-primer.css. On first run
+# (or if the cache is missing), it's extracted from a Sublime MarkdownPreview
+# HTML file in TMPDIR, or downloaded from cdnjs as a fallback.
+#
+# ShellCheck: shellcheck --shell=bash (zsh script, ~95% overlap)
+
+readonly CSS_DIR="${HOME}/.config/mdview"
+readonly CSS_FILE="${CSS_DIR}/github-primer.css"
+
+usage() {
+  printf 'Usage: mdview [-o output.html] <file.md>\n' >&2
+  printf '\nOptions:\n' >&2
+  printf '  -o <path>  Write HTML to specified path (default: TMPDIR)\n' >&2
+  exit 1
+}
+
+ensure_deps() {
+  if ! command -v pandoc &>/dev/null; then
+    printf 'Error: pandoc not found. Install with: brew install pandoc\n' >&2
+    exit 1
+  fi
+}
+
+ensure_css() {
+  [[ -f "${CSS_FILE}" ]] && return
+
+  mkdir -p "${CSS_DIR}"
+
+  # Extract CSS from Sublime Text's MarkdownPreview output if available.
+  # Look for any .html in TMPDIR that contains github-primer CSS.
+  local sublime_html
+  sublime_html="$(find "${TMPDIR}" -maxdepth 1 -name '*.html' -print0 2>/dev/null \
+    | xargs -0 grep -l 'markdown-body' 2>/dev/null \
+    | head -1)" || true
+
+  if [[ -n "${sublime_html}" ]]; then
+    awk '/<style>/{sub(/.*<style>/,"");p=1} /<\/style>/{sub(/<\/style>.*/,"");print;p=0;next} p{print}' \
+      "${sublime_html}" > "${CSS_FILE}"
+    printf 'Cached CSS from: %s\n' "${sublime_html}" >&2
+    return
+  fi
+
+  # Fallback: download GitHub's markdown CSS (latest version via cdnjs API)
+  printf 'No Sublime MarkdownPreview output found in TMPDIR.\n' >&2
+  printf 'Open any .md in Sublime, run "Markdown Preview: Preview in Browser" once,\n' >&2
+  printf 'then re-run mdview to cache the CSS.\n' >&2
+  printf '\nAlternatively, downloading github-markdown-css from cdnjs...\n' >&2
+  local version
+  version="$(curl -fsSL 'https://api.cdnjs.com/libraries/github-markdown-css?fields=version' \
+    | jq -r '.version')" || true
+  if [[ -z "${version}" ]]; then
+    printf 'Error: failed to resolve latest version from cdnjs API\n' >&2
+    exit 1
+  fi
+  curl -fsSL \
+    "https://cdnjs.cloudflare.com/ajax/libs/github-markdown-css/${version}/github-markdown.min.css" \
+    -o "${CSS_FILE}"
+  printf 'Cached CSS v%s from cdnjs.\n' "${version}" >&2
+}
+
+render() {
+  local input_file="$1"
+  local output_file="$2"
+
+  local basename
+  basename="${input_file:t:r}"
+
+  # If no output path specified, create a temp directory
+  if [[ -z "${output_file}" ]]; then
+    local tmpdir
+    tmpdir="$(mktemp -d "${TMPDIR}mdview-XXXXXX")"
+    output_file="${tmpdir}/${basename}.html"
+  fi
+
+  {
+    printf '<!DOCTYPE html><html><head>'
+    printf '<meta charset="utf-8">'
+    printf '<meta name="viewport" content="width=device-width, initial-scale=1">'
+    printf '<style>\n'
+    cat "${CSS_FILE}"
+    printf '\n</style>'
+    printf '<title>%s</title>' "${basename}"
+    printf '</head><body><article class="markdown-body">'
+    pandoc --from gfm --to html5 "${input_file}"
+    printf '</article></body></html>'
+  } > "${output_file}"
+
+  open "${output_file}"
+  printf '%s\n' "${output_file}"
+}
+
+main() {
+  local output_path=""
+
+  while getopts ":o:" opt; do
+    case "${opt}" in
+      o) output_path="${OPTARG}" ;;
+      *) usage ;;
+    esac
+  done
+  shift $((OPTIND - 1))
+
+  [[ $# -eq 0 ]] && usage
+
+  local input_file="$1"
+
+  if [[ ! -f "${input_file}" ]]; then
+    printf 'Error: file not found: %s\n' "${input_file}" >&2
+    exit 1
+  fi
+
+  ensure_deps
+  ensure_css
+  render "${input_file}" "${output_path}"
+}
+
+main "$@"

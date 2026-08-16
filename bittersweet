@@ -72,9 +72,7 @@ typeset -ra BITTERSWEET_SUBCOMMANDS=(
   'blockblock:Install BlockBlock'
   'oversight:Install OverSight'
   'dcg:Install Destructive Command Guard (dcg)'
-  'danger-verify:Build and install danger-verify Swift helper'
   'herald:Build and install herald (Bonjour/mDNS browser for Matter/Thread debugging)'
-  'vault-guard:Build and install vault-guard DA mount approval daemon'
   'claude:Install Claude Code and dcg'
   'brew:Install Homebrew'
   'brewfile:Install Homebrew packages from Brewfile'
@@ -82,6 +80,7 @@ typeset -ra BITTERSWEET_SUBCOMMANDS=(
   'mdmprofile:Open System Preferences to install MDM Profile'
   'launchagents:Install and load LaunchAgents and LaunchDaemon'
   'completions:Regenerate .completions/_bittersweet from BITTERSWEET_SUBCOMMANDS'
+  'okf-index:Regenerate internals/index.md from OKF concept frontmatter'
   'test:Run test suite'
   'hailmary:Run every function in order'
 )
@@ -619,16 +618,23 @@ function install_dotfiles {
   local _harden_count=0
   local _error_count=0
 
-  local -ar dot_dirs=(.ssh .extra .config/git .config/uv .config/dcg .claude .claude/skills .claude/rules)
+  local -ar dot_dirs=(.ssh .extra .codex .codex/rules .config/git .config/uv .config/dcg .claude .claude/skills .claude/rules)
   local -ar dot_files=(.zshrc .functions .completions .aliases)
   local -ar ssh_configs=(config .extra_ssh)
   local -ar git_configs=(config ignore allowed_signers)
   local -ar claude_files=(
     "claude/settings.json:settings.json"
     "claude/statusline-command:statusline-command"
+    "claude/subagent-statusline:subagent-statusline"
     "claude/global-claude.md:CLAUDE.md"
     "claude/lint-hook:lint-hook"
+    "claude/exa-redirect-hook:exa-redirect-hook"
+    "claude/rm-redirect-hook:rm-redirect-hook"
     "claude/npm-attest-hook:npm-attest-hook"
+    "claude/ssh-redirect-hook:ssh-redirect-hook"
+    "claude/git-sign-hook:git-sign-hook"
+    "claude/container-tmp-hook:container-tmp-hook"
+    "claude/gh-publish-hook:gh-publish-hook"
     "claude/session-host-context:session-host-context"
     "claude/hosts:hosts"
     "claude/output-styles:output-styles"
@@ -645,6 +651,10 @@ function install_dotfiles {
     "${SCRIPT_DIR}/.aliases"
     "${SCRIPT_DIR}/claude/settings.json"
     "${SCRIPT_DIR}/.config/1Password/ssh/agent.toml"
+    "${SCRIPT_DIR}/.codex/config.toml"
+    "${SCRIPT_DIR}/.codex/rules/default.rules"
+    "${SCRIPT_DIR}/.codex/AGENTS.md"
+    "${SCRIPT_DIR}/.codex/hooks.json"
     "${SCRIPT_DIR}/claude/hosts/daisy.md"
     "${SCRIPT_DIR}/claude/hosts/iratemonk0x2.md"
   )
@@ -692,6 +702,25 @@ function install_dotfiles {
   # Symlink dcg config into $HOME/.config/dcg/
   _symlink "${SCRIPT_DIR}/.config/dcg/config.toml" "${HOME}/.config/dcg/config.toml"
 
+  # Symlink codex config into $HOME/.codex/
+  _symlink "${SCRIPT_DIR}/.codex/config.toml" "${HOME}/.codex/config.toml"
+
+  # Codex exec-policy rules. Separate from config.toml because Codex reads
+  # ~/.codex/rules/*.rules as its own layer; the `forbidden` prefix_rules there
+  # are the only SSH guard that survives --dangerously-bypass-approvals-and-sandbox.
+  _symlink "${SCRIPT_DIR}/.codex/rules/default.rules" "${HOME}/.codex/rules/default.rules"
+
+  # Global Codex instructions — the CLAUDE.md counterpart, loaded in every
+  # session before any repo AGENTS.md. Gitignored, so unlike a repo AGENTS.md it
+  # may name hosts and aliases.
+  _symlink "${SCRIPT_DIR}/.codex/AGENTS.md" "${HOME}/.codex/AGENTS.md"
+
+  # Codex dcg PreToolUse hook (adopted from the dcg 0.9.4 installer,
+  # 2026-08-06). Hooks are hashed and silently skipped until trusted once via
+  # /hooks inside Codex — trust is keyed per config path, per machine, so a
+  # fresh symlink or a new host needs a one-time /hooks approval.
+  _symlink "${SCRIPT_DIR}/.codex/hooks.json" "${HOME}/.codex/hooks.json"
+
   # Copy 1Password SSH agent config (1Password doesn't follow symlinks)
   _ensure_dir "${HOME}/.config/1Password/ssh"
   cp "${SCRIPT_DIR}/.config/1Password/ssh/agent.toml" "${HOME}/.config/1Password/ssh/agent.toml"
@@ -705,6 +734,11 @@ function install_dotfiles {
   done
 
   # Symlink custom skills into $HOME/.claude/skills/
+  # null_glob (function-scoped): claude/ is gitignored and synced out of band,
+  # so a fresh clone can legitimately have empty skills/ and rules/ — without
+  # it the unmatched glob aborts the whole deploy under set -e. setopt rather
+  # than (N) qualifiers because shellcheck --shell=bash cannot parse the latter
+  setopt local_options null_glob
   local skill_dir skill_name
   for skill_dir in "${SCRIPT_DIR}"/claude/skills/*/; do
     skill_name="${skill_dir%/}"
@@ -768,8 +802,10 @@ function install_scripts {
   #   Symlink dotfiles/bin/ scripts into /usr/local/bin
   #   Create /usr/local/bin
   #   Symlink files in /usr/local/bin
+  #   launchd-invoked scripts (jump-system, jump-user) are COPIED, not
+  #   symlinked — see the comments at each for why
   
-  local -ar bin_files=(dns jump-user danger mdview npm-audit-check claude-session-audit papercut)
+  local -ar bin_files=(dns mdview npm-audit-check claude-session-audit papercut git-sign-unpushed)
   local -ar macos_script_bin_files=(c0design)
   
   # Create /usr/local/bin
@@ -806,6 +842,19 @@ function install_scripts {
     echo "[✅] Successfully installed jump-system to /usr/local/bin/jump-system (root:wheel 700)"
   else
     echo "[❌] Failed to install jump-system to /usr/local/bin/jump-system"
+  fi
+
+  # Copy jump-user rather than symlink: launchd cannot exec a program under
+  # ~/Documents/ after a TCC grant reset (macOS 27) and fails with exit 127
+  # before the script's first log line. Confirmed 2026-07-28 by controlled
+  # probe. root:wheel 755 — the user's agent executes it, cannot modify it.
+  sudo rm -f "/usr/local/bin/jump-user"
+  if sudo cp "${SCRIPT_DIR}/bin/jump-user" "/usr/local/bin/jump-user"; then
+    sudo chown root:wheel "/usr/local/bin/jump-user"
+    sudo chmod 755 "/usr/local/bin/jump-user"
+    echo "[✅] Successfully installed jump-user to /usr/local/bin/jump-user (root:wheel 755)"
+  else
+    echo "[❌] Failed to install jump-user to /usr/local/bin/jump-user"
   fi
 
   # Symlink bittersweet into /usr/local/bin
@@ -971,6 +1020,82 @@ case "${state}" in
     ;;
 esac
 EOF
+}
+
+
+function _okf_concept_row {
+  # _okf_concept_row FILE
+  #   Echo "type<TAB>title<TAB>filename<TAB>description" for one OKF concept,
+  #   parsed from its YAML frontmatter. Title falls back to the filename stem.
+  local file="${1}"
+  local name="${file##*/}"
+  local type="" title="" desc="" line key val
+  local -i fence=0
+  while IFS= read -r line; do
+    if [[ "${line}" == "---" ]]; then
+      (( ++fence >= 2 )) && break
+      continue
+    fi
+    (( fence == 1 )) || continue
+    key="${line%%:*}"
+    val="${line#*: }"
+    val="${val##[\"\']}"
+    val="${val%%[\"\']}"
+    case "${key}" in
+      type) type="${val}" ;;
+      title) title="${val}" ;;
+      description) desc="${val}" ;;
+    esac
+  done < "${file}"
+  [[ -n "${title}" ]] || title="${name%.md}"
+  printf '%s\t%s\t%s\t%s' "${type}" "${title}" "${name}" "${desc}"
+}
+
+
+function _generate_okf_index {
+  # _generate_okf_index OUTPUT_FILE
+  #   Regenerate the internals/ OKF bundle index from concept frontmatter.
+  #   Groups concepts by `type` (alphabetical), orders each group by title
+  #   (case-insensitive), and writes a progressive-disclosure index.md.
+  #   Source of truth is the frontmatter; `./test okf` enforces freshness.
+  local output_file="${1}"
+  local bundle="${SCRIPT_DIR}/internals"
+  local file name t rtitle rname rdesc
+  local -a rows=()
+
+  for file in "${bundle}"/*.md; do
+    [[ -f "${file}" ]] || continue
+    name="${file##*/}"
+    [[ "${name}" == "index.md" || "${name}" == "log.md" ]] && continue
+    rows+=("$(_okf_concept_row "${file}")")
+  done
+
+  cat > "${output_file}" <<'EOF'
+---
+okf_version: "0.1"
+---
+
+Internals knowledge bundle for the dotfiles repo, in Open Knowledge Format
+([OKF v0.1](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)).
+Each concept is one markdown file with YAML frontmatter; this index is the
+progressive-disclosure entry point. Grouped by `type`.
+EOF
+
+  (( ${#rows[@]} )) || return 0
+
+  while IFS= read -r t; do
+    printf '\n# %s\n\n' "${t}" >> "${output_file}"
+    printf '%s\n' "${rows[@]}" \
+      | /usr/bin/awk -F'\t' -v t="${t}" '$1 == t' \
+      | /usr/bin/sort -f -t$'\t' -k2 \
+      | while IFS=$'\t' read -r _ rtitle rname rdesc; do
+          if [[ -n "${rdesc}" ]]; then
+            printf '* [%s](%s) - %s\n' "${rtitle}" "${rname}" "${rdesc}" >> "${output_file}"
+          else
+            printf '* [%s](%s)\n' "${rtitle}" "${rname}" >> "${output_file}"
+          fi
+        done
+  done < <(printf '%s\n' "${rows[@]}" | /usr/bin/cut -f1 | /usr/bin/sort -u)
 }
 
 
@@ -1362,41 +1487,6 @@ function install_dcg {
 }
 
 
-function install_danger_verify {
-  # install_danger_verify
-  #   Builds and installs the danger-verify Swift helper binary
-  #   Kernel-level mount verification for bin/danger (statfs, posix_spawn)
-  #   Source: ~/Documents/Projects/danger-verify/
-  #   Destination: /usr/local/bin/danger-verify
-
-  local -r src_dir="${HOME}/Documents/Projects/danger-verify"
-  local -r binary="/usr/local/bin/danger-verify"
-
-  if ! [[ -d "${src_dir}" ]]; then
-    echo "[❌] danger-verify source not found at ${src_dir}"
-    return 1
-  fi
-
-  echo "[🍺] Building danger-verify"
-
-  if ! swift build --package-path "${src_dir}" -c release --quiet 2>&1; then
-    echo "[❌] Failed to build danger-verify"
-    return 1
-  fi
-
-  echo "[✅] Successfully built danger-verify"
-
-  get_sudo "to install danger-verify to /usr/local/bin"
-
-  if sudo install -m 755 "${src_dir}/.build/release/danger-verify" "${binary}"; then
-    echo "[✅] Successfully installed danger-verify to ${binary}"
-  else
-    echo "[❌] Failed to install danger-verify to ${binary}"
-    return 1
-  fi
-}
-
-
 function install_herald {
   # install_herald
   #   Clones / updates / builds / installs the herald Bonjour/mDNS browser CLI
@@ -1469,47 +1559,15 @@ function install_herald {
     return 1
   fi
 
-  # Ad-hoc re-sign after each rebuild — swift build produces ad-hoc signed
-  # binaries but rebuilds can leave macOS Gatekeeper caching a stale hash.
+  # Ad-hoc re-sign after each rebuild. The stale hash is cached by the *kernel*,
+  # not Gatekeeper — macOS caches signature info per inode and does not flush it
+  # when the file's contents change, so an overwritten binary can crash on next
+  # launch. Gatekeeper/syspolicyd is a separate policy layer and is not what
+  # bites here.
   if codesign --sign - --force "${build_output}" 2>/dev/null; then
     echo "[✅] Ad-hoc signed herald"
   else
     echo "[⚠️ ] codesign --sign - failed (non-fatal; binary remains usable)"
-  fi
-}
-
-
-function install_vault_guard {
-  # install_vault_guard
-  #   Builds and installs the vault-guard DA mount approval daemon
-  #   Blocks Finder-initiated SMB mounts to the research vault
-  #   Source: ~/Documents/Projects/danger-verify/ (vault-guard target)
-  #   Destination: /usr/local/bin/vault-guard
-
-  local -r src_dir="${HOME}/Documents/Projects/danger-verify"
-  local -r binary="/usr/local/bin/vault-guard"
-
-  if ! [[ -d "${src_dir}" ]]; then
-    echo "[❌] danger-verify source not found at ${src_dir}"
-    return 1
-  fi
-
-  echo "[🍺] Building vault-guard"
-
-  if ! swift build --package-path "${src_dir}" -c release --quiet 2>&1; then
-    echo "[❌] Failed to build vault-guard"
-    return 1
-  fi
-
-  echo "[✅] Successfully built vault-guard"
-
-  get_sudo "to install vault-guard to /usr/local/bin"
-
-  if sudo install -m 755 "${src_dir}/.build/release/vault-guard" "${binary}"; then
-    echo "[✅] Successfully installed vault-guard to ${binary}"
-  else
-    echo "[❌] Failed to install vault-guard to ${binary}"
-    return 1
   fi
 }
 
@@ -1675,8 +1733,9 @@ function install_launchagents {
 
   local -ar launchagent_plists=(
     com.0xmachos.jump-user
-    com.0xmachos.vault-guard
     com.0xmachos.imageio-oop
+    com.0xmachos.second-brain-metrics
+    com.0xmachos.container-start
   )
 
   # LaunchAgents: copy into ~/Library/LaunchAgents/
@@ -1714,8 +1773,9 @@ function load_launchagents {
 
   local -ar launchagent_plists=(
     com.0xmachos.jump-user
-    com.0xmachos.vault-guard
     com.0xmachos.imageio-oop
+    com.0xmachos.second-brain-metrics
+    com.0xmachos.container-start
   )
 
   for plist in "${launchagent_plists[@]}"; do
@@ -1804,14 +1864,8 @@ function main {
     dcg)
       install_dcg
       ;;
-    danger-verify)
-      install_danger_verify
-      ;;
     herald)
       install_herald
-      ;;
-    vault-guard)
-      install_vault_guard
       ;;
     claude)
       install_claude
@@ -1840,6 +1894,13 @@ function main {
       _generate_bittersweet_completion "${out_path}"
       echo "[✅] Regenerated ${out_path}"
       ;;
+    okf-index)
+      # Optional second arg: alternate output path (used by tests/okf to
+      # generate into $TMPDIR without mutating the working-copy index.md).
+      local okf_out="${2:-${SCRIPT_DIR}/internals/index.md}"
+      _generate_okf_index "${okf_out}"
+      echo "[✅] Regenerated ${okf_out}"
+      ;;
     test)
       run_test
       ;;
@@ -1855,8 +1916,6 @@ function main {
 
       write_defaults
       install_dotfiles
-      install_danger_verify
-      install_vault_guard
       install_scripts
       enable_touchid_sudo
       install_blockblock

@@ -33,6 +33,7 @@ function run_linkage {
     [SECURITY.md]=repo
     [TODOs.md]=repo
     [History.md]=repo                        # Completed-work ledger; TODOs.md holds only open items
+    [CLAUDE.md]=repo                         # Claude Code repo guidance (untracked: global *claude* ignore)
     [.gitignore]=repo
     [.gitleaksignore]=repo
     [.pii-allowlist]=repo                    # Read in-place by the global pre-commit hook
@@ -45,6 +46,7 @@ function run_linkage {
     # install_dotfiles — config files symlinked into HOME
     [.zshrc]=install_dotfiles
     [.aliases]=install_dotfiles
+    [.codex]=install_dotfiles
     [.functions]=install_dotfiles
     [.completions]=install_dotfiles
     [.ssh]=install_dotfiles
@@ -83,11 +85,13 @@ function run_linkage {
     [dns]=install_scripts
     [jump-user]=install_scripts
     [jump-system]=install_scripts
-    [danger]=install_scripts
     [mdview]=install_scripts
     [npm-audit-check]=install_scripts
     [claude-session-audit]=install_scripts
+    [git-sign-unpushed]=install_scripts
     [papercut]=install_scripts
+    [agent-reset]=repo                          # backup/verify/wipe ritual; run from the repo, installed nowhere
+
     # install_dotfiles → ~/.local/bin/ (op wrappers)
     [vt]=install_dotfiles
     [urlscan]=install_dotfiles
@@ -100,8 +104,15 @@ function run_linkage {
     [settings.json]=install_dotfiles
     [global-claude.md]=install_dotfiles
     [statusline-command]=install_dotfiles
+    [subagent-statusline]=install_dotfiles
     [lint-hook]=install_dotfiles
+    [exa-redirect-hook]=install_dotfiles
+    [rm-redirect-hook]=install_dotfiles
     [npm-attest-hook]=install_dotfiles
+    [ssh-redirect-hook]=install_dotfiles
+    [git-sign-hook]=install_dotfiles
+    [container-tmp-hook]=install_dotfiles
+    [gh-publish-hook]=install_dotfiles
     [session-host-context]=install_dotfiles
     [hosts]=install_dotfiles                 # Dynamic (per-host context files)
     [output-styles]=install_dotfiles         # Dynamic (custom output styles)
@@ -111,9 +122,10 @@ function run_linkage {
 
   # LaunchAgent plists must each be in install_launchagents
   local -A launchagent_plists=(
+    [com.0xmachos.container-start.plist]=install_launchagents
     [com.0xmachos.jump-user.plist]=install_launchagents
-    [com.0xmachos.vault-guard.plist]=install_launchagents
     [com.0xmachos.imageio-oop.plist]=install_launchagents
+    [com.0xmachos.second-brain-metrics.plist]=install_launchagents
   )
 
   # LaunchDaemon plists

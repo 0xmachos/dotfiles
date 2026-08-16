@@ -249,7 +249,10 @@ function _jump_test_launchd_not_in_symlink_array {
   _section "launchd programs vs install_scripts symlink array"
 
   local raw
-  raw=$(/usr/bin/grep -oE 'local -ar bin_files=\([^)]*\)' bittersweet 2>/dev/null)
+  # `|| true` is load-bearing: the dispatcher runs under `set -e`, so a
+  # non-matching grep would abort the entire run — every later suite silently
+  # skipped — and the _fail below could never report the drift it exists for.
+  raw=$(/usr/bin/grep -oE 'local -ar bin_files=\([^)]*\)' bittersweet 2>/dev/null || true)
   if [[ -z "${raw}" ]]; then
     _fail "could not extract bin_files from bittersweet — pattern changed"
     return
@@ -303,6 +306,66 @@ function _jump_test_launchd_program_outside_documents {
   fi
 }
 
+# argv[0] is the exec target and must never sit under ~/Documents — that is the
+# hard failure above. Later arguments are payloads handed to an interpreter,
+# e.g. second-brain-metrics runs /bin/zsh -c '... retrieval-metrics.py'. Those
+# are a READ under ~/Documents rather than an exec, so they do not 127; they
+# depend on the interpreter holding the Documents grant, and when that grant
+# resets they fail by hanging on an invisible consent dialog instead. Reported,
+# not failed, because the /bin/zsh wrapper is a deliberate design choice here.
+function _jump_test_launchd_payloads_under_documents {
+  _section "launchd payload paths under ~/Documents (informational)"
+
+  local plist args tok
+  local -i found=0
+  for plist in LaunchAgents/*.plist LaunchDaemons/*.plist; do
+    [[ -f "${plist}" ]] || continue
+    args=$(/usr/libexec/PlistBuddy -c "Print :ProgramArguments" "${plist}" 2>/dev/null | /usr/bin/sed '1d;$d' || true)
+    [[ -n "${args}" ]] || continue
+    # SC2296/SC2206: zsh word-splitting flag, not valid bash.
+    # shellcheck disable=SC2296,SC2206
+    for tok in ${=args}; do
+      [[ "${tok}" == "${HOME}/Documents/"* ]] || continue
+      found+=1
+      _skip "${plist##*/}: payload ${tok##*/} is under ~/Documents — relies on the interpreter's Documents grant"
+    done
+  done
+
+  if (( found == 0 )); then
+    _pass "no launchd payload paths under ~/Documents"
+  fi
+}
+
+# Copying rather than symlinking trades live-edit for silent staleness: a repo
+# edit does not reach /usr/local/bin until the next `bittersweet scripts`.
+# Caught live 2026-07-29 — the deployed jump-user was missing a guard that had
+# been committed minutes earlier.
+function _jump_test_copied_programs_current {
+  _section "copied launchd programs match their repo source"
+
+  local -a copied=(jump-user jump-system)
+  local name src installed
+  for name in "${copied[@]}"; do
+    src="bin/${name}"
+    installed="/usr/local/bin/${name}"
+    if [[ ! -f "${src}" ]]; then
+      _fail "${src} missing from repo"
+    elif [[ ! -e "${installed}" ]]; then
+      _skip "${name}: not installed at ${installed}"
+    elif [[ -L "${installed}" ]]; then
+      _fail "${name}: ${installed} is a symlink — must be a copy, launchd cannot exec under ~/Documents"
+    elif [[ ! -r "${installed}" ]]; then
+      # jump-system is deliberately root:wheel 700, so an unprivileged run
+      # cannot read it to compare. Not a failure.
+      _skip "${name}: ${installed} not readable by this user"
+    elif cmp -s "${src}" "${installed}"; then
+      _pass "${name}: deployed copy matches ${src}"
+    else
+      _fail "${name}: deployed copy is STALE vs ${src} — re-run 'bittersweet scripts'"
+    fi
+  done
+}
+
 # Exercises the branch added 2026-07-28. `logger` is shadowed by a shell
 # function so the syslog call is captured rather than emitted. On the
 # pre-hardening code the failed redirect was completely silent, so the
@@ -354,4 +417,6 @@ function run_jump {
   _jump_test_run_and_log_unwritable
   _jump_test_launchd_not_in_symlink_array
   _jump_test_launchd_program_outside_documents
+  _jump_test_launchd_payloads_under_documents
+  _jump_test_copied_programs_current
 }

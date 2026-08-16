@@ -63,6 +63,13 @@ function _npm_attest_verdict_expect {
 function run_npm_attest {
   _section "npm-attest deploy signature gate"
 
+  # claude/ is gitignored and synced out of band — absent hook means the sync
+  # hasn't reached this machine, not a regression. Skip, don't die.
+  if [[ ! -f "${SCRIPT_DIR}/claude/npm-attest-hook" ]]; then
+    _skip "claude/npm-attest-hook absent — claude/ not yet synced to this machine"
+    return 0
+  fi
+
   if ! [[ -x "$(command -v jq)" ]]; then
     _skip "jq not installed (brew install jq)"
     return

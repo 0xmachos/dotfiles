@@ -25,7 +25,7 @@ cd "${SCRIPT_DIR}"
 # shellcheck source=tests/lib disable=SC1091
 source "${SCRIPT_DIR}/tests/lib"
 
-readonly -a SUITES=(shellcheck extensions plutil linkage completions jump npm-attest hook-links pii-hook)
+readonly -a SUITES=(shellcheck extensions plutil linkage completions okf jump rm-redirect npm-attest ssh-redirect git-sign container-tmp gh-publish hook-links pii-hook agent-reset)
 
 function _usage {
   echo "Usage: ./test [suite [arg]]"

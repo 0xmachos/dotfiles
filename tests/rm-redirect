@@ -1,0 +1,77 @@
+#!/bin/zsh
+# dotfiles/tests/rm-redirect
+#
+# Behavioural test for claude/rm-redirect-hook — the PreToolUse hook that denies
+# `rm` and points the model at `trash`. Feeds commands to the hook as stdin JSON
+# and asserts the verdict: DENY (trash redirect emitted) for real `rm` at a
+# command position, PASS (allowed through) for /bin/rm, sudo rm, and lookalikes
+# (git rm, echo rm, paths containing rm).
+#
+# Guards the command-position matcher against silent regressions — a tweak that
+# started denying `git rm`, or stopped catching `a && rm b`, would fail here.
+#
+# Run: ./test rm-redirect    (or ./test for the full suite)
+#
+# ShellCheck: lint with `shellcheck --shell=bash tests/rm-redirect`.
+# This file is sourced, not executed — chmod 644.
+#
+# shellcheck source=tests/lib
+
+function _rm_redirect_run {
+  # Echo the hook's stdout for Bash command $1.
+  jq -n --arg c "$1" '{tool_name:"Bash", tool_input:{command:$c}}' \
+    | /bin/zsh "${SCRIPT_DIR}/claude/rm-redirect-hook"
+}
+
+function _rm_redirect_expect {
+  local want="$1" cmd="$2" label="${3:-$2}" out got
+  out="$(_rm_redirect_run "${cmd}")"
+  [[ "${out}" == *permissionDecision* ]] && got=DENY || got=PASS
+  if [[ "${got}" == "${want}" ]]; then
+    _pass "${want}: ${label}"
+  else
+    _fail "${label} — expected ${want}, got ${got}"
+  fi
+}
+
+function run_rm_redirect {
+  _section "rm → trash redirect hook"
+
+  # claude/ is gitignored and synced out of band — absent hook means the sync
+  # hasn't reached this machine, not a regression. Skip, don't die.
+  if [[ ! -f "${SCRIPT_DIR}/claude/rm-redirect-hook" ]]; then
+    _skip "claude/rm-redirect-hook absent — claude/ not yet synced to this machine"
+    return 0
+  fi
+
+  if ! [[ -x "$(command -v jq)" ]]; then
+    _skip "jq not installed (brew install jq)"
+    return
+  fi
+
+  # Real `rm` at a command position → DENY (redirect to trash).
+  _rm_redirect_expect DENY 'rm -rf foo'
+  _rm_redirect_expect DENY 'rm foo.txt'
+  _rm_redirect_expect DENY 'rm -rf ~/Documents/x/.ruff_cache'
+  _rm_redirect_expect DENY 'a && rm b'
+  _rm_redirect_expect DENY 'a; rm b'
+  _rm_redirect_expect DENY '(rm foo)'
+  _rm_redirect_expect DENY $'rm -rf a\nls' 'rm -rf a<NL>ls (multiline)'
+
+  # Escape hatch and non-rm command words → PASS (allowed through).
+  _rm_redirect_expect PASS '/bin/rm foo'             # script escape hatch
+  _rm_redirect_expect PASS 'sudo rm -rf /Library/x'  # trash can't elevate
+  _rm_redirect_expect PASS 'git rm foo'              # rm is an argument
+  _rm_redirect_expect PASS 'docker rm c1'
+  _rm_redirect_expect PASS 'npm rm pkg'
+  _rm_redirect_expect PASS 'echo rm'
+  _rm_redirect_expect PASS 'cd /tmp/rm-stuff && ls'  # rm inside a path
+  _rm_redirect_expect PASS 'trash foo'
+
+  # The deny message must name the replacement tool.
+  if [[ "$(_rm_redirect_run 'rm foo')" == *trash* ]]; then
+    _pass "deny reason names trash"
+  else
+    _fail "deny reason does not mention trash"
+  fi
+}

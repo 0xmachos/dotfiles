@@ -55,7 +55,14 @@ function run_hook_links {
             | /usr/bin/grep -oE '[~]/\.claude/[A-Za-z0-9._-]+' || true)
 
   if (( ${#dests[@]} == 0 )); then
-    _fail "No ~/.claude command references found in settings.json (extraction broke?)"
+    # Distinguish "settings.json configures no hook commands at all" (a minimal
+    # not-yet-synced config from a fresh claude/ bootstrap — legitimate) from
+    # "commands exist but none matched ~/.claude/" (extraction regression).
+    if [[ "$(jq '[.. | objects | .command // empty] | length' < "${settings}")" == "0" ]]; then
+      _skip "settings.json configures no hook commands — claude/ not yet synced"
+    else
+      _fail "No ~/.claude command references found in settings.json (extraction broke?)"
+    fi
     return
   fi
 

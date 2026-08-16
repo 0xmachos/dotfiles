@@ -1,0 +1,81 @@
+#!/bin/zsh
+# dotfiles/tests/okf
+#
+# Asserts the internals/ Open Knowledge Format (OKF) bundle is conformant and
+# its index is in sync with the concept frontmatter.
+#
+# Two checks:
+#   1. Conformance: every non-reserved internals/*.md declares the four
+#      frontmatter keys the OKF reference parser requires (type, title,
+#      description, timestamp), each with a non-empty value. Reserved files
+#      (index.md, log.md) are exempt per OKF SPEC.md sections 6-7.
+#   2. Freshness: regenerating the index into $TMPDIR yields a file
+#      byte-identical to internals/index.md. Catches a concept whose
+#      type/title/description changed without re-running the generator.
+#
+# Run: ./test okf    (or ./test for the full suite)
+#
+# ShellCheck: lint with `shellcheck --shell=bash tests/okf`.
+# This file is sourced, not executed — chmod 644.
+#
+# shellcheck source=tests/lib
+
+function _okf_frontmatter_has {
+  # _okf_frontmatter_has FILE KEY -> exit 0 if the leading frontmatter block
+  # declares KEY with a non-empty value, else 1.
+  /usr/bin/awk -v key="$2" '
+    NR == 1 && $0 != "---" { exit 1 }
+    NR == 1                { next }
+    $0 == "---"            { exit found ? 0 : 1 }
+    $0 ~ "^" key ":[[:space:]]*[^[:space:]]" { found = 1 }
+  ' "$1"
+}
+
+function _okf_check_conformance {
+  local bundle="${SCRIPT_DIR}/internals"
+  local file name key missing ok=1
+  local -a required=(type title description timestamp)
+
+  for file in "${bundle}"/*.md; do
+    [[ -f "${file}" ]] || continue
+    name="${file##*/}"
+    [[ "${name}" == "index.md" || "${name}" == "log.md" ]] && continue
+    missing=""
+    for key in "${required[@]}"; do
+      _okf_frontmatter_has "${file}" "${key}" || missing+="${key} "
+    done
+    if [[ -n "${missing}" ]]; then
+      _fail "okf: ${name} missing/empty frontmatter: ${missing}"
+      ok=0
+    fi
+  done
+
+  (( ok )) && _pass "Concept docs declare type, title, description, timestamp"
+}
+
+function _okf_check_freshness {
+  local committed="${SCRIPT_DIR}/internals/index.md"
+  local generated
+  generated="$(/usr/bin/mktemp "${TMPDIR}okf-index.XXXXXX")"
+  # shellcheck disable=SC2064  # expand path now, not on trap
+  trap "/bin/rm -f '${generated}'" EXIT
+
+  if ! "${SCRIPT_DIR}/bittersweet" okf-index "${generated}" >/dev/null; then
+    _fail "Freshness: \`bittersweet okf-index\` exited non-zero"
+    return
+  fi
+
+  if /usr/bin/diff -q "${committed}" "${generated}" >/dev/null 2>&1; then
+    _pass "internals/index.md matches generator output"
+  else
+    _fail "internals/index.md is stale — run: bittersweet okf-index"
+    /usr/bin/diff "${committed}" "${generated}" | /usr/bin/sed 's/^/      /' | /usr/bin/head -20
+  fi
+}
+
+function run_okf {
+  _section "OKF internals bundle"
+
+  _okf_check_conformance
+  _okf_check_freshness
+}
