@@ -9,19 +9,21 @@
 
 set -uo pipefail
 
-# Determine console user's home directory for shared log file
-CONSOLE_USER=$(stat -f '%Su' /dev/console)
-if [[ "${CONSOLE_USER}" != "root" && -n "${CONSOLE_USER}" ]]; then
-  LOG_FILE="$(dscl . -read "/Users/${CONSOLE_USER}" NFSHomeDirectory | awk '{print $2}')/Library/Logs/jump.log"
-  # jump-user appends to this same file as the console user. A file created by
-  # root is root-owned, and the user's appends then fail silently (root's own
-  # appends succeed regardless of owner). Ownership is fixed at creation and is
-  # not changed by appending, so setting it once here is sufficient.
-  /usr/bin/touch "${LOG_FILE}"
-  /usr/sbin/chown "${CONSOLE_USER}" "${LOG_FILE}"
-else
-  LOG_FILE="/var/log/jump.log"
-fi
+# Root logs only to /var/log, a root-owned directory.
+#
+# Earlier revisions pointed this at the console user's ~/Library/Logs/jump.log
+# so both drivers shared one file. That directory is user-writable, so the
+# final path component is attacker-controlled, and touch/chown/append all
+# follow symlinks: a symlink planted there redirected root's chown onto any
+# file on disk — a user-to-root escalation. No check-then-write guard fixes
+# that safely (it races), so root simply never touches a user-writable path.
+#
+# jump-user keeps its own ~/Library/Logs/jump.log. The two are correlated
+# through syslog, which both drivers already write via the com.0xmachos.jump
+# tag: log show --predicate 'eventMessage CONTAINS "com.0xmachos.jump"'
+# Not readonly: tests source this script and redirect LOG_FILE to a temp file,
+# and bin/jump-user declares its own the same way.
+LOG_FILE="/var/log/jump.log"
 
 function run_and_log {
   local description="$1"

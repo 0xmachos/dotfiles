@@ -37,6 +37,13 @@ function _ssh_redirect_expect {
 function run_ssh_redirect {
   _section "ssh → claude-alias redirect hook"
 
+  # claude/ is gitignored and synced out of band — absent hook means the sync
+  # hasn't reached this machine, not a regression. Skip, don't die.
+  if [[ ! -f "${SCRIPT_DIR}/claude/ssh-redirect-hook" ]]; then
+    _skip "claude/ssh-redirect-hook absent — claude/ not yet synced to this machine"
+    return 0
+  fi
+
   if ! [[ -x "$(command -v jq)" ]]; then
     _skip "jq not installed (brew install jq)"
     return

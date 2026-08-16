@@ -240,15 +240,3 @@ if [[ -d "${INITIAL_DIR}" ]]; then
   cd "${INITIAL_DIR}"
 fi
 
-
-# dcg: warn if hook was silently removed from Claude Code settings
-# Uses zsh builtin read + pattern match instead of jq to avoid spawning an
-# unsigned Homebrew binary that would be blocked by Santa FAA on settings.json
-if command -v dcg &>/dev/null && [[ -f "$HOME/.claude/settings.json" ]]; then
-  # shellcheck disable=SC2168 # local is valid at top-level in zsh
-  local _dcg_settings
-  _dcg_settings="$(<"$HOME/.claude/settings.json")"
-  if [[ "${_dcg_settings}" != *dcg* ]]; then
-    printf '\033[1;33m[dcg] Hook missing from ~/.claude/settings.json — run: dcg install\033[0m\n'
-  fi
-fi

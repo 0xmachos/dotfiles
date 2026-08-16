@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.0xmachos.container-start</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/opt/homebrew/bin/container</string>
+		<string>system</string>
+		<string>start</string>
+		<string>--disable-kernel-install</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>LowPriorityBackgroundIO</key>
+	<true/>
+</dict>
+</plist>

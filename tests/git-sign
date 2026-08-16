@@ -209,6 +209,13 @@ function _gs_push_expect {
 function run_git_sign {
   _section "git-sign hook + git-sign-unpushed"
 
+  # claude/ is gitignored and synced out of band — absent hook means the sync
+  # hasn't reached this machine, not a regression. Skip, don't die.
+  if [[ ! -f "${SCRIPT_DIR}/claude/git-sign-hook" ]]; then
+    _skip "claude/git-sign-hook absent — claude/ not yet synced to this machine"
+    return 0
+  fi
+
   if ! [[ -x "$(command -v jq)" ]]; then
     _skip "jq not installed (brew install jq)"
     return
