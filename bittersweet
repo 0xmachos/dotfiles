@@ -71,9 +71,8 @@ typeset -ra BITTERSWEET_SUBCOMMANDS=(
   'latex:Install LaTeX packages via tlmgr'
   'blockblock:Install BlockBlock'
   'oversight:Install OverSight'
-  'dcg:Install Destructive Command Guard (dcg)'
   'herald:Build and install herald (Bonjour/mDNS browser for Matter/Thread debugging)'
-  'claude:Install Claude Code and dcg'
+  'claude:Install Claude Code'
   'brew:Install Homebrew'
   'brewfile:Install Homebrew packages from Brewfile'
   'compinit:Fix permissions on zsh completion directory'
@@ -618,7 +617,7 @@ function install_dotfiles {
   local _harden_count=0
   local _error_count=0
 
-  local -ar dot_dirs=(.ssh .extra .codex .codex/rules .config/git .config/uv .config/dcg .claude .claude/skills .claude/rules)
+  local -ar dot_dirs=(.ssh .extra .codex .codex/rules .config/git .config/uv .claude .claude/skills .claude/rules)
   local -ar dot_files=(.zshrc .functions .completions .aliases)
   local -ar ssh_configs=(config .extra_ssh)
   local -ar git_configs=(config ignore allowed_signers)
@@ -699,9 +698,6 @@ function install_dotfiles {
   # Symlink npm config into $HOME/.npmrc (npm hardcodes ~/.npmrc)
   _symlink "${SCRIPT_DIR}/.config/npm/.npmrc" "${HOME}/.npmrc"
 
-  # Symlink dcg config into $HOME/.config/dcg/
-  _symlink "${SCRIPT_DIR}/.config/dcg/config.toml" "${HOME}/.config/dcg/config.toml"
-
   # Symlink codex config into $HOME/.codex/
   _symlink "${SCRIPT_DIR}/.codex/config.toml" "${HOME}/.codex/config.toml"
 
@@ -714,12 +710,6 @@ function install_dotfiles {
   # session before any repo AGENTS.md. Gitignored, so unlike a repo AGENTS.md it
   # may name hosts and aliases.
   _symlink "${SCRIPT_DIR}/.codex/AGENTS.md" "${HOME}/.codex/AGENTS.md"
-
-  # Codex dcg PreToolUse hook (adopted from the dcg 0.9.4 installer,
-  # 2026-08-06). Hooks are hashed and silently skipped until trusted once via
-  # /hooks inside Codex — trust is keyed per config path, per machine, so a
-  # fresh symlink or a new host needs a one-time /hooks approval.
-  _symlink "${SCRIPT_DIR}/.codex/hooks.json" "${HOME}/.codex/hooks.json"
 
   # Copy 1Password SSH agent config (1Password doesn't follow symlinks)
   _ensure_dir "${HOME}/.config/1Password/ssh"
@@ -1383,110 +1373,6 @@ function install_oversight {
 } 
 
 
-function install_dcg {
-  # install_dcg
-  #   Installs Destructive Command Guard (dcg) via GitHub releases API
-  #   https://github.com/Dicklesworthstone/destructive_command_guard
-  #   Claude Code PreToolUse hook — blocks destructive Bash commands
-  #   Not Apple codesigned; verified via SHA256 + Sigstore/cosign
-
-  local -r dcg_binary="/usr/local/bin/dcg"
-
-  if [[ -x "${dcg_binary}" ]]; then
-    # Upgrades handled by: sudo dcg update --verify (run by jump/jump-system)
-    echo "[🍺] dcg already installed"
-    return 0
-  fi
-
-  echo "[🍺] Installing dcg (Destructive Command Guard)"
-
-  local api_response
-  local tarball_url
-  local tarball_name
-  local tarball_path
-  local sha_url
-  local sha_path
-  local sigstore_url
-  local sigstore_path
-
-  api_response="$(curl -s "https://api.github.com/repos/Dicklesworthstone/destructive_command_guard/releases/latest")"
-
-  # Find the aarch64-apple-darwin tarball asset
-  # plutil array indexing: walk assets to find the right filename
-  local i=0
-  local asset_name
-  tarball_url=""
-  while true; do
-    asset_name="$(plutil -extract "assets.${i}.name" raw -o - -- - <<< "${api_response}" 2>/dev/null)" || break
-    if [[ "${asset_name}" == "dcg-aarch64-apple-darwin.tar.xz" ]]; then
-      tarball_url="$(plutil -extract "assets.${i}.browser_download_url" raw -o - -- - <<< "${api_response}")"
-      break
-    fi
-    (( i += 1 ))
-  done
-
-  if [[ -z "${tarball_url}" ]]; then
-    echo "[❌] Failed to find dcg-aarch64-apple-darwin.tar.xz in GitHub release"
-    return 1
-  fi
-
-  tarball_name="$(basename "${tarball_url}")"
-  tarball_path="${HOME}/Downloads/${tarball_name}"
-  sha_url="${tarball_url}.sha256"
-  sha_path="${tarball_path}.sha256"
-  sigstore_url="${tarball_url}.sigstore.json"
-  sigstore_path="${tarball_path}.sigstore.json"
-
-  # Download tarball + SHA256 checksum
-  download_application "${tarball_path}" "${tarball_url}"
-  download_application "${sha_path}" "${sha_url}"
-
-  # Verify SHA256
-  echo "[🍺] Verifying SHA256 checksum"
-  if ! (cd "${HOME}/Downloads" && shasum -a 256 -c "${sha_path}" >/dev/null); then
-    echo "[❌] SHA256 verification failed for ${tarball_name}"
-    rm -f "${tarball_path}" "${sha_path}"
-    return 1
-  fi
-  echo "[✅] SHA256 checksum verified"
-
-  # Verify Sigstore bundle if cosign is available
-  if command -v cosign &>/dev/null; then
-    download_application "${sigstore_path}" "${sigstore_url}"
-    echo "[🍺] Verifying Sigstore bundle with cosign"
-    if ! cosign verify-blob "${tarball_path}" --bundle "${sigstore_path}" --certificate-oidc-issuer="https://token.actions.githubusercontent.com" --certificate-identity-regexp="github.com/Dicklesworthstone/destructive_command_guard"; then
-      echo "[❌] Sigstore verification failed for ${tarball_name}"
-      rm -f "${tarball_path}" "${sha_path}" "${sigstore_path}"
-      return 1
-    fi
-    echo "[✅] Sigstore verification passed"
-    rm -f "${sigstore_path}"
-  else
-    echo "[⚠️ ] cosign not found — skipping Sigstore verification (SHA256 OK)"
-  fi
-
-  # Extract and install
-  echo "[🍺] Extracting ${tarball_name}"
-  if ! tar -xf "${tarball_path}" -C "${HOME}/Downloads"; then
-    echo "[❌] Failed to extract ${tarball_name}"
-    rm -f "${tarball_path}" "${sha_path}"
-    return 1
-  fi
-
-  get_sudo "to install dcg to /usr/local/bin"
-  if sudo install -m 755 "${HOME}/Downloads/dcg" "${dcg_binary}"; then
-    echo "[✅] Successfully installed dcg to ${dcg_binary}"
-  else
-    echo "[❌] Failed to install dcg to ${dcg_binary}"
-    rm -f "${HOME}/Downloads/dcg" "${tarball_path}" "${sha_path}"
-    return 1
-  fi
-
-  # Cleanup
-  rm -f "${HOME}/Downloads/dcg" "${tarball_path}" "${sha_path}"
-}
-
-
 function install_herald {
   # install_herald
   #   Clones / updates / builds / installs the herald Bonjour/mDNS browser CLI
@@ -1577,13 +1463,11 @@ function install_claude {
   #   Installs Claude Code via the official native installer
   #   https://claude.ai/install.sh
   #   Downloads the installer to ~/Downloads, executes it, then cleans up
-  #   Always calls install_dcg — DCG must be present when Claude Code is
 
   local -r claude_binary="${HOME}/.local/bin/claude"
 
   if [[ -x "${claude_binary}" ]]; then
     echo "[🍺] Claude Code already installed"
-    install_dcg
     return 0
   fi
 
@@ -1600,14 +1484,10 @@ function install_claude {
   else
     echo "[❌] Failed to install Claude Code"
     rm -f "${installer_path}"
-    install_dcg
     return 1
   fi
 
   rm -f "${installer_path}"
-
-  # DCG must always be installed alongside Claude Code
-  install_dcg
 }
 
 
@@ -1860,9 +1740,6 @@ function main {
       ;;
     oversight)
       install_oversight
-      ;;
-    dcg)
-      install_dcg
       ;;
     herald)
       install_herald

@@ -154,11 +154,6 @@ if [[ -d "$HOME/.docker/completions" ]]; then
   FPATH="$HOME/.docker/completions:$FPATH"
 fi
 
-# XDG data dir completions (dcg installs _dcg here)
-if [[ -d "$HOME/.local/share/zsh/site-functions" ]]; then
-  FPATH="$HOME/.local/share/zsh/site-functions:$FPATH"
-fi
-
 autoload -Uz compinit
 compinit
 
