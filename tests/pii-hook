@@ -1,13 +1,16 @@
 #!/bin/zsh
 # dotfiles/tests/pii-hook
 #
-# Exercises the global pre-commit scanner (.config/git/hooks/pre-commit) and
-# the hook-forward stub in a sandbox repo: literal denylist (content +
-# filename), MAC/UUID token detector (colon + dash forms, placeholder and
-# staged-.pii-allowlist exemptions, adjacency + cross-layer-bleed
-# regressions), SSH-alias derivation, PII_HOOK_BYPASS, invalid-regex
-# hard-blocks, TMPDIR normalisation, and the .git/hooks chain (direct,
-# linked-worktree, and forwarder).
+# Exercises the global pre-commit scanner (.config/git/hooks/pre-commit), the
+# commit-msg message gate (both backed by the shared pii-scan core since
+# 2026-08-17), and the hook-forward stub in a sandbox repo: literal denylist
+# (content + filename + message title/body), MAC/UUID token detector (colon +
+# dash forms, placeholder and staged-.pii-allowlist exemptions, adjacency +
+# cross-layer-bleed regressions), SSH-alias derivation, PII_HOOK_BYPASS,
+# invalid-regex hard-blocks, TMPDIR normalisation, message normalisation
+# (comment stripping + scissors truncation), the applypatch-msg symlink, the
+# --no-verify hole the pre-push message gate exists to close, and the
+# .git/hooks chain (direct, linked-worktree, message-rewrite, and forwarder).
 #
 # Real-looking fixture tokens are ASSEMBLED AT RUN TIME (string concatenation)
 # so this file never contains a regex-shaped token — otherwise committing the
@@ -61,6 +64,17 @@ function _pii_expect_pass {
   else
     _fail "${desc} — expected pass, hook blocked: ${hook_out}"
   fi
+}
+
+function _pii_msg_run {
+  # Run a message hook ($1: hook path) against ${pii_msgfile} from inside the
+  # sandbox. Extra KEY=VALUE args append after the default seams (env: last
+  # value wins). Results in hook_rc / hook_out globals.
+  local hook="$1"; shift
+  hook_rc=0
+  hook_out="$(cd "${pii_sandbox}" && \
+    env PII_HOOK_PATTERNS="${pii_seam_patterns}" PII_HOOK_SSH_CONFIG=/dev/null \
+        "$@" "${hook}" "${pii_msgfile}" 2>&1)" || hook_rc=$?
 }
 
 function run_pii_hook {
@@ -371,6 +385,100 @@ function run_pii_hook {
     _fail "hook-forward exits 0 when the repo has no hook — rc=${hook_rc}"
   fi
 
+  # --- commit-msg message gate (real global hook since 2026-08-17) ---
+
+  local msg_hook="${SCRIPT_DIR}/.config/git/hooks/commit-msg"
+  pii_msgfile="$(mktemp "${TMPDIR:-/tmp}/pii-hook-msg.XXXXXX")"
+
+  # 17. Clean message passes
+  printf 'retire the ledger\n\nBody prose.\n' > "${pii_msgfile}"
+  _pii_msg_run "${msg_hook}"
+  _pii_expect_pass "clean commit message passes"
+
+  # 18. Denylist hit in the TITLE line blocks (the title is just line one of
+  #     the message — no separate field to miss)
+  printf 'deployed to zorblefrobnicate\n' > "${pii_msgfile}"
+  _pii_msg_run "${msg_hook}"
+  _pii_expect_block "denylist hit in message title blocks" "PII pattern"
+
+  # 19. MAC-shaped token in the body blocks
+  printf 'swap NIC\n\nnew iface at %s\n' "${mac}" > "${pii_msgfile}"
+  _pii_msg_run "${msg_hook}"
+  _pii_expect_block "MAC token in message body blocks" "MAC/UUID"
+
+  # 20. Comment lines are stripped before scanning (the hook sees the
+  #     PRE-cleanup file — verified 2026-08-17 — so the status template and
+  #     `commit -v` diffs arrive as `#` lines and must not false-positive).
+  #     The `-m`-keeps-`#`-lines gap this opens is closed by the pre-push
+  #     stored-message scan (tests/git-sign).
+  printf 'clean subject\n# on branch zorblefrobnicate\n' > "${pii_msgfile}"
+  _pii_msg_run "${msg_hook}"
+  _pii_expect_pass "comment lines are not scanned"
+
+  # 21. Content below the scissors line is ignored (git stripspace does NOT
+  #     truncate there — the hook does it itself)
+  printf 'clean subject\n# ------------------------ >8 ------------------------\ndiff mentioning zorblefrobnicate\n' > "${pii_msgfile}"
+  _pii_msg_run "${msg_hook}"
+  _pii_expect_pass "content below the scissors line is not scanned"
+
+  # 22. PII_HOOK_BYPASS=1 skips the message scan, loudly
+  printf 'deployed to zorblefrobnicate\n' > "${pii_msgfile}"
+  _pii_msg_run "${msg_hook}" PII_HOOK_BYPASS=1
+  _pii_expect_pass "PII_HOOK_BYPASS=1 passes the message gate"
+  if [[ "${hook_out}" == *"SKIPPED"* ]]; then
+    _pass "message-gate bypass warns loudly"
+  else
+    _fail "message-gate bypass warns loudly — no SKIPPED warning in output"
+  fi
+
+  # 23. applypatch-msg is a working symlink to commit-msg (`git am` coverage;
+  #     git never runs a custom commit-msg for am — githooks(5))
+  printf 'am-applied zorblefrobnicate patch\n' > "${pii_msgfile}"
+  _pii_msg_run "${SCRIPT_DIR}/.config/git/hooks/applypatch-msg"
+  _pii_expect_block "applypatch-msg symlink scans too" "PII pattern"
+
+  # 24. Chain: the repo's own .git/hooks/commit-msg runs FIRST, its exit
+  #     propagates, and a message it REWRITES is scanned in rewritten form
+  printf '#!/bin/zsh\nexit 7\n' > "${pii_sandbox}/.git/hooks/commit-msg"
+  chmod 755 "${pii_sandbox}/.git/hooks/commit-msg"
+  printf 'clean subject\n' > "${pii_msgfile}"
+  _pii_msg_run "${msg_hook}"
+  if (( hook_rc == 7 )); then
+    _pass "chained commit-msg exit status propagates"
+  else
+    _fail "chained commit-msg exit status propagates — expected 7, got ${hook_rc}"
+  fi
+  # SC2016: single quotes deliberate — "$1" must expand when the generated
+  # hook RUNS, not when this test writes it.
+  # shellcheck disable=SC2016
+  printf '#!/bin/zsh\necho "ps: ran on zorblefrobnicate" >> "$1"\n' \
+    > "${pii_sandbox}/.git/hooks/commit-msg"
+  chmod 755 "${pii_sandbox}/.git/hooks/commit-msg"
+  printf 'clean subject\n' > "${pii_msgfile}"
+  _pii_msg_run "${msg_hook}"
+  _pii_expect_block "message rewritten by the chained hook is scanned" "PII pattern"
+  /bin/rm -f "${pii_sandbox}/.git/hooks/commit-msg"
+
+  # 25. End to end through real git: commit-msg fires on --allow-empty (the
+  #     ledger-event form), and --no-verify is the documented hole
+  local ge=(env PII_HOOK_PATTERNS="${pii_seam_patterns}" PII_HOOK_SSH_CONFIG=/dev/null
+            git -C "${pii_sandbox}" -c core.hooksPath="${SCRIPT_DIR}/.config/git/hooks")
+  if "${ge[@]}" commit -q --allow-empty -m "ledger event, clean" 2>/dev/null; then
+    _pass "real --allow-empty commit passes the gate"
+  else
+    _fail "real --allow-empty commit passes the gate — blocked"
+  fi
+  if "${ge[@]}" commit -q --allow-empty -m "event on zorblefrobnicate" 2>/dev/null; then
+    _fail "real commit with PII message — expected block, committed"
+  else
+    _pass "real commit with PII message blocks"
+  fi
+  if "${ge[@]}" commit -q --no-verify --allow-empty -m "event on zorblefrobnicate" 2>/dev/null; then
+    _pass "--no-verify bypasses commit-msg (pre-push message gate is the backstop)"
+  else
+    _fail "--no-verify bypasses commit-msg — unexpectedly blocked"
+  fi
+
   /bin/rm -rf "${pii_sandbox}" "${fwd_dir}"
-  /bin/rm -f "${pii_seam_patterns}"
+  /bin/rm -f "${pii_seam_patterns}" "${pii_msgfile}"
 }

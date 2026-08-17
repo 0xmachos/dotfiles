@@ -33,7 +33,14 @@
 # shellcheck source=tests/lib
 # shellcheck disable=SC2030,SC2031  # deliberate: GIT_CONFIG_* exports are scoped to sandbox subshells so the user's global config never leaks in (and vice versa)
 
-GS_ENV=(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null)
+# PII seams included: the pre-push hook gained an outgoing-message PII gate
+# (2026-08-17), and without the seams every sandbox push would scan against
+# the machine's real pattern list and live ssh aliases — nondeterministic.
+# /dev/null patterns = empty list (denylist skipped, token detector active).
+# Message-gate cases override per call: `env "${GS_ENV[@]}" PII_HOOK_PATTERNS=…`
+# — env last-value-wins.
+GS_ENV=(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+        PII_HOOK_PATTERNS=/dev/null PII_HOOK_SSH_CONFIG=/dev/null)
 
 function _gs_hook {
   # Echo the hook's stdout. $1 event, $2 command, $3 cwd, $4 tool_response.
@@ -128,9 +135,14 @@ function _gs_prepush_repo {
   local sb="$1"
   (
     export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+    export PII_HOOK_PATTERNS=/dev/null PII_HOOK_SSH_CONFIG=/dev/null
     mkdir -p "${sb}/hooks"
-    cp "${SCRIPT_DIR}/.config/git/hooks/pre-push" "${sb}/hooks/pre-push"
-    chmod 755 "${sb}/hooks/pre-push"
+    # pii-scan rides along: pre-push resolves it as a sibling (${0:A:h}), and
+    # without the copy the message gate reads as command-not-found → every
+    # push blocks for the wrong reason.
+    cp "${SCRIPT_DIR}/.config/git/hooks/pre-push" \
+       "${SCRIPT_DIR}/.config/git/hooks/pii-scan" "${sb}/hooks/"
+    chmod 755 "${sb}/hooks/pre-push" "${sb}/hooks/pii-scan"
     cd "${sb}" || exit 1
     ssh-keygen -t ed25519 -N '' -q -f key
     git init --bare -q remote.git
@@ -210,16 +222,24 @@ function run_git_sign {
   _section "git-sign hook + git-sign-unpushed"
 
   # claude/ is gitignored and synced out of band — absent hook means the sync
-  # hasn't reached this machine, not a regression. Skip, don't die.
+  # hasn't reached this machine, not a regression. Skip THOSE cases, don't
+  # die — and never skip the pre-push gate cases: they exercise
+  # .config/git/hooks/pre-push, which is tracked and always present, and
+  # became load-bearing when commit messages became the ledger (2026-08-17).
+  # Split into functions (zsh dynamic scoping keeps the claude cases' locals
+  # visible to the refusal cases they call).
   if [[ ! -f "${SCRIPT_DIR}/claude/git-sign-hook" ]]; then
-    _skip "claude/git-sign-hook absent — claude/ not yet synced to this machine"
-    return 0
+    _skip "claude/git-sign-hook absent — claude/ not yet synced (pre-push cases still run)"
+  elif ! [[ -x "$(command -v jq)" ]]; then
+    _skip "jq not installed (brew install jq)"
+  else
+    _git_sign_claude_cases
   fi
 
-  if ! [[ -x "$(command -v jq)" ]]; then
-    _skip "jq not installed (brew install jq)"
-    return
-  fi
+  _git_sign_prepush_cases
+}
+
+function _git_sign_claude_cases {
 
   # --- Commits are never pre-emptively unsigned (lock probe removed) ---
   _gs_expect PASS PreToolUse 'git commit -m x' '' '' 'commit is never rewritten'
@@ -479,6 +499,10 @@ fatal: failed to write commit object'
   fi
   /bin/rm -rf "${tworem:h}"
 
+  _git_sign_refusal_cases
+}
+
+function _git_sign_prepush_cases {
   # --- pre-push: the actual enforcement boundary ---
   local ppa ppb ppc ppd ppe
   ppa="$(_gs_prepush_repo "$(mktemp -d "${TMPDIR}git-sign-ppa.XXXXXX")")"
@@ -535,6 +559,83 @@ fatal: failed to write commit object'
   _gs_push_expect ALLOWED "300KB signed commit is not misread as unsigned" "${ppd}" git push origin main
   /bin/rm -rf "${ppd:h}"
 
+  # --- pre-push outgoing-message PII gate (messages are the ledger now) ---
+  # Fixture token assembled at run time so this file never contains it as a
+  # committed literal in a message context; seam patterns per-case via env
+  # last-value-wins over the GS_ENV /dev/null default.
+  local ppf msgpat
+  ppf="$(_gs_prepush_repo "$(mktemp -d "${TMPDIR}git-sign-ppf.XXXXXX")")"
+  msgpat="$(mktemp "${TMPDIR}git-sign-msgpat.XXXXXX")"
+  echo "zorblefrobnicate" > "${msgpat}"
+  (
+    export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+    export PII_HOOK_PATTERNS=/dev/null PII_HOOK_SSH_CONFIG=/dev/null
+    cd "${ppf}" || exit 1
+    # -n: bypass commit-msg deliberately — pre-push must catch what the
+    # commit-time gate missed. Signed, so the signature layer stays green.
+    echo m1 >> f; git add f
+    git commit -qn -S -m "redeployed zorblefrobnicate to prod"
+  )
+  _gs_push_expect BLOCKED "PII in an outgoing commit message" "${ppf}" \
+    env PII_HOOK_PATTERNS="${msgpat}" git push origin main
+  _gs_push_expect BLOCKED "GIT_SIGN_SKIP does not skip the message scan" "${ppf}" \
+    env PII_HOOK_PATTERNS="${msgpat}" GIT_SIGN_SKIP=1 git push origin main
+  (
+    export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+    export PII_HOOK_PATTERNS=/dev/null PII_HOOK_SSH_CONFIG=/dev/null
+    cd "${ppf}" || exit 1
+    git commit -qn -S --amend -m "redeployed the service to prod"
+  )
+  _gs_push_expect ALLOWED "reworded message pushes" "${ppf}" \
+    env PII_HOOK_PATTERNS="${msgpat}" git push origin main
+  # Bypass case takes a FRESH dirty commit and runs after the reword case:
+  # a bypassed push PUBLISHES the dirty tip, and amending it afterwards
+  # would diverge from the remote — the reword push would then block as a
+  # non-fast-forward, not as a gate verdict.
+  (
+    export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+    export PII_HOOK_PATTERNS=/dev/null PII_HOOK_SSH_CONFIG=/dev/null
+    cd "${ppf}" || exit 1
+    echo m1b >> f; git add f
+    git commit -qn -S -m "second note about zorblefrobnicate"
+  )
+  _gs_push_expect BLOCKED "control: fresh dirty message blocks" "${ppf}" \
+    env PII_HOOK_PATTERNS="${msgpat}" git push origin main
+  _gs_push_expect ALLOWED "PII_HOOK_BYPASS=1 overrides the message scan" "${ppf}" \
+    env PII_HOOK_PATTERNS="${msgpat}" PII_HOOK_BYPASS=1 git push origin main
+  # MAC-shaped token in a message blocks with NO denylist at all (layer 3).
+  local msgmac="0f:1e:2d:3c:4b"
+  msgmac="${msgmac}:5a"
+  (
+    export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+    export PII_HOOK_PATTERNS=/dev/null PII_HOOK_SSH_CONFIG=/dev/null
+    cd "${ppf}" || exit 1
+    echo m2 >> f; git add f
+    git commit -qn -S -m "swapped NIC ${msgmac} on the router"
+  )
+  _gs_push_expect BLOCKED "MAC token in a message (layer 3, empty denylist)" "${ppf}" \
+    git push origin main
+  (
+    export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+    export PII_HOOK_PATTERNS=/dev/null PII_HOOK_SSH_CONFIG=/dev/null
+    cd "${ppf}" || exit 1
+    git commit -qn -S --amend -m "swapped the router NIC"
+    # Non-signing repos get the message gate too (the old early-exit is gone).
+    git config commit.gpgsign false
+    git tag -a -m "milestone at zorblefrobnicate" leak-tag
+  )
+  _gs_push_expect BLOCKED "PII in an annotated tag message" "${ppf}" \
+    env PII_HOOK_PATTERNS="${msgpat}" git push origin leak-tag
+  (
+    export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+    cd "${ppf}" || exit 1
+    echo m3 >> f; git add f
+    git commit -qn --no-gpg-sign -m "note about zorblefrobnicate again"
+  )
+  _gs_push_expect BLOCKED "non-signing repo still gets the message gate" "${ppf}" \
+    env PII_HOOK_PATTERNS="${msgpat}" git push origin main
+  /bin/rm -rf "${ppf:h}" "${msgpat}"
+
   # Chains to the repo's own default-location pre-push.
   ppe="$(_gs_prepush_repo "$(mktemp -d "${TMPDIR}git-sign-ppe.XXXXXX")")"
   # Needs something to push: with the branch up to date git skips pre-push
@@ -574,17 +675,22 @@ fatal: failed to write commit object'
   shadow="$(mktemp -d "${TMPDIR}git-sign-shadow.XXXXXX")/repo"
   (
     export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+    export PII_HOOK_PATTERNS=/dev/null PII_HOOK_SSH_CONFIG=/dev/null
     mkdir -p "${shadow}"
     cd "${shadow:h}" || exit 1
     ssh-keygen -t ed25519 -N '' -q -f key
     git init --bare -q remote.git
     git -c init.defaultBranch=main init -q repo
     cd repo || exit 1
-    # Mirror the dotfiles layout: a repo-local hooksPath plus the chaining stub.
+    # Mirror the dotfiles layout: a repo-local hooksPath plus the chaining
+    # stub. pii-scan rides along — pre-push resolves it as a sibling, and
+    # without it the message gate is command-not-found and the internal push
+    # here dies at 127, taking the whole suite with it under set -e.
     mkdir -p .config/git/hooks .githooks
-    cp "${SCRIPT_DIR}/.config/git/hooks/pre-push" .config/git/hooks/pre-push
+    cp "${SCRIPT_DIR}/.config/git/hooks/pre-push" \
+       "${SCRIPT_DIR}/.config/git/hooks/pii-scan" .config/git/hooks/
     cp "${SCRIPT_DIR}/.githooks/pre-push" .githooks/pre-push
-    chmod 755 .config/git/hooks/pre-push .githooks/pre-push
+    chmod 755 .config/git/hooks/pre-push .config/git/hooks/pii-scan .githooks/pre-push
     git config user.name t
     git config user.email t@example.invalid
     git config gpg.format ssh
@@ -710,7 +816,10 @@ fatal: failed to write commit object'
   else
     _fail "core.hooksPath resolves to ${declared} — pre-push/pre-commit missing or not executable"
   fi
+}
 
+function _git_sign_refusal_cases {
+  # Uses ${repo}/${sandbox} from _git_sign_claude_cases via dynamic scope.
   # --- Compound commands are never reproduced with signing disabled ---
   local refusal_resp compound simple
   refusal_resp='Couldn'"'"'t sign message (signer): agent refused operation?
