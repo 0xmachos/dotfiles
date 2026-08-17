@@ -7,6 +7,19 @@ elsewhere. One entry per change, newest first. Explanatory content belongs in
 
 `TODOs.md` holds only open items.
 
+## 2026-08-17 — Restore Remote Control on this Mac; auto-mode environment seeded
+
+`claude/settings.json` gained `env.DO_NOT_TRACK: "0"`, adopting the second
+Mac's decision recorded in `internals/log.md` (2026-08-08, via
+`claude/rules/claude-config.md`, which has not yet synced here). The seed
+settings.json from the 2026-08-16 bootstrap lacked the override, so
+`.zshrc`'s `DO_NOT_TRACK=true` reached Claude Code unopposed and silently
+disabled Remote Control — the old `claude` alias that scrubbed it per-command
+was deliberately deleted earlier. Verified live after a Claude Code restart
+(`DO_NOT_TRACK=0` in-session). Same session, `/auto-mode-setup` wrote the
+`autoMode.environment` block into the same file. When the fuller `claude/`
+sync lands, merge settings.json — both additions are local-first.
+
 ## 2026-08-17 — dcg follow-through: internals retirement notes, TODO triage, poc trashed
 
 Completes the 2026-08-16 uninstall (committed `5fbd1db`). `internals/hooks.md`
