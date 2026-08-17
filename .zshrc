@@ -55,9 +55,10 @@ fi
 # Opt out of CLI tool telemetry. DO_NOT_TRACK is the cross-tool convention
 # (consoledonottrack.com) honoured by gh, Homebrew, Next.js, Turbo, Zola, etc.
 # NB: Claude Code treats its mere presence (any value) as a telemetry-disable
-# signal and silently disables Remote Control, so the `claude` alias in .aliases
-# scrubs it (env -u DO_NOT_TRACK) for that one command. GH_TELEMETRY=false opts
-# `gh` out independently.
+# signal and silently disables Remote Control; claude/settings.json counters
+# it with env.DO_NOT_TRACK: "0" for Claude Code alone (the old `claude` alias
+# that scrubbed it via env -u is gone). GH_TELEMETRY=false opts `gh` out
+# independently.
 export DO_NOT_TRACK=true
 export GH_TELEMETRY=false
 
