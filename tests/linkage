@@ -32,7 +32,6 @@ function run_linkage {
     [README.md]=repo
     [SECURITY.md]=repo
     [TODOs.md]=repo
-    [History.md]=repo                        # Completed-work ledger; TODOs.md holds only open items
     [CLAUDE.md]=repo                         # Claude Code repo guidance (untracked: global *claude* ignore)
     [.gitignore]=repo
     [.gitleaksignore]=repo
