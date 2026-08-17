@@ -1,1 +1,96 @@
-hook-forward
+#!/usr/bin/env zsh
+# .config/git/hooks/commit-msg
+#
+# Global commit-MESSAGE PII gate for EVERY repo, activated by the global
+# core.hooksPath declared in .config/git/config. Added 2026-08-17 when git
+# became this machine's completed-work ledger (History.md retired): messages
+# now carry ledger prose, and nothing else scanned them — the staged-content
+# pre-commit scanner never sees message text, and a hostname in a message
+# becomes permanent SIGNED history that the fail-closed pre-push gate makes
+# painful to rewrite. git-secrets ships the same hook for the same reason.
+#
+# `applypatch-msg` is a symlink to this file: `git am` never runs commit-msg
+# (githooks(5) — only the SAMPLE applypatch-msg chains to it), and both hook
+# types share the same contract ($1 = message file). ${0:t} keeps the
+# sentinel and the chain target per-hook-type.
+#
+# What this hook scans — the NORMALISED candidate message. Verified
+# empirically 2026-08-17 (git 2.54): commit-msg runs BEFORE --cleanup, so on
+# `git commit -v` $1 still holds the status template, the scissors line, and
+# the entire diff; scanning it raw would re-flag staged content the
+# pre-commit scanner already judged (and its allowlisted lines would not
+# match with their diff prefixes). Normalisation mirrors what git will
+# store: truncate at the scissors line (git stripspace does NOT do this),
+# then `git stripspace --strip-comments` (honours core.commentChar and
+# core.commentString; commentChar=auto falls back to `#`, which errs toward
+# scanning more, not less).
+#
+# KNOWN GAP, closed downstream: `git commit -m/-F` messages keep `#` lines
+# (whitespace cleanup), but normalisation strips them here, so a PII line
+# behind a `#` in a -m message passes this hook. The pre-push gate scans the
+# STORED message of every outgoing commit and catches it before publication.
+# Same for every path that skips commit-msg entirely: cherry-pick, revert,
+# plain rebase replay, commit-tree plumbing (all verified not to fire it),
+# and --no-verify. This hook is fast feedback; pre-push is the boundary.
+#
+# Secrets (gitleaks) are deliberately NOT checked here — the pre-push
+# message gate runs gitleaks over the whole outgoing range; doing it per
+# commit would double gitleaks latency machine-wide for no coverage gain.
+#
+# Bypass: --no-verify (whole hook, silent) or PII_HOOK_BYPASS=1 (scan
+# layers, loud — handled inside pii-scan).
+#
+# ShellCheck: lint with `shellcheck --shell=bash .config/git/hooks/commit-msg`.
+
+set -euo pipefail
+
+msgfile="$1"
+hook_type="${0:t}"
+
+# Re-entry guard, shared semantics with the sibling hooks: scoped to hook
+# name AND repo (a repo-A hook committing in repo B must not skip B's scan).
+sentinel="${hook_type}@$(git rev-parse --absolute-git-dir)"
+sentinel="${sentinel// /_}"
+case " ${GIT_GLOBAL_HOOKS_SEEN:-} " in
+  (*" ${sentinel} "*) exit 0 ;;
+esac
+export GIT_GLOBAL_HOOKS_SEEN="${GIT_GLOBAL_HOOKS_SEEN:-} ${sentinel}"
+
+# --- Layer 0: chain to the repo's own default-location hook -----------------
+
+# Runs BEFORE scanning: a repo hook may rewrite the message (commitlint
+# --fix style), and the final text is what must be scanned. Common git dir
+# for linked-worktree correctness; not --git-path (core.hooksPath re-entry —
+# see pre-commit).
+repo_hook="$(git rev-parse --git-common-dir)/hooks/${hook_type}"
+if [[ -x "${repo_hook}" && "${repo_hook:A}" != "${0:A}" ]]; then
+  "${repo_hook}" "$@" || exit $?
+fi
+
+# --- Normalise to what git will store ---------------------------------------
+
+scan_tmp="$(mktemp "${TMPDIR:-/tmp}/pii-msg.XXXXXX")"
+raw_tmp="$(mktemp "${TMPDIR:-/tmp}/pii-msg-raw.XXXXXX")"
+trap '/bin/rm -f "${scan_tmp}" "${raw_tmp}"' EXIT
+
+cchar="$(git config --get core.commentString 2>/dev/null \
+           || git config --get core.commentChar 2>/dev/null \
+           || echo '#')"
+[[ "${cchar}" == "auto" ]] && cchar='#'
+
+# Scissors truncation by hand (no pipeline; read loop keeps a final
+# unterminated line via `|| [[ -n ]]`, same as the pattern-list reader).
+scissors="${cchar} ------------------------ >8 ------------------------"
+while IFS= read -r line || [[ -n "${line}" ]]; do
+  [[ "${line}" == "${scissors}" ]] && break
+  print -r -- "${line}"
+done < "${msgfile}" > "${raw_tmp}"
+
+git stripspace --strip-comments < "${raw_tmp}" > "${scan_tmp}"
+
+# --- Layers 2+3: shared PII scanner -----------------------------------------
+
+if ! "${0:A:h}/pii-scan" "${scan_tmp}" "Commit message"; then
+  echo "     The message text is preserved in $(git rev-parse --git-dir)/COMMIT_EDITMSG." >&2
+  exit 1
+fi

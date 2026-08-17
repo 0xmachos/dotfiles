@@ -1,10 +1,19 @@
 #!/usr/bin/env zsh
 # .config/git/hooks/pre-push
 #
-# Global pre-push signature gate for EVERY repo, activated by the global
-# core.hooksPath declared in .config/git/config. Blocks a push that would
-# publish a commit with no `gpgsig` header, in any repo where commit.gpgsign
-# is on.
+# Global pre-push signature gate AND outgoing-message PII gate for EVERY
+# repo, activated by the global core.hooksPath declared in .config/git/config.
+# Blocks a push that would publish (a) a commit with no `gpgsig` header, in
+# any repo where commit.gpgsign is on, or (b) — since 2026-08-17, in every
+# repo — an outgoing commit or annotated-tag MESSAGE containing a PII
+# pattern, a real-looking MAC/UUID token, or a gitleaks secret. Messages are
+# the completed-work ledger now (History.md retired), and this is the LAST
+# gate before they become permanent: commit-msg is only fast feedback — it
+# never fires for cherry-pick, revert, plain rebase replay, plumbing, or
+# --no-verify commits, and it cannot see `#`-prefixed lines that `-m`
+# messages keep (all verified 2026-08-17). Scanning the STORED message of
+# every outgoing commit closes every one of those paths at once. For PII
+# there is no post-leak rotation — prevention here is the entire control.
 #
 # WHY THIS EXISTS RATHER THAN THE CLAUDE HOOK ALONE (2026-08-08). The
 # PreToolUse `claude/git-sign-hook` used to be the only barrier. A Codex
@@ -32,7 +41,14 @@
 # is the last barrier before a permanent, public SHA. Everything else here
 # fails open.
 #
-# Bypass: GIT_SIGN_SKIP=1 (loud) or `git push --no-verify` (silent, git-level).
+# Bypass: `git push --no-verify` (silent, git-level) skips everything;
+# GIT_SIGN_SKIP=1 (loud) skips the signature layer ONLY; PII_HOOK_BYPASS=1
+# (loud, inside pii-scan) skips the PII layers of the message scan while
+# gitleaks still runs — mirroring pre-commit.
+#
+# The outgoing walk now runs in every repo (it used to be skipped when
+# signing was off), so a diverged remote whose tip is not held locally
+# fail-closes every push, not just signing ones — `git fetch` first.
 #
 # ShellCheck: lint with `shellcheck --shell=bash .config/git/hooks/pre-push`.
 
@@ -76,18 +92,19 @@ fi
 
 # --- Layer 1: signature gate ------------------------------------------------
 
-if [[ -n "${GIT_SIGN_SKIP:-}" ]]; then
-  print -u2 "[⚠️ ] GIT_SIGN_SKIP=1 — pre-push signature gate skipped"
-  exit 0
-fi
-
-# Only gate repos that sign. `--bool` normalises yes/on/1/true; a literal
-# string compare read `yes` as "not signing" and let the push through
-# (Codex finding, 2026-08-08).
+# Only signature-gate repos that sign. `--bool` normalises yes/on/1/true; a
+# literal string compare read `yes` as "not signing" and let the push through
+# (Codex finding, 2026-08-08). The message gate below runs regardless — no
+# early exit for non-signing repos any more.
 typeset -i sign_commits=0 sign_tags=0
 [[ "$(git config --bool --get commit.gpgsign 2>/dev/null || true)" == "true" ]] && sign_commits=1
 [[ "$(git config --bool --get tag.gpgsign 2>/dev/null || true)" == "true" ]] && sign_tags=1
-(( sign_commits || sign_tags )) || exit 0
+
+if [[ -n "${GIT_SIGN_SKIP:-}" ]]; then
+  print -u2 "[⚠️ ] GIT_SIGN_SKIP=1 — pre-push signature gate skipped (message scan still runs)"
+  sign_commits=0
+  sign_tags=0
+fi
 
 # Presence of a `gpgsig` header in the raw commit object, not `%G?`: `%G?`
 # prints N for a *signed* SSH commit whenever gpg.ssh.allowedSignersFile is
@@ -128,17 +145,20 @@ function _tag_is_signed {
   [[ $'\n'"${out}" == *$'\n'-----BEGIN*SIGNATURE-----* ]]
 }
 
-typeset -a unsigned=() unsigned_tags=()
+typeset -a unsigned=() unsigned_tags=() outgoing=() tag_objs=()
 typeset -i unreadable=0
 
 # Gate the tag OBJECT when the ref being pushed is an annotated tag. Peeling to
-# commits (below) cannot see a tag's own signature.
+# commits (below) cannot see a tag's own signature — nor its own MESSAGE, so
+# annotated tags are collected for the message scan here too.
 function _check_tag {
   local ref="$1" obj="$2" objtype rc=0
   objtype="$(git cat-file -t "${obj}" 2>/dev/null || true)"
   if [[ "${objtype}" != tag ]]; then
     return 0
   fi
+  tag_objs+=("${obj}")
+  (( sign_tags )) || return 0
   _tag_is_signed "${obj}" || rc=$?
   if (( rc == 2 )); then
     unreadable=1
@@ -148,7 +168,21 @@ function _check_tag {
   return 0
 }
 
-# Walk a rev range and record every unsigned commit.
+# Annotated-tag message: `git cat-file tag` prints headers, a blank line,
+# then the message with any signature block appended after it. Drop the
+# header block and the signature (base64 armour would only feed the token
+# detector noise); a malformed object falls through unmodified, which errs
+# toward scanning MORE, not less.
+function _tag_message {
+  local out
+  out="$(git cat-file tag "$1" 2>/dev/null)" || return 0
+  out="${out#*$'\n\n'}"
+  out="${out%%-----BEGIN*}"
+  print -r -- "${out}"
+}
+
+# Walk a rev range: collect every outgoing commit for the message scan, and
+# record every unsigned one when the repo signs.
 #
 # The walk's exit status is captured, NOT discarded. `for sha in $(git rev-list
 # …)` swallowed it: an empty expansion ran the loop zero times and the hook
@@ -170,6 +204,8 @@ function _scan_range {
   # status, so the fail-closed rc==2 arm could never fire. It is also the form
   # that is safe under `set -e`.
   for sha in ${=revs}; do
+    outgoing+=("${sha}")
+    (( sign_commits )) || continue
     rc=0
     _is_signed "${sha}" || rc=$?
     if (( rc == 2 )); then
@@ -191,10 +227,11 @@ while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
   # only ever puts a tag object under refs/tags. Measured 2026-08-08 at ~55 ms
   # per ref end to end, so an unconditional probe doubled the cost of a
   # many-ref push (`--mirror`, `--all`) for refs that can never be tags.
-  if (( sign_tags )) && [[ "${local_ref}" == refs/tags/* ]]; then
+  # No longer gated on sign_tags: the message scan needs annotated tags in
+  # every repo.
+  if [[ "${local_ref}" == refs/tags/* ]]; then
     _check_tag "${local_ref}" "${local_sha}"
   fi
-  (( sign_commits )) || continue
 
   typeset -a range
   if [[ "${remote_sha}" == *[^0]* ]]; then
@@ -236,6 +273,57 @@ if (( ${#unsigned} )); then
   print -u2 "     blocked. Run \`git-sign-unpushed\` in the repo, then push again."
   print -u2 "     Override: GIT_SIGN_SKIP=1 git push …   (or git push --no-verify)"
   exit 1
+fi
+
+# --- Layer 2: outgoing-message PII/secret gate ------------------------------
+
+if (( ${#outgoing} || ${#tag_objs} )); then
+  msgs="$(mktemp "${TMPDIR:-/tmp}/pii-push-msgs.XXXXXX")"
+  trap '/bin/rm -f "${msgs}"' EXIT
+
+  # Stored messages, batched: one `git log --stdin` call however many commits
+  # are outgoing (a 1000-commit first push must not fork per sha), fed by
+  # here-string — a file, so an unread stream cannot SIGPIPE (see Layer 0).
+  # `commit <sha>` marker lines attribute hits; their hex cannot match either
+  # token shape or a hostname pattern.
+  {
+    if (( ${#outgoing} )); then
+      # shellcheck disable=SC2296  # ${(F)…} newline-join, zsh flag syntax --shell=bash cannot parse
+      git log --no-walk=unsorted --stdin --format='commit %H%n%B' \
+        <<< "${(F)outgoing}"
+    fi
+    typeset t
+    for t in "${tag_objs[@]}"; do
+      print -r -- "tag ${t}"
+      _tag_message "${t}"
+    done
+  } > "${msgs}"
+
+  # gitleaks over the messages — the pattern blessed in gitleaks issue #800
+  # (`git log --format=%B | gitleaks stdin`); gitleaks itself never scans
+  # message text in any git mode. Output captured, shown only on failure.
+  # Any nonzero rc blocks: 1 = leak found, >=2 = broken config — this gate
+  # fails closed either way.
+  if ! command -v gitleaks &>/dev/null; then
+    print -u2 "[❌] pre-push: gitleaks not found (brew install gitleaks); refusing to push unscanned messages."
+    exit 1
+  fi
+  typeset -i gl_rc=0
+  gl_out="$(gitleaks stdin < "${msgs}" 2>&1)" || gl_rc=$?
+  if (( gl_rc )); then
+    print -u2 "[❌] pre-push: gitleaks flagged outgoing commit/tag messages (rc=${gl_rc}):"
+    print -u2 "${gl_out}"
+    exit 1
+  fi
+
+  # PII layers (denylist + MAC/UUID tokens), shared with pre-commit and
+  # commit-msg. Failure means rewriting the unpushed range — that is the
+  # point: nothing here has been published yet.
+  if ! "${0:A:h}/pii-scan" "${msgs}" "Outgoing commit/tag messages"; then
+    print -u2 "     Rewrite the unpushed message(s) (git commit --amend / rebase -i reword),"
+    print -u2 "     re-sign if needed, then push again. Nothing has been published."
+    exit 1
+  fi
 fi
 
 exit 0

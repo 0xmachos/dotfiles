@@ -1,0 +1,12 @@
+#!/usr/bin/env zsh
+# .githooks/commit-msg
+# Chain to the global commit-message PII gate.
+#
+# This repo's local core.hooksPath (.githooks/) shadows the global hooks dir,
+# so the global commit-msg would otherwise never fire here — in the one repo
+# whose commit messages ARE the completed-work ledger (History.md retired
+# 2026-08-17). Repo-relative path so a fresh clone needs no configuration.
+
+set -euo pipefail
+
+"$(git rev-parse --show-toplevel)/.config/git/hooks/commit-msg" "$@"
