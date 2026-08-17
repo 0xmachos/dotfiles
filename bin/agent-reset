@@ -21,6 +21,12 @@
 #   $AGENT_RESET_HOME                    overrides $HOME (test seam)
 #
 # Subcommands: plan backup verify wipe restore offsite self-test
+#
+# Wipe exit codes: 0 = every in-scope repo handled; 2 = the wipe itself
+# succeeded but one or more repos were SKIPPED and still hold agent artifacts
+# (reconcile with `wipe <backup> --repos-only`); 1 = error. The 2026-08-15 run
+# exited 0 having silently skipped 25 of 33 repos — "completed" must never
+# again read as "everything was reset".
 
 import argparse
 import fnmatch
@@ -36,7 +42,10 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
+
+# Exit code for "wipe ran, but repos were skipped and still hold artifacts".
+EXIT_REPOS_SKIPPED = 2
 
 HOME = Path(os.environ.get("AGENT_RESET_HOME") or Path.home()).resolve()
 CONFIG_DIR = HOME / ".config" / "agent-reset"
@@ -313,6 +322,31 @@ def discover_repos():
         entry["backup_only"].extend(
             b for b in backup_only if b not in entry["backup_only"])
     return repos, skipped
+
+
+def _repo_tracked_artifacts(repo, artifacts):
+    tracked = []
+    for p in artifacts:
+        r = subprocess.run(["git", "-C", repo, "ls-files", "--error-unmatch",
+                            "--", str(p)], capture_output=True, text=True)
+        if r.returncode == 0:
+            tracked.append(p)
+    return tracked
+
+
+def _repo_plan_action(repo, info):
+    """What `wipe` would do to this repo, decided the same way it decides —
+    so `plan` can never again report clean on a run that will skip repos."""
+    tracked = _repo_tracked_artifacts(repo, info["artifacts"])
+    if not tracked:
+        return "delete (no tracked artifact — no commit made)"
+    art_rel = {os.path.relpath(str(p), repo) for p in info["artifacts"]}
+    r = subprocess.run(["git", "-C", repo, "status", "--porcelain"],
+                       capture_output=True, text=True)
+    blockers = _repo_commit_blockers(repo, art_rel, r.stdout.splitlines())
+    if blockers:
+        return "SKIP: %s" % "; ".join(blockers)
+    return "git rm + pathspec commit (%d tracked)" % len(tracked)
 
 
 def discover_memory_dirs():
@@ -660,6 +694,7 @@ def cmd_plan(_args):
 
     repos, skipped = discover_repos()
     print("\n== repos (%d) ==" % len(repos))
+    would_skip = 0
     for repo, info in sorted(repos.items()):
         arts = ", ".join(p.name if p.parent == Path(repo) else
                          str(p.relative_to(repo)) for p in info["artifacts"])
@@ -670,6 +705,17 @@ def cmd_plan(_args):
             print("      wipe: %s" % arts)
         if keep:
             print("      backup-only: %s" % keep)
+        # Dry-run the wipe-time repo decision. `plan` used to report only what
+        # WOULD be wiped, never what would be refused — so the 2026-08-15 plan
+        # read clean while the wipe went on to skip 25 of 33 repos.
+        if info["git"] and info["artifacts"]:
+            action = _repo_plan_action(repo, info)
+            print("      action: %s" % action)
+            if action.startswith("SKIP"):
+                would_skip += 1
+    if would_skip:
+        findings.append("%d repo(s) would be SKIPPED at wipe time — resolve "
+                        "before running the ritual" % would_skip)
 
     zips, loose = discover_downloads()
     print("\n== downloads-manual ingest ==")
@@ -745,9 +791,18 @@ def _hash_now(path):
     return None  # dirs have no hash
 
 
-def _collect_wipe_paths(repos):
-    """Top-level deletion targets, each tagged with its manifest scope."""
+def _collect_wipe_paths(repos, repos_only=False):
+    """Top-level deletion targets, each tagged with its manifest scope.
+
+    repos_only restricts the run to the in-repo leg — the reconcile path for
+    repos an earlier wipe skipped, without re-wiping (already-reset) global
+    state or re-rewriting ~/.claude.json."""
     out = []
+    if repos_only:
+        for repo, info in sorted(repos.items()):
+            for p in info["artifacts"]:
+                out.append(("repos", p))
+        return out
     if CLAUDE_DIR.is_dir():
         for child in sorted(CLAUDE_DIR.iterdir()):
             if claude_entry_action(child.name) == "wipe":
@@ -835,24 +890,74 @@ def _porcelain_unrelated(lines, art_rel):
     return unrelated
 
 
+def _rename_splits_artifacts(lines, art_rel):
+    """True if a staged rename has exactly one side in the artifact set — the
+    user is mid-refactor ON an artifact, and `git rm` would tear it in half."""
+    def is_art(path):
+        path = path.strip().strip('"')
+        return any(path == a or path.startswith(a + "/") for a in art_rel)
+
+    for line in lines:
+        if not line[:1] == "R":
+            continue
+        sides = line[3:].split(" -> ", 1)
+        if len(sides) == 2 and len({is_art(s) for s in sides}) == 2:
+            return True
+    return False
+
+
+def _repo_commit_blockers(repo, art_rel, status_lines):
+    """Reasons the neutral reset commit cannot be made safely.
+
+    Until 2026-08-17 ANY unrelated dirty path skipped the repo wholesale, to
+    stop a plain `git commit` (which commits the whole index) absorbing work
+    the ritual does not own. That gate was far too wide: on the 2026-08-15 run
+    it skipped 25 of 33 repos, 22 of which had no TRACKED artifact at all and
+    so would never have reached a commit in the first place. The commit is now
+    pathspec-limited to the artifacts, which cannot absorb anything else —
+    verified — so plain dirtiness is no longer a blocker. What remains:
+
+      - an in-progress merge/rebase/cherry-pick/revert/bisect: git refuses a
+        partial (pathspec) commit mid-merge, and mid-rebase HEAD is not the
+        user's branch tip;
+      - a staged rename with one side in the artifact set (above).
+    """
+    blockers = []
+    r = subprocess.run(["git", "-C", repo, "rev-parse", "--git-dir"],
+                       capture_output=True, text=True)
+    if r.returncode == 0 and r.stdout.strip():
+        gitdir = Path(repo) / r.stdout.strip() if not os.path.isabs(
+            r.stdout.strip()) else Path(r.stdout.strip())
+        for marker, why in (("MERGE_HEAD", "merge"),
+                            ("CHERRY_PICK_HEAD", "cherry-pick"),
+                            ("REVERT_HEAD", "revert"),
+                            ("BISECT_LOG", "bisect"),
+                            ("rebase-merge", "rebase"),
+                            ("rebase-apply", "rebase")):
+            if (gitdir / marker).exists():
+                blockers.append("%s in progress" % why)
+                break
+    if _rename_splits_artifacts(status_lines, art_rel):
+        blockers.append("staged rename of an artifact (in-flight refactor)")
+    return blockers
+
+
 def _repo_git_wipe(repo, artifacts, report):
     art_rel = {os.path.relpath(str(p), repo) for p in artifacts}
-    # Dirty gate first, tracked or not: a dirty repo is skipped wholesale
-    # (multi-session index discipline — never sweep someone else's work).
-    r = subprocess.run(["git", "-C", repo, "status", "--porcelain"],
-                       capture_output=True, text=True)
-    unrelated = _porcelain_unrelated(r.stdout.splitlines(), art_rel)
-    if unrelated:
-        report["skipped_repos"][repo] = ("unrelated dirty state (%d paths)"
-                                         % len(unrelated))
-        log("SKIP %s: unrelated dirty state — artifacts untouched" % repo)
-        return
-    tracked, untracked = [], []
-    for p in artifacts:
-        r = subprocess.run(["git", "-C", repo, "ls-files", "--error-unmatch",
-                            "--", str(p)], capture_output=True, text=True)
-        (tracked if r.returncode == 0 else untracked).append(p)
+    tracked = _repo_tracked_artifacts(repo, artifacts)
+    untracked = [p for p in artifacts if p not in tracked]
     if tracked:
+        # Only the commit path can touch work the ritual does not own, and
+        # only TRACKED artifacts reach it: with none, a repo full of unrelated
+        # dirt is still perfectly safe to reset (no commit is ever made).
+        r = subprocess.run(["git", "-C", repo, "status", "--porcelain"],
+                           capture_output=True, text=True)
+        blockers = _repo_commit_blockers(repo, art_rel, r.stdout.splitlines())
+        if blockers:
+            why = "; ".join(blockers)
+            report["skipped_repos"][repo] = why
+            log("SKIP %s: %s — artifacts untouched" % (repo, why))
+            return
         try:
             for p in tracked:
                 # -f: an artifact's own uncommitted edits must not block its
@@ -865,8 +970,15 @@ def _repo_git_wipe(repo, artifacts, report):
                                              % (exc.stderr or "").strip()[:200])
             log("SKIP %s: git rm failed — resolve manually" % repo)
             return
+        # Pathspec-limited: `git commit -- <artifacts>` records ONLY those
+        # paths and leaves the rest of the index staged and uncommitted, so a
+        # neutral reset commit can never absorb someone's in-flight work.
+        # A bare `git commit` here would commit the whole index — that hazard
+        # is what the old repo-wide dirty gate was compensating for.
         r = subprocess.run(["git", "-C", repo, "commit", "-q", "-m",
-                            GIT_COMMIT_MESSAGE], capture_output=True, text=True)
+                            GIT_COMMIT_MESSAGE, "--"]
+                           + [str(p) for p in tracked],
+                           capture_output=True, text=True)
         if r.returncode != 0:
             report["commit_failures"][repo] = r.stderr.strip()
             log("WARNING %s: artifacts removed but commit failed (%s) — "
@@ -974,16 +1086,20 @@ def cmd_wipe(args):
     repos, skipped = discover_repos()
     for path, why in skipped:
         log("SKIP (report-only, untouched): %s — %s" % (path, why))
-    targets = _collect_wipe_paths(repos)
+    targets = _collect_wipe_paths(repos, repos_only=args.repos_only)
 
     mem = discover_memory_dirs()                             # gate 7
     print("\nThis wipe will delete, permanently (backup: %s):" % bdir)
     print("  - %d top-level targets across %d scopes" %
           (len(targets), len({s for s, _ in targets})))
-    print("  - ALL %d agent memory directories:" % len(mem))
-    for m in mem:
-        print("      %s" % m)
-    print("  - ~/.claude.json project state (MCP entries preserved)")
+    if args.repos_only:
+        print("  - REPOS ONLY: %d repo(s); global state and ~/.claude.json "
+              "are NOT touched" % len(repos))
+    else:
+        print("  - ALL %d agent memory directories:" % len(mem))
+        for m in mem:
+            print("      %s" % m)
+        print("  - ~/.claude.json project state (MCP entries preserved)")
     if not args.yes:
         try:
             resp = input("Type WIPE to proceed: ")
@@ -1008,7 +1124,10 @@ def cmd_wipe(args):
             fail("files changed again DURING the topup — the system is not "
                  "quiescent; close whatever is writing and re-run")
 
-    if CLAUDE_JSON.is_file():
+    # Not under --repos-only: ~/.claude.json is neither read nor rewritten
+    # there, and re-copying would clobber the ORIGINAL pre-wipe snapshot that
+    # the first run left in this backup dir.
+    if CLAUDE_JSON.is_file() and not args.repos_only:
         shutil.copy2(str(CLAUDE_JSON), str(bdir / "claude.json.pre-wipe"))
 
     report = {"backup": str(bdir), "completed": False, "wiped": [],
@@ -1038,17 +1157,50 @@ def cmd_wipe(args):
                 raise
             except Exception as exc:  # noqa: BLE001 — reported, not hidden
                 report["errors"].append("repo %s: %s" % (repo, exc))
-        _rewrite_claude_json()
+        if not args.repos_only:
+            _rewrite_claude_json()
+        report["repos_only"] = bool(args.repos_only)
         report["completed"] = not report["errors"]
     finally:
-        _write_json_atomic(bdir / "wipe-report.json", report)
+        # Never clobber an earlier run's report: it is the only record of what
+        # that run wiped and skipped (the 2026-08-15 skip list is how the
+        # 25-repo gap was found at all).
+        report_path = bdir / "wipe-report.json"
+        if report_path.exists():
+            report_path = bdir / ("wipe-report-%s.json" % utc_stamp())
+        report["report_path"] = str(report_path)
+        _write_json_atomic(report_path, report)
     if report["errors"]:
         for e in report["errors"]:
             print("[agent-reset] ERROR (left in place): %s" % e,
                   file=sys.stderr)
         fail("wipe finished with %d error(s) — report: %s"
-             % (len(report["errors"]), bdir / "wipe-report.json"))
-    log("wipe complete — report: %s" % (bdir / "wipe-report.json"))
+             % (len(report["errors"]), report_path))
+    log("wipe complete — report: %s" % report_path)
+
+    # A skipped repo STILL HOLDS agent artifacts — the ritual is not done.
+    # This block and the non-zero exit exist because the 2026-08-15 run
+    # printed the checklist below and exited 0 with 25 repos left unreset.
+    # In-scope repos only. skipped_outside is out of scope BY DESIGN (a clone
+    # in ~/Desktop, a stale ~/.claude.json key): --repos-only can never
+    # reconcile it, so it stays report-only and must not raise the exit code.
+    unresolved = dict(report["skipped_repos"])
+    if unresolved:
+        print("\n" + "!" * 72)
+        print("ATTENTION: %d repo(s) were SKIPPED and still hold agent "
+              "artifacts:" % len(unresolved))
+        for path, why in sorted(unresolved.items()):
+            print("  %s\n      %s" % (path, why))
+        print("\nThe wipe itself succeeded; these are NOT reset. Resolve each "
+              "(finish the\nmerge/rebase, or handle it by hand), then "
+              "reconcile the in-repo leg with:\n"
+              "  agent-reset wipe %s --repos-only --topup" % bdir)
+        print("!" * 72)
+    if report["commit_failures"]:
+        print("\nWARNING: artifacts removed but NOT committed in %d repo(s) — "
+              "commit by hand:" % len(report["commit_failures"]))
+        for path in sorted(report["commit_failures"]):
+            print("  %s" % path)
     print("""
 Post-wipe checklist:
   1. Remove BOTH bypass aliases from ~/.aliases (claude + codex lines);
@@ -1060,7 +1212,11 @@ Post-wipe checklist:
      (prefer a gate/test/hook over a CLAUDE.md sentence).
   5. Consider an explicit cleanupPeriodDays in fresh settings (default
      30-day transcript auto-delete).
+  6. If any repo was reported SKIPPED above, the ritual is INCOMPLETE until
+     each is resolved and `wipe --repos-only` reconciles them.
 """)
+    if unresolved:
+        sys.exit(EXIT_REPOS_SKIPPED)
 
 
 # ------------------------------------------------------------------ restore
@@ -1260,6 +1416,21 @@ def cmd_self_test(_args):
     check("porcelain: rename between artifacts is related",
           _porcelain_unrelated(["R  CLAUDE.md -> .claude/old.md"], art) == [])
 
+    # The 2026-08-17 gate narrowing: unrelated dirt (staged or not) must NOT
+    # block a repo any more — only a rename that splits the artifact set.
+    check("rename guard: rename OUT of an artifact splits it",
+          _rename_splits_artifacts(["R  CLAUDE.md -> docs.md"], art))
+    check("rename guard: rename INTO an artifact splits it",
+          _rename_splits_artifacts(["R  docs.md -> CLAUDE.md"], art))
+    check("rename guard: rename between artifacts does NOT split",
+          not _rename_splits_artifacts(
+              ["R  CLAUDE.md -> .claude/old.md"], art))
+    check("rename guard: unrelated rename does NOT split",
+          not _rename_splits_artifacts(["R  a.c -> b.c"], art))
+    check("rename guard: staged unrelated edits do NOT split",
+          not _rename_splits_artifacts(
+              ["M  src/main.c", "A  new.txt", " M other.txt"], art))
+
     if failures:
         fail("self-test: %d failure(s)" % len(failures))
     log("self-test OK (%d checks)" % len(ran))
@@ -1288,6 +1459,10 @@ def main():
                         help="skip typed confirmation (list still printed)")
     p_wipe.add_argument("--topup", action="store_true",
                         help="archive files changed since backup, then wipe")
+    p_wipe.add_argument("--repos-only", action="store_true",
+                        help="wipe only the in-repo leg (reconcile repos a "
+                             "previous run skipped); global state and "
+                             "~/.claude.json are left alone")
     p_wipe.add_argument("--force", action="store_true",
                         help="allow wipe despite running agent processes "
                              "(typed confirmation still required)")

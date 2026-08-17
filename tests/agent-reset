@@ -86,6 +86,9 @@ EOF
   # the leftover sweep must delete it (adversarial-review finding).
   echo '{"grants":[]}' > "${repo}/.claude/settings.local.json"
 
+  # Unrelated WORKTREE dirt next to a tracked artifact. Until 2026-08-17 this
+  # skipped the whole repo; the commit is now pathspec-limited, so the repo is
+  # reset and the unrelated edit stays uncommitted in the worktree.
   local dirty="${fix}/Documents/Projects/dirtyrepo"
   mkdir -p "${dirty}"
   git -C "${dirty}" init -q &&
@@ -94,6 +97,53 @@ EOF
     git -C "${dirty}" add CLAUDE.md other.txt &&
     git -C "${dirty}" commit -q -m 'fixture' || return 1
   echo 'v2' > "${dirty}/other.txt"
+
+  # Unrelated work STAGED in the index next to a tracked artifact — the shape
+  # that stranded the real-world case. The reset commit must record ONLY the
+  # artifact; the staged work must survive, still staged, still uncommitted.
+  local staged="${fix}/Documents/Projects/stagedrepo"
+  mkdir -p "${staged}/.claude"
+  git -C "${staged}" init -q &&
+    echo '# tracked instructions' > "${staged}/CLAUDE.md" &&
+    echo 'skill' > "${staged}/.claude/skill.md" &&
+    echo 'v1' > "${staged}/inflight.c" &&
+    git -C "${staged}" add CLAUDE.md .claude/skill.md inflight.c &&
+    git -C "${staged}" commit -q -m 'fixture' || return 1
+  echo 'v2 IN FLIGHT' > "${staged}/inflight.c"
+  echo 'brand new' > "${staged}/added.c"
+  git -C "${staged}" add inflight.c added.c || return 1
+
+  # No TRACKED artifact (the machine-global *claude* ignore makes this the
+  # common case) + heavy unrelated dirt: no commit is ever made, so there is
+  # nothing to absorb — must be deleted outright, dirt untouched.
+  local untr="${fix}/Documents/Projects/untrackedrepo"
+  mkdir -p "${untr}/.claude"
+  git -C "${untr}" init -q &&
+    echo 'v1' > "${untr}/src.c" &&
+    git -C "${untr}" add src.c &&
+    git -C "${untr}" commit -q -m 'fixture' || return 1
+  echo '# untracked instructions' > "${untr}/CLAUDE.md"
+  echo '{}' > "${untr}/.claude/settings.json"
+  echo 'v2 dirty' > "${untr}/src.c"
+  echo 'also dirty' > "${untr}/stray.c"
+
+  # Mid-merge: git refuses a pathspec commit here, so the repo MUST be
+  # skipped — the one dirty-state case that is still a genuine blocker.
+  local merging="${fix}/Documents/Projects/mergerepo"
+  mkdir -p "${merging}"
+  git -C "${merging}" init -q &&
+    echo '# tracked instructions' > "${merging}/CLAUDE.md" &&
+    echo 'base' > "${merging}/conflict.txt" &&
+    git -C "${merging}" add CLAUDE.md conflict.txt &&
+    git -C "${merging}" commit -q -m 'fixture' &&
+    git -C "${merging}" checkout -q -b side &&
+    echo 'side' > "${merging}/conflict.txt" &&
+    git -C "${merging}" commit -q -am 'side' &&
+    git -C "${merging}" checkout -q main &&
+    echo 'main' > "${merging}/conflict.txt" &&
+    git -C "${merging}" commit -q -am 'main' || return 1
+  git -C "${merging}" merge side > /dev/null 2>&1  # conflicts on purpose
+  [[ -f "${merging}/.git/MERGE_HEAD" ]] || return 1
 
   # Artifact-dirty repo: the ONLY dirt is an edited tracked artifact — must
   # proceed (git rm -f), not crash and not skip.
@@ -206,6 +256,14 @@ run_agent_reset() {
   else
     _fail "plan modified the fixture"
   fi
+  # plan must predict the wipe-time repo decision — it used to report only
+  # what WOULD be wiped, so a run that went on to skip repos looked clean.
+  if [[ "${out}" == *"action: SKIP: merge in progress"* \
+     && "${out}" == *"would be SKIPPED at wipe time"* ]]; then
+    _pass "plan predicts and flags the repos wipe would skip"
+  else
+    _fail "plan did not flag the would-be-skipped repo"
+  fi
 
   # 3. backup, then wipe must refuse without a verify stamp
   local bdir=""
@@ -271,11 +329,16 @@ run_agent_reset() {
     _fail "changed-file gate did not trigger (rc=${rc})"
   fi
 
-  # 8. happy-path wipe with --topup
+  # 8. happy-path wipe with --topup. Exit 2 (not 0) because the fixture holds
+  #    a mid-merge repo that must be skipped — a wipe that leaves ANY repo
+  #    unreset must never exit 0 again (the 2026-08-15 silent-success bug).
   rc=0
   out="$(_ar_run "${fix}" "${quiet}" wipe "${bdir}" --yes --topup 2>&1)" || rc=$?
-  if [[ ${rc} -eq 0 ]]; then
-    _pass "wipe completes with --topup"
+  if [[ ${rc} -eq 2 ]]; then
+    _pass "wipe completes, exits 2 for the skipped repo"
+  elif [[ ${rc} -eq 0 ]]; then
+    _fail "wipe exited 0 despite skipping a repo (silent success)"
+    return 0
   else
     _fail "wipe failed (rc=${rc}): $(echo "${out}" | tail -3)"
     return 0
@@ -363,11 +426,62 @@ EOF
   else
     _fail "artifact-dirty repo mishandled (last commit: ${msg})"
   fi
-  # dirty repo: skipped entirely
-  if [[ -f "${fix}/Documents/Projects/dirtyrepo/CLAUDE.md" ]]; then
-    _pass "dirty repo skipped (artifacts untouched)"
+  # worktree-dirty repo: now RESET, with the unrelated edit left uncommitted
+  local _git="env GIT_CONFIG_GLOBAL=${fix}/gitconfig GIT_CONFIG_NOSYSTEM=1 git"
+  if [[ ! -e "${fix}/Documents/Projects/dirtyrepo/CLAUDE.md" ]]; then
+    _pass "worktree-dirty repo reset (unrelated dirt no longer blocks)"
   else
-    _fail "dirty repo was swept"
+    _fail "worktree-dirty repo still skipped"
+  fi
+  if [[ "$(cat "${fix}/Documents/Projects/dirtyrepo/other.txt")" == "v2" ]] \
+     && ${=_git} -C "${fix}/Documents/Projects/dirtyrepo" diff --quiet \
+        -- other.txt; then
+    _fail "unrelated worktree edit was committed by the reset"
+  else
+    _pass "unrelated worktree edit survives, still uncommitted"
+  fi
+
+  # staged-work repo: reset commit must contain ONLY the artifacts
+  local sfiles srepo="${fix}/Documents/Projects/stagedrepo"
+  sfiles="$(${=_git} -C "${srepo}" show --name-only --format= HEAD | sort | tr '\n' ' ')"
+  if [[ ! -e "${srepo}/CLAUDE.md" && ! -e "${srepo}/.claude" \
+     && "${sfiles}" == ".claude/skill.md CLAUDE.md " ]]; then
+    _pass "staged-work repo reset; commit holds artifacts only"
+  else
+    _fail "staged-work repo commit wrong (files: ${sfiles})"
+  fi
+  if [[ "$(${=_git} -C "${srepo}" diff --cached --name-only | sort | tr '\n' ' ')" \
+        == "added.c inflight.c " ]]; then
+    _pass "in-flight staged work still staged, not absorbed"
+  else
+    _fail "in-flight staged work was absorbed or dropped"
+  fi
+
+  # no-tracked-artifact repo: deleted outright, no commit, dirt untouched
+  local urepo="${fix}/Documents/Projects/untrackedrepo"
+  if [[ ! -e "${urepo}/CLAUDE.md" && ! -e "${urepo}/.claude" ]]; then
+    _pass "untracked artifacts deleted despite unrelated dirt"
+  else
+    _fail "untracked-artifact repo was skipped over unrelated dirt"
+  fi
+  if [[ "$(${=_git} -C "${urepo}" log --oneline | wc -l | tr -d ' ')" == "1" \
+     && "$(cat "${urepo}/src.c")" == "v2 dirty" \
+     && -f "${urepo}/stray.c" ]]; then
+    _pass "no commit made and unrelated dirt untouched"
+  else
+    _fail "untracked-artifact repo gained a commit or lost dirt"
+  fi
+
+  # mid-merge repo: the one dirty state that still blocks
+  if [[ -f "${fix}/Documents/Projects/mergerepo/CLAUDE.md" ]]; then
+    _pass "mid-merge repo skipped (pathspec commit impossible)"
+  else
+    _fail "mid-merge repo was swept"
+  fi
+  if [[ "${out}" == *"merge in progress"* && "${out}" == *"ATTENTION"* ]]; then
+    _pass "skipped repos reported loudly at end of wipe"
+  else
+    _fail "skipped repos not surfaced in the wipe summary"
   fi
   # HOME-as-project + out-of-scope stray: the critical review findings —
   # HOME never becomes a repo (keep-survivor checks above prove ~/.claude
