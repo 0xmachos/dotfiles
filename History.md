@@ -7,6 +7,22 @@ elsewhere. One entry per change, newest first. Explanatory content belongs in
 
 `TODOs.md` holds only open items.
 
+## 2026-08-17 — dcg follow-through: internals retirement notes, TODO triage, poc trashed
+
+Completes the 2026-08-16 uninstall (committed `5fbd1db`). `internals/hooks.md`
+got a Santa-style retired banner on its dcg section (frontmatter updated,
+index regenerated) and `internals/codex-cli.md` a banner on the hooks.json
+section recording the open consequence: the two Codex redirect hooks lived in
+`.codex/hooks.json`, whose deploy line is gone — re-homing them is now a
+TODOs.md Future Work entry, along with stripping the dcg hook from the fuller
+`claude/settings.json` when it syncs. Eight dcg TODO entries triaged out (all
+moot, already filed upstream, or verified DO-NOT-FILE); three residual
+mentions in other entries re-tensed. `poc/dcg-eval-bench/` (bench results +
+unfiled issue drafts) trashed — the upstream filings end at #268/#269/#279,
+already public. The bisect rustup toolchain (`~/.cargo`/`~/.rustup`, ~1.2 GB,
+rustup shims only, no rc wiring) trashed too, on an explicit go-ahead after
+auto-mode declined the inferred authorisation.
+
 ## 2026-08-16 — Uninstall dcg; remove all its repo tooling
 
 Claude now runs in automode, so the dcg pre-exec guard was retired wholesale
