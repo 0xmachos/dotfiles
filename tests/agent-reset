@@ -502,6 +502,38 @@ EOF
     _fail "no wipe report"
   fi
 
+  # 8b. --repos-only reconcile: resolve the blocker, re-run the in-repo leg
+  #     alone. Global state is already wiped and must not be re-processed,
+  #     and the first run's report must survive as the record of what it did.
+  ${=_git} -C "${fix}/Documents/Projects/mergerepo" merge --abort > /dev/null 2>&1
+  local claude_json_before
+  claude_json_before="$(cat "${fix}/.claude.json")"
+  rc=0
+  out="$(_ar_run "${fix}" "${quiet}" wipe "${bdir}" --yes --topup \
+        --repos-only 2>&1)" || rc=$?
+  if [[ ${rc} -eq 0 && ! -e "${fix}/Documents/Projects/mergerepo/CLAUDE.md" ]]; then
+    _pass "--repos-only reconciles a previously skipped repo (exit 0)"
+  else
+    _fail "--repos-only reconcile failed (rc=${rc})"
+  fi
+  if [[ "${out}" == *"REPOS ONLY"* && "${out}" != *"memory directories"* ]]; then
+    _pass "--repos-only announces its narrowed scope"
+  else
+    _fail "--repos-only scope banner wrong"
+  fi
+  if [[ "$(cat "${fix}/.claude.json")" == "${claude_json_before}" \
+     && -f "${fix}/.claude/papercuts.md" ]]; then
+    _pass "--repos-only leaves ~/.claude.json and global state alone"
+  else
+    _fail "--repos-only touched out-of-leg state"
+  fi
+  if [[ -f "${bdir}/wipe-report.json" ]] \
+     && ls "${bdir}"/wipe-report-*.json > /dev/null 2>&1; then
+    _pass "re-run writes a new report, first run's report preserved"
+  else
+    _fail "wipe-report.json was clobbered by the re-run"
+  fi
+
   # 9. restore round-trip: bring projects/ back from the archive
   rc=0
   _ar_run "${fix}" "${quiet}" restore "${bdir}" --scope global-claude \
