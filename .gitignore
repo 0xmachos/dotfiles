@@ -19,6 +19,9 @@ poc/
 
 # PII patterns for pre-commit hook
 .githooks/pii-patterns
+# ...and any backup/variant of it: the pattern list is literal PII, and a stray
+# .bak from an edit is exactly as sensitive as the original.
+.githooks/pii-patterns.*
 # Host-local MCP server config (absolute per-user paths)
 .mcp.json
 
