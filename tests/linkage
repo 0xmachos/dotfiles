@@ -97,7 +97,7 @@ function run_linkage {
     [bao-mcp-env]=install_dotfiles
   )
 
-  # claude/ files → owning subcommand (rules/ and skills/ are dynamic)
+  # claude/ files → owning subcommand (rules/, skills/ and agents/ are dynamic)
   local -A claude_items=(
     [settings.json]=install_dotfiles
     [global-claude.md]=install_dotfiles
@@ -116,6 +116,7 @@ function run_linkage {
     [output-styles]=install_dotfiles         # Dynamic (custom output styles)
     [rules]=install_dotfiles                 # Dynamic (individual rules)
     [skills]=install_dotfiles                # Dynamic (individual skills)
+    [agents]=install_dotfiles                # Dynamic (individual subagents)
   )
 
   # LaunchAgent plists must each be in install_launchagents
