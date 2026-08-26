@@ -617,7 +617,7 @@ function install_dotfiles {
   local _harden_count=0
   local _error_count=0
 
-  local -ar dot_dirs=(.ssh .extra .codex .codex/rules .config/git .config/uv .claude .claude/skills .claude/rules)
+  local -ar dot_dirs=(.ssh .extra .codex .codex/rules .config/git .config/uv .claude .claude/skills .claude/rules .claude/agents)
   local -ar dot_files=(.zshrc .functions .completions .aliases)
   local -ar ssh_configs=(config .extra_ssh)
   local -ar git_configs=(config ignore allowed_signers)
@@ -742,6 +742,17 @@ function install_dotfiles {
     [[ -f "${rule_file}" ]] || continue
     rule_name="${rule_file##*/}"
     _symlink "${rule_file}" "${HOME}/.claude/rules/${rule_name}"
+  done
+
+  # Symlink Claude Code subagents into $HOME/.claude/agents/
+  # Per-file rather than a claude_files entry so individual agents sync
+  # independently; inside the null_glob scope opened above so an absent or
+  # empty claude/agents/ on a partially-synced clone cannot abort the deploy
+  local agent_file agent_name
+  for agent_file in "${SCRIPT_DIR}"/claude/agents/*.md; do
+    [[ -f "${agent_file}" ]] || continue
+    agent_name="${agent_file##*/}"
+    _symlink "${agent_file}" "${HOME}/.claude/agents/${agent_name}"
   done
 
   # Symlink API wrapper scripts into ~/.local/bin/ (ahead of /opt/homebrew/bin
