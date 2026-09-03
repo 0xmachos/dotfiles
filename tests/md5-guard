@@ -1,0 +1,150 @@
+#!/bin/zsh
+# dotfiles/tests/md5-guard
+#
+# Behavioural test for claude/md5-guard-hook — the PreToolUse hook that denies
+# MD5 checksum tools and points the model at `shasum -a 256`. Feeds commands to
+# the hook as stdin JSON and asserts the verdict: DENY for md5/md5sum/gmd5sum/
+# md5deep and `openssl md5` at a command position (including through wrappers,
+# subshells and command substitution), PASS for lookalikes (`echo md5`, a path
+# containing md5, `--grep=md5`), for the SHA-256 replacements, and for the
+# MD5_GUARD_SKIP=1 bypass.
+#
+# Guards the command-position matcher against silent regressions in both
+# directions — a tweak that started denying `brew install md5deep`, or stopped
+# catching `a && md5 b`, would fail here.
+#
+# Run: ./test md5-guard    (or ./test for the full suite)
+#
+# ShellCheck: lint with `shellcheck --shell=bash tests/md5-guard`.
+# This file is sourced, not executed — chmod 644.
+#
+# shellcheck source=tests/lib
+
+function _md5_guard_run {
+  # Echo the hook's stdout for Bash command $1.
+  jq -n --arg c "$1" '{tool_name:"Bash", tool_input:{command:$c}}' \
+    | /bin/zsh "${SCRIPT_DIR}/claude/md5-guard-hook"
+}
+
+function _md5_guard_expect {
+  local want="$1" cmd="$2" label="${3:-$2}" out got
+  out="$(_md5_guard_run "${cmd}")"
+  [[ "${out}" == *permissionDecision* ]] && got=DENY || got=PASS
+  if [[ "${got}" == "${want}" ]]; then
+    _pass "${want}: ${label}"
+  else
+    _fail "${label} — expected ${want}, got ${got}"
+  fi
+}
+
+function run_md5_guard {
+  _section "md5 → sha256 guard hook"
+
+  # claude/ is gitignored and synced out of band — absent hook means the sync
+  # hasn't reached this machine, not a regression. Skip, don't die.
+  if [[ ! -f "${SCRIPT_DIR}/claude/md5-guard-hook" ]]; then
+    _skip "claude/md5-guard-hook absent — claude/ not yet synced to this machine"
+    return 0
+  fi
+
+  if ! [[ -x "$(command -v jq)" ]]; then
+    _skip "jq not installed (brew install jq)"
+    return
+  fi
+
+  # MD5 tools at a command position → DENY.
+  _md5_guard_expect DENY 'md5 file.txt'
+  _md5_guard_expect DENY 'md5sum foo'
+  _md5_guard_expect DENY 'gmd5sum foo'
+  _md5_guard_expect DENY 'md5deep -r .'
+  _md5_guard_expect DENY 'md5 -s hello'          # string mode is still MD5
+  _md5_guard_expect DENY '/sbin/md5 x'           # absolute path, basename match
+  _md5_guard_expect DENY '/usr/local/bin/md5sum x'
+
+  # openssl's two MD5 spellings → DENY.
+  _md5_guard_expect DENY 'openssl md5 f'
+  _md5_guard_expect DENY 'openssl dgst -md5 f'
+
+  # Seen through env-var prefixes and wrappers → DENY.
+  _md5_guard_expect DENY 'sudo md5sum /etc/hosts'
+  _md5_guard_expect DENY 'timeout 5 md5 f'
+  _md5_guard_expect DENY 'env md5 f'
+  _md5_guard_expect DENY 'nice -n 10 md5 f'
+  _md5_guard_expect DENY 'FOO=bar md5 f'
+  _md5_guard_expect DENY 'xargs md5'
+
+  # Every command position in a compound command → DENY.
+  _md5_guard_expect DENY 'a && md5 b'
+  _md5_guard_expect DENY 'a; md5 b'
+  _md5_guard_expect DENY 'a || md5 b'
+  _md5_guard_expect DENY 'cat f | md5'
+  _md5_guard_expect DENY '(md5 f)'
+  # Single quotes are the point: the fixture is a literal command string that
+  # must reach the hook unexpanded.
+  # shellcheck disable=SC2016
+  _md5_guard_expect DENY 'echo $(md5 f)'         # command substitution
+  # shellcheck disable=SC2016
+  _md5_guard_expect DENY 'x `md5 f`'             # backtick substitution
+  _md5_guard_expect DENY $'ls\nmd5 f' 'ls<NL>md5 f (multiline)'
+
+  # Lookalikes and the SHA-256 replacements → PASS.
+  _md5_guard_expect PASS 'echo md5'                    # not a command position
+  _md5_guard_expect PASS 'grep md5 file'
+  _md5_guard_expect PASS 'git log --grep=md5'
+  _md5_guard_expect PASS 'cd /tmp/md5-stuff && ls'     # md5 inside a path
+  _md5_guard_expect PASS 'brew install md5deep'        # md5deep is an argument
+  _md5_guard_expect PASS 'md5sums.txt'                 # not the tool name
+  _md5_guard_expect PASS 'shasum -a 256 f'
+  _md5_guard_expect PASS 'openssl dgst -sha256 f'
+  _md5_guard_expect PASS 'ls && shasum -a 256 f'
+  _md5_guard_expect PASS 'gsha256sum f'
+
+  # Quoting regressions. A pipe character inside a quoted regex is data, not
+  # a separator - a quote-blind splitter turned the middle alternative of a
+  # grep pattern into a bare md5 command position and denied it (live false
+  # positive, 2026-09-04). The converse still holds: quoting an ARGUMENT of a
+  # real md5 call does not launder it.
+  _md5_guard_expect PASS 'grep -iE "claude|md5|muse" f'
+  _md5_guard_expect PASS "echo 'a|md5|b'"
+  _md5_guard_expect PASS "awk -F'|' '{print}' notes.txt"
+  _md5_guard_expect DENY 'md5 "my file.txt"'
+
+  # Quote state must reset at every newline. Carried across a multi-line
+  # command it desynchronises on the first unbalanced quote: a Python
+  # heredoc's triple-quote opens, closes, opens, so a later double quote
+  # closed the region and re-exposed the pipes in the SAME grep pattern
+  # two lines down. Second live false positive of 2026-09-04.
+  local heredoc
+  heredoc=$'python3 - <<\'PY\'\nnew = """  x\n  run PASS \'grep -iE "a|md5|b" f\'\n"""\nPY'
+  _md5_guard_expect PASS "${heredoc}" 'python heredoc with a triple-quoted block'
+
+  # Bypass, as a command prefix (a PreToolUse hook never sees the command's
+  # own environment, so the prefix is read out of the command string).
+  _md5_guard_expect PASS 'MD5_GUARD_SKIP=1 md5 f' 'MD5_GUARD_SKIP=1 override'
+
+  # The deny reason must name the replacement tool and the bypass.
+  local reason
+  reason="$(_md5_guard_run 'md5 f')"
+  if [[ "${reason}" == *"shasum -a 256"* ]]; then
+    _pass "deny reason names shasum -a 256"
+  else
+    _fail "deny reason does not mention shasum -a 256"
+  fi
+  if [[ "${reason}" == *MD5_GUARD_SKIP* ]]; then
+    _pass "deny reason names the MD5_GUARD_SKIP bypass"
+  else
+    _fail "deny reason does not mention MD5_GUARD_SKIP"
+  fi
+
+  # Malformed / non-Bash payloads must fail open, never block.
+  if [[ -z "$(printf '%s' '{}' | /bin/zsh "${SCRIPT_DIR}/claude/md5-guard-hook")" ]]; then
+    _pass "fail-open: payload with no command allowed through"
+  else
+    _fail "fail-open: payload with no command produced a verdict"
+  fi
+  if [[ -z "$(printf '%s' 'not json' | /bin/zsh "${SCRIPT_DIR}/claude/md5-guard-hook")" ]]; then
+    _pass "fail-open: unparseable payload allowed through"
+  else
+    _fail "fail-open: unparseable payload produced a verdict"
+  fi
+}

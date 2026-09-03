@@ -633,6 +633,7 @@ function install_dotfiles {
     "claude/ssh-redirect-hook:ssh-redirect-hook"
     "claude/git-sign-hook:git-sign-hook"
     "claude/container-tmp-hook:container-tmp-hook"
+    "claude/md5-guard-hook:md5-guard-hook"
     "claude/gh-publish-hook:gh-publish-hook"
     "claude/session-host-context:session-host-context"
     "claude/hosts:hosts"
