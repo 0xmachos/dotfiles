@@ -9,6 +9,7 @@
 #
 #   muse                     # interactive TUI, prompts off, sandbox off
 #   muse "fix the tests"     # same, with an opening prompt
+#   muse resume --last       # same: resume reopens the interactive TUI
 #   muse exec ...            # untouched: headless runs pick their own
 #   muse skills list         #   posture (--disable-approval / --yolo)
 #   MUSE_AUTO_SKIP=1 muse    # escape hatch: stock defaults for one launch
@@ -25,6 +26,9 @@
 # Routing: any known subcommand anywhere in argv passes through unchanged;
 # everything else is an interactive launch. The subcommand list is from
 # `muse --help` plus the flag-gated `plugins`; extend it when Muse grows one.
+# `resume` is deliberately NOT in that list: it reopens the TUI, so it needs
+# the same posture as a fresh launch, and root options parse on either side
+# of the subcommand (verified against `muse resume --help`, 2026-09-03).
 #
 # Caveats (2026-09-03): Muse runs its shell tool with a cleared environment,
 # so the rm→trash alias does not apply inside a session — deletions are
@@ -41,7 +45,7 @@ function muse {
   fi
   for arg in "$@"; do
     case "${arg}" in
-      resume|exec|config|export|trace|skills|sandbox|schema|serve|session-message|auth|login|logout|init|plugins)
+      exec|config|export|trace|skills|sandbox|schema|serve|session-message|auth|login|logout|init|plugins)
         command muse "$@"
         return
         ;;
