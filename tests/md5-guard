@@ -26,10 +26,43 @@ function _md5_guard_run {
     | /bin/zsh "${SCRIPT_DIR}/claude/md5-guard-hook"
 }
 
+function _md5_guard_run_file {
+  # Feed a command string held in a file. The 1MB fixtures are larger than
+  # ARG_MAX, so they cannot travel through argv.
+  jq -Rs '{tool_name:"Bash", tool_input:{command:.}}' < "$1" \
+    | /bin/zsh "${SCRIPT_DIR}/claude/md5-guard-hook"
+}
+
+function _md5_guard_expect_file {
+  local want="$1" file="$2" label="$3" out got
+  out="$(_md5_guard_run_file "${file}")"
+  got="$(_md5_guard_verdict "${out}")"
+  if [[ "${got}" == "${want}" ]]; then
+    _pass "${want}: ${label}"
+  else
+    _fail "${label} — expected ${want}, got ${got}"
+  fi
+}
+
+function _md5_guard_verdict {
+  # DENY only for well-formed JSON whose permissionDecision is exactly "deny".
+  # A substring test for permissionDecision passed a mutant that emitted
+  # "allow", or emitted malformed text (Codex review finding, 2026-09-04).
+  local out="$1" decision
+  [[ -n "${out}" ]] || { printf 'PASS'; return 0; }
+  decision="$(printf '%s' "${out}" \
+    | jq -er '.hookSpecificOutput.permissionDecision' 2>/dev/null)" \
+    || { printf 'MALFORMED'; return 0; }
+  case "${decision}" in
+    deny) printf 'DENY' ;;
+    *)    printf 'BAD:%s' "${decision}" ;;
+  esac
+}
+
 function _md5_guard_expect {
   local want="$1" cmd="$2" label="${3:-$2}" out got
   out="$(_md5_guard_run "${cmd}")"
-  [[ "${out}" == *permissionDecision* ]] && got=DENY || got=PASS
+  got="$(_md5_guard_verdict "${out}")"
   if [[ "${got}" == "${want}" ]]; then
     _pass "${want}: ${label}"
   else
@@ -151,27 +184,60 @@ function run_md5_guard {
     _fail "deny reason does not mention MD5_GUARD_SKIP"
   fi
 
-  # A command larger than the 64KB cap is allowed through without being split.
-  # The splitter is O(n^2) and measured 17.5s on 100KB; Claude Code BLOCKS the
-  # tool call when a PreToolUse hook passes its 60s timeout, so the cap trades
-  # a miss for never being the thing that stops a large heredoc.
-  local big pad
-  pad="$(printf 'x%.0s' {1..70000})"
+  # Size and triage limits. Line-level triage means a large command is still
+  # scanned: only lines that actually contain md5 reach the tokeniser, so a
+  # 100KB heredoc with one md5 line is denied rather than skipped. What fails
+  # open is a command over 1MB, or a single line over 64KB — running past
+  # Claude Code's 60s hook timeout BLOCKS the tool call, which is worse than
+  # a miss.
+  local pad big
+  pad="$(printf 'x%.0s' {1..100000})"
   big="cat > f <<EOF
 ${pad}
 md5 g
 EOF"
-  _md5_guard_expect PASS "${big}" 'command over the 64KB cap (fail-open)'
-  # Just under the cap, the same shape is still caught — including an MD5 call
-  # on its own line inside a heredoc body, which is an MD5 call being written
-  # into a script.
-  local small
-  pad="$(printf 'x%.0s' {1..1000})"
-  small="cat > f <<EOF
-${pad}
-md5 g
-EOF"
-  _md5_guard_expect DENY "${small}" 'command under the 64KB cap still scanned'
+  _md5_guard_expect DENY "${big}" '100KB command, md5 on its own line, still scanned'
+
+  local fixture_dir
+  fixture_dir="$(mktemp -d "${TMPDIR:-/tmp}/md5-guard-fixtures.XXXXXX")"
+
+  pad="$(printf 'x%.0s' {1..1100000})"
+  printf '%s\n' "cat > f <<EOF" "${pad}" "md5 g" "EOF" > "${fixture_dir}/huge"
+  _md5_guard_expect_file PASS "${fixture_dir}/huge" 'command over the 1MB cap (fail-open)'
+
+  pad="$(printf 'x%.0s' {1..70000})"
+  printf '%s\n' "echo ${pad} && md5 f" > "${fixture_dir}/longline"
+  _md5_guard_expect_file PASS "${fixture_dir}/longline" 'single line over 64KB (fail-open)'
+
+  /bin/rm -rf "${fixture_dir}"
+
+  # Codex adversarial review, 2026-09-04. Every one of these was a live
+  # bypass or a live false denial in the first implementation.
+  # Single quotes are the point: the fixture is a literal command string.
+  # shellcheck disable=SC2016
+  _md5_guard_expect DENY 'echo "$(md5 f)"' 'command substitution inside double quotes'
+  # shellcheck disable=SC2016
+  _md5_guard_expect DENY 'H=$(md5 f)' 'substitution assigned to a variable'
+  _md5_guard_expect DENY '"md5" f' 'double-quoted command word'
+  _md5_guard_expect DENY "'md5' f" 'single-quoted command word'
+  _md5_guard_expect DENY 'm"d"5 f' 'command word split across quotes'
+  _md5_guard_expect DENY '\md5 f' 'backslash-escaped command word'
+  _md5_guard_expect DENY '>out md5 f' 'leading redirection with attached target'
+  _md5_guard_expect DENY '> out md5 f' 'leading redirection with separate target'
+  _md5_guard_expect DENY '2>/dev/null md5 f' 'leading fd redirection'
+  _md5_guard_expect DENY 'env -u FOO md5 f' 'wrapper flag that takes an operand'
+  _md5_guard_expect DENY 'sudo -u root md5 f' 'sudo -u with an operand'
+  _md5_guard_expect DENY 'nice -n 10 md5 f' 'nice -n with an operand'
+  _md5_guard_expect DENY 'timeout -k 5 12 md5 f' 'timeout with flag operand and duration'
+  _md5_guard_expect DENY 'md5 f # MD5_GUARD_SKIP=' 'bypass marker with no value does not exempt'
+  _md5_guard_expect DENY 'MD5_GUARD_SKIP= md5 f' 'bypass assigned an empty value does not exempt'
+  # False denials the review found. The SHA-256 spelling must never be denied
+  # just because a filename contains md5, and a comment is not a command.
+  _md5_guard_expect PASS 'openssl dgst -sha256 md5.txt' 'openssl sha256 over a file named md5.txt'
+  _md5_guard_expect PASS 'shasum -a 256 md5.txt' 'shasum over a file named md5.txt'
+  _md5_guard_expect PASS 'echo x # comment | md5 f' 'md5 inside a trailing comment'
+  _md5_guard_expect PASS '# md5 f' 'whole line is a comment'
+  _md5_guard_expect PASS 'echo "a#b" && ls md5.txt' 'hash inside a word is not a comment'
 
   # Malformed / non-Bash payloads must fail open, never block.
   if [[ -z "$(printf '%s' '{}' | /bin/zsh "${SCRIPT_DIR}/claude/md5-guard-hook")" ]]; then
