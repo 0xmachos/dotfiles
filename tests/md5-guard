@@ -52,6 +52,10 @@ function run_md5_guard {
     return
   fi
 
+  # A session-wide export of the bypass would silently turn ~30 DENY cases
+  # into PASS and the suite would still report green. Clear it for this run.
+  unset MD5_GUARD_SKIP
+
   # MD5 tools at a command position → DENY.
   _md5_guard_expect DENY 'md5 file.txt'
   _md5_guard_expect DENY 'md5sum foo'
@@ -99,6 +103,12 @@ function run_md5_guard {
   _md5_guard_expect PASS 'ls && shasum -a 256 f'
   _md5_guard_expect PASS 'gsha256sum f'
 
+  # The boot volume is case-insensitive, so these really do execute the
+  # MD5 binaries. The tool name is lowercased before the match.
+  _md5_guard_expect DENY 'MD5 f'
+  _md5_guard_expect DENY 'MD5SUM f'
+  _md5_guard_expect DENY 'OpenSSL DGST -MD5 f'
+
   # Quoting regressions. A pipe character inside a quoted regex is data, not
   # a separator - a quote-blind splitter turned the middle alternative of a
   # grep pattern into a bare md5 command position and denied it (live false
@@ -108,6 +118,11 @@ function run_md5_guard {
   _md5_guard_expect PASS "echo 'a|md5|b'"
   _md5_guard_expect PASS "awk -F'|' '{print}' notes.txt"
   _md5_guard_expect DENY 'md5 "my file.txt"'
+
+  # A backslash escapes the next character outside single quotes. Without
+  # that, an escaped double quote closed the quoted region early and
+  # exposed the pipes after it — a false DENY, not a fail-open miss.
+  _md5_guard_expect PASS 'echo "a \" b|md5|c"' 'escaped quote inside a quoted string'
 
   # Quote state must reset at every newline. Carried across a multi-line
   # command it desynchronises on the first unbalanced quote: a Python
@@ -135,6 +150,28 @@ function run_md5_guard {
   else
     _fail "deny reason does not mention MD5_GUARD_SKIP"
   fi
+
+  # A command larger than the 64KB cap is allowed through without being split.
+  # The splitter is O(n^2) and measured 17.5s on 100KB; Claude Code BLOCKS the
+  # tool call when a PreToolUse hook passes its 60s timeout, so the cap trades
+  # a miss for never being the thing that stops a large heredoc.
+  local big pad
+  pad="$(printf 'x%.0s' {1..70000})"
+  big="cat > f <<EOF
+${pad}
+md5 g
+EOF"
+  _md5_guard_expect PASS "${big}" 'command over the 64KB cap (fail-open)'
+  # Just under the cap, the same shape is still caught — including an MD5 call
+  # on its own line inside a heredoc body, which is an MD5 call being written
+  # into a script.
+  local small
+  pad="$(printf 'x%.0s' {1..1000})"
+  small="cat > f <<EOF
+${pad}
+md5 g
+EOF"
+  _md5_guard_expect DENY "${small}" 'command under the 64KB cap still scanned'
 
   # Malformed / non-Bash payloads must fail open, never block.
   if [[ -z "$(printf '%s' '{}' | /bin/zsh "${SCRIPT_DIR}/claude/md5-guard-hook")" ]]; then
