@@ -238,6 +238,13 @@ EOF"
   _md5_guard_expect PASS 'echo x # comment | md5 f' 'md5 inside a trailing comment'
   _md5_guard_expect PASS '# md5 f' 'whole line is a comment'
   _md5_guard_expect PASS 'echo "a#b" && ls md5.txt' 'hash inside a word is not a comment'
+  # A hash mid-word is not a comment, so it must not swallow the rest of the
+  # line. A URL fragment is the shape that would turn that into a bypass
+  # class covering every command after it.
+  _md5_guard_expect DENY 'curl http://x/#frag && md5 f' 'unquoted URL fragment does not start a comment'
+  _md5_guard_expect DENY "curl 'http://x/#frag' && md5 f" 'quoted URL fragment does not start a comment'
+  _md5_guard_expect DENY 'md5 f;#c' 'comment after the call does not hide the call'
+  _md5_guard_expect DENY 'md5 f #c' 'trailing comment does not hide the call'
 
   # Malformed / non-Bash payloads must fail open, never block.
   if [[ -z "$(printf '%s' '{}' | /bin/zsh "${SCRIPT_DIR}/claude/md5-guard-hook")" ]]; then
