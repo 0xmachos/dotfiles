@@ -2,8 +2,8 @@
 # dotfiles/bin/jump-user
 #
 # jump-user
-#   User-level update script for Homebrew and Claude Code (and
-#   per-host extras from .extra/jump-user, if present)
+#   User-level update script for Homebrew, Claude Code and Muse Code
+#   (and per-host extras from .extra/jump-user, if present)
 #   Designed to be run by LaunchAgent com.0xmachos.jump-user
 #   Can also be run manually
 #
@@ -136,6 +136,43 @@ function main {
   local -r CLAUDE_BINARY="${HOME}/.local/bin/claude"
   if [[ -x "${CLAUDE_BINARY}" ]]; then
     run_and_log "claude update" "${CLAUDE_BINARY}" update || rc=1
+  fi
+
+  ## Muse Code ##
+  # Meta's own installer, not Homebrew: ~/.local/bin/muse is a bash launcher
+  # that downloads and SHA-256-verifies muse-bin-<version> beside itself.
+  # User-writable, so this must run as the user, never from jump-system.
+  #
+  # There is no `muse update` subcommand. MUSE_LAUNCHER_INSTALL=1 is the
+  # launcher's own install-and-exit path: it updates the binary, reports any
+  # pending update notice, and exits 0 without starting the TUI. Verified
+  # against launcher_version="2" (Muse Code 1.0.2-R2040.1), 2026-09-04.
+  #
+  # It updates the BINARY only — the launcher script itself refreshes from
+  # api.meta.ai on a normal interactive launch, at most hourly, in the
+  # background. Do not use MUSE_SYNC_UPDATE=1 to cover that here: it execs
+  # the app binary afterwards.
+  #
+  # MUSE_LOGIN=0 blocks the device sign-in flow. The launcher reads a bearer
+  # token only from ~/.config/muse/auth.json, and this Mac's file carries
+  # metadata alone (storage: keychain, no access_token key — checked
+  # 2026-09-04), so downloads go out unauthenticated. If Meta ever gates the
+  # download host, the launcher's fallback is device_login. Without a TTY it
+  # declines that anyway; the flag states the intent, and makes the failure a
+  # plain HTTP error. Sign-in stays `muse`'s own job.
+  #
+  # An upgrade writes .muse-update-notice, and report_update_notice keeps it
+  # unless stderr is a TTY. A launchd run therefore leaves the "Muse Code
+  # updated X -> Y" line for the next interactive launch. run_and_log records
+  # only [OK] muse update.
+  #
+  # The launcher takes an install-directory lock and returns 0 if it cannot
+  # get it, so a concurrent background update from an open Muse session makes
+  # this step a silent no-op, not a failure.
+  local -r MUSE_BINARY="${HOME}/.local/bin/muse"
+  if [[ -x "${MUSE_BINARY}" ]]; then
+    run_and_log "muse update" \
+      /usr/bin/env MUSE_LAUNCHER_INSTALL=1 MUSE_LOGIN=0 "${MUSE_BINARY}" || rc=1
   fi
 
   ## Local extras (gitignored, sourced if present) ##
