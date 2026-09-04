@@ -111,6 +111,7 @@ function run_linkage {
     [git-sign-hook]=install_dotfiles
     [container-tmp-hook]=install_dotfiles
     [md5-guard-hook]=install_dotfiles
+    [md5-write-hook]=install_dotfiles
     [gh-publish-hook]=install_dotfiles
     [session-host-context]=install_dotfiles
     [hosts]=install_dotfiles                 # Dynamic (per-host context files)
