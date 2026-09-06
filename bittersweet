@@ -575,7 +575,8 @@ function install_dotfiles {
   # install_dotfiles
   #   Create directories in $HOME
   #   Symlink config files from repo into $HOME
-  #   Config files for: zsh, git, ssh, Claude Code, VirusTotal, Ghostty, Xcode
+  #   Config files for: zsh, git, ssh, Claude Code, Codex, VirusTotal, uv, npm,
+  #   1Password, Ghostty, Xcode
 
   local _dir_count=0
   local _link_count=0
@@ -616,10 +617,10 @@ function install_dotfiles {
     "${SCRIPT_DIR}/.zshrc"
     "${SCRIPT_DIR}/.aliases"
     "${SCRIPT_DIR}/claude/settings.json"
+    "${SCRIPT_DIR}/claude/global-claude.md"
     "${SCRIPT_DIR}/.config/1Password/ssh/agent.toml"
     "${SCRIPT_DIR}/.codex/config.toml"
     "${SCRIPT_DIR}/.codex/rules/default.rules"
-    "${SCRIPT_DIR}/.codex/AGENTS.md"
     "${SCRIPT_DIR}/.codex/hooks.json"
     "${SCRIPT_DIR}/claude/hosts/hostb.md"
     "${SCRIPT_DIR}/claude/hosts/hosta.md"
@@ -673,10 +674,19 @@ function install_dotfiles {
   # are the only SSH guard that survives --dangerously-bypass-approvals-and-sandbox.
   _symlink "${SCRIPT_DIR}/.codex/rules/default.rules" "${HOME}/.codex/rules/default.rules"
 
-  # Global Codex instructions — the CLAUDE.md counterpart, loaded in every
-  # session before any repo AGENTS.md. Gitignored, so unlike a repo AGENTS.md it
-  # may name hosts and aliases.
-  _symlink "${SCRIPT_DIR}/.codex/AGENTS.md" "${HOME}/.codex/AGENTS.md"
+  # Global agent instructions. ONE source file, two symlinks: Claude Code reads
+  # ~/.claude/CLAUDE.md (claude_files below), Codex reads ~/.codex/AGENTS.md, and
+  # Muse Code takes the first of ~/.claude/CLAUDE.md -> $CODEX_HOME/AGENTS.md, so
+  # it lands on the Claude path (verified 2026-09-06, Muse 1.0.3-R2198.1 — it
+  # never loads the Codex one while the Claude one exists). Merged 2026-09-06
+  # from two files that were never at parity: the Codex copy was created
+  # 2026-09-04 for the MD5 rule alone, three sections against six, so Codex was
+  # never told about bao-admin, the repo-first rule, or the machine notes. It
+  # also carried the .codex/-is-deliberately-sparse carve-out, which the merge
+  # dropped and a same-day audit restored. Gitignored,
+  # so unlike a repo AGENTS.md it may name hosts and aliases. Keep it under
+  # 32768 B — Codex truncates a project doc there silently, mid-file.
+  _symlink "${SCRIPT_DIR}/claude/global-claude.md" "${HOME}/.codex/AGENTS.md"
 
   # Copy 1Password SSH agent config (1Password doesn't follow symlinks)
   _ensure_dir "${HOME}/.config/1Password/ssh"

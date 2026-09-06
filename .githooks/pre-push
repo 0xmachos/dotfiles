@@ -11,7 +11,7 @@
 # Found 2026-08-08 immediately after building the global gate: the one repo it
 # did not protect was the repo it was written in. This is the "a repo that
 # sets its own local core.hooksPath silently opts out" gap already documented
-# in the project CLAUDE.md — it applies to pre-push exactly as it does to the
+# in the project AGENTS.md — it applies to pre-push exactly as it does to the
 # pre-commit scanner.
 #
 # `exec` hands over stdin (git's <local-ref> <local-sha> <remote-ref>
