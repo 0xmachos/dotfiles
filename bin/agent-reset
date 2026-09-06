@@ -23,8 +23,10 @@
 # Subcommands: plan backup verify wipe restore offsite self-test
 #
 # Wipe exit codes: 0 = every in-scope repo handled; 2 = the wipe itself
-# succeeded but one or more repos were SKIPPED and still hold agent artifacts
-# (reconcile with `wipe <backup> --repos-only`); 1 = error. The 2026-08-15 run
+# succeeded but coverage was bounded — one or more repos were SKIPPED and still
+# hold agent artifacts (reconcile with `wipe <backup> --repos-only`), or the
+# artifacts were removed and their reset commit failed (2026-09-06: not
+# reconcilable that way, the artifacts are already gone); 1 = error. The 2026-08-15 run
 # exited 0 having silently skipped 25 of 33 repos — "completed" must never
 # again read as "everything was reset".
 
@@ -891,8 +893,19 @@ def _porcelain_unrelated(lines, art_rel):
 
 
 def _rename_splits_artifacts(lines, art_rel):
-    """True if a staged rename has exactly one side in the artifact set — the
-    user is mid-refactor ON an artifact, and `git rm` would tear it in half."""
+    """True if a staged rename has ANY side in the artifact set — the user is
+    mid-refactor ON an artifact.
+
+    Until 2026-09-06 this required EXACTLY one artifact side, on the reasoning
+    that a rename wholly inside the artifact set tears nothing in half. That
+    was wrong, and the AGENTS.md/CLAUDE.md single-source design made it bite:
+    `git mv CLAUDE.md AGENTS.md` followed by `ln -s AGENTS.md CLAUDE.md` puts
+    both names back on disk, so both sides count as artifacts, the guard stood
+    down, and the wipe proceeded. `git rm -f` then unstages the rename
+    DESTINATION and `git commit -- <path>` cannot record a path absent from
+    HEAD, so the commit failed while the artifacts were already gone. Measured
+    against a sandbox fixture; a control without the recreated symlink skipped
+    correctly. Nothing was unrecoverable, but the run reported success."""
     def is_art(path):
         path = path.strip().strip('"')
         return any(path == a or path.startswith(a + "/") for a in art_rel)
@@ -901,7 +914,7 @@ def _rename_splits_artifacts(lines, art_rel):
         if not line[:1] == "R":
             continue
         sides = line[3:].split(" -> ", 1)
-        if len(sides) == 2 and len({is_art(s) for s in sides}) == 2:
+        if len(sides) == 2 and any(is_art(s) for s in sides):
             return True
     return False
 
@@ -920,7 +933,7 @@ def _repo_commit_blockers(repo, art_rel, status_lines):
       - an in-progress merge/rebase/cherry-pick/revert/bisect: git refuses a
         partial (pathspec) commit mid-merge, and mid-rebase HEAD is not the
         user's branch tip;
-      - a staged rename with one side in the artifact set (above).
+      - a staged rename with ANY side in the artifact set (above).
     """
     blockers = []
     r = subprocess.run(["git", "-C", repo, "rev-parse", "--git-dir"],
@@ -1215,7 +1228,12 @@ Post-wipe checklist:
   6. If any repo was reported SKIPPED above, the ritual is INCOMPLETE until
      each is resolved and `wipe --repos-only` reconciles them.
 """)
-    if unresolved:
+    # Added 2026-09-06: a commit failure left the artifacts deleted, no commit
+    # made, and the run exiting 0 — "completed" reading as "everything was
+    # reset" for the second time. The ATTENTION block above stays keyed on
+    # `unresolved` alone: a commit failure cannot be reconciled by
+    # `--repos-only`, because the artifacts are already gone.
+    if unresolved or report["commit_failures"]:
         sys.exit(EXIT_REPOS_SKIPPED)
 
 
@@ -1422,9 +1440,18 @@ def cmd_self_test(_args):
           _rename_splits_artifacts(["R  CLAUDE.md -> docs.md"], art))
     check("rename guard: rename INTO an artifact splits it",
           _rename_splits_artifacts(["R  docs.md -> CLAUDE.md"], art))
-    check("rename guard: rename between artifacts does NOT split",
-          not _rename_splits_artifacts(
+    # Flipped 2026-09-06: a rename BETWEEN artifacts blocks too. `git rm`
+    # unstages the destination, so the pathspec commit finds no such path in
+    # HEAD and fails after the artifacts are already deleted.
+    check("rename guard: rename BETWEEN artifacts also blocks",
+          _rename_splits_artifacts(
               ["R  CLAUDE.md -> .claude/old.md"], art))
+    # The measured 2026-09-06 shape: BOTH names are in REPO_ARTIFACTS, and the
+    # recreated symlink puts both on disk, so both sides are artifacts. Use a
+    # local set carrying both — `art` above deliberately holds only one.
+    check("rename guard: CLAUDE.md -> AGENTS.md (single-source adoption) blocks",
+          _rename_splits_artifacts(["R  CLAUDE.md -> AGENTS.md"],
+                                   {"CLAUDE.md", "AGENTS.md", ".claude"}))
     check("rename guard: unrelated rename does NOT split",
           not _rename_splits_artifacts(["R  a.c -> b.c"], art))
     check("rename guard: staged unrelated edits do NOT split",
