@@ -80,6 +80,9 @@ function _agents_check_cap {
 
 # Codex truncates from the END, and a truncated file stays a valid regular file
 # under the cap — so the size check cannot see it. Assert the last section.
+#
+# The pattern must track the file: when a new last section is added, move this
+# with it, or the check silently stops guarding the tail it was written for.
 function _agents_check_tail {
   local label="$1" file="$2" pattern="$3"
   if /usr/bin/grep -q "${pattern}" "${file}"; then
@@ -105,7 +108,7 @@ function run_agents_md {
     if [[ -f "${repo_agents}" && ! -L "${repo_agents}" ]]; then
       _pass "repo: AGENTS.md is a regular file (the single source)"
       _agents_check_cap "repo AGENTS.md" "${repo_agents}"
-      _agents_check_tail "repo AGENTS.md" "${repo_agents}" '^## Conventions'
+      _agents_check_tail "repo AGENTS.md" "${repo_agents}" '^## Before you stop'
     elif [[ -L "${repo_agents}" ]]; then
       _fail "repo: AGENTS.md is a symlink — the direction is inverted; AGENTS.md must be the real file (Codex never reads CLAUDE.md)"
     else
