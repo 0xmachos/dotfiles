@@ -24,7 +24,12 @@ INITIAL_DIR="${HOME}/Documents/Projects"
 
 ### $PATH Exports ###
 
-if [[ -x "/opt/homebrew/bin/brew" ]]; then
+if [[ -x "/opt/homebrew/bin/brew" && (
+  "${HOMEBREW_PREFIX:-}" != "/opt/homebrew" ||
+  "${HOMEBREW_CELLAR:-}" != "/opt/homebrew/Cellar" ||
+  "${HOMEBREW_REPOSITORY:-}" != "/opt/homebrew" ||
+  ":${PATH}:" != *":/opt/homebrew/bin:"*
+) ]]; then
   eval "$(/opt/homebrew/bin/brew shellenv)"
   # Add Homebrew to PATH
 fi
@@ -225,7 +230,16 @@ setopt HIST_IGNORE_SPACE
 ### Zoxide ###
 
 if [[ -x "/opt/homebrew/bin/zoxide" ]]; then
-  eval "$(zoxide init zsh)"
+  # Generate zoxide's shell integration once and source it on later starts.
+  # Regenerate automatically when Homebrew upgrades the zoxide executable.
+  typeset -r ZOXIDE_INIT_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/zoxide-init.zsh"
+  if [[ ! -r "${ZOXIDE_INIT_CACHE}" || "/opt/homebrew/bin/zoxide" -nt "${ZOXIDE_INIT_CACHE}" ]]; then
+    /bin/mkdir -p "${ZOXIDE_INIT_CACHE:h}"
+    "/opt/homebrew/bin/zoxide" init zsh >| "${ZOXIDE_INIT_CACHE}"
+  fi
+  # Generated at runtime under $XDG_CACHE_HOME — no file for shellcheck to follow.
+  # shellcheck source=/dev/null
+  source "${ZOXIDE_INIT_CACHE}"
 fi
 
 
