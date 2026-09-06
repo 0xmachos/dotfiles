@@ -96,4 +96,51 @@ function run_completions {
 
   _completions_check_parity
   _completions_check_freshness
+  _completions_check_large_commit
+}
+
+# Exercise the real hook against a staged set larger than the pipe buffer.
+# All executables it dispatches are fixtures; the real repo is never staged.
+function _completions_check_large_commit {
+  local fixture rc=0
+  fixture="$(mktemp -d "${TMPDIR}completion-hook.XXXXXX")"
+  if (
+    export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+    cd "${fixture}" || exit 1
+    git init -q
+    git config core.hooksPath /dev/null
+    mkdir -p .completions .config/git/hooks
+    cat > bittersweet <<'EOF'
+#!/bin/zsh
+print generated > .completions/_bittersweet
+print generated >> calls
+EOF
+    cat > ./test <<'EOF'
+#!/bin/zsh
+print tested >> calls
+EOF
+    cat > .config/git/hooks/pre-commit <<'EOF'
+#!/bin/zsh
+print scanned >> calls
+EOF
+    chmod 755 bittersweet test .config/git/hooks/pre-commit
+    print old > .completions/_bittersweet
+    # Reuse one empty blob in the index: no need to create thousands of files.
+    local empty i
+    empty="$(git hash-object -w --stdin </dev/null)"
+    for (( i=1; i<=2000; i++ )); do
+      printf '100644 %s\tz-file-%05d-with-a-long-name-to-fill-the-pipe-buffer\n' "${empty}" "${i}"
+    done > index-info
+    git update-index --index-info < index-info
+    git add bittersweet .completions/_bittersweet
+    /bin/zsh "${SCRIPT_DIR}/.githooks/pre-commit" >/dev/null
+    [[ "$(<calls)" == $'generated\ntested\nscanned' ]] || exit 1
+    [[ "$(git show :.completions/_bittersweet)" == generated ]] || exit 1
+  ); then
+    _pass "large staged changes still regenerate, test, stage and scan completions"
+  else
+    rc=$?
+    _fail "large staged changes skipped completion enforcement (status ${rc})"
+  fi
+  /bin/rm -rf "${fixture}"
 }

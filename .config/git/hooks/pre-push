@@ -106,46 +106,23 @@ if [[ -n "${GIT_SIGN_SKIP:-}" ]]; then
   sign_tags=0
 fi
 
-# Presence of a `gpgsig` header in the raw commit object, not `%G?`: `%G?`
-# prints N for a *signed* SSH commit whenever gpg.ssh.allowedSignersFile is
-# missing (verified 2026-08-06), so it cannot tell unsigned from unverifiable.
-#
-# Header-block only: `git cat-file commit` prints headers, a blank line, then
-# the MESSAGE, and scanning all of it meant an unsigned commit whose message
-# contained a line starting `gpgsig` read as signed (found by both reviewers,
-# reproduced 2026-08-08: `git verify-commit` failed and `%G?` printed N while
-# this gate exited 0). `${out%%$'\n\n'*}` truncates at the boundary, and the
-# trailing space is required so only a real header line matches.
-#
-# NO PIPELINE, deliberately. Under `set -o pipefail` ANY early-exiting consumer
-# — `grep -q`, and equally `sed '/^$/q'` — SIGPIPEs the producer, the pipeline
-# reports 141, and a SIGNED commit is misread as unsigned. Reproduced twice:
-# 2026-08-08 on a 300 KB commit via `grep -q` (PIPE_BUF here is 512 bytes, so
-# the threshold is low), and again the same day when the header-block fix was
-# first written as `| sed '/^$/q' | grep`, which reintroduced it through sed's
-# `q` and failed the very 300 KB regression test that pins it. Zsh pattern
-# matching needs no subprocess at all, so the class is gone rather than dodged.
-# The leading newline lets one pattern match a `gpgsig` header on the first
-# line as well as a later one. Same class of bug as the pii-patterns fail-open
-# documented in the project CLAUDE.md.
-function _is_signed {
-  local out
-  out="$(git cat-file commit "$1" 2>/dev/null)" || return 2
-  [[ $'\n'"${out%%$'\n\n'*}" == *$'\n'gpgsig\ * ]]
-}
+# Commit signature presence is checked by the shared commit-signatures helper
+# after collecting every range, so overlapping refs read each object once.
+# It preserves the header-only check and fail-closed object parsing.
 
 # Annotated tags carry their signature in the tag OBJECT, appended after the
 # message rather than as a header, so the commit walk below can never see it:
 # an unsigned tag over a signed commit passed the gate while `git tag -v` said
 # "error: no signature found" (verified 2026-08-08). Exit 0 signed, 1 unsigned,
-# 2 unreadable — same contract as _is_signed.
+# 2 unreadable.
 function _tag_is_signed {
   local out
   out="$(git cat-file tag "$1" 2>/dev/null)" || return 2
   [[ $'\n'"${out}" == *$'\n'-----BEGIN*SIGNATURE-----* ]]
 }
 
-typeset -a unsigned=() unsigned_tags=() outgoing=() tag_objs=()
+typeset -a unsigned=() unsigned_tags=()
+typeset -Ua outgoing=() tag_objs=()
 typeset -i unreadable=0
 
 # Gate the tag OBJECT when the ref being pushed is an annotated tag. Peeling to
@@ -181,8 +158,8 @@ function _tag_message {
   print -r -- "${out}"
 }
 
-# Walk a rev range: collect every outgoing commit for the message scan, and
-# record every unsigned one when the repo signs.
+# Walk each range fail-closed; signature and message scans consume the
+# deduplicated outgoing list after all refs have been collected.
 #
 # The walk's exit status is captured, NOT discarded. `for sha in $(git rev-list
 # …)` swallowed it: an empty expansion ran the loop zero times and the hook
@@ -193,26 +170,15 @@ function _tag_message {
 # tip that exits 1 in both controls (force-push over a diverged remote is the
 # live case; --force-with-lease is safe because the lease requires the object).
 function _scan_range {
-  local revs sha rc rl_rc=0
+  local revs sha rl_rc=0
   # shellcheck disable=SC2034  # read via `${=revs}`, zsh word-splitting that --shell=bash cannot see
   revs="$(git rev-list "$@" 2>/dev/null)" || rl_rc=$?
   if (( rl_rc )); then
     unreadable=1
     return 0
   fi
-  # `cmd || rc=$?`, not `if ! cmd`: after `if ! cmd`, `$?` holds the NEGATED
-  # status, so the fail-closed rc==2 arm could never fire. It is also the form
-  # that is safe under `set -e`.
   for sha in ${=revs}; do
     outgoing+=("${sha}")
-    (( sign_commits )) || continue
-    rc=0
-    _is_signed "${sha}" || rc=$?
-    if (( rc == 2 )); then
-      unreadable=1
-    elif (( rc != 0 )); then
-      unsigned+=("${sha}")
-    fi
   done
   return 0
 }
@@ -244,6 +210,16 @@ while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
 
   _scan_range "${range[@]}"
 done <<< "${UPDATES}"
+
+if (( ! unreadable && sign_commits && ${#outgoing} )); then
+  unsigned_text=""
+  # shellcheck disable=SC2296  # zsh newline join and split
+  if unsigned_text="$("${0:A:h}/commit-signatures" <<< "${(F)outgoing}")"; then
+    [[ -z "${unsigned_text}" ]] || unsigned=("${(@f)unsigned_text}")
+  else
+    unreadable=1
+  fi
+fi
 
 if (( unreadable )); then
   print -u2 "[❌] pre-push: an object could not be read, or a revision walk failed."

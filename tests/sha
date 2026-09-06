@@ -1,0 +1,58 @@
+#!/bin/zsh
+# Hash the intended file and preserve failures without touching the clipboard.
+# shellcheck source=tests/lib
+# shellcheck disable=SC2031  # sha uses a local target in isolated subshells
+
+function run_sha {
+  _section "SHA-256 file and app hashing"
+  local fixture
+  fixture="$(mktemp -d "${TMPDIR}sha-test.XXXXXX")"
+  local app="${fixture}/Demo.App.app"
+  mkdir -p "${app}/Contents/MacOS"
+  printf abc > "${fixture}/plain"
+  printf abc > "${app}/Contents/MacOS/actual.binary"
+  /usr/libexec/PlistBuddy -c 'Add :CFBundleExecutable string actual.binary' \
+    "${app}/Contents/Info.plist" >/dev/null
+  local expected='ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad'
+  local target out
+  for target in "${fixture}/plain" "${app}" "${app}/"; do
+    if out=$(
+      # shellcheck source=.functions/sha disable=SC1091
+      source "${SCRIPT_DIR}/.functions/sha"
+      # shellcheck disable=SC2329
+      pbcopy() { cat > "${fixture}/clipboard"; }
+      sha "${target}"
+    ) && [[ "${out}" == "${expected}  "* && "$(<"${fixture}/clipboard")" == "${expected}" ]]; then
+      _pass "sha: ${target#"${fixture}"/} resolves and copies the expected digest"
+    else
+      _fail "sha: failed to hash ${target#"${fixture}"/}"
+    fi
+  done
+  # A hashing error must neither become pbcopy's success nor clear clipboard.
+  print -r -- unchanged > "${fixture}/clipboard"
+  if (
+    # shellcheck source=.functions/sha disable=SC1091
+    source "${SCRIPT_DIR}/.functions/sha"
+    # shellcheck disable=SC2329
+    pbcopy() { cat > "${fixture}/clipboard"; }
+    sha "${fixture}/missing"
+  ) >/dev/null 2>&1; then
+    _fail "sha: missing file reported success"
+  elif [[ "$(<"${fixture}/clipboard")" == unchanged ]]; then
+    _pass "sha: missing file fails without changing the clipboard"
+  else
+    _fail "sha: hashing failure changed the clipboard"
+  fi
+  if (
+    # shellcheck source=.functions/sha disable=SC1091
+    source "${SCRIPT_DIR}/.functions/sha"
+    # shellcheck disable=SC2329
+    pbcopy() { return 7; }
+    sha "${fixture}/plain"
+  ) >/dev/null 2>&1; then
+    _fail "sha: clipboard failure reported success"
+  else
+    _pass "sha: clipboard failure is preserved"
+  fi
+  /bin/rm -rf "${fixture}"
+}

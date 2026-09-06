@@ -136,8 +136,8 @@ unsetopt case_glob
 #   Enables zsh-completions as installed by brew
 #   If “zsh compinit: insecure directories” run
 #     chmod -R go-w “$(brew --prefix)/share”
-if type brew &>/dev/null; then
-  FPATH=$(brew --prefix)/share/zsh-completions:$FPATH
+if [[ -n "${HOMEBREW_PREFIX:-}" ]]; then
+  FPATH="${HOMEBREW_PREFIX}/share/zsh-completions:$FPATH"
 fi
 
 # User functions — must be in FPATH before compinit
@@ -235,4 +235,3 @@ if [[ -d "${INITIAL_DIR}" ]]; then
   # shellcheck disable=SC2164
   cd "${INITIAL_DIR}"
 fi
-

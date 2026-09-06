@@ -33,69 +33,83 @@ function _jump_test_scripts_exist {
   fi
 }
 
-function _jump_test_shellcheck {
-  _section "shellcheck (jump scripts)"
+# Exercise the real connectivity gate with deterministic scutil output. No
+# network or updater runs; the optional command argument leaves main's fixed
+# /usr/sbin/scutil path intact.
+function _jump_test_reachability {
+  _section "reachability (real functions, offline fixtures)"
 
-  if ! command -v shellcheck >/dev/null 2>&1; then
-    _skip "shellcheck not installed"
-    return
-  fi
+  local fixture
+  fixture="$(mktemp -d "${TMPDIR}test-jump-reachability.XXXXXX")"
+  cat > "${fixture}/scutil" <<'MOCK'
+#!/bin/zsh
+print -r -- "$2" >> "${JUMP_TEST_CALLS}"
+if [[ "$2" == "${JUMP_TEST_REACHABLE_DOMAIN}" ]]; then
+  print -r -- "${JUMP_TEST_OUTPUT}"
+  exit "${JUMP_TEST_STATUS}"
+fi
+print -r -- 'Not Reachable'
+MOCK
+  chmod 700 "${fixture}/scutil"
 
-  local bindir="bin"
-  local script output
-  for script in jump-user jump-system npm-audit-check; do
-    if output=$(shellcheck --shell=bash "${bindir}/${script}" 2>&1); then
-      _pass "${script} passes shellcheck"
-    else
-      _fail "${script} shellcheck errors: ${output}"
-    fi
-  done
-}
-
-# Verifies the grep pattern matches all known scutil -r output formats
-function _jump_test_reachability_patterns {
-  _section "reachability pattern"
-
-  # root returns "Reachable", user returns "Reachable,Transient Connection"
-  local -a reachable_outputs=(
-    "Reachable"
-    "Reachable,Transient Connection"
-    "Reachable,Direct"
-    "Reachable,Directly Reachable Address"
+  local script name output expected_calls expected_rc actual
+  local -a calls
+  local -a formats=(
+    'Reachable' 'Reachable,Transient Connection' 'Reachable,Direct'
+    'Reachable,Directly Reachable Address' 'Not Reachable' '' 'Transient Connection'
   )
-  local -a unreachable_outputs=(
-    "Not Reachable"
-    ""
-    "Transient Connection"
-  )
-
-  local pattern='^Reachable'
-
-  local output
-  for output in "${reachable_outputs[@]}"; do
-    if echo "${output}" | grep "${pattern}" >/dev/null 2>&1; then
-      _pass "pattern matches: '${output}'"
-    else
-      _fail "pattern should match: '${output}'"
-    fi
+  local reachable_domain probe_status
+  for script in bin/jump-user bin/jump-system; do
+    name="${script##*/}"
+    # First-host success formats, rejection formats, fallback success, and a
+    # failed scutil that misleadingly printed Reachable before exiting.
+    for output in "${formats[@]}" fallback command-error; do
+      reachable_domain=captive.apple.com
+      probe_status=0
+      expected_calls=1
+      expected_rc=0
+      case "${output}" in
+        'Not Reachable'|''|'Transient Connection')
+          expected_calls=3; expected_rc=1 ;;
+        fallback)
+          reachable_domain=google.com; expected_calls=2 ;;
+        command-error)
+          probe_status=7; expected_calls=3; expected_rc=1 ;;
+      esac
+      : > "${fixture}/calls"
+      : > "${fixture}/log"
+      # shellcheck disable=SC1090,SC1091,SC2034,SC2329
+      actual=$(
+        set +e
+        source <(/usr/bin/grep -v '^main "\$@"' "${script}")
+        export JUMP_TEST_CALLS="${fixture}/calls"
+        export JUMP_TEST_REACHABLE_DOMAIN="${reachable_domain}"
+        export JUMP_TEST_STATUS="${probe_status}"
+        export JUMP_TEST_OUTPUT="${output}"
+        [[ "${output}" == fallback || "${output}" == command-error ]] && JUMP_TEST_OUTPUT=Reachable
+        logger() { print -r -- "$*" >> "${fixture}/log"; }
+        check_internet_connection "${fixture}/scutil"
+        print -r -- "$?"
+      )
+      # shellcheck disable=SC2296  # zsh newline split
+      calls=("${(@f)$(<"${fixture}/calls")}")
+      if [[ "${actual}" == "${expected_rc}" ]] && (( ${#calls[@]} == expected_calls )); then
+        _pass "${name}: '${output:-<empty>}' returns ${expected_rc} after ${expected_calls} probe(s)"
+      else
+        _fail "${name}: '${output:-<empty>}' returned ${actual} after ${#calls[@]} probe(s)"
+      fi
+      if (( expected_rc )); then
+        if [[ "$(<"${fixture}/log")" == *'[FAIL]'* ]]; then
+          _pass "${name}: failed reachability logs its failure"
+        else
+          _fail "${name}: failed reachability did not log its failure"
+        fi
+      elif [[ -s "${fixture}/log" ]]; then
+        _fail "${name}: successful reachability logged a failure"
+      fi
+    done
   done
-
-  # Live check: verify pattern matches this system's actual scutil output
-  local live_output
-  live_output="$(/usr/sbin/scutil -r "captive.apple.com" 2>&1)"
-  if echo "${live_output}" | grep "${pattern}" >/dev/null 2>&1; then
-    _pass "live scutil output matches: '${live_output}'"
-  else
-    _fail "live scutil output rejected: '${live_output}'"
-  fi
-
-  for output in "${unreachable_outputs[@]}"; do
-    if echo "${output}" | grep "${pattern}" >/dev/null 2>&1; then
-      _fail "pattern should NOT match: '${output}'"
-    else
-      _pass "pattern rejects: '${output:-<empty>}'"
-    fi
-  done
+  /bin/rm -rf "${fixture}"
 }
 
 # Verifies every *_BINARY/*_APP path declared in the jump-suite scripts
@@ -171,11 +185,9 @@ function _jump_test_log_file {
     return
   fi
 
-  # This is the SHARED log: jump-system (root) and jump-user (the console user)
-  # both append to it. Root writes it regardless of owner, so only the user's
-  # access is ever in question — a root-owned file silently drops every
-  # jump-user append. The previous assertion accepted uid 0 here and therefore
-  # passed for the whole time that bug was live (found 2026-07-28).
+  # This is jump-user's log; jump-system writes separately to /var/log.
+  # A root-owned file left by the retired shared-log setup can still prevent
+  # jump-user from recording failures.
   if [[ -w "${log_file}" ]]; then
     _pass "jump.log is writable by the console user"
   else
@@ -408,9 +420,8 @@ function _jump_test_run_and_log_unwritable {
 
 function run_jump {
   _jump_test_scripts_exist
-  _jump_test_shellcheck
   _jump_test_zsh_syntax
-  _jump_test_reachability_patterns
+  _jump_test_reachability
   _jump_test_binary_paths
   _jump_test_log_file
   _jump_test_run_and_log

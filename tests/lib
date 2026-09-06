@@ -38,30 +38,17 @@ function _section {
   echo "${BOLD}── $1 ──${RESET}"
 }
 
-# Expect a command to be BLOCKED (EPERM on open)
-function _expect_blocked {
-  local desc="$1"
-  shift
-  local err
-  if err="$("$@" 2>&1)"; then
-    _fail "${desc} — expected EPERM, got success"
-    return
-  fi
-  if [[ "${err}" == *"Operation not permitted"* ]]; then
-    _pass "${desc}"
+# These hooks emit either nothing or one deny object. An allow response,
+# malformed JSON, or unrelated output must never satisfy a deny assertion.
+function _hook_verdict {
+  local out="$1"
+  if [[ -z "${out}" ]]; then
+    printf 'PASS'
+  elif jq -es 'length == 1 and .[0].hookSpecificOutput.permissionDecision == "deny"' \
+      >/dev/null 2>&1 <<< "${out}"; then
+    printf 'DENY'
   else
-    _fail "${desc} — not EPERM: ${err}"
-  fi
-}
-
-# Expect a command to succeed (caller is allowlisted)
-function _expect_allowed {
-  local desc="$1"
-  shift
-  if "$@" >/dev/null 2>&1; then
-    _pass "${desc}"
-  else
-    _fail "${desc} — expected success, got denied"
+    printf 'INVALID'
   fi
 }
 

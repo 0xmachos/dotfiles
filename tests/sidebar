@@ -1,0 +1,28 @@
+#!/bin/zsh
+# Shared generator: first-line recognition, depth, ordering and deduplication.
+# shellcheck source=tests/lib
+
+function run_sidebar {
+  _section "Sublime sidebar generator"
+  # shellcheck source=lib/zsh-sidebar disable=SC1091
+  source "${SCRIPT_DIR}/lib/zsh-sidebar"
+  local fixture out
+  fixture="$(mktemp -d "${TMPDIR}sidebar-test.XXXXXX")"
+  mkdir -p "${fixture}/bin" "${fixture}/.git" "${fixture}/deep/nested"
+  printf '#!/bin/zsh' > "${fixture}/zeta"
+  printf '#autoload\n' > "${fixture}/bin/alpha"
+  printf '#compdef zeta\n' > "${fixture}/bin/zeta"
+  printf '#!/bin/bash\n' > "${fixture}/bash-only"
+  printf '#!/bin/zsh\n' > "${fixture}/.git/ignored"
+  printf '#!/bin/zsh\n' > "${fixture}/deep/nested/too-deep"
+  : > "${fixture}/empty"
+  _generate_zsh_sidebar_syntax "${fixture}" "${fixture}/output.sublime-syntax"
+  out="$(<"${fixture}/output.sublime-syntax")"
+  out="${out#*hidden_file_extensions:$'\n'}"
+  if [[ "${out}" == $'  - alpha\n  - zeta' ]]; then
+    _pass "sidebar recognizes unterminated headers, sorts, deduplicates and excludes unrelated files"
+  else
+    _fail "sidebar generated unexpected filenames: ${out}"
+  fi
+  /bin/rm -rf "${fixture}"
+}

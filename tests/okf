@@ -20,31 +20,47 @@
 #
 # shellcheck source=tests/lib
 
-function _okf_frontmatter_has {
-  # _okf_frontmatter_has FILE KEY -> exit 0 if the leading frontmatter block
-  # declares KEY with a non-empty value, else 1.
-  /usr/bin/awk -v key="$2" '
-    NR == 1 && $0 != "---" { exit 1 }
-    NR == 1                { next }
-    $0 == "---"            { exit found ? 0 : 1 }
-    $0 ~ "^" key ":[[:space:]]*[^[:space:]]" { found = 1 }
+# Validate all required scalar fields in one pass. EOF without a closing
+# fence must fail, including an empty file (which executes no AWK rules).
+function _okf_validate_frontmatter {
+  /usr/bin/awk '
+    BEGIN { split("type title description timestamp", required, " ") }
+    NR == 1 && $0 != "---" { invalid = 1; exit }
+    NR == 1 { next }
+    $0 == "---" { closed = 1; exit }
+    /^[A-Za-z]+:/ {
+      key = $0; sub(/:.*/, "", key)
+      value = $0; sub(/^[^:]*:[[:space:]]*/, "", value)
+      sub(/[[:space:]]*$/, "", value)
+      if (value != "" && value != "\"\"" && value != "\047\047" && value !~ /^#/)
+        found[key] = 1
+    }
+    END {
+      if (NR == 0 || invalid || !closed) {
+        print "missing or unterminated leading frontmatter"
+        exit 1
+      }
+      for (i = 1; i <= 4; i++) {
+        if (!found[required[i]]) {
+          printf "%s ", required[i]
+          missing = 1
+        }
+      }
+      if (missing) { print ""; exit 1 }
+    }
   ' "$1"
 }
 
+
 function _okf_check_conformance {
   local bundle="${SCRIPT_DIR}/internals"
-  local file name key missing ok=1
-  local -a required=(type title description timestamp)
+  local file name missing ok=1
 
   for file in "${bundle}"/*.md; do
     [[ -f "${file}" ]] || continue
     name="${file##*/}"
     [[ "${name}" == "index.md" || "${name}" == "log.md" ]] && continue
-    missing=""
-    for key in "${required[@]}"; do
-      _okf_frontmatter_has "${file}" "${key}" || missing+="${key} "
-    done
-    if [[ -n "${missing}" ]]; then
+    if ! missing="$(_okf_validate_frontmatter "${file}")"; then
       _fail "okf: ${name} missing/empty frontmatter: ${missing}"
       ok=0
     fi

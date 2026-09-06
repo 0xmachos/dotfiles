@@ -54,54 +54,18 @@ function die {
   exit 1
 }
 
-# Echo the SHA of every commit in the given rev-list range that has no
-# signature. Presence of a `gpgsig` header in the raw commit object, not
-# `%G?`: verification status reads N for a *signed* SSH commit whenever
-# gpg.ssh.allowedSignersFile is missing (verified 2026-08-06), so it cannot
-# distinguish "unsigned" from "unverifiable".
-# Exit 0 signed, 1 unsigned, 2 unreadable.
-#
-# Header-block only: `git cat-file commit` prints headers, a blank line, then
-# the MESSAGE, so scanning all of it meant an unsigned commit whose message
-# held a line starting `gpgsig` read as signed (2026-08-08, same defect in all
-# three copies of this predicate). `${out%%$'\n\n'*}` truncates at the
-# boundary; the trailing space keeps it to real header lines.
-#
-# NO PIPELINE, deliberately. This script sets pipefail, so ANY early-exiting
-# consumer — `grep -q`, and equally `sed '/^$/q'` — SIGPIPEs the producer, the
-# pipeline reports 141, and a SIGNED commit reads as unsigned, triggering a
-# pointless rewrite and a bogus "unsigned commits remain" failure. Reproduced
-# on a 300 KB commit (PIPE_BUF here is 512 bytes, so the bar is low). Zsh
-# pattern matching forks nothing, so the class is gone rather than dodged; the
-# leading newline lets one pattern match a first-line header too. Same class as
-# the pii-patterns fail-open in the project CLAUDE.md.
-function _is_signed {
-  local out
-  out="$(git cat-file commit "$1" 2>/dev/null)" || return 2
-  [[ $'\n'"${out%%$'\n\n'*}" == *$'\n'gpgsig\ * ]]
-}
+# Shared with pre-push: one framed cat-file batch, header-only signature
+# presence checks, and a nonzero status on any unreadable object. Resolve
+# through :A so the deployed bin symlink still finds its checkout's helper.
+SIGNATURE_SCAN="${0:A:h:h}/.config/git/hooks/commit-signatures"
 
-# The walk's exit status is captured, not discarded by `for sha in $(git
-# rev-list …)`: an empty expansion made a FAILED walk indistinguishable from
-# "no unsigned commits", so a broken range reported success and re-signed
-# nothing. Same defect as the pre-push gate's (2026-08-08).
-function _unsigned_shas {
-  local revs sha rc rl_rc=0
-  # shellcheck disable=SC2034  # read via `${=revs}`, zsh word-splitting that --shell=bash cannot see
-  revs="$(git rev-list "$@")" || rl_rc=$?
-  (( rl_rc == 0 )) || die "revision walk failed for range: $*"
-  for sha in ${=revs}; do
-    rc=0
-    _is_signed "${sha}" || rc=$?
-    (( rc == 2 )) && die "cannot read commit object ${sha}"
-    (( rc == 0 )) || print -r -- "${sha}"
-  done
-}
-
-# True when $1 is reachable from any remote-tracking ref, i.e. already
-# published. `rev-list -1 <sha> --not --remotes` prints nothing in that case.
+# True when $1 is already reachable from a remote-tracking ref. Capture the
+# walk status separately: an unreadable range must never permit a rewrite.
 function _is_published {
-  [[ -z "$(git rev-list -1 "$1" --not --remotes 2>/dev/null)" ]]
+  local unpublished
+  unpublished="$(git rev-list -1 "$1" --not --remotes 2>/dev/null)" \
+    || die "cannot determine whether $1 is already published"
+  [[ -z "${unpublished}" ]]
 }
 
 # Candidates ALWAYS come from `HEAD --not --remotes`, never from
@@ -124,7 +88,10 @@ function _amend_head {
   GIT_COMMITTER_DATE="$(git show -s --format=%cI HEAD)" \
     git commit --amend --no-edit -n -S \
     || die "amend failed to sign — is the machine unlocked? (Secretive refuses while locked)"
-  if [[ -n "$(_unsigned_shas -1 HEAD)" ]]; then
+  local unsigned head_sha
+  head_sha="$(git rev-parse HEAD)" || die "cannot read HEAD after amend"
+  unsigned="$("${SIGNATURE_SCAN}" <<< "${head_sha}")" || die "cannot inspect HEAD after amend"
+  if [[ -n "${unsigned}" ]]; then
     die "HEAD still unsigned after amend — inspect: git log -1 --format='%h %G? %s'"
   fi
   echo "[✅] Re-signed:"
@@ -160,7 +127,9 @@ function _resign_by_rebase {
   # real bugs) — refuse rather than mangle history. Scoped to the commits the
   # rebase will actually replay; a merge below the deepest unsigned commit is
   # never touched and must not block the re-sign.
-  if [[ -n "$(git rev-list --merges "${rebase_range[@]}")" ]]; then
+  local merges
+  merges="$(git rev-list --merges "${rebase_range[@]}")" || die "cannot inspect replay range"
+  if [[ -n "${merges}" ]]; then
     die "merge commits in the replay range — re-sign manually with --rebase-merges"
   fi
 
@@ -172,15 +141,28 @@ function _resign_by_rebase {
     die "a rebase is already in progress — finish it (git rebase --continue) or abort it first"
   fi
 
-  # Belt to the `--not --remotes` brace above: nothing about to be rewritten
-  # may already be published. A pushed SHA is permanent.
-  local s
-  for s in $(git rev-list "${rebase_range[@]}"); do
-    _is_published "${s}" \
-      && die "refusing to rewrite ${s} — already reachable from a remote-tracking ref"
+  # Check publication for the whole replay range in two walks, rather than
+  # starting a reachability walk for every commit. Both must succeed before
+  # any history is rewritten; the original newest-first order is retained.
+  local replay unpublished s
+  local -a replay_commits
+  local -A unpublished_set=()
+  # shellcheck disable=SC2034  # used by zsh newline split below
+  replay="$(git rev-list "${rebase_range[@]}")" || die "cannot read replay range"
+  unpublished="$(git rev-list "${rebase_range[@]}" --not --remotes)" \
+    || die "cannot check replay publication status"
+  # shellcheck disable=SC2296
+  replay_commits=("${(@f)replay}")
+  # shellcheck disable=SC2296,SC2066  # zsh explicitly splits on newlines
+  for s in "${(@f)unpublished}"; do
+    [[ -z "${s}" ]] || unpublished_set[${s}]=1
+  done
+  for s in "${replay_commits[@]}"; do
+    [[ -n "${unpublished_set[${s}]:-}" ]] \
+      || die "refusing to rewrite ${s} — already reachable from a remote-tracking ref"
   done
 
-  echo "[ℹ️ ] Replaying $(git rev-list --count "${rebase_range[@]}") commit(s) — expect one Touch ID tap each."
+  echo "[ℹ️ ] Replaying ${#replay_commits} commit(s) — expect one Touch ID tap each."
 
   # The exec skips commits that still carry a signature: an already-signed
   # commit whose ancestry is untouched fast-forwards through the rebase and
@@ -206,7 +188,10 @@ function _resign_by_rebase {
     exit 1
   fi
 
-  if [[ -n "$(_unsigned_shas "${RANGE[@]}")" ]]; then
+  local remaining unsigned
+  remaining="$(git rev-list "${RANGE[@]}")" || die "cannot read unpushed range after rebase"
+  unsigned="$("${SIGNATURE_SCAN}" <<< "${remaining}")" || die "cannot inspect commits after rebase"
+  if [[ -n "${unsigned}" ]]; then
     die "unsigned commits remain after rebase — inspect: git log --format='%h %G? %s' ${RANGE[*]}"
   fi
   echo "[✅] Re-signed:"
@@ -220,13 +205,15 @@ function main {
     die "worktree not clean — commit or stash first (rebase refuses a dirty tree)"
   fi
 
-  if [[ -z "$(git rev-list "${RANGE[@]}")" ]]; then
+  local revs
+  revs="$(git rev-list "${RANGE[@]}")" || die "revision walk failed for unpushed range"
+  if [[ -z "${revs}" ]]; then
     echo "[✅] No unpushed commits — nothing to re-sign"
     return 0
   fi
 
   local unsigned
-  unsigned="$(_unsigned_shas "${RANGE[@]}")"
+  unsigned="$("${SIGNATURE_SCAN}" <<< "${revs}")" || die "cannot inspect unpushed commit objects"
   if [[ -z "${unsigned}" ]]; then
     echo "[✅] All unpushed commits are signed — nothing to do"
     return 0

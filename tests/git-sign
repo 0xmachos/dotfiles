@@ -141,8 +141,9 @@ function _gs_prepush_repo {
     # without the copy the message gate reads as command-not-found → every
     # push blocks for the wrong reason.
     cp "${SCRIPT_DIR}/.config/git/hooks/pre-push" \
-       "${SCRIPT_DIR}/.config/git/hooks/pii-scan" "${sb}/hooks/"
-    chmod 755 "${sb}/hooks/pre-push" "${sb}/hooks/pii-scan"
+       "${SCRIPT_DIR}/.config/git/hooks/pii-scan" \
+       "${SCRIPT_DIR}/.config/git/hooks/commit-signatures" "${sb}/hooks/"
+    chmod 755 "${sb}/hooks/pre-push" "${sb}/hooks/pii-scan" "${sb}/hooks/commit-signatures"
     cd "${sb}" || exit 1
     ssh-keygen -t ed25519 -N '' -q -f key
     git init --bare -q remote.git
@@ -236,6 +237,8 @@ function run_git_sign {
     _git_sign_claude_cases
   fi
 
+  _git_sign_resign_cases
+  _git_sign_batch_cases
   _git_sign_prepush_cases
 }
 
@@ -312,6 +315,20 @@ fatal: failed to write commit object'
     'another branch does not trigger the re-sign nudge'
   /bin/rm -rf "${scoperepo:h}"
 
+  _git_sign_refusal_cases
+}
+
+function _git_sign_resign_cases {
+  # Tracked recovery tooling must be tested even when claude/ is absent.
+  local sandbox repo
+  sandbox="$(mktemp -d "${TMPDIR}git-sign-resign.XXXXXX")"
+  repo="$(_gs_newrepo "${sandbox}")"
+  (
+    export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+    cd "${repo}" || exit 1
+    _gs_commit c1 '2026-02-02T11:00:00+00:00' '2026-03-02T11:00:00+00:00'
+    _gs_commit c2 '2026-02-03T12:00:00+00:00' '2026-03-03T12:00:00+00:00'
+  )
   # --- Re-sign: dirty worktree refused ---
   echo dirty >> "${repo}/f"
   if (cd "${repo}" && env "${GS_ENV[@]}" "${SCRIPT_DIR}/bin/git-sign-unpushed" &>/dev/null); then
@@ -359,8 +376,10 @@ fatal: failed to write commit object'
   else
     _fail "pushed base commit was rewritten"
   fi
-  _gs_expect PASS PreToolUse 'git push' "${repo}" '' 'push gate: all signed'
-  _gs_expect PASS PostToolUse 'git commit -m x' "${repo}" '' 'no nudge once the range is clean'
+  if [[ -f "${SCRIPT_DIR}/claude/git-sign-hook" ]] && command -v jq >/dev/null; then
+    _gs_expect PASS PreToolUse 'git push' "${repo}" '' 'push gate: all signed'
+    _gs_expect PASS PostToolUse 'git commit -m x' "${repo}" '' 'no nudge once the range is clean'
+  fi
 
   # --- Fast path: a single unsigned commit at the tip is amended, not rebased ---
   local head_before
@@ -499,7 +518,79 @@ fatal: failed to write commit object'
   fi
   /bin/rm -rf "${tworem:h}"
 
-  _git_sign_refusal_cases
+  /bin/rm -rf "${sandbox}"
+}
+
+function _git_sign_batch_cases {
+  local sandbox repo signed unsigned out rc case_name
+  sandbox="$(mktemp -d "${TMPDIR}git-sign-batch.XXXXXX")"
+  repo="$(_gs_newrepo "${sandbox}")"
+  (
+    export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+    cd "${repo}" || exit 1
+    _gs_commit_signed signed '2026-02-02T10:00:00+00:00'
+    _gs_commit $'unsigned\n\ngpgsig forged message header' '2026-02-03T10:00:00+00:00'
+  )
+  signed="$(git -C "${repo}" rev-parse 'HEAD^')"
+  unsigned="$(git -C "${repo}" rev-parse HEAD)"
+  local scanner="${SCRIPT_DIR}/.config/git/hooks/commit-signatures"
+  out="$(cd "${repo}" && "${scanner}" <<< "${signed}"$'\n'"${unsigned}"$'\n'"${unsigned}"$'\n'"${signed}")"
+  if [[ "${out}" == "${unsigned}" ]]; then
+    _pass "batch signatures: deduplicates and distinguishes headers from message text"
+  else
+    _fail "batch signatures: wrong unsigned commit list"
+  fi
+  if "${scanner}" </dev/null && "${scanner}" <<< ''; then
+    _pass "batch signatures: empty input succeeds"
+  else
+    _fail "batch signatures: empty input failed"
+  fi
+
+  # Real Git's missing-object response has exit 0; the parser must reject it.
+  local missing="${signed//?/0}"
+  rc=0
+  (cd "${repo}" && "${scanner}" <<< "${missing}") >/dev/null 2>&1 || rc=$?
+  if (( rc == 2 )); then
+    _pass "batch signatures: missing object fails closed"
+  else
+    _fail "batch signatures: missing object returned ${rc}"
+  fi
+  local blob
+  blob="$(git -C "${repo}" rev-parse HEAD:f)"
+  rc=0
+  (cd "${repo}" && "${scanner}" <<< "${blob}") >/dev/null 2>&1 || rc=$?
+  if (( rc == 2 )); then
+    _pass "batch signatures: non-commit object fails closed"
+  else
+    _fail "batch signatures: blob returned ${rc}"
+  fi
+
+  git -C "${repo}" cat-file --batch <<< "${signed}" > "${sandbox}/valid"
+  mkdir "${sandbox}/bin"
+  cat > "${sandbox}/bin/git" <<'EOF'
+#!/bin/zsh
+cat "${BATCH_TEST_FIXTURE}"
+EOF
+  chmod 755 "${sandbox}/bin/git"
+  for case_name in truncated bad-size extra-data; do
+    case "${case_name}" in
+      truncated) head -c 80 "${sandbox}/valid" > "${sandbox}/broken" ;;
+      bad-size) printf '%s commit nope\n' "${signed}" > "${sandbox}/broken" ;;
+      extra-data)
+        cat "${sandbox}/valid" > "${sandbox}/broken"
+        printf junk >> "${sandbox}/broken"
+        ;;
+    esac
+    rc=0
+    PATH="${sandbox}/bin:${PATH}" BATCH_TEST_FIXTURE="${sandbox}/broken" \
+      "${scanner}" <<< "${signed}" >/dev/null 2>&1 || rc=$?
+    if (( rc == 2 )); then
+      _pass "batch signatures: ${case_name} fails closed"
+    else
+      _fail "batch signatures: ${case_name} returned ${rc}"
+    fi
+  done
+  /bin/rm -rf "${sandbox}"
 }
 
 function _git_sign_prepush_cases {
@@ -688,9 +779,10 @@ function _git_sign_prepush_cases {
     # here dies at 127, taking the whole suite with it under set -e.
     mkdir -p .config/git/hooks .githooks
     cp "${SCRIPT_DIR}/.config/git/hooks/pre-push" \
-       "${SCRIPT_DIR}/.config/git/hooks/pii-scan" .config/git/hooks/
+       "${SCRIPT_DIR}/.config/git/hooks/pii-scan" \
+       "${SCRIPT_DIR}/.config/git/hooks/commit-signatures" .config/git/hooks/
     cp "${SCRIPT_DIR}/.githooks/pre-push" .githooks/pre-push
-    chmod 755 .config/git/hooks/pre-push .config/git/hooks/pii-scan .githooks/pre-push
+    chmod 755 .config/git/hooks/pre-push .config/git/hooks/pii-scan .config/git/hooks/commit-signatures .githooks/pre-push
     git config user.name t
     git config user.email t@example.invalid
     git config gpg.format ssh

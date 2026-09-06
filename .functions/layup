@@ -4,7 +4,6 @@
 function layup {
 
   echo "[🍺] Updating tlmgr and all installed LaTeX packages"
-  sleep 2
   
   # GPG repo verification disabled: gnupg not installed, SHA-512 checksums
   # and HTTPS transport still protect package integrity. See TODOs.md.
