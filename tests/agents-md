@@ -1,0 +1,194 @@
+#!/bin/zsh
+# dotfiles/tests/agents-md
+#
+# Guards the one-file agent-guidance design against silent collapse.
+#
+# The design (adopted 2026-09-06, established against Claude Code 2.1.263,
+# Codex CLI 0.153.4 and Muse Code 1.0.3-R2198.1):
+#
+#   repo scope    AGENTS.md is the real file; CLAUDE.md is a symlink to it.
+#   global scope  claude/global-claude.md is the real file; BOTH
+#                 ~/.claude/CLAUDE.md and ~/.codex/AGENTS.md link to it.
+#
+# Claude Code does not read AGENTS.md at any scope — the native-support request
+# (anthropics/claude-code#6235) was closed as completed 2026-08-17 and 2.1.263
+# still does not read it — so it needs the CLAUDE.md name. Codex ignores CLAUDE.md entirely
+# (project_doc_fallback_filenames defaults to an empty list), so it needs the
+# AGENTS.md name. Muse takes the first of AGENTS.md / CLAUDE.md / .agents/ /
+# .claude/ per directory and warns about every candidate it skipped — but it
+# dedupes by RESOLVED path, so the symlink loads once and prints no warning.
+# One inode, three harnesses, no generator and no parity script.
+#
+# Why this suite has to exist. The failure is invisible from every direction:
+#   * The global `*claude*` rule in .config/git/ignore ignores CLAUDE.md in
+#     EVERY repo on this Mac, so git can never show the 120000 -> 100644 mode
+#     change when the symlink becomes a regular file.
+#   * Claude Code refuses to write through the symlink (#66559) and its error
+#     text literally instructs the caller to "resolve the symlink and pass the
+#     real target path explicitly" — an agent that obeys, or a BSD `sed -i`,
+#     replaces the link with a copy.
+#   * Precedent: a Muse write destroyed the .config/muse/settings.json symlink
+#     on 2026-09-04.
+#   * After the break every harness still loads something plausible — Claude the
+#     stale copy, Codex and Muse the fresh AGENTS.md — so nothing looks wrong.
+#
+# The size check is the other invisible failure. Codex truncates a project doc
+# PAST project_doc_max_bytes (32768) silently and mid-file, with nothing on
+# stderr (openai/codex#7138). Measured 2026-09-06: 32768 B loads whole,
+# 32800 B loses its tail. Raising the cap in config.toml does not travel with a
+# repo, so 32768 is the real ceiling. The same two numbers are used by the
+# homelab repo's own parity gate, deliberately.
+#
+# Both files are gitignored, so a fresh clone before an out-of-band sync
+# legitimately has neither. That skips rather than fails.
+#
+# Run: ./test agents-md    (or ./test for the full suite)
+#
+# ShellCheck: lint with `shellcheck --shell=bash tests/agents-md`.
+# This file is sourced, not executed — chmod 644.
+#
+# shellcheck source=tests/lib
+
+# Codex project_doc_max_bytes default, and the 75% nudge.
+readonly _AGENTS_CAP_BYTES=32768
+readonly _AGENTS_WARN_BYTES=24576
+
+# Byte size of $1 with the leading whitespace macOS wc emits stripped.
+function _agents_size {
+  # Guard the redirection: `wc -c < missing` fails, and under the dispatcher's
+  # `set -euo pipefail` that kills the whole ./test run with no summary — the
+  # exact `exit`-never-`return` violation the suite rules forbid. Both current
+  # callers are -f guarded; this stops the next call site being a landmine.
+  [[ -f "$1" ]] || { echo 0; return; }
+  wc -c < "$1" | tr -d '[:space:]'
+}
+
+function _agents_check_cap {
+  local label="$1" file="$2" size
+  size="$(_agents_size "${file}")"
+
+  if (( size >= _AGENTS_CAP_BYTES )); then
+    _fail "${label}: ${size} B is at or over Codex's ${_AGENTS_CAP_BYTES} B cap — it truncates silently, mid-file, and the rules near the end go first"
+    return
+  fi
+
+  _pass "${label}: ${size} B, under the ${_AGENTS_CAP_BYTES} B Codex cap"
+  if (( size >= _AGENTS_WARN_BYTES )); then
+    echo "      ${YELLOW}warn${RESET}  ${label} is past 75% of the cap — start moving detail into internals/"
+  fi
+}
+
+# Codex truncates from the END, and a truncated file stays a valid regular file
+# under the cap — so the size check cannot see it. Assert the last section.
+function _agents_check_tail {
+  local label="$1" file="$2" pattern="$3"
+  if /usr/bin/grep -q "${pattern}" "${file}"; then
+    _pass "${label}: tail intact (${pattern} present)"
+  else
+    _fail "${label}: last section (${pattern}) missing — truncated or partially written, and it is still under the cap so the size check cannot catch it"
+  fi
+}
+
+function run_agents_md {
+  _section "Agent guidance: AGENTS.md / CLAUDE.md single-source"
+
+  local repo_agents="${SCRIPT_DIR}/AGENTS.md"
+  local repo_claude="${SCRIPT_DIR}/CLAUDE.md"
+  local global_src="${SCRIPT_DIR}/claude/global-claude.md"
+
+  # 1. Repo scope. Both files are gitignored (CLAUDE.md by the machine-wide
+  #    *claude* rule, AGENTS.md by .extra_gitexclude), so a clone awaiting an
+  #    out-of-band sync has neither. That is not damage.
+  if [[ ! -e "${repo_agents}" && ! -L "${repo_claude}" && ! -e "${repo_claude}" ]]; then
+    _skip "repo: neither AGENTS.md nor CLAUDE.md present — clone pending out-of-band sync"
+  else
+    if [[ -f "${repo_agents}" && ! -L "${repo_agents}" ]]; then
+      _pass "repo: AGENTS.md is a regular file (the single source)"
+      _agents_check_cap "repo AGENTS.md" "${repo_agents}"
+      _agents_check_tail "repo AGENTS.md" "${repo_agents}" '^## Conventions'
+    elif [[ -L "${repo_agents}" ]]; then
+      _fail "repo: AGENTS.md is a symlink — the direction is inverted; AGENTS.md must be the real file (Codex never reads CLAUDE.md)"
+    else
+      _fail "repo: AGENTS.md missing — Codex and Muse read no project guidance here"
+    fi
+
+    # The check this suite exists for.
+    if [[ ! -L "${repo_claude}" ]]; then
+      if [[ -e "${repo_claude}" ]]; then
+        _fail "repo: CLAUDE.md is a regular file, not a symlink — the link was replaced and the two bodies will now drift silently (fix: rm CLAUDE.md && ln -s AGENTS.md CLAUDE.md)"
+      else
+        _fail "repo: CLAUDE.md missing — Claude Code reads no project guidance here (it does not read AGENTS.md)"
+      fi
+    else
+      local target
+      target="$(readlink "${repo_claude}")"
+      if [[ "${target}" != "AGENTS.md" ]]; then
+        _fail "repo: CLAUDE.md points at '${target}', expected the relative target 'AGENTS.md'"
+      elif [[ ! -e "${repo_claude}" ]]; then
+        _fail "repo: CLAUDE.md is a dangling symlink to '${target}'"
+      else
+        _pass "repo: CLAUDE.md -> AGENTS.md, resolving"
+      fi
+    fi
+  fi
+
+  # 2. Global source file. -f follows a symlink, so test -L separately: if the
+  #    source itself became a link the direction is inverted at global scope,
+  #    and section 4 cannot catch it on a machine where the gate skips.
+  if [[ -L "${global_src}" ]]; then
+    _fail "global: claude/global-claude.md is itself a symlink — the direction is inverted; it must be the real file both ~/.claude/CLAUDE.md and ~/.codex/AGENTS.md point at"
+  elif [[ ! -f "${global_src}" ]]; then
+    _skip "global: claude/global-claude.md absent — claude/ pending out-of-band sync"
+  else
+    _agents_check_cap "global-claude.md" "${global_src}"
+    _agents_check_tail "global-claude.md" "${global_src}" '^## Machine notes'
+  fi
+
+  # 3. Deploy-code parity (hermetic). Catches a bittersweet regression on a
+  #    machine where this repo is not the live deployment.
+  local bittersweet="${SCRIPT_DIR}/bittersweet"
+  # Single quotes are the point: match the literal ${SCRIPT_DIR}/${HOME} text
+  # as it appears in the source, not its expansion.
+  # shellcheck disable=SC2016
+  if /usr/bin/grep -q '_symlink "${SCRIPT_DIR}/claude/global-claude.md" "${HOME}/.codex/AGENTS.md"' "${bittersweet}"; then
+    _pass "bittersweet: ~/.codex/AGENTS.md deploys from claude/global-claude.md"
+  else
+    _fail "bittersweet: no _symlink deploying claude/global-claude.md to ~/.codex/AGENTS.md — Codex and Claude would drift apart again"
+  fi
+
+  # The Claude half deploys by a DIFFERENT mechanism — a claude_files map entry,
+  # not a _symlink call — so it needs its own guard. Without this, dropping the
+  # map row is invisible on any machine where step 4 skips.
+  if /usr/bin/grep -q '"claude/global-claude.md:CLAUDE.md"' "${bittersweet}"; then
+    _pass "bittersweet: ~/.claude/CLAUDE.md registered in the claude_files map"
+  else
+    _fail "bittersweet: claude/global-claude.md absent from the claude_files map — Claude Code would lose its global instructions"
+  fi
+
+  # shellcheck disable=SC2016
+  if /usr/bin/grep -q '"\${SCRIPT_DIR}/claude/global-claude.md"' "${bittersweet}"; then
+    _pass "bittersweet: claude/global-claude.md is hardened (sensitive_files)"
+  else
+    _fail "bittersweet: claude/global-claude.md missing from sensitive_files — it names hosts and must be mode 600"
+  fi
+
+  # 4. Live deployment (environment-gated, same gate as tests/hook-links): only
+  #    meaningful when THIS repo is the active deployment.
+  if [[ "$(readlink "${HOME}/.claude/settings.json" 2>/dev/null)" != "${SCRIPT_DIR}/claude/settings.json" ]]; then
+    _skip "global deployment: ~/.claude not linked to this repo (run: bittersweet dotfiles)"
+    return
+  fi
+
+  local live
+  for live in "${HOME}/.claude/CLAUDE.md" "${HOME}/.codex/AGENTS.md"; do
+    if [[ ! -L "${live}" ]]; then
+      _fail "global: ${live} is not a symlink — it must link to claude/global-claude.md"
+    elif [[ "$(readlink "${live}")" != "${global_src}" ]]; then
+      _fail "global: ${live} points at '$(readlink "${live}")', expected ${global_src}"
+    elif [[ ! -e "${live}" ]]; then
+      _fail "global: ${live} is a dangling symlink"
+    else
+      _pass "global: ${live} -> claude/global-claude.md"
+    fi
+  done
+}

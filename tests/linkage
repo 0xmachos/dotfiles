@@ -97,14 +97,14 @@ function run_linkage {
   # "repo" = docs, metadata, test infra — intentionally not installed.
   local -A top_level=(
     # Repo metadata
-    [CLAUDE.md]=repo
     [.mcp.json]=repo                         # Host-local MCP config (gitignored)
     [.ignore]=repo                           # ripgrep whitelist for gitignored docs (gitignored)
     [LICENSE]=repo
     [README.md]=repo
     [SECURITY.md]=repo
     [TODOs.md]=repo
-    [CLAUDE.md]=repo                         # Claude Code repo guidance (untracked: global *claude* ignore)
+    [AGENTS.md]=repo                         # Repo agent guidance, all 3 harnesses (untracked: .extra_gitexclude)
+    [CLAUDE.md]=repo                         # Symlink -> AGENTS.md (untracked: global *claude* ignore)
     [.gitignore]=repo
     [.gitleaksignore]=repo
     [.pii-allowlist]=repo                    # Read in-place by the global pre-commit hook
