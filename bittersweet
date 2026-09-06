@@ -85,6 +85,17 @@ typeset -ra BITTERSWEET_SUBCOMMANDS=(
 )
 ### END Subcommand SOT ###
 
+# One list drives both copying and loading. Tests exercise both consumers.
+typeset -ra LAUNCHAGENT_PLISTS=(
+  com.0xmachos.jump-user
+  com.0xmachos.imageio-oop
+  com.0xmachos.second-brain-metrics
+  com.0xmachos.container-start
+)
+
+# shellcheck source=lib/zsh-sidebar disable=SC1091
+source "${SCRIPT_DIR}/lib/zsh-sidebar"
+
 
 function usage {
 
@@ -110,12 +121,10 @@ function usage {
 # check_os_compatibility
 # check_developer_tools
 # download_application
-# verify_sha
 # verify_signature
 # install_application
 # get_sudo
 # ctrl_c
-# run_test
 
 
 function check_os_compatibility {
@@ -175,40 +184,6 @@ function download_application {
     echo "[❌] Failed to download ${file_name}"
     return 1
   fi
-}
-
-
-function verify_sha {
-  # verify_sha
-  #   Uses shasum to check hash of file is what
-  #   we expect it to be
-
-  local file_name=${1:?file_name not passed to verify_sha}
-  local file_download_path=${2:?file_download_path not passed to verify_sha}
-  local file_sha_length=${3:?file_sha_length not passsed to verify_sha}
-  local file_sha=${4:?file_sha not passed to verify_sha}
-
-
-  echo "[🍺] Attempting to validate ${file_name} SHA${file_sha_length} hash"
-
-  echo "${file_sha}  ${file_name}" > "${file_download_path}.sha${file_sha_length}"
-
-  (
-    # Execute in a subshell so the working directory is not permanantly changed
-
-    cd "${HOME}/Downloads" || exit
-
-    if shasum -a "${file_sha_length}" -c "${file_download_path}.sha${file_sha_length}" >/dev/null; then 
-    # Attempt to validate the ZIPs SHA256 hash
-      echo "[✅] Successfully validated ${file_name} SHA${file_sha_length} hash"
-    else
-      echo "[❌] Failed to validate ${file_name} SHA${file_sha_length} hash"
-      exit 1
-    fi
-
-  )
-
-  rm "${file_download_path:?}.sha${file_sha_length:?}"
 }
 
 
@@ -391,21 +366,11 @@ function ctrl_c {
 }
 
 
-function run_test {
-
-  "${SCRIPT_DIR}/test"
-}
-
-
-
-
 ################################
 ################################
 #### END Utility Functions #####
 ################################
 ################################
-
-
 
 
 function write_defaults {
@@ -948,43 +913,6 @@ function install_secretive {
 }
 
 
-function _generate_zsh_sidebar_syntax {
-  # _generate_zsh_sidebar_syntax OUTPUT_FILE
-  #   Scans repo for extensionless zsh scripts and generates a .sublime-syntax
-  #   that registers their filenames for Sublime Text sidebar icons.
-  local output_file="${1}"
-  local -a names=()
-  local file basename first_line
-
-  while IFS= read -r -d '' file; do
-    basename="${file##*/}"
-    [[ "${basename}" == ?*.* ]] && continue
-    first_line="$(head -1 "${file}" 2>/dev/null)" || continue
-    if [[ "${first_line}" == *'#!'*zsh* ]] || \
-       [[ "${first_line}" == '#compdef '* ]] || \
-       [[ "${first_line}" == '#autoload'* ]]; then
-      names+=("${basename}")
-    fi
-  done < <(find "${SCRIPT_DIR}" -maxdepth 2 -type f -not -path '*/.git/*' -print0)
-
-  cat > "${output_file}" <<'EOF'
-%YAML 1.2
----
-name: Zsh (Dotfiles)
-scope: source.shell.zsh
-version: 2
-hidden: true
-extends: Packages/ShellScript/Zsh.sublime-syntax
-
-hidden_file_extensions:
-EOF
-
-  printf '%s\n' "${names[@]}" | sort -u | while IFS= read -r name; do
-    printf '  - %s\n' "${name}" >> "${output_file}"
-  done
-}
-
-
 function _generate_bittersweet_completion {
   # _generate_bittersweet_completion OUTPUT_FILE
   #   Writes a #compdef file for bittersweet sourced from
@@ -1147,7 +1075,7 @@ function install_sublime_text {
   # Generate sidebar icon syntax from repo contents (not symlinked)
   local zsh_syntax="${live_st_dir}/Packages/User/Zsh (Dotfiles).sublime-syntax"
   /bin/rm -f "${zsh_syntax}"
-  _generate_zsh_sidebar_syntax "${zsh_syntax}"
+  _generate_zsh_sidebar_syntax "${SCRIPT_DIR}" "${zsh_syntax}"
   echo "[🍺] Generated Zsh sidebar syntax ($(grep -c '^ *- ' "${zsh_syntax}") files)"
 
   echo "[✅] Sublime Text config installed (${_link_count} symlinks)"
@@ -1624,16 +1552,9 @@ function install_launchagents {
   #   Explicit `launchctl bootstrap` still follows symlinks, but doesn't
   #   survive reboot. Copying is the only reliable approach.
 
-  local -ar launchagent_plists=(
-    com.0xmachos.jump-user
-    com.0xmachos.imageio-oop
-    com.0xmachos.second-brain-metrics
-    com.0xmachos.container-start
-  )
-
   # LaunchAgents: copy into ~/Library/LaunchAgents/
   if mkdir -p "${HOME}/Library/LaunchAgents"; then
-    for plist in "${launchagent_plists[@]}"; do
+    for plist in "${LAUNCHAGENT_PLISTS[@]}"; do
       if cp "${SCRIPT_DIR}/LaunchAgents/${plist}.plist" "${HOME}/Library/LaunchAgents/${plist}.plist"; then
         chmod 644 "${HOME}/Library/LaunchAgents/${plist}.plist"
         echo "[✅] Successfully installed ${plist}.plist to ~/Library/LaunchAgents/"
@@ -1664,14 +1585,7 @@ function load_launchagents {
 
   local -r uid=$(id -u)
 
-  local -ar launchagent_plists=(
-    com.0xmachos.jump-user
-    com.0xmachos.imageio-oop
-    com.0xmachos.second-brain-metrics
-    com.0xmachos.container-start
-  )
-
-  for plist in "${launchagent_plists[@]}"; do
+  for plist in "${LAUNCHAGENT_PLISTS[@]}"; do
     launchctl bootout "gui/${uid}/${plist}" 2>/dev/null || true
     if launchctl bootstrap "gui/${uid}" "${HOME}/Library/LaunchAgents/${plist}.plist"; then
       echo "[✅] Successfully loaded ${plist} LaunchAgent"
@@ -1792,7 +1706,8 @@ function main {
       echo "[✅] Regenerated ${okf_out}"
       ;;
     test)
-      run_test
+      shift
+      "${SCRIPT_DIR}/test" "$@"
       ;;
     hailmary)
       # Execute all the functions

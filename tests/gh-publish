@@ -42,7 +42,7 @@ function _gp_test_review {
 function _gp_test_expect {
   local want="$1" cmd="$2" label="$3" out got
   out="$(_gp_test_run "${cmd}" "${4:-}" "${5-1}" "${6-1}")"
-  [[ "${out}" == *permissionDecision* ]] && got=DENY || got=PASS
+  got="$(_hook_verdict "${out}")"
   if [[ "${got}" == "${want}" ]]; then
     _pass "${want}: ${label}"
   else

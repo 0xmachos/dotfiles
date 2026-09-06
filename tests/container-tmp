@@ -25,7 +25,7 @@ function _container_tmp_run {
 function _container_tmp_expect {
   local want="$1" cmd="$2" cwd="${3:-}" label="${4:-$2}" out got
   out="$(_container_tmp_run "${cmd}" "${cwd}")"
-  [[ "${out}" == *permissionDecision* ]] && got=DENY || got=PASS
+  got="$(_hook_verdict "${out}")"
   if [[ "${got}" == "${want}" ]]; then
     _pass "${want}: ${label}"
   else

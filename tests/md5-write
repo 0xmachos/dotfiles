@@ -3,7 +3,7 @@
 #
 # Behavioural test for claude/md5-write-hook — the PreToolUse hook that DENIES
 # a write putting MD5 cryptography into a file. Feeds tool payloads as stdin
-# JSON and asserts the verdict: DENY for MD5 call sites in source, ALLOW for
+# JSON and asserts the verdict: DENY for MD5 call sites in source, PASS for
 # the SHA-256 equivalents, for MD5 named in a comment, for prose files, for
 # content naming the guard, and for a word that merely contains md5.
 #
@@ -33,20 +33,6 @@ function _md5_write_run_edit {
     | /bin/zsh "${SCRIPT_DIR}/claude/md5-write-hook"
 }
 
-function _md5_write_verdict {
-  # DENY only for well-formed JSON whose permissionDecision is exactly "deny".
-  # A substring test would pass a mutant emitting "allow" or malformed text.
-  local out="$1" decision
-  [[ -n "${out}" ]] || { printf 'ALLOW'; return 0; }
-  decision="$(printf '%s' "${out}" \
-    | jq -er '.hookSpecificOutput.permissionDecision' 2>/dev/null)" \
-    || { printf 'MALFORMED'; return 0; }
-  case "${decision}" in
-    deny) printf 'DENY' ;;
-    *)    printf 'BAD:%s' "${decision}" ;;
-  esac
-}
-
 function _md5_write_expect {
   # NOT `path`. In zsh `path` is tied to `PATH` as an array, so `local path=`
   # replaces PATH with that one value for the life of the function — every
@@ -54,7 +40,7 @@ function _md5_write_expect {
   # frames away from the assignment. Cost an hour on 2026-09-04.
   local want="$1" file="$2" content="$3" label="${4:-$2}" out got
   out="$(_md5_write_run "${file}" "${content}")"
-  got="$(_md5_write_verdict "${out}")"
+  got="$(_hook_verdict "${out}")"
   if [[ "${got}" == "${want}" ]]; then
     _pass "${want}: ${label}"
   else
@@ -77,7 +63,7 @@ function run_md5_write {
     return
   fi
 
-  # A session-wide export of the bypass would turn every DENY case into ALLOW
+  # A session-wide export of the bypass would turn every DENY case into PASS
   # and the suite would still report green. This bit during development.
   unset MD5_GUARD_SKIP
 
@@ -96,52 +82,52 @@ function run_md5_write {
   _md5_write_expect DENY /x/a.sh 'md5sum "$f" > sums.txt' 'shell md5sum in a script'
   _md5_write_expect DENY /x/a.sh 'cd /tmp && md5 file' 'shell md5 after a separator'
 
-  # The SHA-256 spellings → ALLOW.
-  _md5_write_expect ALLOW /x/a.py 'h = hashlib.sha256(data).hexdigest()' 'python hashlib.sha256'
-  _md5_write_expect ALLOW /x/a.swift 'let d = SHA256.hash(data: raw)' 'swift CryptoKit SHA256'
-  _md5_write_expect ALLOW /x/a.js "crypto.createHash('sha256').update(x)" 'node createHash sha256'
+  # The SHA-256 spellings → PASS.
+  _md5_write_expect PASS /x/a.py 'h = hashlib.sha256(data).hexdigest()' 'python hashlib.sha256'
+  _md5_write_expect PASS /x/a.swift 'let d = SHA256.hash(data: raw)' 'swift CryptoKit SHA256'
+  _md5_write_expect PASS /x/a.js "crypto.createHash('sha256').update(x)" 'node createHash sha256'
   # shellcheck disable=SC2016
-  _md5_write_expect ALLOW /x/a.sh 'shasum -a 256 "$f" > sums.txt' 'shell shasum -a 256'
-  _md5_write_expect ALLOW /x/a.java 'MessageDigest.getInstance("SHA-256")' 'java SHA-256'
+  _md5_write_expect PASS /x/a.sh 'shasum -a 256 "$f" > sums.txt' 'shell shasum -a 256'
+  _md5_write_expect PASS /x/a.java 'MessageDigest.getInstance("SHA-256")' 'java SHA-256'
 
   # Exemption 1: comments are stripped before matching. MD5 named in a comment
   # is not MD5 in the code, and blocking `# never use md5sum` would stop real
   # work. This matters far more now the hook denies than it did when it only
   # reported.
-  _md5_write_expect ALLOW /x/a.sh '# never use md5sum here' 'hash comment naming md5sum'
-  _md5_write_expect ALLOW /x/a.py '# do not call hashlib.md5 any more' 'hash comment naming a call site'
-  _md5_write_expect ALLOW /x/a.js "// avoid createHash('md5')" 'slash comment naming a call site'
-  _md5_write_expect ALLOW /x/a.py 'h = hashlib.sha256(d)  # was hashlib.md5' 'trailing comment after clean code'
+  _md5_write_expect PASS /x/a.sh '# never use md5sum here' 'hash comment naming md5sum'
+  _md5_write_expect PASS /x/a.py '# do not call hashlib.md5 any more' 'hash comment naming a call site'
+  _md5_write_expect PASS /x/a.js "// avoid createHash('md5')" 'slash comment naming a call site'
+  _md5_write_expect PASS /x/a.py 'h = hashlib.sha256(d)  # was hashlib.md5' 'trailing comment after clean code'
   # A URL is not a comment: `//` preceded by a colon survives the strip, so a
   # real call on the next line is still caught.
-  _md5_write_expect ALLOW /x/a.js 'const u = "https://x//y";' 'URL only'
+  _md5_write_expect PASS /x/a.js 'const u = "https://x//y";' 'URL only'
   _md5_write_expect DENY /x/a.js 'const u = "https://x/y";
 crypto.createHash("md5")' 'URL on one line, a real call on the next'
 
   # Exemption 2: prose discusses MD5, code uses it. Without this, editing
   # internals/hooks.md or TODOs.md would be blocked by their own subject.
-  _md5_write_expect ALLOW /x/a.md 'Never write hashlib.md5 here.' 'markdown discussing MD5'
-  _md5_write_expect ALLOW /x/a.markdown 'Insecure.MD5 is banned.' 'markdown long extension'
-  _md5_write_expect ALLOW /x/a.txt 'md5sum notes' 'plain text'
-  _md5_write_expect ALLOW /x/NOTES.RST 'CC_MD5 appears here' 'rst, uppercase path'
+  _md5_write_expect PASS /x/a.md 'Never write hashlib.md5 here.' 'markdown discussing MD5'
+  _md5_write_expect PASS /x/a.markdown 'Insecure.MD5 is banned.' 'markdown long extension'
+  _md5_write_expect PASS /x/a.txt 'md5sum notes' 'plain text'
+  _md5_write_expect PASS /x/NOTES.RST 'CC_MD5 appears here' 'rst, uppercase path'
 
   # Exemption 3: content naming the guard exempts itself. This is how the hook
   # and this suite avoid blocking themselves, with no path list to rot. It is
   # checked on the ORIGINAL content, because the marker normally sits in a
   # comment and comments are stripped.
-  _md5_write_expect ALLOW /x/a.py '# MD5_GUARD_SKIP: vendor publishes md5 only
+  _md5_write_expect PASS /x/a.py '# MD5_GUARD_SKIP: vendor publishes md5 only
 h = hashlib.md5(d)' 'content naming the guard, in a comment'
 
-  # Words that merely contain md5 → ALLOW. A narrow call-site match is what
+  # Words that merely contain md5 → PASS. A narrow call-site match is what
   # makes a blocking hook usable at all.
-  _md5_write_expect ALLOW /x/a.py 'md5_path = "/tmp/x"' 'variable named md5_path'
-  _md5_write_expect ALLOW /x/a.py 'p = "md5.txt"' 'filename containing md5'
-  _md5_write_expect ALLOW /x/a.py 'def _md5_guard_split(s): pass' 'function name containing md5'
+  _md5_write_expect PASS /x/a.py 'md5_path = "/tmp/x"' 'variable named md5_path'
+  _md5_write_expect PASS /x/a.py 'p = "md5.txt"' 'filename containing md5'
+  _md5_write_expect PASS /x/a.py 'def _md5_guard_split(s): pass' 'function name containing md5'
 
   # Edit payloads carry new_string rather than content.
   local out got
   out="$(_md5_write_run_edit /x/a.py 'h = hashlib.md5(d)')"
-  got="$(_md5_write_verdict "${out}")"
+  got="$(_hook_verdict "${out}")"
   if [[ "${got}" == DENY ]]; then
     _pass "DENY: Edit payload (new_string) is scanned"
   else
@@ -152,11 +138,11 @@ h = hashlib.md5(d)' 'content naming the guard, in a comment'
   # edit to a file with pre-existing MD5 would be blocked forever, including
   # the edit that removes it.
   out="$(_md5_write_run_edit /x/a.py 'h = hashlib.sha256(d)')"
-  got="$(_md5_write_verdict "${out}")"
-  if [[ "${got}" == ALLOW ]]; then
-    _pass "ALLOW: a clean Edit is not judged by the file on disk"
+  got="$(_hook_verdict "${out}")"
+  if [[ "${got}" == PASS ]]; then
+    _pass "PASS: a clean Edit is not judged by the file on disk"
   else
-    _fail "clean Edit — expected ALLOW, got ${got}"
+    _fail "clean Edit — expected PASS, got ${got}"
   fi
 
   # The deny reason must name the fix, quote the offending line, and say the
@@ -188,7 +174,7 @@ h = hashlib.md5(d)' 'content naming the guard, in a comment'
   # Content with a double quote and a backslash must not break the JSON. jq
   # builds it precisely because the matched lines are arbitrary file content.
   out="$(_md5_write_run /x/a.py 'h = hashlib.md5(b"a\"b\\c")')"
-  if [[ "$(_md5_write_verdict "${out}")" == DENY ]]; then
+  if [[ "$(_hook_verdict "${out}")" == DENY ]]; then
     _pass "DENY: quotes and backslashes in the matched line stay valid JSON"
   else
     _fail "quotes/backslashes in content produced invalid JSON"

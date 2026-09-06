@@ -52,18 +52,19 @@ function run_and_log {
 
 function check_internet_connection {
   local -a domains=("captive.apple.com" "google.com" "flightywifi.com")
-  local all_domains_not_reachable=true
+  local domain reachability
 
+  # Tests may supply a fixture command when sourcing this function. main calls
+  # it without arguments, so launchd always uses the fixed system binary.
   for domain in "${domains[@]}"; do
-    if /usr/sbin/scutil -r "${domain}" | grep '^Reachable' >/dev/null; then
-      all_domains_not_reachable=false
+    if reachability=$("${1:-/usr/sbin/scutil}" -r "${domain}") \
+        && [[ $'\n'"${reachability}" == *$'\n'Reachable* ]]; then
+      return 0
     fi
   done
 
-  if [[ "${all_domains_not_reachable}" = "true" ]]; then
-    logger -t "com.0xmachos.jump" "[FAIL] jump-system: not connected to the internet"
-    return 1
-  fi
+  logger -t "com.0xmachos.jump" "[FAIL] jump-system: not connected to the internet"
+  return 1
 }
 
 function main {

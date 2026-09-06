@@ -26,7 +26,7 @@ function _rm_redirect_run {
 function _rm_redirect_expect {
   local want="$1" cmd="$2" label="${3:-$2}" out got
   out="$(_rm_redirect_run "${cmd}")"
-  [[ "${out}" == *permissionDecision* ]] && got=DENY || got=PASS
+  got="$(_hook_verdict "${out}")"
   if [[ "${got}" == "${want}" ]]; then
     _pass "${want}: ${label}"
   else

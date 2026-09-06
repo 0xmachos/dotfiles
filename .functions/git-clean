@@ -11,12 +11,11 @@ function git-clean {
     dir="${dir%/.git}"
     (
       cd "${dir}" || exit
-      local repo_name
-      repo_name=$(basename "${dir}")
+      local repo_name="${dir##*/}"
       echo "  Cleaning: ${repo_name}"
       GIT_TERMINAL_PROMPT=0 git fetch --prune &>/dev/null
       git gc --quiet
       git fsck --full --strict &>/dev/null
     )
-  done < <(find "$HOME/Documents/Projects" -type d -maxdepth 5 -name .git)
+  done < <(find "$HOME/Documents/Projects" -maxdepth 5 -type d -name .git -print -prune)
 }

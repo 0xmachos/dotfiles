@@ -1,0 +1,78 @@
+#!/bin/zsh
+# Regression tests for shared assertions; no deployed hooks are required.
+# shellcheck source=tests/lib
+
+function run_test_helpers {
+  _section "Hook verdict and frontmatter regressions"
+  local out expected
+  local -a outputs=(
+    ''
+    '{"hookSpecificOutput":{"permissionDecision":"deny"}}'
+    '{"hookSpecificOutput":{"permissionDecision":"allow"}}'
+    'permissionDecision: deny'
+    '{}'
+    'null'
+    '{"hookSpecificOutput":{"permissionDecision":"deny"}} {}'
+  )
+  local -a verdicts=(PASS DENY INVALID INVALID INVALID INVALID INVALID)
+  local i
+  for (( i=1; i<=${#outputs}; i++ )); do
+    out="$(_hook_verdict "${outputs[i]}")"
+    expected="${verdicts[i]}"
+    if [[ "${out}" == "${expected}" ]]; then
+      _pass "hook response ${i}: ${expected}"
+    else
+      _fail "hook response ${i}: expected ${expected}, got ${out}"
+    fi
+  done
+
+  # Exercise the actual expectation functions with an allow mutant. The
+  # counters are isolated, so the expected assertion failure does not leak.
+  local suite runner assertion
+  local -a expectations=(
+    rm-redirect _rm_redirect_run _rm_redirect_expect
+    ssh-redirect _ssh_redirect_run _ssh_redirect_expect
+    container-tmp _container_tmp_run _container_tmp_expect
+    gh-publish _gp_test_run _gp_test_expect
+  )
+  for (( i=1; i<=${#expectations}; i+=3 )); do
+    suite="${expectations[i]}"
+    runner="${expectations[i+1]}"
+    assertion="${expectations[i+2]}"
+    if (
+      # shellcheck source=/dev/null
+      source "${SCRIPT_DIR}/tests/${suite}"
+      # zsh's function table installs a mock without evaluating user input.
+      # shellcheck disable=SC2034,SC2004  # functions is an associative zsh table
+      functions[${runner}]='print -r -- '\''{"hookSpecificOutput":{"permissionDecision":"allow"}}'\'
+      # shellcheck disable=SC2154  # shared counter from tests/lib
+      local before=${fail_count}
+      "${assertion}" DENY fixture fixture >/dev/null
+      (( fail_count == before + 1 ))
+    ); then
+      _pass "${suite}: an allow response fails the DENY assertion"
+    else
+      _fail "${suite}: allow mutant escaped the assertion"
+    fi
+  done
+
+  # shellcheck source=tests/okf disable=SC1091
+  source "${SCRIPT_DIR}/tests/okf"
+  local -a documents=(
+    ''
+    $'---\ntitle: fixture\n'
+    $'---\ntitle: fixture\n---\n'
+    $'---\ntype: ""\ntitle: fixture\ndescription: test\ntimestamp: today\n---\n'
+    $'---\ntype: reference\ntitle: fixture\ndescription: test\ntimestamp: today\n---\n'
+  )
+  local rc
+  for (( i=1; i<=${#documents}; i++ )); do
+    rc=0
+    _okf_validate_frontmatter <(print -rn -- "${documents[i]}") >/dev/null || rc=$?
+    if (( (i == 5 && rc == 0) || (i != 5 && rc != 0) )); then
+      _pass "frontmatter fixture ${i}"
+    else
+      _fail "frontmatter fixture ${i}: unexpected status ${rc}"
+    fi
+  done
+}

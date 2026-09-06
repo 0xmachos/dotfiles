@@ -1,8 +1,8 @@
 #!/bin/zsh
 # dotfiles/tests/shellcheck
 #
-# ShellCheck suite — lints every shell script in the repo root, .functions/,
-# bin/, and tests/. Always invokes shellcheck in bash mode (shellcheck has no
+# ShellCheck suite — lints shell scripts in the repo root, .functions/, bin/,
+# lib/, tests/, and both hook directories. Uses bash mode (shellcheck has no
 # native Zsh support — the ~95% overlap catches real issues, Zsh-only syntax
 # is suppressed inline in each script).
 #
@@ -11,52 +11,33 @@
 #
 # shellcheck source=tests/lib
 
-function _check_shellcheck {
-  if ! [[ -x "$(command -v shellcheck)" ]]; then
-    _fail "shellcheck not installed (brew install shellcheck)"
-    return 1
-  fi
-  return 0
-}
-
-function _collect_shell_files {
-  typeset -ga SC_FILES
-  SC_FILES=()
-
-  local file
-  while IFS=$'\n' read -r file; do
-    SC_FILES+=("${file}")
-  done < <(/usr/bin/find . ./.functions ./bin ./tests -maxdepth 1 -type f \
-            -not -iwholename '*.git*'   \
-            -not -iwholename '*venv*'   \
-            -not -iwholename '*.tar.xz' \
-            | /usr/bin/sort -u)
-}
-
-function _analyse_one {
-  local shell_file="${1:?shell_file not passed to _analyse_one}"
-  local name
-  name="$(/usr/bin/basename "${shell_file}")"
-
-  if shellcheck --shell=bash "${shell_file}" ; then
-    _pass "${name}"
-  else
-    _fail "${name}"
-  fi
-}
-
 function run_shellcheck {
   _section "ShellCheck"
 
-  _check_shellcheck || return
+  if ! command -v shellcheck >/dev/null 2>&1; then
+    _fail "shellcheck not installed (brew install shellcheck)"
+    return
+  fi
 
-  _collect_shell_files
-
+  local -a shell_files=()
   local file
-  for file in "${SC_FILES[@]}"; do
-    # file(1) identifies the shebang dialect. Accept bash / sh ("shell") and zsh.
+  while IFS=$'\n' read -r file; do
+    # Preserve file(1)'s dialect check: agent-reset is deliberately Python.
+    # Only regular files are collected, so hook symlinks are not linted twice.
     if /usr/bin/file "${file}" | /usr/bin/grep --quiet -E "shell|bash|zsh"; then
-      _analyse_one "${file}"
+      shell_files+=("${file}")
     fi
-  done
+  done < <(/usr/bin/find . ./.functions ./bin ./lib ./tests ./.githooks ./.config/git/hooks \
+            -maxdepth 1 -type f \
+            -not -iwholename '*venv*'   \
+            -not -iwholename '*.tar.xz' \
+            | /usr/bin/sort -u)
+
+  if (( ${#shell_files[@]} == 0 )); then
+    _fail "No shell scripts found"
+  elif shellcheck --shell=bash "${shell_files[@]}"; then
+    _pass "All ${#shell_files[@]} shell scripts pass ShellCheck"
+  else
+    _fail "ShellCheck reported errors (see file diagnostics above)"
+  fi
 }

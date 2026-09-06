@@ -20,7 +20,10 @@ set -euo pipefail
 #
 # --no-verify still bypasses both. CI is the only unbypassable layer.
 completion_test_output=""
-if git diff --cached --name-only --diff-filter=d | grep -qx 'bittersweet'; then
+# Materialise before matching: grep -q could exit early and SIGPIPE git,
+# making pipefail silently skip the completion gate on a large staged set.
+staged_paths="$(git diff --cached --name-only --diff-filter=d)"
+if [[ $'\n'"${staged_paths}"$'\n' == *$'\n'bittersweet$'\n'* ]]; then
   if [[ -x ./bittersweet ]]; then
     ./bittersweet completions >/dev/null
     if ! git diff --quiet -- .completions/_bittersweet; then

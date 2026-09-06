@@ -1,0 +1,47 @@
+#!/usr/bin/env zsh
+# Print unsigned commits from a newline-separated SHA list on stdin.
+# Presence of a gpgsig header is the contract; verification would reject SSH
+# signatures when allowedSignersFile is absent. Exit 2 means unreadable input.
+#
+# One cat-file process reads the whole batch. Its output is materialised so
+# rejecting a record cannot SIGPIPE Git. Read exact byte lengths, never look
+# for record markers in message text: a message may contain forged headers,
+# binary bytes, or hundreds of kilobytes of text.
+
+set -euo pipefail
+export LC_ALL=C
+umask 077
+
+typeset -Ua commits=()
+while IFS= read -r sha || [[ -n "${sha}" ]]; do
+  [[ -z "${sha}" ]] && continue
+  [[ "${sha}" != *[^0-9a-f]* && ( ${#sha} == 40 || ${#sha} == 64 ) ]] || exit 2
+  commits+=("${sha}")
+done
+(( ${#commits} )) || exit 0
+
+batch="$(mktemp "${TMPDIR:-/tmp}/commit-signatures.XXXXXX")" || exit 2
+trap '/bin/rm -f "${batch}"' EXIT
+# shellcheck disable=SC2296  # zsh newline join
+git cat-file --batch <<< "${(F)commits}" > "${batch}" || exit 2
+
+exec {batch_fd}< "${batch}"
+for sha in "${commits[@]}"; do
+  IFS= read -r header <&${batch_fd} || exit 2
+  [[ "${header}" == "${sha} commit "* ]] || exit 2
+  bytes="${header##* }"
+  [[ "${header}" == "${sha} commit ${bytes}" ]] || exit 2
+  [[ -n "${bytes}" && "${bytes}" != *[^0-9]* && ${#bytes} -le 15 ]] || exit 2
+  (( bytes > 0 )) || exit 2
+  # -k counts bytes in the C locale. The separating newline is outside the
+  # object size; checking it also catches truncated or misframed output.
+  IFS= read -r -u "${batch_fd}" -k "${bytes}" object || exit 2
+  IFS= read -r -u "${batch_fd}" -k 1 ending || exit 2
+  [[ "${ending}" == $'\n' && "${object}" == *$'\n\n'* ]] || exit 2
+  [[ $'\n'"${object%%$'\n\n'*}" == *$'\n'gpgsig\ * ]] || print -r -- "${sha}"
+done
+# Missing records, unexpected extra records, and trailing junk all block.
+if IFS= read -r extra <&${batch_fd} || [[ -n "${extra}" ]]; then
+  exit 2
+fi
+exec {batch_fd}<&-

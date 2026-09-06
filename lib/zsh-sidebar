@@ -1,0 +1,40 @@
+#!/usr/bin/env zsh
+# Shared by the Sublime installer and the post-commit hook. Sourced, not run.
+
+function _generate_zsh_sidebar_syntax {
+  local repo_dir="$1" output_file="$2"
+  local -a names=()
+  local file basename first_line
+
+  while IFS= read -r -d '' file; do
+    basename="${file##*/}"
+    [[ "${basename}" == ?*.* ]] && continue
+    first_line=""
+    # read returns nonzero for an unterminated last line, which still counts.
+    { IFS= read -r first_line < "${file}" || [[ -n "${first_line}" ]]; } 2>/dev/null || continue
+    if [[ "${first_line}" == *'#!'*zsh* ||
+          "${first_line}" == '#compdef '* ||
+          "${first_line}" == '#autoload'* ]]; then
+      names+=("${basename}")
+    fi
+  done < <(/usr/bin/find "${repo_dir}" -maxdepth 2 -type f -not -path '*/.git/*' -print0)
+
+  {
+    cat <<'EOF'
+%YAML 1.2
+---
+name: Zsh (Dotfiles)
+scope: source.shell.zsh
+version: 2
+hidden: true
+extends: Packages/ShellScript/Zsh.sublime-syntax
+
+hidden_file_extensions:
+EOF
+    # zsh sorts and deduplicates without a sort process or a pipeline.
+    # shellcheck disable=SC2296
+    for basename in "${(ou)names[@]}"; do
+      printf '  - %s\n' "${basename}"
+    done
+  } > "${output_file}"
+}

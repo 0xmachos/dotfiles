@@ -17,7 +17,7 @@
 #     of the matcher that never invokes npm. Guards against a tweak that started
 #     gating `wrangler deployments list`, or stopped honouring `--dry-run` /
 #     NPM_ATTEST_SKIP.
-#   * Allow/block (PASS vs BLOCK) — stdout: a deny JSON blocks, empty allows.
+#   * Allow/block (PASS vs DENY) — stdout: a deny JSON blocks, empty allows.
 #     Confirms the unverifiable paths allow rather than fail closed.
 #
 # Run: ./test npm-attest    (or ./test for the full suite)
@@ -48,11 +48,11 @@ function _npm_attest_gate_expect {
 }
 
 function _npm_attest_verdict_expect {
-  # PASS (allowed, empty stdout) vs BLOCK (deny JSON) for command $1 in dir $2.
+  # PASS (allowed, empty stdout) vs DENY (deny JSON) for command $1 in dir $2.
   local want="$1" cmd="$2" dir="$3" label="${4:-$2}" out got
   out="$(jq -n --arg c "${cmd}" '{tool_name:"Bash", tool_input:{command:$c}}' \
     | ( cd "${dir}" && /bin/zsh "${SCRIPT_DIR}/claude/npm-attest-hook" 2>/dev/null ))"
-  [[ "${out}" == *permissionDecision* ]] && got=BLOCK || got=PASS
+  got="$(_hook_verdict "${out}")"
   if [[ "${got}" == "${want}" ]]; then
     _pass "${want}: ${label}"
   else
