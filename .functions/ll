@@ -2,9 +2,22 @@
 # dotfiles/.functions/ll
 
 function ll {
-  # -F forces less to exit when the listing fits one screen, so short
-  # directories still print straight to the prompt like the old alias did.
-  # -X keeps that short output in normal scrollback (no screen clear).
-  # -R shows the ANSI color codes from CLICOLOR_FORCE instead of raw escapes.
-  CLICOLOR_FORCE=1 command ls -aFGhlt "$@" | less -FRX
+  local out rows
+  local -a out_lines
+
+  out=$(CLICOLOR_FORCE=1 command ls -aFGhlt "$@") || return
+  print -r -- "$out"
+
+  # A listing longer than the terminal scrolls the total line and the first
+  # entries out of view above the prompt, so repeat them below the listing.
+  # shellcheck disable=SC2296 # zsh-only ${(f)var} line-split flag — no bash equivalent
+  out_lines=("${(@f)out}")
+  rows=$(tput lines 2>/dev/null)
+  rows=${rows:-${LINES:-24}}
+  if (( ${#out_lines} > rows )); then
+    print
+    print -- '--- top of listing ---'
+    # shellcheck disable=SC2296 # zsh-only ${(@)arr[a,b]} slice flag — no bash equivalent
+    print -rl -- "${(@)out_lines[1,5]}"
+  fi
 }
