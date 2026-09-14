@@ -1,0 +1,10 @@
+#!/usr/bin/env zsh
+# dotfiles/.functions/ll
+
+function ll {
+  # -F forces less to exit when the listing fits one screen, so short
+  # directories still print straight to the prompt like the old alias did.
+  # -X keeps that short output in normal scrollback (no screen clear).
+  # -R shows the ANSI color codes from CLICOLOR_FORCE instead of raw escapes.
+  CLICOLOR_FORCE=1 command ls -aFGhlt "$@" | less -FRX
+}
