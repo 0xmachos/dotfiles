@@ -1561,12 +1561,21 @@ function install_launchagents {
   #   Symlinked plists are silently skipped — RunAtLoad never fires.
   #   Explicit `launchctl bootstrap` still follows symlinks, but doesn't
   #   survive reboot. Copying is the only reliable approach.
+  #
+  #   macOS 27 "Golden Gate" (GA 2026-09-14) confirmed a second plist hazard:
+  #   launchd no longer loads a plist carrying the com.apple.quarantine xattr
+  #   (Apple release notes, bug 166415497; cf. the objective-see/BlockBlock#106
+  #   quarantined-plist report — see internals/feedbacks.md for the filing).
+  #   `cp` preserves xattrs, so a plist quarantined upstream of this repo (a
+  #   zip download, an AirDrop) would carry the flag into the deployed copy.
+  #   Strip it after every copy — a no-op when the flag is already absent.
 
   # LaunchAgents: copy into ~/Library/LaunchAgents/
   if mkdir -p "${HOME}/Library/LaunchAgents"; then
     for plist in "${LAUNCHAGENT_PLISTS[@]}"; do
       if cp "${SCRIPT_DIR}/LaunchAgents/${plist}.plist" "${HOME}/Library/LaunchAgents/${plist}.plist"; then
         chmod 644 "${HOME}/Library/LaunchAgents/${plist}.plist"
+        xattr -d com.apple.quarantine "${HOME}/Library/LaunchAgents/${plist}.plist" 2>/dev/null || true
         echo "[✅] Successfully installed ${plist}.plist to ~/Library/LaunchAgents/"
       else
         echo "[❌] Failed to install ${plist}.plist"
@@ -1582,6 +1591,7 @@ function install_launchagents {
   if sudo cp "${SCRIPT_DIR}/LaunchDaemons/com.0xmachos.jump-system.plist" "/Library/LaunchDaemons/com.0xmachos.jump-system.plist"; then
     sudo chown root:wheel "/Library/LaunchDaemons/com.0xmachos.jump-system.plist"
     sudo chmod 644 "/Library/LaunchDaemons/com.0xmachos.jump-system.plist"
+    sudo xattr -d com.apple.quarantine "/Library/LaunchDaemons/com.0xmachos.jump-system.plist" 2>/dev/null || true
     echo "[✅] Successfully installed com.0xmachos.jump-system.plist to /Library/LaunchDaemons/"
   else
     echo "[❌] Failed to install com.0xmachos.jump-system.plist"
