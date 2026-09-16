@@ -4,6 +4,12 @@
 <dict>
 	<key>Label</key>
 	<string>com.0xmachos.jump-user</string>
+	<key>LowPriorityBackgroundIO</key>
+	<true/>
+	<key>Nice</key>
+	<integer>10</integer>
+	<key>ProcessType</key>
+	<string>Background</string>
 	<key>ProgramArguments</key>
 	<array>
 		<string>/usr/local/bin/jump-user</string>
@@ -12,13 +18,11 @@
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
+	<key>StandardErrorPath</key>
+	<string>__HOME__/Library/Logs/jump-user.launchd.log</string>
+	<key>StandardOutPath</key>
+	<string>__HOME__/Library/Logs/jump-user.launchd.log</string>
 	<key>StartInterval</key>
 	<integer>43200</integer>
-	<key>Nice</key>
-	<integer>10</integer>
-	<key>ProcessType</key>
-	<string>Background</string>
-	<key>LowPriorityBackgroundIO</key>
-	<true/>
 </dict>
 </plist>
