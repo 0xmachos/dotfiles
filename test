@@ -27,9 +27,34 @@ source "${SCRIPT_DIR}/tests/lib"
 
 readonly -a SUITES=(shellcheck test-helpers sha sidebar extensions plutil linkage completions okf agents-md jump rm-redirect npm-attest ssh-redirect git-sign container-tmp md5-guard md5-write gh-publish hook-links pii-hook agent-reset)
 
+# Optional, per-clone suites: one name per line in .extra_test_suites
+# (gitignored by the .extra* pattern, like .extra_gitexclude). They cover
+# private tools that must not be named in the tracked SUITES array. A listed
+# suite whose file is absent is SKIPPED under `./test` (the clone may not
+# carry the private tool) but an explicit `./test <name>` for it still
+# fails — an explicit request never skips. The mandatory array above stays
+# fail-closed: a missing mandatory suite still aborts the run. Malformed
+# lines (anything but [a-z0-9-]) abort the run even under `./test`, so a
+# typo cannot silently drop a suite. Added 2026-09-17 for tests/steam.
+typeset -a EXTRA_SUITES=()
+function _load_extra_suites {
+  local registry="${SCRIPT_DIR}/.extra_test_suites" line
+  [[ -f "${registry}" ]] || return 0
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ -z "${line}" || "${line}" == \#* ]] && continue
+    if [[ ! "${line}" =~ ^[a-z0-9-]+$ ]]; then
+      echo "[FAIL] .extra_test_suites: malformed suite name '${line}'"
+      exit 1
+    fi
+    EXTRA_SUITES+=("${line}")
+  done < "${registry}"
+}
+_load_extra_suites
+
 function _usage {
   echo "Usage: ./test [suite [arg]]"
   echo "Suites: ${SUITES[*]}"
+  (( ${#EXTRA_SUITES[@]} )) && echo "Extra (per-clone): ${EXTRA_SUITES[*]}"
 }
 
 function _run_suite {
@@ -53,12 +78,24 @@ function main {
       for s in "${SUITES[@]}"; do
         _run_suite "${s}"
       done
+      for s in "${EXTRA_SUITES[@]}"; do
+        if [[ -f "${SCRIPT_DIR}/tests/${s}" ]]; then
+          _run_suite "${s}"
+        else
+          _section "${s}"
+          _skip "${s}: listed in .extra_test_suites but tests/${s} is absent on this clone"
+        fi
+      done
       ;;
     *)
       # zsh: (Ie) returns the 1-based index of an exact match, 0 if missing.
-      if (( ${SUITES[(Ie)${filter}]} == 0 )); then
+      if (( ${SUITES[(Ie)${filter}]} == 0 && ${EXTRA_SUITES[(Ie)${filter}]} == 0 )); then
         echo "[FAIL] Unknown suite: ${filter}"
         _usage
+        exit 1
+      fi
+      if [[ ! -f "${SCRIPT_DIR}/tests/${filter}" ]]; then
+        echo "[FAIL] Suite ${filter} is registered but tests/${filter} is absent"
         exit 1
       fi
       shift

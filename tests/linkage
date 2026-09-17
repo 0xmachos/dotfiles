@@ -128,6 +128,7 @@ function run_linkage {
     [claude]=install_dotfiles              # Dynamic (skills, rules, settings)
     [.githooks]=install_dotfiles           # core.hooksPath
     [.extra_gitexclude]=install_dotfiles   # .git/info/exclude (gitignored source)
+    [.extra_test_suites]=repo              # per-clone optional suites, read by ./test (gitignored)
 
     # Other bittersweet subcommands
     [bin]=install_scripts
