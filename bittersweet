@@ -733,13 +733,27 @@ function install_dotfiles {
   done
 
   # Symlink API wrapper scripts into ~/.local/bin/ (ahead of /opt/homebrew/bin
-  # on PATH, so wrappers shadow Homebrew binaries and inject 1Password keys)
+  # on PATH, so wrappers shadow Homebrew binaries and inject 1Password keys).
+  # bao-mcp-env does NOT shadow a same-named Homebrew binary and every
+  # consumer either hardcodes its absolute path or resolves it by bare name
+  # for cross-machine portability (not PATH-shadowing) — moved to
+  # /usr/local/bin via install_scripts's bin_files (Linux-path audit,
+  # internals/linux-path-audit.md, 2026-09-18). vt/urlscan/op-homelab stay
+  # here: their shadowing of Homebrew is load-bearing.
   _ensure_dir "${HOME}/.local/bin"
-  local -ar op_wrapper_scripts=(vt urlscan op-homelab bao-mcp-env)
+  local -ar op_wrapper_scripts=(vt urlscan op-homelab)
   local wrapper
   for wrapper in "${op_wrapper_scripts[@]}"; do
     _symlink "${SCRIPT_DIR}/bin/${wrapper}" "${HOME}/.local/bin/${wrapper}"
   done
+
+  # Remove the stale pre-move symlink so PATH order (~/.local/bin comes
+  # before /usr/local/bin here) can't keep resolving the old copy for the
+  # consumers that invoke bao-mcp-env by bare name.
+  if [[ -L "${HOME}/.local/bin/bao-mcp-env" ]]; then
+    rm -f "${HOME}/.local/bin/bao-mcp-env"
+    echo "[✅] Removed stale ~/.local/bin/bao-mcp-env (now at /usr/local/bin via install_scripts)"
+  fi
 
   # Symlink Ghostty config into macOS Application Support location
   _ensure_dir "${HOME}/Library/Application Support/com.mitchellh.ghostty"
@@ -783,7 +797,7 @@ function install_scripts {
   #   launchd-invoked scripts (jump-system, jump-user) are COPIED, not
   #   symlinked — see the comments at each for why
   
-  local -ar bin_files=(dns mdview npm-audit-check claude-session-audit papercut git-sign-unpushed)
+  local -ar bin_files=(dns mdview npm-audit-check claude-session-audit papercut git-sign-unpushed bao-mcp-env)
   local -ar macos_script_bin_files=(c0design)
   
   # Create /usr/local/bin
