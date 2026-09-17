@@ -811,6 +811,33 @@ function install_scripts {
     fi
   done
 
+  # Optional, per-clone tools: one name per line in .extra_bin_files
+  # (gitignored by the .extra* pattern, like .extra_test_suites for ./test).
+  # A private tool that must not be named in the tracked bin_files array is
+  # symlinked exactly like the tracked ones. Malformed names abort; a listed
+  # file that is absent on this clone is reported, not fatal (pending sync).
+  # Added 2026-09-17 for bin/steam.
+  local extra_bin_registry="${SCRIPT_DIR}/.extra_bin_files" extra_bin
+  if [[ -f "${extra_bin_registry}" ]]; then
+    while IFS= read -r extra_bin || [[ -n "${extra_bin}" ]]; do
+      [[ -z "${extra_bin}" || "${extra_bin}" == \#* ]] && continue
+      if [[ ! "${extra_bin}" =~ ^[a-z0-9-]+$ ]]; then
+        echo "[❌] .extra_bin_files: malformed tool name '${extra_bin}'"
+        exit 1
+      fi
+      if [[ ! -f "${SCRIPT_DIR}/bin/${extra_bin}" ]]; then
+        echo "[❌] .extra_bin_files: bin/${extra_bin} is absent on this clone (pending sync?)"
+        continue
+      fi
+      if sudo ln -sfn "${SCRIPT_DIR}/bin/${extra_bin}" "/usr/local/bin/${extra_bin}"; then
+        sudo chmod -h 755 "/usr/local/bin/${extra_bin}"
+        echo "[✅] Successfully linked ${extra_bin} (per-clone) to /usr/local/bin/${extra_bin}"
+      else
+        echo "[❌] Failed to link ${extra_bin} to /usr/local/bin/${extra_bin}"
+      fi
+    done < "${extra_bin_registry}"
+  fi
+
   # Copy jump-system as root-owned (executed by LaunchDaemon, must not be
   # user-writable — symlink would be a local privilege escalation)
   sudo rm -f "/usr/local/bin/jump-system"
