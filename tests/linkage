@@ -129,6 +129,7 @@ function run_linkage {
     [.githooks]=install_dotfiles           # core.hooksPath
     [.extra_gitexclude]=install_dotfiles   # .git/info/exclude (gitignored source)
     [.extra_test_suites]=repo              # per-clone optional suites, read by ./test (gitignored)
+    [.extra_bin_files]=repo                # per-clone bin tools, read by install_scripts (gitignored)
 
     # Other bittersweet subcommands
     [bin]=install_scripts
