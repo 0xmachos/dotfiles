@@ -163,13 +163,13 @@ function run_linkage {
     [claude-session-audit]=install_scripts
     [git-sign-unpushed]=install_scripts
     [papercut]=install_scripts
+    [bao-mcp-env]=install_scripts               # moved from ~/.local/bin 2026-09-18, internals/linux-path-audit.md
     [agent-reset]=repo                          # backup/verify/wipe ritual; run from the repo, installed nowhere
 
     # install_dotfiles → ~/.local/bin/ (op wrappers)
     [vt]=install_dotfiles
     [urlscan]=install_dotfiles
     [op-homelab]=install_dotfiles
-    [bao-mcp-env]=install_dotfiles
   )
 
   # claude/ files → owning subcommand (rules/, skills/ and agents/ are dynamic)
