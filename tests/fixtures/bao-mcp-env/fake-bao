@@ -1,0 +1,94 @@
+#!/bin/zsh
+# dotfiles/tests/fixtures/bao-mcp-env/fake-bao
+#
+# Stand-in for the `bao` binary used by tests/bao-mcp-env through the
+# BAO_MCP_ENV_BAO seam. It never touches the network or a real OpenBao
+# instance. Every call is recorded so the suite can prove:
+#   1. role_id/secret_id travel to `auth/approle/login` as "@<path>" file
+#      references, never as literal values in argv or in this script's own
+#      environment;
+#   2. `token revoke -self` is called exactly once per bao-mcp-env
+#      invocation, on both the success and the kv-read-failure path;
+#   3. no fake secret value this fixture serves ever needs to appear in a
+#      call's argv (bao-mcp-env only ever passes the kv-subpath, never a
+#      secret, on its `kv get` argv).
+#
+# Contract (all via environment, set by the suite):
+#   FAKE_BAO_DIR         record directory; files calls, argv.N, env.N
+#   FAKE_BAO_TOKEN        token string to emit on a successful login
+#                         (default: a fixed synthetic value)
+#   FAKE_BAO_LOGIN_FAIL   if set (any value), `auth/approle/login` fails
+#   FAKE_BAO_KV_FAIL      if set (any value), `kv get` fails
+#   FAKE_BAO_KV_JSON       path to a JSON file to print verbatim for
+#                         `kv get -format=json` (default: a 2-field fixture)
+#
+# Supported subcommands: `write -field=token auth/approle/login role_id=@F
+# secret_id=@F`, `kv get -format=json -mount=kv PATH`, `token revoke -self`.
+#
+# ShellCheck: lint with `shellcheck --shell=bash tests/fixtures/bao-mcp-env/fake-bao`.
+
+set -euo pipefail
+umask 077
+
+: "${FAKE_BAO_DIR:?FAKE_BAO_DIR unset}"
+
+# --- record the call ---------------------------------------------------------
+counter="${FAKE_BAO_DIR}/calls"
+n=0
+[[ -f "${counter}" ]] && n="$(<"${counter}")"
+n=$(( n + 1 ))
+printf '%s' "${n}" > "${counter}"
+printf '%s\n' "$@" > "${FAKE_BAO_DIR}/argv.${n}"
+/usr/bin/env > "${FAKE_BAO_DIR}/env.${n}"
+
+# --- dispatch ------------------------------------------------------------
+case "${1:-}" in
+  write)
+    # write -field=token auth/approle/login role_id=@FILE secret_id=@FILE
+    if [[ -n "${FAKE_BAO_LOGIN_FAIL:-}" ]]; then
+      echo "fake-bao: login denied (scripted failure)" >&2
+      exit 1
+    fi
+    role_id_arg="" secret_id_arg=""
+    for arg in "$@"; do
+      case "${arg}" in
+        role_id=@*)   role_id_arg="${arg#role_id=@}" ;;
+        secret_id=@*) secret_id_arg="${arg#secret_id=@}" ;;
+      esac
+    done
+    printf '%s\n' "${role_id_arg}" > "${FAKE_BAO_DIR}/login-role-id-path.${n}"
+    printf '%s\n' "${secret_id_arg}" > "${FAKE_BAO_DIR}/login-secret-id-path.${n}"
+    if [[ -z "${role_id_arg}" || ! -r "${role_id_arg}" ]]; then
+      echo "fake-bao: role_id file reference missing or unreadable" >&2
+      exit 1
+    fi
+    if [[ -z "${secret_id_arg}" || ! -r "${secret_id_arg}" ]]; then
+      echo "fake-bao: secret_id file reference missing or unreadable" >&2
+      exit 1
+    fi
+    printf '%s' "${FAKE_BAO_TOKEN:-fake-token-0000000000000000}"
+    ;;
+
+  kv)
+    # kv get -format=json -mount=kv PATH
+    if [[ -n "${FAKE_BAO_KV_FAIL:-}" ]]; then
+      echo "fake-bao: kv read denied (scripted failure)" >&2
+      exit 1
+    fi
+    if [[ -n "${FAKE_BAO_KV_JSON:-}" ]]; then
+      /bin/cat "${FAKE_BAO_KV_JSON}"
+    else
+      printf '{"data":{"data":{"FAKE_FIELD_ONE":"one-value","FAKE_FIELD_TWO":"two-value"}}}'
+    fi
+    ;;
+
+  token)
+    # token revoke -self
+    :
+    ;;
+
+  *)
+    echo "fake-bao: unhandled subcommand: $*" >&2
+    exit 2
+    ;;
+esac
