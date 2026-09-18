@@ -1387,7 +1387,7 @@ def cmd_self_test(_args):
     check("matcher: key agent with claude in argv path is NOT matched",
           not is_agent_process(
               "sep-agent",
-              "sep-agent serve --blob /h/.config/openbao/claude/blob.bin"))
+              "sep-agent serve --blob /h/Library/Application Support/openbao/claude/blob.bin"))
     check("matcher: substring in unrelated argv is NOT matched",
           not is_agent_process("tail", "tail -f /var/log/claude-thing.log"))
 

@@ -191,11 +191,11 @@ EOF
   # the named regression: an unrelated daemon carrying "claude" inside an
   # ARGUMENT path must not block the wipe.
   cat > "${fix}/ps-quiet" <<'EOF'
-  845 sep-agent        sep-agent serve --blob /h/.config/openbao/claude/blob.bin
+  845 sep-agent        sep-agent serve --blob /h/Library/Application Support/openbao/claude/blob.bin
   900 zsh              -zsh
 EOF
   cat > "${fix}/ps-busy" <<'EOF'
-  845 sep-agent        sep-agent serve --blob /h/.config/openbao/claude/blob.bin
+  845 sep-agent        sep-agent serve --blob /h/Library/Application Support/openbao/claude/blob.bin
   999 claude           claude --resume
 EOF
 
