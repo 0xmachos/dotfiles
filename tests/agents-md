@@ -10,9 +10,12 @@
 #   global scope  claude/global-claude.md is the real file; BOTH
 #                 ~/.claude/CLAUDE.md and ~/.codex/AGENTS.md link to it.
 #
-# Claude Code does not read AGENTS.md at any scope — the native-support request
-# (anthropics/claude-code#6235) was closed as completed 2026-08-17 and 2.1.263
-# still does not read it — so it needs the CLAUDE.md name. Codex ignores CLAUDE.md entirely
+# Through 2.1.263, Claude Code read no AGENTS.md at any scope, so it needed the
+# CLAUDE.md name. 2.1.277 (2026-09-18) shipped native AGENTS.md fallback as a
+# built-in mod, gated by a GrowthBook flag (tengu_agents_md_mod) — on for this
+# Mac's install, not guaranteed on for every 2.1.277 install. The symlink stays
+# regardless: it does not depend on that flag, and full rationale is in
+# AGENTS.md's own header. Codex ignores CLAUDE.md entirely
 # (project_doc_fallback_filenames defaults to an empty list), so it needs the
 # AGENTS.md name. Muse takes the first of AGENTS.md / CLAUDE.md / .agents/ /
 # .claude/ per directory and warns about every candidate it skipped — but it
