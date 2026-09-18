@@ -1371,17 +1371,24 @@ function install_herald {
   #   macOS companion to the Herald iOS app (jessedc/herald-ios-bonjour-browser)
   #   Used by Claude for Matter/Thread debugging in ridleys-shooting-party
   #   Source: ~/Documents/Projects/herald-cli/HeraldCLI (subdir Package.swift)
-  #   Destination: ~/.local/bin/herald (symlink → .build/release/herald)
+  #   Destination: /usr/local/bin/herald — a root-owned COPY, not a symlink
+  #   (Linux-path audit, internals/linux-path-audit.md, 2026-09-18). A
+  #   symlink here would point at a user-writable Swift build directory,
+  #   the same privilege-escalation shape jump-system/jump-user avoid by
+  #   being copied rather than linked (see install_scripts). rm -f + cp
+  #   gives each deploy a fresh inode, which also sidesteps the kernel's
+  #   per-inode signature-cache staleness the re-sign step below exists for.
   #
   #   Actively maintained upstream. Full update cycle: clone (if missing),
-  #   fetch, fast-forward pull (refused if local diverged), build, re-sign.
-  #   Upstream commit range is logged before each pull — check the output
-  #   for what actually landed. No Sigstore/Homebrew attestation available.
+  #   fetch, fast-forward pull (refused if local diverged), build, deploy,
+  #   re-sign. Upstream commit range is logged before each pull — check the
+  #   output for what actually landed. No Sigstore/Homebrew attestation
+  #   available.
 
   local -r repo_url="https://github.com/jessedc/herald-ios-bonjour-browser.git"
   local -r src_dir="${HOME}/Documents/Projects/herald-cli"
   local -r pkg_dir="${src_dir}/HeraldCLI"
-  local -r binary="${HOME}/.local/bin/herald"
+  local -r binary="/usr/local/bin/herald"
   local -r build_output="${pkg_dir}/.build/release/herald"
 
   # Clone if missing, otherwise fetch + fast-forward pull
@@ -1428,12 +1435,22 @@ function install_herald {
 
   echo "[✅] Successfully built herald"
 
-  mkdir -p "${HOME}/.local/bin"
+  # Remove the stale pre-move symlink so PATH order can't keep resolving
+  # a copy that no longer tracks the source build.
+  if [[ -L "${HOME}/.local/bin/herald" ]]; then
+    rm -f "${HOME}/.local/bin/herald"
+    echo "[✅] Removed stale ~/.local/bin/herald (now at /usr/local/bin, root-owned copy)"
+  fi
 
-  if ln -sf "${build_output}" "${binary}"; then
-    echo "[✅] Symlinked ${binary} → ${build_output}"
+  get_sudo "to install herald into /usr/local/bin"
+  sudo mkdir -m 755 -p "/usr/local/bin"
+  sudo rm -f "${binary}"
+  if sudo cp "${build_output}" "${binary}"; then
+    sudo chown root:wheel "${binary}"
+    sudo chmod 755 "${binary}"
+    echo "[✅] Installed herald to ${binary} (root:wheel 755)"
   else
-    echo "[❌] Failed to symlink ${binary}"
+    echo "[❌] Failed to install herald to ${binary}"
     return 1
   fi
 
@@ -1441,8 +1458,8 @@ function install_herald {
   # not Gatekeeper — macOS caches signature info per inode and does not flush it
   # when the file's contents change, so an overwritten binary can crash on next
   # launch. Gatekeeper/syspolicyd is a separate policy layer and is not what
-  # bites here.
-  if codesign --sign - --force "${build_output}" 2>/dev/null; then
+  # bites here. Signs the deployed copy directly, not the build output.
+  if sudo codesign --sign - --force "${binary}" 2>/dev/null; then
     echo "[✅] Ad-hoc signed herald"
   else
     echo "[⚠️ ] codesign --sign - failed (non-fatal; binary remains usable)"
