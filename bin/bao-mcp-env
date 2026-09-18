@@ -27,8 +27,11 @@
 
 set -eu
 
-BAO="/opt/homebrew/bin/bao"
-JQ="$(command -v jq || echo /opt/homebrew/bin/jq)"
+# Seams (tests/bao-mcp-env): BAO_MCP_ENV_BAO BAO_MCP_ENV_JQ. CRED_DIR below
+# isn't independently overridable — tests point HOME at a fixture instead,
+# so this file's own path construction runs unmodified.
+BAO="${BAO_MCP_ENV_BAO:-/opt/homebrew/bin/bao}"
+JQ="${BAO_MCP_ENV_JQ:-$(command -v jq || echo /opt/homebrew/bin/jq)}"
 export BAO_ADDR="https://100.82.54.111:8200"
 export BAO_CACERT="${HOME}/.step/certs/root_ca.crt"
 
