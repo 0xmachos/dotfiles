@@ -1631,11 +1631,22 @@ function install_launchagents {
   # LaunchAgents: copy into ~/Library/LaunchAgents/
   if mkdir -p "${HOME}/Library/LaunchAgents"; then
     for plist in "${LAUNCHAGENT_PLISTS[@]}"; do
-      if cp "${SCRIPT_DIR}/LaunchAgents/${plist}.plist" "${HOME}/Library/LaunchAgents/${plist}.plist"; then
+      # __HOME__ is expanded to the invoking user's home at copy time. launchd
+      # does NOT expand ~ or $HOME inside path values, and a literal /Users/<name>
+      # cannot live in the repo: the two Macs use different usernames, so it would
+      # be wrong on one of them, and the PII gate denies the B8 spelling outright.
+      # Plists with no token are copied byte-for-byte. Written via a temp file and
+      # validated before it replaces the live plist, so a failed sed can never
+      # leave a truncated plist that launchd silently refuses to load.
+      agent_tmp="${HOME}/Library/LaunchAgents/.${plist}.plist.tmp"
+      if sed "s|__HOME__|${HOME}|g" "${SCRIPT_DIR}/LaunchAgents/${plist}.plist" > "${agent_tmp}" \
+         && plutil -lint "${agent_tmp}" >/dev/null 2>&1 \
+         && mv "${agent_tmp}" "${HOME}/Library/LaunchAgents/${plist}.plist"; then
         chmod 644 "${HOME}/Library/LaunchAgents/${plist}.plist"
         xattr -d com.apple.quarantine "${HOME}/Library/LaunchAgents/${plist}.plist" 2>/dev/null || true
         echo "[✅] Successfully installed ${plist}.plist to ~/Library/LaunchAgents/"
       else
+        rm -f "${agent_tmp}"
         echo "[❌] Failed to install ${plist}.plist"
       fi
     done

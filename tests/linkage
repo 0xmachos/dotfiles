@@ -33,6 +33,20 @@ function _linkage_deployments {
     # shellcheck disable=SC2329
     cp() { _linkage_record "$1"; }
     # shellcheck disable=SC2329
+    # install_launchagents's __HOME__ substitution: `sed "..." SRC > TMP`,
+    # `plutil -lint TMP`, `mv TMP DEST`. The `> TMP` redirect is the caller's,
+    # not something a mock can intercept, so it still creates a real (empty,
+    # since the mocked sed prints nothing) file at TMP — plutil is stubbed to
+    # pass so the chain reaches mv, and mv deletes TMP instead of moving it
+    # into the real ~/Library/LaunchAgents/, so no real plist is ever touched.
+    # SRC (sed's last arg) is what gets recorded, matching what cp's mock
+    # recorded from its own first (source) arg.
+    sed() { _linkage_record "${@: -1}"; }
+    # shellcheck disable=SC2329
+    plutil() { return 0; }
+    # shellcheck disable=SC2329
+    mv() { rm -f "$1"; }
+    # shellcheck disable=SC2329
     _ensure_dir() { :; }
     # shellcheck disable=SC2329
     _harden() { :; }
