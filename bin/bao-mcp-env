@@ -11,7 +11,9 @@
 # connection constants: OpenBao lives on hostb, reached over Tailscale, and
 # the listener cert chains to the step-ca root that `step ca bootstrap`
 # wrote locally. Authenticates with the laptop-approle AppRole (creds under
-# ~/.config/openbao/claude/, 0600 — Secrets-Architecture §6.6).
+# ~/Library/Application Support/openbao/claude/, 0600 — moved 2026-09-18
+# from ~/.config/openbao/claude/, dotfiles internals/linux-path-audit.md;
+# Secrets-Architecture §6.6).
 # Reads the whole secret and exports every field verbatim as an
 # environment variable — kv/mcp/* entries store literal env-var names as
 # field keys (§7), so this loader has no per-server logic. Mirrors
@@ -38,7 +40,7 @@ fi
 path="$1"
 shift
 
-CRED_DIR="${HOME}/.config/openbao/claude"
+CRED_DIR="${HOME}/Library/Application Support/openbao/claude"
 
 if [ ! -r "$CRED_DIR/role_id" ] || [ ! -r "$CRED_DIR/secret_id" ]; then
     echo "bao-mcp-env: AppRole credentials missing or unreadable in $CRED_DIR" >&2
