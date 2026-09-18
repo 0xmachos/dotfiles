@@ -13,10 +13,17 @@
 # This file is sourced, not executed — chmod 644.
 #
 # shellcheck source=tests/lib
-# shellcheck disable=SC2031  # installer mocks and their counters stay in a subshell
+# shellcheck disable=SC2030,SC2031  # fixture HOME and installer mocks stay in subshells
 
 function _linkage_deployments {
   (
+    local fixture_home
+    fixture_home="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/linkage-home.XXXXXX")" || return 1
+    trap '/bin/rm -rf -- "${fixture_home}"' EXIT
+    # HOME is intentionally overridden only in this fixture subshell: real
+    # shell redirects cannot be mocked and must never reach the user's home.
+    export HOME="${fixture_home}"
+    /bin/mkdir -p "${HOME}/Library/LaunchAgents"
     # Load declarations only, never the orchestrator's top-level setup/main.
     # shellcheck disable=SC1090,SC1091
     source <(/usr/bin/awk '
@@ -24,6 +31,8 @@ function _linkage_deployments {
       block { print }
       /^}$/ || /^\)$/ { block = 0 }
     ' "${SCRIPT_DIR}/bittersweet")
+    /bin/mkdir -p "${HOME}/.local/bin"
+    /bin/ln -s "${SCRIPT_DIR}/bin/bao-mcp-env" "${HOME}/.local/bin/bao-mcp-env"
 
     # Descriptor 3 carries operations; normal installer chatter is discarded.
     # shellcheck disable=SC2329
@@ -38,7 +47,7 @@ function _linkage_deployments {
     # not something a mock can intercept, so it still creates a real (empty,
     # since the mocked sed prints nothing) file at TMP — plutil is stubbed to
     # pass so the chain reaches mv, and mv deletes TMP instead of moving it
-    # into the real ~/Library/LaunchAgents/, so no real plist is ever touched.
+    # within the fixture home, so no real plist is ever touched.
     # SRC (sed's last arg) is what gets recorded, matching what cp's mock
     # recorded from its own first (source) arg.
     sed() { _linkage_record "${@: -1}"; }
@@ -79,6 +88,10 @@ function _linkage_deployments {
     local owner
     for owner in install_dotfiles install_scripts install_launchagents load_launchagents; do
       "${owner}"
+      if [[ "${owner}" == install_dotfiles && ! -L "${HOME}/.local/bin/bao-mcp-env" ]]; then
+        print -u2 'dotfiles removed bao-mcp-env before scripts installed its replacement'
+        return 1
+      fi
     done
   ) 3>&1 >/dev/null
 }
@@ -93,8 +106,49 @@ function _linkage_check_deployed {
   fi
 }
 
+function _linkage_bao_migration {
+  (
+    local fixture_home replacement legacy
+    fixture_home="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/linkage-bao.XXXXXX")" || return 1
+    trap '/bin/rm -rf -- "${fixture_home}"' EXIT
+    export HOME="${fixture_home}"
+    replacement="${fixture_home}/new/bao-mcp-env"
+    legacy="${HOME}/.local/bin/bao-mcp-env"
+    /bin/mkdir -p "${HOME}/.local/bin" "${fixture_home}/new"
+    # shellcheck disable=SC1090,SC1091
+    source <(/usr/bin/awk '
+      /^function _retire_bao_mcp_link / { block = 1 }
+      block { print }
+      /^}$/ { block = 0 }
+    ' "${SCRIPT_DIR}/bittersweet")
+    /bin/ln -s "${SCRIPT_DIR}/bin/bao-mcp-env" "${legacy}"
+    _retire_bao_mcp_link "${replacement}"
+    [[ -L "${legacy}" ]] || return 1
+    print '#!/bin/sh' > "${replacement}"
+    _retire_bao_mcp_link "${replacement}"
+    [[ -L "${legacy}" ]] || return 1
+    /bin/chmod 755 "${replacement}"
+    _retire_bao_mcp_link "${replacement}"
+    [[ ! -L "${legacy}" ]] || return 1
+    # An unrelated installation and a regular file are never removed.
+    /bin/ln -s "${replacement}" "${legacy}"
+    _retire_bao_mcp_link "${replacement}"
+    [[ -L "${legacy}" ]] || return 1
+    /bin/rm "${legacy}"
+    print sentinel > "${legacy}"
+    _retire_bao_mcp_link "${replacement}"
+    [[ "$(<"${legacy}")" == sentinel ]] || return 1
+  ) >/dev/null
+}
+
 function run_linkage {
   _section "Dotfile Coverage"
+
+  if _linkage_bao_migration; then
+    _pass "bao migration preserves legacy paths until an executable replacement exists"
+  else
+    _fail "bao migration removed an unready or unrelated installation"
+  fi
 
   # SC2154: fail_count is declared in tests/lib, sourced by the dispatcher.
   # shellcheck disable=SC2154

@@ -747,13 +747,8 @@ function install_dotfiles {
     _symlink "${SCRIPT_DIR}/bin/${wrapper}" "${HOME}/.local/bin/${wrapper}"
   done
 
-  # Remove the stale pre-move symlink so PATH order (~/.local/bin comes
-  # before /usr/local/bin here) can't keep resolving the old copy for the
-  # consumers that invoke bao-mcp-env by bare name.
-  if [[ -L "${HOME}/.local/bin/bao-mcp-env" ]]; then
-    rm -f "${HOME}/.local/bin/bao-mcp-env"
-    echo "[✅] Removed stale ~/.local/bin/bao-mcp-env (now at /usr/local/bin via install_scripts)"
-  fi
+  # The old bao-mcp-env link is retired by install_scripts only after its
+  # replacement is installed. Running dotfiles alone must preserve it.
 
   # Symlink Ghostty config into macOS Application Support location
   _ensure_dir "${HOME}/Library/Application Support/com.mitchellh.ghostty"
@@ -820,6 +815,9 @@ function install_scripts {
     if sudo ln -sfn "${SCRIPT_DIR}/bin/${bin_file}" "/usr/local/bin/${bin_file}"; then
       sudo chmod -h 755 "/usr/local/bin/${bin_file}"
       echo "[✅] Successfully linked ${bin_file} to /usr/local/bin/${bin_file}"
+      if [[ "${bin_file}" == bao-mcp-env && -x "/usr/local/bin/${bin_file}" ]]; then
+        _retire_bao_mcp_link "/usr/local/bin/${bin_file}"
+      fi
     else
       echo "[❌] Failed to link ${bin_file} to /usr/local/bin/${bin_file}"
     fi
@@ -1364,6 +1362,17 @@ function install_oversight {
   defaults write com.objective-see.OverSight startAtLogin  -bool true
 } 
 
+
+function _retire_bao_mcp_link {
+  # Keep regular files and links owned by another installation untouched.
+  # Accept the destination explicitly so migration cases run in fixtures.
+  local replacement="$1" legacy="${HOME}/.local/bin/bao-mcp-env"
+  if [[ -x "${replacement}" && -L "${legacy}" &&
+        "$(readlink "${legacy}")" == "${SCRIPT_DIR}/bin/bao-mcp-env" ]]; then
+    rm -f "${legacy}"
+    echo "[✅] Removed old bao-mcp-env link after verifying its replacement"
+  fi
+}
 
 function install_herald {
   # install_herald
