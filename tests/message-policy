@@ -1,0 +1,227 @@
+#!/bin/zsh
+# dotfiles/tests/message-policy
+#
+# Hermetic suite for the public-repository message policy added 2026-09-22:
+# pre-push Layer 3 (trailers, empty commits, long bodies), pre-push Layer 4
+# (tracked-tree PII scan of every pushed tip), the commit-msg fast-feedback
+# layer, and the repo-visibility resolver they share. Every case runs in a
+# throwaway repo whose core.hooksPath holds copies of the global hooks, so
+# git's real hook path is exercised without the pre-commit scanner or the
+# real denylist: PII_HOOK_PATTERNS points at a fixture list, and
+# REPO_VISIBILITY_FORCE fixes the visibility per call (public cases must
+# block, private cases must allow — every block is paired with its
+# allow-side control, as tests/git-sign does).
+#
+# Run: ./test message-policy    (or ./test for the full suite)
+#
+# ShellCheck: lint with `shellcheck --shell=bash tests/message-policy`.
+# This file is sourced, not executed — chmod 644.
+#
+# shellcheck source=tests/lib
+# shellcheck disable=SC2016,SC2329,SC2030,SC2031
+
+typeset -ga MP_ENV=(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+                    PII_HOOK_SSH_CONFIG=/dev/null)
+
+function _mp_repo {
+  # Sandbox with a pushed base commit and the global hooks copied into a
+  # private hooksPath. $1 = sandbox dir, $2 = fixture pattern file. Echoes
+  # the repo path.
+  local sb="$1" patterns="$2"
+  (
+    export "${MP_ENV[@]}" PII_HOOK_PATTERNS="${patterns}" REPO_VISIBILITY_FORCE=private
+    mkdir -p "${sb}/hooks"
+    cp "${SCRIPT_DIR}/.config/git/hooks/pre-push" \
+       "${SCRIPT_DIR}/.config/git/hooks/commit-msg" \
+       "${SCRIPT_DIR}/.config/git/hooks/pii-scan" \
+       "${SCRIPT_DIR}/.config/git/hooks/commit-signatures" \
+       "${SCRIPT_DIR}/.config/git/hooks/repo-visibility" "${sb}/hooks/"
+    chmod 755 "${sb}"/hooks/*
+    cd "${sb}" || exit 1
+    ssh-keygen -t ed25519 -N '' -q -f key
+    git init --bare -q remote.git
+    git -c init.defaultBranch=main init -q repo
+    cd repo || exit 1
+    git config user.name t
+    git config user.email t@example.invalid
+    git config gpg.format ssh
+    git config user.signingkey "${sb}/key"
+    git config commit.gpgsign true
+    git config core.hooksPath "${sb}/hooks"
+    git remote add origin "${sb}/remote.git"
+    print base > base.txt
+    git add base.txt
+    git commit -q -m 'Add base file'
+    git push -qu origin main 2>/dev/null
+  )
+  echo "${sb}/repo"
+}
+
+function _mp_commit {
+  # $1 repo, $2 message (may be multi-line), rest = files to touch (or none
+  # for --allow-empty). Commits WITHOUT the commit-msg hook so pre-push cases
+  # test pre-push alone.
+  local dir="$1" msg="$2"
+  shift 2
+  (
+    cd "${dir}" || exit 1
+    export "${MP_ENV[@]}"
+    local f
+    for f in "$@"; do print "$RANDOM" >> "${f}"; git add "${f}"; done
+    if (( $# )); then
+      git -c core.hooksPath=/dev/null commit -q -m "${msg}"
+    else
+      git -c core.hooksPath=/dev/null commit -q --allow-empty -m "${msg}"
+    fi
+  )
+}
+
+function _mp_push_expect {
+  # $1 want (ALLOWED|BLOCKED), $2 label, $3 repo, $4 visibility, rest = extra env.
+  local want="$1" label="$2" dir="$3" vis="$4"
+  shift 4
+  local got out
+  if out="$( cd "${dir}" && env "${MP_ENV[@]}" PII_HOOK_PATTERNS="${MP_PATTERNS}" \
+         REPO_VISIBILITY_FORCE="${vis}" "$@" git push -q origin main 2>&1 )"; then
+    got=ALLOWED
+  else
+    got=BLOCKED
+  fi
+  if [[ "${got}" == "${want}" ]]; then
+    _pass "pre-push ${want} (${vis}): ${label}"
+  else
+    _fail "pre-push ${label} (${vis}) — expected ${want}, got ${got}: $(print -r -- "${out}" | /usr/bin/head -c 600)"
+  fi
+}
+
+function _mp_reset_to_remote {
+  ( cd "$1" && export "${MP_ENV[@]}" && git fetch -q origin && git reset -q --hard origin/main )
+}
+
+function _mp_commitmsg_expect {
+  # Drive the commit-msg hook directly. $1 want (PASS|DENY), $2 label,
+  # $3 repo, $4 visibility, $5 message text, $6 = "staged" to stage a file first.
+  local want="$1" label="$2" dir="$3" vis="$4" text="$5" staged="${6:-}"
+  local rc=0 got msgfile
+  msgfile="$(mktemp "${TMPDIR:-/tmp}/mp-msg.XXXXXX")"
+  print -r -- "${text}" > "${msgfile}"
+  (
+    cd "${dir}" || exit 1
+    export "${MP_ENV[@]}" PII_HOOK_PATTERNS="${MP_PATTERNS}" REPO_VISIBILITY_FORCE="${vis}"
+    git reset -q
+    if [[ "${staged}" == staged ]]; then print "$RANDOM" >> staged.txt; git add staged.txt; fi
+    env -u GIT_GLOBAL_HOOKS_SEEN /bin/zsh "${dir%/repo}/hooks/commit-msg" "${msgfile}"
+  ) >/dev/null 2>&1 || rc=$?
+  /bin/rm -f "${msgfile}"
+  if (( rc == 0 )); then got=PASS; else got=DENY; fi
+  if [[ "${got}" == "${want}" ]]; then
+    _pass "commit-msg ${want} (${vis}): ${label}"
+  else
+    _fail "commit-msg ${label} (${vis}) — expected ${want}, got ${got} (exit ${rc})"
+  fi
+}
+
+function _mp_visibility_expect {
+  # $1 want, $2 label, $3 repo, rest = env for the resolver.
+  local want="$1" label="$2" dir="$3"
+  shift 3
+  local got
+  got="$( cd "${dir}" && env "${MP_ENV[@]}" "$@" /bin/zsh "${SCRIPT_DIR}/.config/git/hooks/repo-visibility" 2>/dev/null )"
+  if [[ "${got}" == "${want}" ]]; then
+    _pass "repo-visibility ${want}: ${label}"
+  else
+    _fail "repo-visibility ${label} — expected ${want}, got '${got}'"
+  fi
+}
+
+function run_message_policy {
+  _section "public-repo message policy: repo-visibility, commit-msg, pre-push layers 3+4"
+
+  local sb repo long_body i
+  sb="$(mktemp -d "${TMPDIR:-/tmp}/message-policy.XXXXXX")"
+  typeset -g MP_PATTERNS="${sb}/patterns"
+  # Fixture denylist: one made-up token, assembled at runtime so this file
+  # never carries a literal that looks like a real entry.
+  print -r -- "fixture$(print -n 'host')token" > "${MP_PATTERNS}"
+  repo="$(_mp_repo "${sb}" "${MP_PATTERNS}")"
+
+  # --- repo-visibility resolver ---
+  _mp_visibility_expect private 'explicit git config wins' "${repo}" \
+      GIT_CONFIG_PARAMETERS="'hooks.repoVisibility=private'"
+  _mp_visibility_expect public 'explicit git config public' "${repo}" \
+      GIT_CONFIG_PARAMETERS="'hooks.repoVisibility=public'"
+  _mp_visibility_expect unknown 'local path origin resolves to unknown' "${repo}"
+  _mp_visibility_expect public 'force seam' "${repo}" REPO_VISIBILITY_FORCE=public
+  # A github.com origin through a gh fixture that answers private / public.
+  print -r -- '#!/bin/sh
+printf "true\n"' > "${sb}/gh-private"
+  print -r -- '#!/bin/sh
+printf "false\n"' > "${sb}/gh-public"
+  print -r -- '#!/bin/sh
+exit 1' > "${sb}/gh-broken"
+  chmod 755 "${sb}"/gh-*
+  _mp_visibility_expect private 'github origin, gh says private' "${repo}" \
+      GIT_CONFIG_PARAMETERS="'remote.origin.url=git@github.com:o/r.git'" REPO_VISIBILITY_GH="${sb}/gh-private"
+  _mp_visibility_expect public 'github origin, gh says public' "${repo}" \
+      GIT_CONFIG_PARAMETERS="'remote.origin.url=https://github.com/o/r'" REPO_VISIBILITY_GH="${sb}/gh-public"
+  _mp_visibility_expect unknown 'github origin, gh fails -> unknown (callers treat as public)' "${repo}" \
+      GIT_CONFIG_PARAMETERS="'remote.origin.url=https://x@github.com/o/r.git'" REPO_VISIBILITY_GH="${sb}/gh-broken"
+
+  # --- pre-push Layer 3: trailer ---
+  _mp_commit "${repo}" $'Add a file\n\nLedger-Event: true' a.txt
+  _mp_push_expect BLOCKED 'Ledger-Event trailer' "${repo}" public
+  _mp_push_expect BLOCKED 'Ledger-Event trailer, visibility unknown counts as public' "${repo}" unknown
+  _mp_push_expect ALLOWED 'Ledger-Event trailer in a private repo' "${repo}" private
+  _mp_reset_to_remote "${repo}"
+
+  _mp_commit "${repo}" $'Add a file\n\nClaude-Session: https://example.invalid/session_x' a.txt
+  _mp_push_expect BLOCKED 'Claude-Session trailer' "${repo}" public
+  _mp_reset_to_remote "${repo}"
+
+  # --- pre-push Layer 3: empty commit ---
+  _mp_commit "${repo}" 'Record an event with no diff'
+  _mp_push_expect BLOCKED 'empty commit' "${repo}" public
+  _mp_push_expect ALLOWED 'empty commit in a private repo' "${repo}" private
+  _mp_push_expect ALLOWED 'empty commit with MSG_POLICY_SKIP=1' "${repo}" public MSG_POLICY_SKIP=1
+  _mp_reset_to_remote "${repo}"
+
+  # --- pre-push Layer 3: body length ---
+  long_body=""
+  for i in {1..130}; do long_body+="word${i} "; done
+  _mp_commit "${repo}" $'Add a file\n\n'"${long_body}" a.txt
+  _mp_push_expect BLOCKED '130-word body' "${repo}" public
+  _mp_push_expect ALLOWED '130-word body in a private repo' "${repo}" private
+  _mp_push_expect ALLOWED '130-word body with hooks.maxBodyWords=200' "${repo}" public \
+      GIT_CONFIG_PARAMETERS="'hooks.maxBodyWords=200'"
+  _mp_reset_to_remote "${repo}"
+
+  _mp_commit "${repo}" $'Add a file\n\nOne short line about what changed.' a.txt
+  _mp_push_expect ALLOWED 'short body' "${repo}" public
+  _mp_reset_to_remote "${repo}"
+
+  # --- pre-push Layer 4: tracked-tree scan ---
+  _mp_commit "${repo}" 'Add a clean config line' b.txt
+  _mp_push_expect ALLOWED 'clean tracked tree' "${repo}" public
+  _mp_reset_to_remote "${repo}"
+
+  # The home-repo control below PUBLISHES the fixture value to the sandbox
+  # remote, so it must be the last push of the suite: every later tree would
+  # carry the value and block for the wrong reason.
+  _mp_commit "${repo}" 'Add a config line' b.txt
+  ( cd "${repo}" && print -r -- "value=fixture$(print -n 'host')token" >> b.txt && git add b.txt \
+      && env "${MP_ENV[@]}" git -c core.hooksPath=/dev/null commit -q --amend --no-edit )
+  _mp_push_expect BLOCKED 'tracked file carries a denylisted value' "${repo}" public
+  _mp_push_expect ALLOWED 'tracked file carries a denylisted value, private repo' "${repo}" private
+  _mp_reset_to_remote "${repo}"
+
+  # --- commit-msg fast feedback ---
+  _mp_commitmsg_expect DENY 'Ledger-Event trailer' "${repo}" public $'Add x\n\nLedger-Event: true' staged
+  _mp_commitmsg_expect PASS 'Ledger-Event trailer, private repo' "${repo}" private $'Add x\n\nLedger-Event: true' staged
+  _mp_commitmsg_expect DENY '130-word body' "${repo}" public $'Add x\n\n'"${long_body}" staged
+  _mp_commitmsg_expect PASS 'short message' "${repo}" public $'Add x\n\nOne line.' staged
+  # Nothing staged is NOT judged by commit-msg (it cannot tell --allow-empty
+  # from a message amend); pre-push Layer 3 owns the empty-commit rule.
+  _mp_commitmsg_expect PASS 'nothing staged passes here (amend shape; pre-push owns empties)' "${repo}" public 'Reword a subject'
+
+  /bin/rm -rf "${sb}"
+}

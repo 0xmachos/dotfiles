@@ -6,9 +6,9 @@
 # Blocks a push that would publish (a) a commit with no `gpgsig` header, in
 # any repo where commit.gpgsign is on, or (b) — since 2026-08-17, in every
 # repo — an outgoing commit or annotated-tag MESSAGE containing a PII
-# pattern, a real-looking MAC/UUID token, or a gitleaks secret. Messages are
-# the completed-work ledger now (History.md retired), and this is the LAST
-# gate before they become permanent: commit-msg is only fast feedback — it
+# pattern, a real-looking MAC/UUID token, or a gitleaks secret. This is the
+# LAST gate before a message becomes permanent: commit-msg is only fast
+# feedback — it
 # never fires for cherry-pick, revert, plain rebase replay, plumbing, or
 # --no-verify commits, and it cannot see `#`-prefixed lines that `-m`
 # messages keep (all verified 2026-08-17). Scanning the STORED message of
@@ -44,7 +44,19 @@
 # Bypass: `git push --no-verify` (silent, git-level) skips everything;
 # GIT_SIGN_SKIP=1 (loud) skips the signature layer ONLY; PII_HOOK_BYPASS=1
 # (loud, inside pii-scan) skips the PII layers of the message scan while
-# gitleaks still runs — mirroring pre-commit.
+# gitleaks still runs — mirroring pre-commit; MSG_POLICY_SKIP=1 (loud) skips
+# Layers 3 and 4 only.
+#
+# Layers 3 and 4 (added 2026-09-22) apply to PUBLIC repositories only, as
+# decided by the sibling `repo-visibility` script (explicit
+# `hooks.repoVisibility`, else a gh lookup of the github.com origin; unknown
+# counts as public, because a gate that opens on a lookup failure is not a
+# gate). Layer 3 is the message POLICY: no `Ledger-Event:` or
+# `Claude-Session:` trailer, no empty commit (a single parent with the same
+# tree), no body over `hooks.maxBodyWords` words (default 120). Layer 4
+# materialises the tracked tree of every pushed tip and runs pii-scan over
+# it, so a value that entered a file before its denylist pattern existed is
+# caught at the boundary and not only by ./test pii-tree.
 #
 # The outgoing walk now runs in every repo (it used to be skipped when
 # signing was off), so a diverged remote whose tip is not held locally
@@ -122,7 +134,7 @@ function _tag_is_signed {
 }
 
 typeset -a unsigned=() unsigned_tags=()
-typeset -Ua outgoing=() tag_objs=()
+typeset -Ua outgoing=() tag_objs=() tips=()
 typeset -i unreadable=0
 
 # Gate the tag OBJECT when the ref being pushed is an annotated tag. Peeling to
@@ -209,6 +221,7 @@ while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
   fi
 
   _scan_range "${range[@]}"
+  [[ "${local_ref}" == refs/tags/* ]] || tips+=("${local_sha}")
 done <<< "${UPDATES}"
 
 if (( ! unreadable && sign_commits && ${#outgoing} )); then
@@ -300,6 +313,85 @@ if (( ${#outgoing} || ${#tag_objs} )); then
     print -u2 "     re-sign if needed, then push again. Nothing has been published."
     exit 1
   fi
+fi
+
+# --- Layer 3: public-repository message policy ------------------------------
+
+visibility="$("${0:A:h}/repo-visibility" 2>/dev/null || print unknown)"
+typeset -i public_repo=1
+[[ "${visibility}" == private ]] && public_repo=0
+if [[ -n "${MSG_POLICY_SKIP:-}" ]]; then
+  print -u2 "[⚠️ ] MSG_POLICY_SKIP=1 — public-repo message policy and tree scan skipped"
+  public_repo=0
+fi
+
+if (( public_repo && ${#outgoing} )); then
+  max_words="$(git config --get hooks.maxBodyWords 2>/dev/null || true)"
+  [[ "${max_words}" =~ ^[0-9]+$ ]] || max_words=120
+  typeset -a policy_hits=()
+  typeset sha full body parents ptree n
+  for sha in "${outgoing[@]}"; do
+    full="$(git log -1 --format=%B "${sha}" 2>/dev/null || true)"
+    if [[ $'\n'"${full}" == *$'\n'Ledger-Event:* || $'\n'"${full}" == *$'\n'Claude-Session:* ]]; then
+      policy_hits+=("${sha} carries a Ledger-Event or Claude-Session trailer")
+    fi
+    parents="$(git rev-list --parents -n 1 "${sha}" 2>/dev/null || true)"
+    # "sha parent" = exactly one parent; a root or a merge is never "empty".
+    if [[ "${parents}" == *" "* && "${parents#* }" != *" "* ]]; then
+      ptree="$(git rev-parse "${parents#* }^{tree}" 2>/dev/null || true)"
+      if [[ -n "${ptree}" && "${ptree}" == "$(git rev-parse "${sha}^{tree}" 2>/dev/null)" ]]; then
+        policy_hits+=("${sha} is an empty commit (same tree as its parent)")
+      fi
+    fi
+    body="$(git log -1 --format=%b "${sha}" 2>/dev/null || true)"
+    n="$(wc -w <<< "${body}")"
+    n="${n// /}"
+    if (( n > max_words )); then
+      policy_hits+=("${sha} body is ${n} words (limit ${max_words})")
+    fi
+  done
+  if (( ${#policy_hits} )); then
+    print -u2 "[❌] pre-push: this repository is ${visibility}; ${#policy_hits} commit(s) break the public-repo message policy:"
+    typeset h
+    for h in "${policy_hits[@]}"; do
+      print -u2 "       $(git log --no-walk --format='%h %s' "${h%% *}" 2>/dev/null || print -r -- "${h%% *}") — ${h#* }"
+    done
+    print -u2 "     A public commit message says WHAT changed, in a subject and at most a short body."
+    print -u2 "     Reword (git commit --amend / rebase -i), drop empty commits, then push again."
+    print -u2 "     Override: MSG_POLICY_SKIP=1 git push …   (private repo: git config hooks.repoVisibility private)"
+    exit 1
+  fi
+fi
+
+# --- Layer 4: public-repository tracked-tree scan ---------------------------
+
+if (( public_repo && ${#tips} )); then
+  tree_tmp="$(mktemp -d "${TMPDIR:-/tmp}/pii-push-tree.XXXXXX")"
+  tree_scan="$(mktemp "${TMPDIR:-/tmp}/pii-push-treescan.XXXXXX")"
+  trap '/bin/rm -rf "${tree_tmp}" "${tree_scan}" "${msgs:-}"' EXIT
+  typeset tip tpath tar_file
+  for tip in "${tips[@]}"; do
+    /usr/bin/find "${tree_tmp:?}" -mindepth 1 -delete
+    tar_file="${tree_tmp}/tree.tar"
+    # Two steps, never a pipeline (hook rule: a SIGPIPE'd producer fails open).
+    if ! git archive --format=tar -o "${tar_file}" "${tip}" 2>/dev/null; then
+      print -u2 "[❌] pre-push: could not materialise the tree of ${tip} for the PII scan; refusing to push."
+      exit 1
+    fi
+    /usr/bin/tar -xf "${tar_file}" -C "${tree_tmp}"
+    /bin/rm -f "${tar_file}"
+    : > "${tree_scan}"
+    while IFS= read -r tpath || [[ -n "${tpath}" ]]; do
+      [[ -f "${tree_tmp}/${tpath}" && ! -L "${tree_tmp}/${tpath}" ]] || continue
+      /usr/bin/grep -qI '' "${tree_tmp}/${tpath}" 2>/dev/null || continue
+      { print -r -- "file ${tpath}"; /bin/cat "${tree_tmp}/${tpath}"; print; } >> "${tree_scan}"
+    done <<< "$(git ls-tree -r --name-only "${tip}" 2>/dev/null)"
+    if ! "${0:A:h}/pii-scan" "${tree_scan}" "Tracked tree of $(git rev-parse --short "${tip}") (public repo)"; then
+      print -u2 "     A tracked file at the pushed tip carries a denylisted value or a real-looking token."
+      print -u2 "     Remove it from the file (and from the unpushed history that added it), then push again."
+      exit 1
+    fi
+  done
 fi
 
 exit 0

@@ -2,12 +2,11 @@
 # .config/git/hooks/commit-msg
 #
 # Global commit-MESSAGE PII gate for EVERY repo, activated by the global
-# core.hooksPath declared in .config/git/config. Added 2026-08-17 when git
-# became this machine's completed-work ledger (History.md retired): messages
-# now carry ledger prose, and nothing else scanned them — the staged-content
-# pre-commit scanner never sees message text, and a hostname in a message
-# becomes permanent SIGNED history that the fail-closed pre-push gate makes
-# painful to rewrite. git-secrets ships the same hook for the same reason.
+# core.hooksPath declared in .config/git/config. Added 2026-08-17: nothing
+# else scanned message text — the staged-content pre-commit scanner never
+# sees it, and a hostname in a message becomes permanent SIGNED history that
+# the fail-closed pre-push gate makes painful to rewrite. git-secrets ships
+# the same hook for the same reason.
 #
 # `applypatch-msg` is a symlink to this file: `git am` never runs commit-msg
 # (githooks(5) — only the SAMPLE applypatch-msg chains to it), and both hook
@@ -38,7 +37,17 @@
 # commit would double gitleaks latency machine-wide for no coverage gain.
 #
 # Bypass: --no-verify (whole hook, silent) or PII_HOOK_BYPASS=1 (scan
-# layers, loud — handled inside pii-scan).
+# layers, loud — handled inside pii-scan); MSG_POLICY_SKIP=1 (loud) skips
+# the public-repo policy layer only.
+#
+# Public-repo message policy (added 2026-09-22, fast feedback for the
+# pre-push Layer 3 boundary): in a repository the sibling `repo-visibility`
+# script reports as public (or unknown), the candidate message may not carry
+# a `Ledger-Event:` or `Claude-Session:` trailer, its body may not exceed
+# `hooks.maxBodyWords` words (default 120). Empty commits are NOT judged
+# here: commit-msg cannot tell `--allow-empty` from `--amend` of a message
+# (both arrive with nothing staged), so that rule lives in pre-push Layer 3,
+# where the commit object exists. A public repo's log is published content.
 #
 # ShellCheck: lint with `shellcheck --shell=bash .config/git/hooks/commit-msg`.
 
@@ -93,4 +102,36 @@ git stripspace --strip-comments < "${raw_tmp}" > "${scan_tmp}"
 if ! "${0:A:h}/pii-scan" "${scan_tmp}" "Commit message"; then
   echo "     The message text is preserved in $(git rev-parse --git-dir)/COMMIT_EDITMSG." >&2
   exit 1
+fi
+
+# --- Layer 4: public-repository message policy (fast feedback) --------------
+
+if [[ -n "${MSG_POLICY_SKIP:-}" ]]; then
+  echo "[⚠️ ] MSG_POLICY_SKIP=1 — public-repo message policy skipped for this commit" >&2
+  exit 0
+fi
+visibility="$("${0:A:h}/repo-visibility" 2>/dev/null || echo unknown)"
+if [[ "${visibility}" != private ]]; then
+  msg="$(< "${scan_tmp}")"
+  max_words="$(git config --get hooks.maxBodyWords 2>/dev/null || true)"
+  [[ "${max_words}" =~ ^[0-9]+$ ]] || max_words=120
+  typeset -a policy_hits=()
+  if [[ $'\n'"${msg}" == *$'\n'Ledger-Event:* || $'\n'"${msg}" == *$'\n'Claude-Session:* ]]; then
+    policy_hits+=("carries a Ledger-Event or Claude-Session trailer")
+  fi
+  body="${msg#*$'\n'}"
+  [[ "${body}" == "${msg}" ]] && body=""
+  n="$(wc -w <<< "${body}")"
+  n="${n// /}"
+  (( n > max_words )) && policy_hits+=("body is ${n} words (limit ${max_words})")
+  git_dir="$(git rev-parse --git-dir 2>/dev/null || true)"
+  if (( ${#policy_hits} )); then
+    echo "[❌] commit-msg: this repository is ${visibility}; the message breaks the public-repo policy:" >&2
+    typeset h
+    for h in "${policy_hits[@]}"; do echo "       ${h}" >&2; done
+    echo "     A public commit message says WHAT changed: a subject and at most a short body." >&2
+    echo "     The message text is preserved in ${git_dir:-.git}/COMMIT_EDITMSG." >&2
+    echo "     Override: MSG_POLICY_SKIP=1 git commit …   (private repo: git config hooks.repoVisibility private)" >&2
+    exit 1
+  fi
 fi

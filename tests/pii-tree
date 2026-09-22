@@ -1,0 +1,71 @@
+#!/bin/zsh
+# dotfiles/tests/pii-tree
+#
+# Scans EVERY tracked text file at HEAD with the shared pii-scan core
+# (denylist + MAC/UUID token detector), not just the hunks a commit stages.
+# Added 2026-09-22. The pre-commit scanner only sees staged hunks, so a value
+# that entered a tracked file before its denylist pattern existed stayed in
+# the tree for months with every later commit passing the gate. This suite
+# is the backstop: a new denylist entry is checked against the whole tree the
+# next time ./test runs, and the pre-push hook runs the same tree scan on
+# every pushed tip in a public repository.
+#
+# Live, like tests/okf: it reads the real per-clone denylist and the live
+# ssh config. On a machine without .githooks/pii-patterns the scan degrades
+# to the alias-derived patterns and says so on stderr (pii-scan's own
+# warning); that is a warning, not a failure.
+#
+# Symlinks and binary files are skipped; the concatenation carries a
+# `file <path>` marker line before each file so a hit is attributable
+# (mirrors the `commit <sha>` markers of the pre-push message scan).
+#
+# Run: ./test pii-tree    (or ./test for the full suite)
+#
+# ShellCheck: lint with `shellcheck --shell=bash tests/pii-tree`.
+# This file is sourced, not executed — chmod 644.
+#
+# shellcheck source=tests/lib
+
+function _pii_tree_materialise {
+  # $1 = output file. Writes every tracked regular text file at HEAD into it,
+  # each preceded by a marker line. Echoes the number of files included.
+  local out="$1" tpath n=0
+  : > "${out}"
+  while IFS= read -r tpath || [[ -n "${tpath}" ]]; do
+    [[ -f "${tpath}" && ! -L "${tpath}" ]] || continue
+    # grep -I treats a NUL-bearing file as binary and reports no match.
+    /usr/bin/grep -qI '' "${tpath}" 2>/dev/null || continue
+    { print -r -- "file ${tpath}"; /bin/cat "${tpath}"; print; } >> "${out}"
+    n=$(( n + 1 ))
+  done < <(/usr/bin/git -C "${SCRIPT_DIR}" ls-files -z | /usr/bin/tr "\0" "\n")
+  print -r -- "${n}"
+}
+
+function run_pii_tree {
+  _section "pii-tree: whole tracked tree against the PII scanner"
+
+  local scanner="${SCRIPT_DIR}/.config/git/hooks/pii-scan"
+  if [[ ! -x "${scanner}" ]]; then
+    _skip "pii-scan absent or not executable at ${scanner}"
+    return 0
+  fi
+
+  local tmp n rc=0 out
+  tmp="$(mktemp "${TMPDIR:-/tmp}/pii-tree.XXXXXX")"
+  n="$(cd "${SCRIPT_DIR}" && _pii_tree_materialise "${tmp}")"
+  if (( n == 0 )); then
+    _fail "no tracked text files were materialised (git ls-files empty?)"
+    /bin/rm -f "${tmp}"
+    return 0
+  fi
+
+  # Run from the repo root: pii-scan reads .pii-allowlist from the INDEX of
+  # the repo in cwd. Output captured; shown only on failure.
+  out="$(cd "${SCRIPT_DIR}" && "${scanner}" "${tmp}" "Tracked tree at HEAD" 2>&1)" || rc=$?
+  /bin/rm -f "${tmp}"
+  if (( rc == 0 )); then
+    _pass "${n} tracked text files carry no denylist hit or real-looking MAC/UUID token"
+  else
+    _fail "PII scanner flagged tracked content (rc ${rc}):"$'\n'"${out}"
+  fi
+}
