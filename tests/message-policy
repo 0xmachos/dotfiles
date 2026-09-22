@@ -211,6 +211,8 @@ exit 1' > "${sb}/gh-broken"
   ( cd "${repo}" && print -r -- "value=fixture$(print -n 'host')token" >> b.txt && git add b.txt \
       && env "${MP_ENV[@]}" git -c core.hooksPath=/dev/null commit -q --amend --no-edit )
   _mp_push_expect BLOCKED 'tracked file carries a denylisted value' "${repo}" public
+  _mp_push_expect ALLOWED 'tracked file carries a denylisted value, hooks.treeScan=false defers' "${repo}" public \
+      GIT_CONFIG_PARAMETERS="'hooks.treeScan=false'"
   _mp_push_expect ALLOWED 'tracked file carries a denylisted value, private repo' "${repo}" private
   _mp_reset_to_remote "${repo}"
 

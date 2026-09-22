@@ -365,7 +365,16 @@ fi
 
 # --- Layer 4: public-repository tracked-tree scan ---------------------------
 
-if (( public_repo && ${#tips} )); then
+# Per-repo deferral for a public repo whose tracked files predate the
+# denylist and have not been cleaned yet: `git config hooks.treeScan false`.
+# Loud, so a deferred repo is never mistaken for a clean one.
+typeset -i tree_scan_on=1
+if [[ "$(git config --bool --get hooks.treeScan 2>/dev/null || true)" == "false" ]]; then
+  print -u2 "[⚠️ ] hooks.treeScan=false — public-repo tracked-tree scan deferred for this repository"
+  tree_scan_on=0
+fi
+
+if (( public_repo && tree_scan_on && ${#tips} )); then
   tree_tmp="$(mktemp -d "${TMPDIR:-/tmp}/pii-push-tree.XXXXXX")"
   tree_scan="$(mktemp "${TMPDIR:-/tmp}/pii-push-treescan.XXXXXX")"
   trap '/bin/rm -rf "${tree_tmp}" "${tree_scan}" "${msgs:-}"' EXIT
