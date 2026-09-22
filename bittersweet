@@ -582,6 +582,12 @@ function install_dotfiles {
   local _link_count=0
   local _harden_count=0
   local _error_count=0
+  # null_glob (function-scoped): claude/ is gitignored and synced out of band,
+  # so a fresh clone can legitimately have empty hosts/, skills/ and rules/ —
+  # without it an unmatched glob aborts the whole deploy under set -e. setopt
+  # rather than (N) qualifiers because shellcheck --shell=bash cannot parse
+  # the latter. Set here, before the file arrays, so their globs see it too.
+  setopt local_options null_glob
 
   local -ar dot_dirs=(.ssh .extra .codex .codex/rules .config/git .config/uv .claude .claude/skills .claude/rules .claude/agents)
   local -ar dot_files=(.zshrc .functions .completions .aliases)
@@ -622,8 +628,10 @@ function install_dotfiles {
     "${SCRIPT_DIR}/.codex/config.toml"
     "${SCRIPT_DIR}/.codex/rules/default.rules"
     "${SCRIPT_DIR}/.codex/hooks.json"
-    "${SCRIPT_DIR}/claude/hosts/hostb.md"
-    "${SCRIPT_DIR}/claude/hosts/hosta.md"
+    # Per-host rules files are named after private machines, so the list is a
+    # glob, never literal names; null_glob (set at the top of this function)
+    # makes it empty rather than fatal when claude/ is not synced.
+    "${SCRIPT_DIR}"/claude/hosts/*.md
   )
 
   local dot_dir dot_file ssh_config git_config claude_file sensitive_file
@@ -700,12 +708,8 @@ function install_dotfiles {
     _symlink "${SCRIPT_DIR}/${src}" "${HOME}/.claude/${dest}"
   done
 
-  # Symlink custom skills into $HOME/.claude/skills/
-  # null_glob (function-scoped): claude/ is gitignored and synced out of band,
-  # so a fresh clone can legitimately have empty skills/ and rules/ — without
-  # it the unmatched glob aborts the whole deploy under set -e. setopt rather
-  # than (N) qualifiers because shellcheck --shell=bash cannot parse the latter
-  setopt local_options null_glob
+  # Symlink custom skills into $HOME/.claude/skills/ (null_glob is set at the
+  # top of this function: an empty skills/ or rules/ must not abort the deploy)
   local skill_dir skill_name
   for skill_dir in "${SCRIPT_DIR}"/claude/skills/*/; do
     skill_name="${skill_dir%/}"

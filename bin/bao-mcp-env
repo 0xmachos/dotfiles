@@ -6,11 +6,11 @@
 #   kv-subpath  path under the kv/ mount, e.g. mcp/example-service
 #   command     binary to exec with the secret's fields in its environment
 #
-# MBP port of hostb's loader (home-repo, hostb fs/ overlay
-# copy of bao-mcp-env) — identical except the two
-# connection constants: OpenBao lives on hostb, reached over Tailscale, and
-# the listener cert chains to the step-ca root that `step ca bootstrap`
-# wrote locally. Authenticates with the laptop-approle AppRole (creds under
+# Laptop port of the server-side loader (private repo) — identical except
+# the connection config: the server address is read from the untracked
+# credential directory (addr, one line), and the listener cert chains to
+# the step-ca root that `step ca bootstrap` wrote locally. Authenticates
+# with this laptop's AppRole (creds under
 # ~/Library/Application Support/openbao/claude/, 0600 — moved 2026-09-18
 # from ~/.config/openbao/claude/, dotfiles internals/linux-path-audit.md;
 # Secrets-Architecture §6.6).
@@ -32,7 +32,6 @@ set -eu
 # so this file's own path construction runs unmodified.
 BAO="${BAO_MCP_ENV_BAO:-/opt/homebrew/bin/bao}"
 JQ="${BAO_MCP_ENV_JQ:-$(command -v jq || echo /opt/homebrew/bin/jq)}"
-export BAO_ADDR="https://203.0.113.10:8200"
 export BAO_CACERT="${HOME}/.step/certs/root_ca.crt"
 
 if [ "$#" -lt 2 ]; then
@@ -50,12 +49,25 @@ if [ ! -r "$CRED_DIR/role_id" ] || [ ! -r "$CRED_DIR/secret_id" ]; then
     exit 1
 fi
 
+# The server address is private wiring (an overlay-network address), so it
+# lives beside the credentials, never in this tracked file. One line, https URL.
+if [ ! -r "$CRED_DIR/addr" ]; then
+    echo "bao-mcp-env: server address file missing or unreadable: $CRED_DIR/addr" >&2
+    exit 1
+fi
+BAO_ADDR="$(head -n 1 "$CRED_DIR/addr")"
+case "$BAO_ADDR" in
+    https://*) ;;
+    *) echo "bao-mcp-env: $CRED_DIR/addr must hold one https:// URL" >&2; exit 1 ;;
+esac
+export BAO_ADDR
+
 # Pass the credentials by @file, not by value: an argv-borne secret is readable
 # by any local user via ps(1) for the lifetime of the call. bao's own arg parser
 # loads a value from a file when it begins with "@".
 if ! BAO_TOKEN="$("$BAO" write -field=token auth/approle/login \
     role_id="@$CRED_DIR/role_id" secret_id="@$CRED_DIR/secret_id" 2>/dev/null)"; then
-    echo "bao-mcp-env: AppRole login failed for laptop-approle (OpenBao sealed/down, or Tailscale path to hostb broken?)" >&2
+    echo "bao-mcp-env: AppRole login failed (server sealed/down, or overlay path broken?)" >&2
     exit 1
 fi
 export BAO_TOKEN

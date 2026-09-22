@@ -1,13 +1,18 @@
 #!/bin/zsh
 # dotfiles/bin/op-homelab
-# Run op authenticated as the homelab-scoped 1Password Service Account
-# (op-service-user) instead of the desktop-app integration. For
-# unattended use (Remote Control sessions, LaunchAgents) where nobody can
-# approve a Touch ID prompt.
+# Run op authenticated as a scoped 1Password Service Account instead of the
+# desktop-app integration. For unattended use (Remote Control sessions,
+# LaunchAgents) where nobody can approve a Touch ID prompt.
 #
-# Token: login Keychain item (service op-service-account). Copy the ops_ token
-# to the clipboard, then store/rotate with:
-#   security add-generic-password -U -s op-service-account -a op-service-user -w "$(pbpaste)" ~/Library/Keychains/login.keychain-db
+# The Keychain item that holds the token is named in an untracked file,
+# ~/Library/Application Support/op-homelab/keychain-item, two lines:
+#   service=<keychain service name>
+#   account=<keychain account name>
+# The names are private wiring, so they never sit in this tracked file.
+# Token: login Keychain item under those names. Copy the ops_ token to the
+# clipboard, then store/rotate with the command this script prints as its
+# store hint (security add-generic-password -U -s <service> -a <account>
+# -w "$(pbpaste)" ~/Library/Keychains/login.keychain-db).
 # NB: add-generic-password's -w TAKES a value (unlike find-generic-password's
 # boolean -w), so the keychain path must stay positional — a bare "-w <path>"
 # silently stores the path as the token. Only $(pbpaste) reaches shell history.
@@ -21,8 +26,19 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-readonly KEYCHAIN_SERVICE="op-service-account"
-readonly KEYCHAIN_ACCOUNT="op-service-user"
+readonly ITEM_FILE="${HOME}/Library/Application Support/op-homelab/keychain-item"
+if [[ ! -r "${ITEM_FILE}" ]]; then
+  echo "[❌] Keychain item names file missing or unreadable: ${ITEM_FILE}" >&2
+  echo "     Create it (0600) with two lines: service=<name> and account=<name>" >&2
+  exit 1
+fi
+KEYCHAIN_SERVICE="$(/usr/bin/sed -n 's/^service=//p' "${ITEM_FILE}" | /usr/bin/head -n 1)"
+KEYCHAIN_ACCOUNT="$(/usr/bin/sed -n 's/^account=//p' "${ITEM_FILE}" | /usr/bin/head -n 1)"
+if [[ -z "${KEYCHAIN_SERVICE}" || -z "${KEYCHAIN_ACCOUNT}" ]]; then
+  echo "[❌] ${ITEM_FILE} must hold service=<name> and account=<name>" >&2
+  exit 1
+fi
+readonly KEYCHAIN_SERVICE KEYCHAIN_ACCOUNT
 readonly LOGIN_KEYCHAIN="${HOME}/Library/Keychains/login.keychain-db"
 readonly STORE_HINT="security add-generic-password -U -s ${KEYCHAIN_SERVICE} -a ${KEYCHAIN_ACCOUNT} -w \"\$(pbpaste)\" ${LOGIN_KEYCHAIN}"
 

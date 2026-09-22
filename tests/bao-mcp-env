@@ -54,12 +54,14 @@ function _bme_teardown {
   [[ -n "${BME_T}" && -d "${BME_T}" ]] && /bin/rm -rf "${BME_T}"
 }
 
-# Writes readable role_id/secret_id into the fixture credential dir. Tests
-# that want to exercise the missing-credentials path skip calling this.
+# Writes readable role_id/secret_id and the server address file into the
+# fixture credential dir. Tests that want to exercise the missing-credentials
+# or missing-address paths skip calling this, or remove one file after it.
 function _bme_write_creds {
   printf 'fake-role-id-0000\n' > "${BME_CRED_DIR}/role_id"
   printf 'fake-secret-id-0000\n' > "${BME_CRED_DIR}/secret_id"
-  /bin/chmod 600 "${BME_CRED_DIR}/role_id" "${BME_CRED_DIR}/secret_id"
+  printf 'https://fake-bao.invalid:8200\n' > "${BME_CRED_DIR}/addr"
+  /bin/chmod 600 "${BME_CRED_DIR}/role_id" "${BME_CRED_DIR}/secret_id" "${BME_CRED_DIR}/addr"
 }
 
 # Runs bao-mcp-env with the fake bao seam and fixture HOME. Real jq is used
@@ -144,6 +146,29 @@ function _bme_test_missing_creds {
   else
     _fail "credentials absent: bao was invoked despite missing creds"
   fi
+}
+
+function _bme_test_missing_addr {
+  _section "bao-mcp-env: missing or malformed server address"
+
+  # Credentials present, address file absent: the address is private wiring
+  # that must never fall back to a tracked default.
+  _bme_write_creds
+  /bin/rm -f "${BME_CRED_DIR}/addr"
+  _bme_run mcp/example-service /usr/bin/env
+  _bme_expect_rc 1 "address file absent"
+  _bme_expect_err 'server address file missing or unreadable' "address file absent: message"
+  if [[ "$(_bme_calls)" == 0 ]]; then
+    _pass "address file absent: bao never invoked"
+  else
+    _fail "address file absent: bao was invoked despite the missing address"
+  fi
+
+  # A non-https line is refused rather than exported.
+  printf 'http://fake-bao.invalid:8200\n' > "${BME_CRED_DIR}/addr"
+  _bme_run mcp/example-service /usr/bin/env
+  _bme_expect_rc 1 "address not https"
+  _bme_expect_err 'must hold one https:// URL' "address not https: message"
 }
 
 function _bme_test_login_failure {
@@ -271,6 +296,7 @@ function run_bao_mcp_env {
   _bme_setup
   _bme_test_usage
   _bme_test_missing_creds
+  _bme_test_missing_addr
   _bme_test_login_failure
   _bme_test_kv_failure
   _bme_test_success

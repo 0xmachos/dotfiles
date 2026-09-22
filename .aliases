@@ -110,8 +110,14 @@ alias ppl='/usr/libexec/PlistBuddy -c print '
 # Lint given plst file for syntax errors
 alias plint='plutil -lint '
 
-## hostd
-# Pull pcap captures from hostd into today's dated directory
+## Private aliases
+# Host-specific aliases that name private machines live in ~/.extra_aliases,
+# which is never tracked (the .extra* pattern is gitignored and this repo is
+# public). Absent file: nothing to load.
+if [[ -r "${HOME}/.extra_aliases" ]]; then
+  # shellcheck source=/dev/null
+  source "${HOME}/.extra_aliases"
+fi
 
 ## Miscellaneous
 
