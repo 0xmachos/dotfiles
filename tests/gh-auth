@@ -1,0 +1,240 @@
+#!/bin/zsh
+# dotfiles/tests/gh-auth
+#
+# Live assertions for the GitHub auth configuration on THIS machine: the
+# real global git config, the real ~/.ssh/config, the gh CLI state and the
+# login keychain (the tests/okf pattern, not a hermetic sandbox).
+#
+# Three groups, reported apart so a failure names its group:
+#
+#   signing — gpg.format=ssh, commit/tag gpgsign on, user.signingkey set,
+#     and ~/.ssh/config routing IdentityAgent to Secretive's socket, so every
+#     signature is a Secure Enclave operation.
+#
+#   push credential — the gh token's scopes are within
+#     GH_AUTH_ALLOWED_SCOPES (repo, read:org and gist are gh's own minimum;
+#     workflow is needed to push a change under .github/workflows/); the
+#     credential.helper chain for https://github.com and
+#     https://gist.github.com is [blank, gh] as set in .config/git/config;
+#     no internet password for either host sits in the login keychain
+#     (queried by metadata only, the secret is never read); hosts.yml holds
+#     no token line; no ~/.git-credentials or ~/.netrc.
+#
+#   server — this repo has an active required_signatures ruleset on its
+#     default branch with no bypass actors, read through gh.
+#
+# Skips, not fails: gh not installed, gh logged out, no network for the
+# `gh auth status` / `gh api` calls. A skip is "could not check", never
+# "checked and fine".
+#
+# Added 2026-09-21.
+#
+# Run: ./test gh-auth    (or ./test for the full suite)
+#
+# ShellCheck: lint with `shellcheck --shell=bash tests/gh-auth`.
+# This file is sourced, not executed — chmod 644.
+#
+# shellcheck source=tests/lib
+
+# The full scope set a gh login here may carry. Anything else fails, with
+# the removal command in the message.
+readonly -a GH_AUTH_ALLOWED_SCOPES=(repo read:org gist workflow)
+
+function _gha_signing {
+  _section "gh-auth — signing is Secretive-gated"
+
+  local val
+
+  val="$(git config --global --get gpg.format 2>/dev/null || true)"
+  if [[ "${val}" == "ssh" ]]; then
+    _pass "gpg.format is ssh"
+  else
+    _fail "gpg.format is '${val:-unset}', expected ssh"
+  fi
+
+  val="$(git config --global --get commit.gpgsign 2>/dev/null || true)"
+  if [[ "${val}" == "true" ]]; then
+    _pass "commit.gpgsign is true"
+  else
+    _fail "commit.gpgsign is '${val:-unset}', expected true"
+  fi
+
+  val="$(git config --global --get tag.gpgsign 2>/dev/null || true)"
+  if [[ "${val}" == "true" ]]; then
+    _pass "tag.gpgsign is true"
+  else
+    _fail "tag.gpgsign is '${val:-unset}', expected true"
+  fi
+
+  val="$(git config --global --get user.signingkey 2>/dev/null || true)"
+  if [[ -n "${val}" ]]; then
+    _pass "user.signingkey is set (${val})"
+  else
+    _fail "user.signingkey is unset"
+  fi
+
+  if [[ ! -f ${HOME}/.ssh/config ]]; then
+    _skip "${HOME}/.ssh/config absent on this machine"
+  elif grep -Fq 'IdentityAgent ~/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh' "${HOME}/.ssh/config"; then
+    _pass "${HOME}/.ssh/config routes the agent socket to Secretive"
+  else
+    _fail "${HOME}/.ssh/config does not route IdentityAgent to Secretive's socket"
+  fi
+}
+
+function _gha_token_scopes {
+  # `gh auth status` validates the token over the network and prints the
+  # scope line as: `- Token scopes: 'repo', 'read:org', ...`. Its output is
+  # captured and never echoed — it also carries the masked token.
+  local out line scope bad="" extra=""
+  local -a scopes
+
+  out="$(gh auth status -h github.com 2>&1 || true)"
+
+  if [[ "${out}" == *"not logged in"* || "${out}" == *"You are not logged into"* ]]; then
+    _skip "gh is logged out — no token to check"
+    return
+  fi
+
+  line=""
+  # shellcheck disable=SC2066,SC2296  # zsh (@f) line split
+  for line in "${(@f)out}"; do
+    [[ "${line}" == *"Token scopes:"* ]] && break
+    line=""
+  done
+  if [[ -z "${line}" ]]; then
+    _skip "gh auth status gave no scope line (offline?) — token scopes NOT checked"
+    return
+  fi
+
+  line="${line#*Token scopes:}"
+  line="${line//\'/}"
+  line="${line//,/ }"
+  # shellcheck disable=SC2206  # zsh ${=} word split is the intent
+  scopes=(${=line})
+
+  for scope in "${scopes[@]}"; do
+    if (( ${GH_AUTH_ALLOWED_SCOPES[(Ie)${scope}]} == 0 )); then
+      extra+="${scope},"
+    fi
+  done
+  extra="${extra%,}"
+
+  if [[ -z "${extra}" ]]; then
+    _pass "gh token scopes are within {${GH_AUTH_ALLOWED_SCOPES[*]}}: ${scopes[*]}"
+  else
+    bad="gh token carries scope(s) outside the allow-list: ${extra}"
+    _fail "${bad} — drop with: gh auth refresh -h github.com --remove-scopes ${extra}"
+  fi
+}
+
+function _gha_credential_helper {
+  # `git config --get-all` prints the chain in order. The tracked config
+  # sets a blank first entry (clears osxkeychain from Xcode's system config)
+  # and then gh's helper. Anything else means git can push with a
+  # credential gh does not manage.
+  local host chain
+  local -a entries
+
+  for host in github.com gist.github.com; do
+    chain="$(git -C "${SCRIPT_DIR}" config --get-all "credential.https://${host}.helper" 2>/dev/null || true)"
+    # shellcheck disable=SC2296  # zsh (@f) line split
+    entries=("${(@f)chain}")
+    if (( ${#entries[@]} == 2 )) && [[ -z "${entries[1]}" && "${entries[2]}" == *"gh auth git-credential" ]]; then
+      _pass "credential helper for https://${host} is gh alone (chain cleared first)"
+    else
+      _fail "credential helper chain for https://${host} is not [blank, gh]: '${chain//$'\n'/ | }'"
+    fi
+  done
+}
+
+function _gha_no_stray_credentials {
+  # Only metadata is queried; `security find-internet-password` without -w
+  # never prints the secret. Exit 44 = not found, which is the pass.
+  local host
+
+  for host in github.com gist.github.com; do
+    if /usr/bin/security find-internet-password -s "${host}" >/dev/null 2>&1; then
+      _fail "login keychain still holds an internet password for ${host} — a second push credential outside gh's control (delete: security delete-internet-password -s ${host})"
+    else
+      _pass "no internet password for ${host} in the login keychain"
+    fi
+  done
+
+  if [[ ! -f ${HOME}/.config/gh/hosts.yml ]]; then
+    _skip "${HOME}/.config/gh/hosts.yml absent"
+  elif grep -q 'oauth_token' "${HOME}/.config/gh/hosts.yml"; then
+    _fail "hosts.yml holds an oauth_token line — token is on disk, not in the keyring"
+  else
+    _pass "hosts.yml holds no token (keyring storage)"
+  fi
+
+  local f
+  for f in "${HOME}/.git-credentials" "${HOME}/.netrc"; do
+    if [[ -e "${f}" ]]; then
+      _fail "${f} exists — a plaintext credential store git or curl will read"
+    else
+      _pass "no ${f}"
+    fi
+  done
+}
+
+function _gha_server_ruleset {
+  # The server-side half of the signing gate: an active required_signatures
+  # ruleset on the default branch with no bypass actors. Read through gh so
+  # the check uses the same token the push does.
+  local nwo result
+
+  nwo="$(cd "${SCRIPT_DIR}" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || true)"
+  if [[ -z "${nwo}" ]]; then
+    _skip "could not resolve this repo on GitHub (offline?) — ruleset NOT checked"
+    return
+  fi
+
+  # shellcheck disable=SC2016  # $ids is jq's, not the shell's
+  result="$(gh api "repos/${nwo}/rulesets" --paginate --jq '
+    [ .[] | select(.enforcement == "active") | .id ] as $ids
+    | if ($ids | length) == 0 then "none" else ($ids | map(tostring) | join(" ")) end' 2>/dev/null || true)"
+  if [[ -z "${result}" ]]; then
+    _skip "gh api rulesets failed (offline?) — ruleset NOT checked"
+    return
+  fi
+  if [[ "${result}" == "none" ]]; then
+    _fail "${nwo} has no active ruleset — an unsigned commit can land on the default branch"
+    return
+  fi
+
+  local id ok=0
+  for id in ${=result}; do
+    if [[ "$(gh api "repos/${nwo}/rulesets/${id}" --jq '
+        ([.rules[].type] | index("required_signatures")) != null
+        and (.conditions.ref_name.include | index("~DEFAULT_BRANCH")) != null
+        and ((.bypass_actors // []) | length) == 0' 2>/dev/null)" == "true" ]]; then
+      ok=1
+      break
+    fi
+  done
+
+  if (( ok )); then
+    _pass "${nwo}: active required_signatures ruleset on the default branch, no bypass actors"
+  else
+    _fail "${nwo}: no active ruleset requires signatures on the default branch with zero bypass actors"
+  fi
+}
+
+function run_gh_auth {
+  _gha_signing
+
+  _section "gh-auth — push credential is gh's narrowed token, nothing else"
+  if ! [[ -x "$(command -v gh)" ]]; then
+    _skip "gh not installed — token, helper and ruleset checks need it"
+    return
+  fi
+
+  _gha_token_scopes
+  _gha_credential_helper
+  _gha_no_stray_credentials
+
+  _section "gh-auth — server refuses unsigned commits on this repo's default branch"
+  _gha_server_ruleset
+}

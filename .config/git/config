@@ -32,3 +32,16 @@
 [gpg "ssh"]
 	allowedSignersFile = ~/.config/git/allowed_signers
 
+[credential "https://github.com"]
+	helper =
+	helper = !/opt/homebrew/bin/gh auth git-credential
+	# gh is the only git credential helper for GitHub over HTTPS
+	# (2026-09-21). The blank first line clears the chain, because Xcode's
+	# git ships a system-level credential.helper = osxkeychain. One token
+	# then serves git and gh: `gh auth refresh` narrows both, `gh auth
+	# logout` ends both. Absolute path: launchd never sees /opt/homebrew/bin
+	# on PATH, and a wrong path fails loud. tests/gh-auth asserts this.
+
+[credential "https://gist.github.com"]
+	helper =
+	helper = !/opt/homebrew/bin/gh auth git-credential
