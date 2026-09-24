@@ -103,7 +103,7 @@ function _gha_token_scopes {
     line=""
   done
   if [[ -z "${line}" ]]; then
-    _skip "gh auth status gave no scope line (offline?) — token scopes NOT checked"
+    _skip "gh auth status gave no scope line (offline, or the login keychain is locked — e.g. over SSH) — token scopes NOT checked"
     return
   fi
 
@@ -187,7 +187,7 @@ function _gha_server_ruleset {
 
   nwo="$(cd "${SCRIPT_DIR}" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || true)"
   if [[ -z "${nwo}" ]]; then
-    _skip "could not resolve this repo on GitHub (offline?) — ruleset NOT checked"
+    _skip "could not resolve this repo on GitHub (offline, or gh cannot read its token — locked keychain over SSH) — ruleset NOT checked"
     return
   fi
 
@@ -196,7 +196,7 @@ function _gha_server_ruleset {
     [ .[] | select(.enforcement == "active") | .id ] as $ids
     | if ($ids | length) == 0 then "none" else ($ids | map(tostring) | join(" ")) end' 2>/dev/null || true)"
   if [[ -z "${result}" ]]; then
-    _skip "gh api rulesets failed (offline?) — ruleset NOT checked"
+    _skip "gh api rulesets failed (offline, or gh cannot read its token — locked keychain over SSH) — ruleset NOT checked"
     return
   fi
   if [[ "${result}" == "none" ]]; then

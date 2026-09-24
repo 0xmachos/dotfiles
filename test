@@ -15,7 +15,19 @@ set -euo pipefail
 # -u prevent using undefined variables
 # -o pipefail force pipelines to fail on first non-zero status code
 
-/usr/bin/tput sgr0
+# Reset terminal attributes only when there is a terminal to reset: over a
+# non-tty SSH session TERM is unset, tput exits 2, and -e would abort the
+# whole run before the first suite.
+if [[ -t 1 && -n "${TERM:-}" ]]; then
+  /usr/bin/tput sgr0
+fi
+
+# A non-login shell (ssh host 'cmd', launchd) has no Homebrew on PATH, so
+# `command -v gh`/jq/shellcheck would report "not installed" and every suite
+# that needs them would skip. Add it once, in front, if it is missing.
+if [[ -d /opt/homebrew/bin && ":${PATH}:" != *:/opt/homebrew/bin:* ]]; then
+  export PATH="/opt/homebrew/bin:${PATH}"
+fi
 
 readonly SCRIPT_DIR="${0:A:h}"
 cd "${SCRIPT_DIR}"
