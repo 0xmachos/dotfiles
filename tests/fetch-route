@@ -108,7 +108,7 @@ function run_fetch_route {
   _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/issues?q=is%3Aopen' \
     "gh search issues --repo 'example-org/example-repo'" 'issue search'
   _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/pulls?q=is%3Aopen' \
-    "gh search issues --repo 'example-org/example-repo'" 'pulls search'
+    "gh search prs --repo 'example-org/example-repo'" 'pulls search'
   _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/pull/7' \
     "gh pr view '7' -R 'example-org/example-repo' --comments" 'PR view'
   _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/pull/7' \
