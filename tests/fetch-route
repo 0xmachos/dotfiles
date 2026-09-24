@@ -19,6 +19,10 @@
 # This file is sourced, not executed — chmod 644.
 #
 # shellcheck source=tests/lib
+# shellcheck disable=SC2016
+# SC2016 above: the single-quoted '$(id)' fixtures are deliberate — they
+# must NOT expand, since the whole point is a repo name shaped like a
+# command substitution that the hook has to quote, not execute.
 
 function _fr_run_url {
   # Echo the hook's stdout for a WebFetch-shaped single-url payload.
@@ -57,15 +61,18 @@ function _fr_expect_url {
 
 function _fr_expect_reason_has {
   # Assert a single-URL call is denied AND its reason contains a substring —
-  # used for pinning the exact gh command per GitHub URL shape.
-  local tool="$1" url="$2" substring="$3" out reason
+  # used for pinning the exact gh command per GitHub URL shape. Checks the
+  # verdict itself (not just the reason text) since a malformed or PASS
+  # response with no reason would otherwise satisfy an empty/absent check.
+  local tool="$1" url="$2" substring="$3" out reason verdict
   local label="${4:-$url}"
   out="$(_fr_run_url "${tool}" "${url}")"
+  verdict="$(_hook_verdict "${out}")"
   reason="$(_fr_reason "${out}")"
-  if [[ "${reason}" == *"${substring}"* ]]; then
-    _pass "reason has '${substring}': ${label}"
+  if [[ "${verdict}" == DENY && "${reason}" == *"${substring}"* ]]; then
+    _pass "DENY + reason has '${substring}': ${label}"
   else
-    _fail "${label} — reason lacks '${substring}': ${reason}"
+    _fail "${label} — expected DENY with reason containing '${substring}', got verdict=${verdict} reason=${reason}"
   fi
 }
 
@@ -93,45 +100,45 @@ function run_fetch_route {
   done
 
   _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/blob/main/src/foo.py' \
-    'gh api "repos/example-org/example-repo/contents/src/foo.py?ref=main" -H "Accept: application/vnd.github.raw"' 'blob'
+    "gh api 'repos/example-org/example-repo/contents/src/foo.py?ref=main' -H \"Accept: application/vnd.github.raw\"" 'blob'
   _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/tree/main/src' \
-    'gh api "repos/example-org/example-repo/contents/src?ref=main"' 'tree'
+    "gh api 'repos/example-org/example-repo/contents/src?ref=main'" 'tree'
   _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/issues/42' \
-    'gh issue view 42 -R example-org/example-repo --comments' 'issue'
+    "gh issue view '42' -R 'example-org/example-repo' --comments" 'issue'
   _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/issues?q=is%3Aopen' \
-    'gh search issues --repo example-org/example-repo' 'issue search'
+    "gh search issues --repo 'example-org/example-repo'" 'issue search'
   _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/pulls?q=is%3Aopen' \
-    'gh search issues --repo example-org/example-repo' 'pulls search'
+    "gh search issues --repo 'example-org/example-repo'" 'pulls search'
   _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/pull/7' \
-    'gh pr view 7 -R example-org/example-repo --comments' 'PR view'
+    "gh pr view '7' -R 'example-org/example-repo' --comments" 'PR view'
   _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/pull/7' \
-    'gh pr diff 7 -R example-org/example-repo' 'PR diff (same reason as PR view)'
+    "gh pr diff '7' -R 'example-org/example-repo'" 'PR diff (same reason as PR view)'
   _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/pull/7/files' \
-    'gh pr view 7 -R example-org/example-repo --comments' 'PR /files subpage'
+    "gh pr view '7' -R 'example-org/example-repo' --comments" 'PR /files subpage'
   _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/pull/7/commits' \
-    'gh pr view 7 -R example-org/example-repo --comments' 'PR /commits subpage'
+    "gh pr view '7' -R 'example-org/example-repo' --comments" 'PR /commits subpage'
   _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/pull/7.diff' \
-    'gh pr diff 7 -R example-org/example-repo' 'PR .diff'
+    "gh pr diff '7' -R 'example-org/example-repo'" 'PR .diff'
   _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/pull/7.patch' \
-    'gh pr diff 7 -R example-org/example-repo' 'PR .patch'
+    "gh pr diff '7' -R 'example-org/example-repo'" 'PR .patch'
   _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/commit/deadbeef' \
-    'gh api repos/example-org/example-repo/commits/deadbeef -H "Accept: application/vnd.github.patch"' 'commit'
+    "gh api 'repos/example-org/example-repo/commits/deadbeef' -H \"Accept: application/vnd.github.patch\"" 'commit'
   _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/commit/deadbeef.patch' \
-    'gh api repos/example-org/example-repo/commits/deadbeef -H "Accept: application/vnd.github.patch"' 'commit .patch suffix stripped'
+    "gh api 'repos/example-org/example-repo/commits/deadbeef' -H \"Accept: application/vnd.github.patch\"" 'commit .patch suffix stripped'
   _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/commit/deadbeef.diff' \
-    'gh api repos/example-org/example-repo/commits/deadbeef -H "Accept: application/vnd.github.patch"' 'commit .diff suffix stripped'
+    "gh api 'repos/example-org/example-repo/commits/deadbeef' -H \"Accept: application/vnd.github.patch\"" 'commit .diff suffix stripped'
   _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/releases' \
-    'gh release list -R example-org/example-repo' 'releases root'
+    "gh release list -R 'example-org/example-repo'" 'releases root'
   _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/releases/tag/v1.0' \
-    'gh release view v1.0 -R example-org/example-repo' 'release tag'
+    "gh release view 'v1.0' -R 'example-org/example-repo'" 'release tag'
   _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo' \
-    'gh repo view example-org/example-repo' 'repo root'
+    "gh repo view 'example-org/example-repo'" 'repo root'
   _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/discussions/3' \
     'gh api graphql' 'discussions'
   _fr_expect_reason_has WebFetch 'https://api.github.com/repos/example-org/example-repo' \
-    'gh api repos/example-org/example-repo' 'api.github.com'
+    "gh api 'repos/example-org/example-repo'" 'api.github.com'
   _fr_expect_reason_has WebFetch 'https://raw.githubusercontent.com/example-org/example-repo/main/src/foo.py' \
-    'gh api "repos/example-org/example-repo/contents/src/foo.py?ref=main" -H "Accept: application/vnd.github.raw"' 'raw.githubusercontent.com'
+    "gh api 'repos/example-org/example-repo/contents/src/foo.py?ref=main' -H \"Accept: application/vnd.github.raw\"" 'raw.githubusercontent.com'
   _fr_expect_reason_has WebFetch 'https://raw.githubusercontent.com/example-org/example-repo/main/src/foo.py' \
     'may itself contain slashes' 'raw.githubusercontent.com ambiguity noted'
 
@@ -149,6 +156,69 @@ function run_fetch_route {
   # NOT github: *.github.io and docs.github.com.
   _fr_expect_url PASS WebFetch 'https://example-org.github.io/some-page' 'github.io allowed'
   _fr_expect_url PASS WebFetch 'https://docs.github.com/en/actions' 'docs.github.com allowed'
+
+  # --- URL authority parsing edge cases -------------------------------------
+  # scheme, userinfo, port and trailing-dot handling in _fr_split_url.
+
+  _fr_expect_url PASS WebFetch 'https://github.com:pass@evil.com/o/r' \
+    'userinfo before the host must not be mistaken for it — the real host is evil.com, not github.com'
+  _fr_expect_url DENY WebFetch 'https://user@github.com/o/r' \
+    'a userinfo@ prefix does not hide the real github.com host'
+  _fr_expect_url DENY WebFetch 'https://github.com./o/r' \
+    'one trailing dot on the host is stripped before matching'
+  _fr_expect_url PASS WebFetch 'garbage://github.com/o/r' \
+    'a non-http(s) scheme is never routed'
+  _fr_expect_url PASS WebFetch 'https://github.com:bad/o/r' \
+    'a non-digit port makes the URL unparseable and fails open'
+
+  # --- Shell-quoting in suggested commands ----------------------------------
+  # A URL path segment is arbitrary text, not validated to be shell-safe, so
+  # every dynamic value in a suggested command must be quoted before it is
+  # safe to paste into zsh.
+
+  # Note: the reason string is "${url}: ${FR_REASON}" (main() labels each
+  # denied URL with its own raw form before the reason text), so the label
+  # itself legitimately carries the unquoted URL/query — that is not a
+  # "suggested command" and is out of scope here. The leak-checks below are
+  # scoped to the command text after "Use: "/inside the backticks, not the
+  # whole reason.
+
+  local quote_out quote_reason want_quoted cmd_part
+  quote_out="$(_fr_run_url WebFetch 'https://github.com/o/$(id)')"
+  quote_reason="$(_fr_reason "${quote_out}")"
+  want_quoted="'o/\$(id)'"
+  if [[ "${quote_reason}" == *"${want_quoted}"* ]]; then
+    _pass "a repo name shaped like a command substitution is quoted in the suggested command"
+  else
+    _fail "expected the quoted form ${want_quoted} in reason: ${quote_reason}"
+  fi
+  cmd_part="${quote_reason#*Use: }"
+  cmd_part="${cmd_part//"${want_quoted}"/}"
+  if [[ "${cmd_part}" != *'$(id)'* ]]; then
+    _pass "no unquoted \$(id) leaks into the suggested command outside the quoted form"
+  else
+    _fail "an unquoted \$(id) leaked into the suggested command: ${quote_reason}"
+  fi
+
+  quote_out="$(_fr_run_url WebFetch 'https://x.com/someuser/status/1234567890?s=20&x=1')"
+  quote_reason="$(_fr_reason "${quote_out}")"
+  cmd_part="${quote_reason#*\`}"
+  cmd_part="${cmd_part%%\`*}"
+  if [[ "${cmd_part}" == *"'https://x.com/someuser/status/1234567890'"* ]]; then
+    _pass "an X status URL's suggested command is quoted with the query string stripped"
+  else
+    _fail "expected a quoted, query-stripped URL in the suggested command: ${cmd_part}"
+  fi
+  if [[ "${cmd_part}" != *'s=20'* ]]; then
+    _pass "the X status URL's query string does not leak into the suggested command"
+  else
+    _fail "the query string leaked into the suggested command: ${cmd_part}"
+  fi
+
+  # --- api.github.com: query string preserved and quoted --------------------
+
+  _fr_expect_reason_has WebFetch 'https://api.github.com/repos/example-org/example-repo/issues?state=closed' \
+    "gh api 'repos/example-org/example-repo/issues?state=closed'" 'api.github.com query string preserved and quoted'
 
   # GitHub via the urls[] (MCP) shape, one URL in the batch.
   _fr_expect_url DENY mcp__exa__web_fetch_exa 'https://github.com/example-org/example-repo' 'exa web_fetch denied for github'
@@ -177,6 +247,11 @@ function run_fetch_route {
   _fr_expect_url DENY WebFetch 'https://www.x.com/someuser/status/1234567890' 'www.x.com status'
   _fr_expect_url DENY WebFetch 'https://x.com/i/status/1234567890' 'x.com/i/status'
   _fr_expect_url DENY WebFetch 'https://x.com/i/web/status/1234567890' 'x.com/i/web/status'
+
+  # One trailing slash is tolerated on every status shape.
+  _fr_expect_url DENY WebFetch 'https://x.com/someuser/status/1234567890/' 'x.com status with one trailing slash'
+  _fr_expect_url DENY WebFetch 'https://x.com/i/status/1234567890/' 'x.com/i/status with one trailing slash'
+  _fr_expect_url DENY WebFetch 'https://x.com/i/web/status/1234567890/' 'x.com/i/web/status with one trailing slash'
 
   # Non-status x.com URLs are not this hook's concern.
   _fr_expect_url PASS WebFetch 'https://x.com/someuser' 'x.com profile page allowed'
@@ -230,27 +305,38 @@ function run_fetch_route {
   fi
 
   # --- fail-open --------------------------------------------------------------
+  # Every fail-open path must both print nothing AND exit 0 — a nonzero exit
+  # with empty stdout would still leave Claude Code treating the hook as
+  # errored rather than a clean allow.
 
-  if [[ -z "$(printf '%s' '{}' | /bin/zsh "${SCRIPT_DIR}/claude/fetch-route-hook")" ]]; then
-    _pass "fail-open: payload with no tool_name allows the fetch"
+  local fo_out fo_rc
+
+  fo_out="$(printf '%s' '{}' | /bin/zsh "${SCRIPT_DIR}/claude/fetch-route-hook")"; fo_rc=$?
+  if [[ -z "${fo_out}" && "${fo_rc}" -eq 0 ]]; then
+    _pass "fail-open: payload with no tool_name allows the fetch (status 0, empty stdout)"
   else
-    _fail "fail-open: payload with no tool_name produced a verdict"
+    _fail "fail-open: payload with no tool_name — status ${fo_rc}, stdout: ${fo_out}"
   fi
-  if [[ -z "$(printf '%s' 'not json' | /bin/zsh "${SCRIPT_DIR}/claude/fetch-route-hook")" ]]; then
-    _pass "fail-open: unparseable payload allows the fetch"
+
+  fo_out="$(printf '%s' 'not json' | /bin/zsh "${SCRIPT_DIR}/claude/fetch-route-hook")"; fo_rc=$?
+  if [[ -z "${fo_out}" && "${fo_rc}" -eq 0 ]]; then
+    _pass "fail-open: unparseable payload allows the fetch (status 0, empty stdout)"
   else
-    _fail "fail-open: unparseable payload produced a verdict"
+    _fail "fail-open: unparseable payload — status ${fo_rc}, stdout: ${fo_out}"
   fi
-  if [[ -z "$(printf '%s' '' | /bin/zsh "${SCRIPT_DIR}/claude/fetch-route-hook")" ]]; then
-    _pass "fail-open: empty payload allows the fetch"
+
+  fo_out="$(printf '%s' '' | /bin/zsh "${SCRIPT_DIR}/claude/fetch-route-hook")"; fo_rc=$?
+  if [[ -z "${fo_out}" && "${fo_rc}" -eq 0 ]]; then
+    _pass "fail-open: empty payload allows the fetch (status 0, empty stdout)"
   else
-    _fail "fail-open: empty payload produced a verdict"
+    _fail "fail-open: empty payload — status ${fo_rc}, stdout: ${fo_out}"
   fi
+
   # A tool_name present but no url/urls at all (e.g. some other tool_input shape).
-  out="$(jq -n '{tool_name:"WebFetch", tool_input:{}}' | /bin/zsh "${SCRIPT_DIR}/claude/fetch-route-hook")"
-  if [[ -z "${out}" ]]; then
-    _pass "fail-open: tool_input with no url/urls allows the fetch"
+  fo_out="$(jq -n '{tool_name:"WebFetch", tool_input:{}}' | /bin/zsh "${SCRIPT_DIR}/claude/fetch-route-hook")"; fo_rc=$?
+  if [[ -z "${fo_out}" && "${fo_rc}" -eq 0 ]]; then
+    _pass "fail-open: tool_input with no url/urls allows the fetch (status 0, empty stdout)"
   else
-    _fail "tool_input with no url/urls produced a verdict"
+    _fail "fail-open: tool_input with no url/urls — status ${fo_rc}, stdout: ${fo_out}"
   fi
 }
