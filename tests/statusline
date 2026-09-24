@@ -80,13 +80,10 @@ function _sl_expect_has {
   fi
 }
 
-function _sl_expect_lacks {
-  local label="$1" haystack="$2" needle="$3"
-  if [[ "${haystack}" != *"${needle}"* ]]; then
-    _pass "${label}"
-  else
-    _fail "${label} — unwanted $(printf '%q' "${needle}") in $(printf '%q' "${haystack}")"
-  fi
+# _sl_expect_hidden <label> — the usage row is gone AND the rest survived:
+# the whole output is exactly the calm two rows, so a blank bar can't pass
+function _sl_expect_hidden {
+  _sl_expect_eq "$1" "$(_sl_plain "${_SL_OUT}")" $'work Opus\n░░░░░░░░░░ 0K'
 }
 
 function _sl_expect_eq {
@@ -164,8 +161,8 @@ function _sl_ctx_case {
   # fields, so the sum is what is tested
   _sl_run 30 "$(_sl_json ".context_window.current_usage = {input_tokens: 1000,
     cache_creation_input_tokens: 2000, cache_read_input_tokens: ($1 - 3000)}")"
-  _sl_expect_eq "context $1 tokens → $3 in its band" \
-    "${_SL_OUT%%"${RESET}"*}${RESET}" "$2$3${RESET}"
+  # The whole tiny-tier output, so a dropped reset fails too
+  _sl_expect_eq "context $1 tokens → $3 in its band" "${_SL_OUT}" "$2$3${RESET}"
 }
 
 function _sl_context {
@@ -195,8 +192,12 @@ function _sl_context {
   _sl_run 140 "${p250k}"
   _sl_expect_has "above-range settings → 500K fallback" "$(_sl_line 2)" "█████░░░░░"
   # The documented range edges, 100K and 1M, are inclusive
-  _sl_barmax_case "${p250k}" 99999 "█████░░░░░"
-  _sl_barmax_case "${p250k}" 100000 "██████████"
+  # 50K tokens so the 100K edge doesn't saturate: 99,999 falls back to 500K
+  # (one cell), 100,000 is honoured (five)
+  local p50k
+  p50k="$(_sl_json '.context_window.current_usage.input_tokens = 50000')"
+  _sl_barmax_case "${p50k}" 99999 "█░░░░░░░░░"
+  _sl_barmax_case "${p50k}" 100000 "█████░░░░░"
   _sl_barmax_case "${p250k}" 1000000 "██░░░░░░░░"
   _sl_barmax_case "${p250k}" 1000001 "█████░░░░░"
   printf '{"autoCompactWindow":500000}' > "${_SL_SB}/.claude/settings.json"
@@ -219,11 +220,11 @@ function _sl_usage {
   local plain
   # No resets_at: pace cannot compute, so visibility is threshold-only
   _sl_run 140 "$(_sl_json '.rate_limits.five_hour = {used_percentage: 49}')"
-  _sl_expect_lacks "5h 49% hidden" "$(_sl_plain "${_SL_OUT}")" "5h"
+  _sl_expect_hidden "5h 49% hidden"
   _sl_run 140 "$(_sl_json '.rate_limits.five_hour = {used_percentage: 50}')"
   _sl_expect_has "5h 50% shown yellow" "$(_sl_line 3)" "${YELLOW}${BOLD}50%"
   _sl_run 140 "$(_sl_json '.rate_limits.seven_day = {used_percentage: 74}')"
-  _sl_expect_lacks "7d 74% hidden" "$(_sl_plain "${_SL_OUT}")" "7d"
+  _sl_expect_hidden "7d 74% hidden"
 
   # 7d 75% with 1d left: elapsed ~86% is ahead of usage, so no pace
   _sl_run 140 "$(_sl_json '.rate_limits.seven_day = {used_percentage: 75, resets_at: ($now + 86460)}')"
@@ -245,7 +246,7 @@ function _sl_usage {
   _sl_expect_has "5h pace 20 ahead is red" "$(_sl_line 3)" "${RED}⇡20${RESET}"
   # One second short of the grace period → no pace, so hidden
   _sl_run 140 "$(_sl_json '.rate_limits.five_hour = {used_percentage: 30, resets_at: ($now + 16201)}')"
-  _sl_expect_lacks "5h pace suppressed in first 30 min" "$(_sl_plain "${_SL_OUT}")" "5h"
+  _sl_expect_hidden "5h pace suppressed in first 30 min"
 
   # 7d pace boundary at exactly 25% elapsed: 10 ahead shows yellow, 9 hides
   _sl_run 140 "$(_sl_json '.rate_limits.seven_day = {used_percentage: 35, resets_at: ($now + 453600)}')"
@@ -253,7 +254,7 @@ function _sl_usage {
   _sl_expect_eq "7d 10 points ahead shows ⇡10" "${plain}" "7d 35% ⇡10"
   _sl_expect_has "7d pace 10 ahead is yellow" "$(_sl_line 3)" "${YELLOW}⇡10${RESET}"
   _sl_run 140 "$(_sl_json '.rate_limits.seven_day = {used_percentage: 34, resets_at: ($now + 453600)}')"
-  _sl_expect_lacks "7d 9 points ahead stays hidden" "$(_sl_plain "${_SL_OUT}")" "7d"
+  _sl_expect_hidden "7d 9 points ahead stays hidden"
 }
 
 # ── (4) countdown units ────────────────────────────────────────────────────
@@ -439,12 +440,13 @@ function _sl_subagent {
     {id: "c", name: "Explore", status: "completed", tokenCount: 400000},
     {id: "d", name: "Explore", status: "running"},
     {id: "e", name: "Explore", status: "running", tokenCount: 399999},
-    {id: "f", name: "Explore", effort: "max"}]}')"
+    {id: "f", name: "Explore", effort: "max"},
+    {id: "g", name: "Explore", status: "failed"}]}')"
   rc=0
   out="$(printf '%s' "${payload}" | /bin/zsh "${script}" 2>/dev/null)" || rc=$?
   _sl_expect_eq "subagent: exit 0 with tasks" "${rc}" "0"
   _sl_expect_eq "subagent: exactly one row per task id" \
-    "$(jq -r .id <<< "${out}" 2>/dev/null | sort | tr '\n' ' ')" "a b c d e f "
+    "$(jq -r .id <<< "${out}" 2>/dev/null | sort | tr '\n' ' ')" "a b c d e f g "
   while IFS= read -r line; do
     if ! jq -e 'has("id") and has("content")' <<< "${line}" >/dev/null 2>&1; then
       _fail "subagent: row is not JSON with id + content: $(printf '%q' "${line}")"
@@ -459,9 +461,11 @@ function _sl_subagent {
          _sl_expect_eq "subagent: full row at 100 cols" "${content}" \
            "${_SL_CYAN}Explore${RESET} ${_SL_DIM}·${RESET} ${_SL_CYAN}running${RESET} ${_SL_DIM}·${RESET} ${_SL_DIM}d${RESET} ${_SL_DIM}·${RESET} ${_SL_DIM}sonnet${RESET} ${_SL_DIM}·${RESET} ${_SL_MAGENTA}▲ high${RESET} ${_SL_DIM}·${RESET} ${GREEN}199K${RESET}" ;;
       b) _sl_expect_has "subagent: 200,000 tokens yellow" "${content}" "${YELLOW}200K${RESET}" ;;
-      c) _sl_expect_has "subagent: 400,000 tokens red" "${content}" "${RED}400K${RESET}" ;;
+      c) _sl_expect_has "subagent: 400,000 tokens red" "${content}" "${RED}400K${RESET}"
+         _sl_expect_has "subagent: completed status green" "${content}" "${GREEN}completed${RESET}" ;;
       e) _sl_expect_has "subagent: 399,999 tokens yellow" "${content}" "${YELLOW}399K${RESET}" ;;
       f) _sl_expect_has "subagent: max effort badge red" "${content}" "${RED}▲▲▲ max${RESET}" ;;
+      g) _sl_expect_has "subagent: failed status red" "${content}" "${RED}failed${RESET}" ;;
       d) _sl_expect_eq "subagent: no tokenCount → no token segment" \
            "$(_sl_plain "${content}")" "Explore · running" ;;
       *) _fail "subagent: unexpected id ${id}" ;;
