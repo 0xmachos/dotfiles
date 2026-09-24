@@ -1,0 +1,256 @@
+#!/bin/zsh
+# dotfiles/tests/fetch-route
+#
+# Behavioural test for claude/fetch-route-hook — the PreToolUse hook that
+# DENIES a fetch of a URL with a better, specific tool: a GitHub code host
+# (for every matched tool, pointing at the right `gh` command for that URL's
+# shape) or an X status post fetched through WebFetch/Exa (pointing at
+# X's oEmbed endpoint, but allowed through mcp__parallel__web_fetch, which
+# does handle X). Feeds tool payloads as stdin JSON, the same shape as tests/md5-write,
+# and asserts the verdict and (for GitHub) the specific gh command named.
+#
+# Every fixture URL below is invented for this suite (example-org/
+# example-repo, made-up owners and IDs) — never a real repository or a real
+# X post.
+#
+# Run: ./test fetch-route    (or ./test for the full suite)
+#
+# ShellCheck: lint with `shellcheck --shell=bash tests/fetch-route`.
+# This file is sourced, not executed — chmod 644.
+#
+# shellcheck source=tests/lib
+
+function _fr_run_url {
+  # Echo the hook's stdout for a WebFetch-shaped single-url payload.
+  local tool="$1" url="$2"
+  jq -n --arg t "${tool}" --arg u "${url}" '{tool_name:$t, tool_input:{url:$u}}' \
+    | /bin/zsh "${SCRIPT_DIR}/claude/fetch-route-hook"
+}
+
+function _fr_run_urls {
+  # Echo the hook's stdout for an MCP-shaped urls[] payload.
+  local tool="$1"
+  shift
+  local urls_json
+  urls_json="$(printf '%s\n' "$@" | jq -R . | jq -s .)"
+  jq -n --arg t "${tool}" --argjson u "${urls_json}" '{tool_name:$t, tool_input:{urls:$u}}' \
+    | /bin/zsh "${SCRIPT_DIR}/claude/fetch-route-hook"
+}
+
+function _fr_reason {
+  # Echo the deny reason of hook output $1, or empty if it was not a deny.
+  printf '%s' "$1" | jq -er '.hookSpecificOutput.permissionDecisionReason' 2>/dev/null
+}
+
+function _fr_expect_url {
+  # Assert the verdict for a single-URL WebFetch-shaped call.
+  local want="$1" tool="$2" url="$3" out got
+  local label="${4:-$url}"
+  out="$(_fr_run_url "${tool}" "${url}")"
+  got="$(_hook_verdict "${out}")"
+  if [[ "${got}" == "${want}" ]]; then
+    _pass "${want}: ${label}"
+  else
+    _fail "${label} — expected ${want}, got ${got}"
+  fi
+}
+
+function _fr_expect_reason_has {
+  # Assert a single-URL call is denied AND its reason contains a substring —
+  # used for pinning the exact gh command per GitHub URL shape.
+  local tool="$1" url="$2" substring="$3" out reason
+  local label="${4:-$url}"
+  out="$(_fr_run_url "${tool}" "${url}")"
+  reason="$(_fr_reason "${out}")"
+  if [[ "${reason}" == *"${substring}"* ]]; then
+    _pass "reason has '${substring}': ${label}"
+  else
+    _fail "${label} — reason lacks '${substring}': ${reason}"
+  fi
+}
+
+function run_fetch_route {
+  _section "fetch → gh/oEmbed routing hook"
+
+  # claude/ is gitignored and synced out of band — absent hook means the sync
+  # hasn't reached this machine, not a regression. Skip, don't die.
+  if [[ ! -f "${SCRIPT_DIR}/claude/fetch-route-hook" ]]; then
+    _skip "claude/fetch-route-hook absent — claude/ not yet synced to this machine"
+    return 0
+  fi
+
+  if ! [[ -x "$(command -v jq)" ]]; then
+    _skip "jq not installed (brew install jq)"
+    return
+  fi
+
+  # --- GitHub: every shape gets the right gh command, for every matched tool ---
+
+  local -a tools=(WebFetch mcp__exa__web_fetch_exa mcp__exa__crawling_exa mcp__parallel__web_fetch)
+  local tool
+  for tool in "${tools[@]}"; do
+    _fr_expect_url DENY "${tool}" 'https://github.com/example-org/example-repo' "github root denied for ${tool}"
+  done
+
+  _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/blob/main/src/foo.py' \
+    'gh api "repos/example-org/example-repo/contents/src/foo.py?ref=main" -H "Accept: application/vnd.github.raw"' 'blob'
+  _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/tree/main/src' \
+    'gh api "repos/example-org/example-repo/contents/src?ref=main"' 'tree'
+  _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/issues/42' \
+    'gh issue view 42 -R example-org/example-repo --comments' 'issue'
+  _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/issues?q=is%3Aopen' \
+    'gh search issues --repo example-org/example-repo' 'issue search'
+  _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/pulls?q=is%3Aopen' \
+    'gh search issues --repo example-org/example-repo' 'pulls search'
+  _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/pull/7' \
+    'gh pr view 7 -R example-org/example-repo --comments' 'PR view'
+  _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/pull/7' \
+    'gh pr diff 7 -R example-org/example-repo' 'PR diff (same reason as PR view)'
+  _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/pull/7/files' \
+    'gh pr view 7 -R example-org/example-repo --comments' 'PR /files subpage'
+  _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/pull/7/commits' \
+    'gh pr view 7 -R example-org/example-repo --comments' 'PR /commits subpage'
+  _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/pull/7.diff' \
+    'gh pr diff 7 -R example-org/example-repo' 'PR .diff'
+  _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/pull/7.patch' \
+    'gh pr diff 7 -R example-org/example-repo' 'PR .patch'
+  _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/commit/deadbeef' \
+    'gh api repos/example-org/example-repo/commits/deadbeef -H "Accept: application/vnd.github.patch"' 'commit'
+  _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/commit/deadbeef.patch' \
+    'gh api repos/example-org/example-repo/commits/deadbeef -H "Accept: application/vnd.github.patch"' 'commit .patch suffix stripped'
+  _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/commit/deadbeef.diff' \
+    'gh api repos/example-org/example-repo/commits/deadbeef -H "Accept: application/vnd.github.patch"' 'commit .diff suffix stripped'
+  _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/releases' \
+    'gh release list -R example-org/example-repo' 'releases root'
+  _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/releases/tag/v1.0' \
+    'gh release view v1.0 -R example-org/example-repo' 'release tag'
+  _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo' \
+    'gh repo view example-org/example-repo' 'repo root'
+  _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/discussions/3' \
+    'gh api graphql' 'discussions'
+  _fr_expect_reason_has WebFetch 'https://api.github.com/repos/example-org/example-repo' \
+    'gh api repos/example-org/example-repo' 'api.github.com'
+  _fr_expect_reason_has WebFetch 'https://raw.githubusercontent.com/example-org/example-repo/main/src/foo.py' \
+    'gh api "repos/example-org/example-repo/contents/src/foo.py?ref=main" -H "Accept: application/vnd.github.raw"' 'raw.githubusercontent.com'
+  _fr_expect_reason_has WebFetch 'https://raw.githubusercontent.com/example-org/example-repo/main/src/foo.py' \
+    'may itself contain slashes' 'raw.githubusercontent.com ambiguity noted'
+
+  # Hosts with no shape-specific branch still get a generic gh pointer.
+  _fr_expect_reason_has WebFetch 'https://gist.github.com/example-user/deadbeefcafe' 'gh api' 'gist.github.com generic'
+  _fr_expect_reason_has WebFetch 'https://gist.githubusercontent.com/example-user/deadbeef/raw/file.py' 'gh api' 'gist.githubusercontent.com generic'
+  _fr_expect_reason_has WebFetch 'https://codeload.github.com/example-org/example-repo/zip/refs/heads/main' 'gh api' 'codeload.github.com generic'
+  _fr_expect_reason_has WebFetch 'https://objects.githubusercontent.com/example-blob' 'gh api' 'objects.githubusercontent.com generic'
+  _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/settings' 'gh api' 'unrecognised github.com shape falls to generic'
+
+  # Case-insensitive host match, port stripped.
+  _fr_expect_url DENY WebFetch 'https://GitHub.com/example-org/example-repo' 'host matched case-insensitively'
+  _fr_expect_url DENY WebFetch 'https://github.com:443/example-org/example-repo' 'host matched with a port'
+
+  # NOT github: *.github.io and docs.github.com.
+  _fr_expect_url PASS WebFetch 'https://example-org.github.io/some-page' 'github.io allowed'
+  _fr_expect_url PASS WebFetch 'https://docs.github.com/en/actions' 'docs.github.com allowed'
+
+  # GitHub via the urls[] (MCP) shape, one URL in the batch.
+  _fr_expect_url DENY mcp__exa__web_fetch_exa 'https://github.com/example-org/example-repo' 'exa web_fetch denied for github'
+  local out
+  out="$(_fr_run_urls mcp__parallel__web_fetch 'https://github.com/example-org/example-repo')"
+  if [[ "$(_hook_verdict "${out}")" == DENY ]]; then
+    _pass "DENY: github via urls[] MCP shape"
+  else
+    _fail "github via urls[] MCP shape not denied"
+  fi
+
+  # --- X status posts -----------------------------------------------------
+
+  local -a x_deny_tools=(WebFetch mcp__exa__web_fetch_exa mcp__exa__crawling_exa)
+  for tool in "${x_deny_tools[@]}"; do
+    _fr_expect_url DENY "${tool}" 'https://x.com/someuser/status/1234567890' "x.com status denied for ${tool}"
+    _fr_expect_reason_has "${tool}" 'https://x.com/someuser/status/1234567890' 'oEmbed' "oEmbed named for ${tool}"
+  done
+  _fr_expect_url PASS mcp__parallel__web_fetch 'https://x.com/someuser/status/1234567890' 'X status allowed through mcp__parallel__web_fetch'
+
+  # Every documented status-URL shape and host alias, all denied on WebFetch.
+  _fr_expect_url DENY WebFetch 'https://twitter.com/someuser/status/1234567890' 'twitter.com status'
+  _fr_expect_url DENY WebFetch 'https://www.twitter.com/someuser/status/1234567890' 'www.twitter.com status'
+  _fr_expect_url DENY WebFetch 'https://mobile.twitter.com/someuser/status/1234567890' 'mobile.twitter.com status'
+  _fr_expect_url DENY WebFetch 'https://mobile.x.com/someuser/status/1234567890' 'mobile.x.com status'
+  _fr_expect_url DENY WebFetch 'https://www.x.com/someuser/status/1234567890' 'www.x.com status'
+  _fr_expect_url DENY WebFetch 'https://x.com/i/status/1234567890' 'x.com/i/status'
+  _fr_expect_url DENY WebFetch 'https://x.com/i/web/status/1234567890' 'x.com/i/web/status'
+
+  # Non-status x.com URLs are not this hook's concern.
+  _fr_expect_url PASS WebFetch 'https://x.com/someuser' 'x.com profile page allowed'
+  _fr_expect_url PASS WebFetch 'https://x.com/search?q=example' 'x.com search allowed'
+
+  # --- unrelated URLs -------------------------------------------------------
+
+  _fr_expect_url PASS WebFetch 'https://example.com/whatever' 'unrelated host allowed'
+  _fr_expect_url PASS WebFetch 'https://example.com/github.com/not-actually-github' 'github.com only in the path, not the host'
+
+  # --- mixed batch: deny the whole call, name only the offenders -----------
+
+  out="$(_fr_run_urls mcp__exa__web_fetch_exa \
+    'https://github.com/example-org/example-repo/blob/main/foo.py' \
+    'https://x.com/someuser/status/42' \
+    'https://example.com/fine')"
+  if [[ "$(_hook_verdict "${out}")" == DENY ]]; then
+    _pass "DENY: mixed batch with two offenders and one innocent URL"
+  else
+    _fail "mixed batch was not denied"
+  fi
+  local mixed_reason
+  mixed_reason="$(_fr_reason "${out}")"
+  if [[ "${mixed_reason}" == *'github.com/example-org/example-repo/blob/main/foo.py'* ]]; then
+    _pass "mixed batch: github offender named"
+  else
+    _fail "mixed batch: github offender missing"
+  fi
+  if [[ "${mixed_reason}" == *'x.com/someuser/status/42'* ]]; then
+    _pass "mixed batch: x.com offender named"
+  else
+    _fail "mixed batch: x.com offender missing"
+  fi
+  if [[ "${mixed_reason}" != *'example.com/fine'* ]]; then
+    _pass "mixed batch: innocent URL NOT named individually"
+  else
+    _fail "mixed batch: innocent URL leaked into the reason"
+  fi
+  if [[ "${mixed_reason}" == *'1 other URL(s)'* && "${mixed_reason}" == *'separate call'* ]]; then
+    _pass "mixed batch: says how many were fine and to re-issue separately"
+  else
+    _fail "mixed batch: missing the re-issue footer"
+  fi
+
+  # An all-innocent batch is allowed outright.
+  out="$(_fr_run_urls mcp__exa__web_fetch_exa 'https://example.com/a' 'https://example.com/b')"
+  if [[ "$(_hook_verdict "${out}")" == PASS ]]; then
+    _pass "PASS: all-innocent batch"
+  else
+    _fail "all-innocent batch was denied"
+  fi
+
+  # --- fail-open --------------------------------------------------------------
+
+  if [[ -z "$(printf '%s' '{}' | /bin/zsh "${SCRIPT_DIR}/claude/fetch-route-hook")" ]]; then
+    _pass "fail-open: payload with no tool_name allows the fetch"
+  else
+    _fail "fail-open: payload with no tool_name produced a verdict"
+  fi
+  if [[ -z "$(printf '%s' 'not json' | /bin/zsh "${SCRIPT_DIR}/claude/fetch-route-hook")" ]]; then
+    _pass "fail-open: unparseable payload allows the fetch"
+  else
+    _fail "fail-open: unparseable payload produced a verdict"
+  fi
+  if [[ -z "$(printf '%s' '' | /bin/zsh "${SCRIPT_DIR}/claude/fetch-route-hook")" ]]; then
+    _pass "fail-open: empty payload allows the fetch"
+  else
+    _fail "fail-open: empty payload produced a verdict"
+  fi
+  # A tool_name present but no url/urls at all (e.g. some other tool_input shape).
+  out="$(jq -n '{tool_name:"WebFetch", tool_input:{}}' | /bin/zsh "${SCRIPT_DIR}/claude/fetch-route-hook")"
+  if [[ -z "${out}" ]]; then
+    _pass "fail-open: tool_input with no url/urls allows the fetch"
+  else
+    _fail "tool_input with no url/urls produced a verdict"
+  fi
+}
