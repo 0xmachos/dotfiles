@@ -113,6 +113,14 @@ function _gha_token_scopes {
   # shellcheck disable=SC2206  # zsh ${=} word split is the intent
   scopes=(${=line})
 
+  # A fine-grained PAT has repository permissions, not OAuth scopes; gh
+  # reports none. Those permissions are visible only on the web
+  # (settings/personal-access-tokens), so the check stops here.
+  if (( ${#scopes[@]} == 0 )) || [[ "${scopes[1]}" == "none" ]]; then
+    _pass "gh token has no OAuth scopes (fine-grained PAT) — review its permissions at github.com/settings/personal-access-tokens"
+    return
+  fi
+
   for scope in "${scopes[@]}"; do
     if (( ${GH_AUTH_ALLOWED_SCOPES[(Ie)${scope}]} == 0 )); then
       extra+="${scope},"
