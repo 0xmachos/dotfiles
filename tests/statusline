@@ -43,16 +43,23 @@ function _sl_json {
 }
 
 # _sl_run <cols> <payload> [NAME=value ...] — sets _SL_OUT and _SL_RC. The
-# `|| _SL_RC=$?` keeps a non-zero exit (the case under test) from tripping
-# the runner's set -e.
+# `|| _SL_RC=$?` keeps a non-zero exit from tripping the runner's set -e, and
+# every run then fails loudly on it: an exit-1 run can still print the text an
+# assertion wants, or an empty line a "hidden" assertion accepts.
+# GIT_CEILING_DIRECTORIES stops git discovery at the sandbox, so a TMPDIR
+# inside a checkout cannot pull in a real repo (or write its /tmp cache).
 function _sl_run {
   local cols="$1" payload="$2"
   shift 2
   _SL_RC=0
   _SL_OUT="$(printf '%s' "${payload}" | env -u CLAUDE_CODE_AUTO_COMPACT_WINDOW \
+    -u GIT_DIR -u GIT_WORK_TREE GIT_CEILING_DIRECTORIES="${_SL_SB}" \
     HOME="${_SL_SB}" COLUMNS="${cols}" STATUSLINE_NOW="${_SL_NOW}" \
     STATUSLINE_OSASCRIPT="${_SL_SB}/osascript-stub" "$@" \
-    /bin/zsh "${SCRIPT_DIR}/claude/statusline-command" 2>/dev/null)" || _SL_RC=$?
+    /bin/zsh "${SCRIPT_DIR}/claude/statusline-command" 2>"${_SL_SB}/stderr")" || _SL_RC=$?
+  if (( _SL_RC != 0 )); then
+    _fail "statusline-command exited ${_SL_RC} at ${cols} cols on $(printf '%q' "${payload}"): $(head -3 "${_SL_SB}/stderr")"
+  fi
 }
 
 function _sl_plain {
@@ -131,6 +138,22 @@ function _sl_exit_codes {
       fi
     done
   done
+
+  # Tier edges, each side: the calm payload renders a different plain shape
+  # per tier (full: 10-cell bar; medium: 5-cell; compact: one labelled line;
+  # tiny: tokens only)
+  _sl_tier_case 100 $'work Opus\n░░░░░░░░░░ 0K'
+  _sl_tier_case 99 $'work Opus\n░░░░░ 0K'
+  _sl_tier_case 70 $'work Opus\n░░░░░ 0K'
+  _sl_tier_case 69 'work · Opus · 0K'
+  _sl_tier_case 45 'work · Opus · 0K'
+  _sl_tier_case 44 '0K'
+}
+
+function _sl_tier_case {
+  # <cols> <expected plain output>
+  _sl_run "$1" "$(_sl_json '.')"
+  _sl_expect_eq "tier edge at $1 cols" "$(_sl_plain "${_SL_OUT}")" "$2"
 }
 
 # ── (2) context colour bands and bar fill ──────────────────────────────────
@@ -167,8 +190,27 @@ function _sl_context {
   _sl_expect_has "junk settings → 500K fallback" "$(_sl_line 2)" "█████░░░░░"
   printf '{"autoCompactWindow":50000}' > "${_SL_SB}/.claude/settings.json"
   _sl_run 140 "${p250k}"
-  _sl_expect_has "out-of-range settings → 500K fallback" "$(_sl_line 2)" "█████░░░░░"
+  _sl_expect_has "below-range settings → 500K fallback" "$(_sl_line 2)" "█████░░░░░"
+  printf '{"autoCompactWindow":2000000}' > "${_SL_SB}/.claude/settings.json"
+  _sl_run 140 "${p250k}"
+  _sl_expect_has "above-range settings → 500K fallback" "$(_sl_line 2)" "█████░░░░░"
+  # The documented range edges, 100K and 1M, are inclusive
+  _sl_barmax_case "${p250k}" 99999 "█████░░░░░"
+  _sl_barmax_case "${p250k}" 100000 "██████████"
+  _sl_barmax_case "${p250k}" 1000000 "██░░░░░░░░"
+  _sl_barmax_case "${p250k}" 1000001 "█████░░░░░"
   printf '{"autoCompactWindow":500000}' > "${_SL_SB}/.claude/settings.json"
+  # Past the max the bar clamps at its 10 cells rather than overflowing
+  _sl_run 140 "$(_sl_json '.context_window.current_usage.input_tokens = 750000')"
+  _sl_expect_eq "bar clamps at 10 cells past the max" \
+    "$(_sl_plain "$(_sl_line 2)")" "██████████ 750K"
+}
+
+function _sl_barmax_case {
+  # <payload> <autoCompactWindow> <expected bar>
+  printf '{"autoCompactWindow":%s}' "$2" > "${_SL_SB}/.claude/settings.json"
+  _sl_run 140 "$1"
+  _sl_expect_has "bar max edge $2" "$(_sl_line 2)" "$3"
 }
 
 # ── (3) usage visibility and pace ──────────────────────────────────────────
@@ -194,12 +236,13 @@ function _sl_usage {
   _sl_expect_eq "5h 79%: yellow, no countdown" "$(_sl_line 3)" \
     "${_SL_DIM}5h${RESET} ${YELLOW}${BOLD}79%${RESET}"
   _sl_run 140 "$(_sl_json '.rate_limits.five_hour = {used_percentage: 80, resets_at: ($now + 600)}')"
-  _sl_expect_eq "5h 80%: red with countdown" "$(_sl_plain "$(_sl_line 3)")" "5h 80% · 10m"
+  _sl_expect_eq "5h 80%: red with countdown" "$(_sl_line 3)" \
+    "${_SL_DIM}5h${RESET} ${RED}${BOLD}80%${RESET} ${_SL_DIM}·${RESET} ${_SL_DIM}10m${RESET}"
 
   # Pace override: 30% used, 10% elapsed (exactly the 30-minute grace) → ⇡20 red
   _sl_run 140 "$(_sl_json '.rate_limits.five_hour = {used_percentage: 30, resets_at: ($now + 16200)}')"
   _sl_expect_eq "5h below threshold shown while pace warns" "$(_sl_plain "$(_sl_line 3)")" "5h 30% ⇡20"
-  _sl_expect_has "5h pace 20 ahead is red" "$(_sl_line 3)" "${RED}⇡20"
+  _sl_expect_has "5h pace 20 ahead is red" "$(_sl_line 3)" "${RED}⇡20${RESET}"
   # One second short of the grace period → no pace, so hidden
   _sl_run 140 "$(_sl_json '.rate_limits.five_hour = {used_percentage: 30, resets_at: ($now + 16201)}')"
   _sl_expect_lacks "5h pace suppressed in first 30 min" "$(_sl_plain "${_SL_OUT}")" "5h"
@@ -208,23 +251,36 @@ function _sl_usage {
   _sl_run 140 "$(_sl_json '.rate_limits.seven_day = {used_percentage: 35, resets_at: ($now + 453600)}')"
   plain="$(_sl_plain "$(_sl_line 3)")"
   _sl_expect_eq "7d 10 points ahead shows ⇡10" "${plain}" "7d 35% ⇡10"
-  _sl_expect_has "7d pace 10 ahead is yellow" "$(_sl_line 3)" "${YELLOW}⇡10"
+  _sl_expect_has "7d pace 10 ahead is yellow" "$(_sl_line 3)" "${YELLOW}⇡10${RESET}"
   _sl_run 140 "$(_sl_json '.rate_limits.seven_day = {used_percentage: 34, resets_at: ($now + 453600)}')"
   _sl_expect_lacks "7d 9 points ahead stays hidden" "$(_sl_plain "${_SL_OUT}")" "7d"
 }
 
 # ── (4) countdown units ────────────────────────────────────────────────────
 function _sl_countdown_case {
-  # <window key> <label> <used> <seconds to reset> <expected>
+  # <window key> <label> <used> <seconds to reset> <expected> — the countdown
+  # must END the row, so a "2h 1m" can't satisfy "2h"
+  local row
   _sl_run 140 "$(_sl_json ".rate_limits.$1 = {used_percentage: $3, resets_at: (\$now + $4)}")"
-  _sl_expect_has "$2 countdown $4s → $5" "$(_sl_plain "$(_sl_line 3)")" "· $5"
+  row="$(_sl_plain "$(_sl_line 3)")"
+  if [[ "${row}" == *" · $5" ]]; then
+    _pass "$2 countdown $4s → $5"
+  else
+    _fail "$2 countdown $4s — wanted row ending ' · $5', got $(printf '%q' "${row}")"
+  fi
 }
 
 function _sl_countdowns {
   _sl_countdown_case five_hour 5h 85 7260 2h
+  _sl_countdown_case five_hour 5h 85 3600 1h
+  _sl_countdown_case five_hour 5h 85 3599 59m
   _sl_countdown_case five_hour 5h 85 2520 42m
-  _sl_countdown_case five_hour 5h 85 30 1m
+  _sl_countdown_case five_hour 5h 85 60 1m
+  _sl_countdown_case five_hour 5h 85 59 1m
+  _sl_countdown_case five_hour 5h 85 0 now
   _sl_countdown_case seven_day 7d 80 259260 3d
+  _sl_countdown_case seven_day 7d 80 86400 1d
+  _sl_countdown_case seven_day 7d 80 86399 23h
   _sl_countdown_case seven_day 7d 80 46860 13h
   _sl_countdown_case seven_day 7d 80 2970 49m
 }
@@ -245,7 +301,9 @@ function _sl_identity {
   _sl_run 140 "$(_sl_json "${fable} | .effort.level = \"medium\"")"
   _sl_expect_has "Fable medium: coloured, ↓" "$(_sl_line 1)" "${YELLOW}◆ med ↓${RESET}"
   _sl_run 140 "$(_sl_json "${fable} | .effort.level = \"xhigh\"")"
-  _sl_expect_has "Fable xhigh: ↑" "$(_sl_line 1)" "▲▲ xhigh ↑"
+  _sl_expect_has "Fable xhigh: coloured, ↑" "$(_sl_line 1)" "${_SL_MAGENTA}▲▲ xhigh ↑${RESET}"
+  _sl_run 140 "$(_sl_json "${fable} | .effort.level = \"max\"")"
+  _sl_expect_has "Fable max: red, ↑" "$(_sl_line 1)" "${RED}▲▲▲ max ↑${RESET}"
 
   _sl_run 140 "$(_sl_json "${opus}")"
   _sl_expect_eq "no effort field → no badge; model → Opus" "$(_sl_plain "$(_sl_line 1)")" "work Opus"
@@ -263,13 +321,13 @@ function _sl_api_case {
 function _sl_cost_case {
   # <usd> <colour> — the sandbox FX rate is 1, so £ equals USD
   _sl_run 140 "$(_sl_json ".cost.total_cost_usd = $1")"
-  _sl_expect_has "cost \$$1 at rate 1 → band" "$(_sl_line 2)" "$2£$(printf '%.2f' "$1")"
+  _sl_expect_has "cost \$$1 at rate 1 → band" "$(_sl_line 2)" "$2£$(printf '%.2f' "$1")${RESET}"
 }
 
 function _sl_hit_case {
   # <hit_ratio> <expected %> <colour>
   _sl_run 140 "$(_sl_json ".prompt_cache = {hit_ratio: $1}")"
-  _sl_expect_has "cache hit $2% → band" "$(_sl_line 2)" "♻️$3$2%"
+  _sl_expect_has "cache hit $2% → band" "$(_sl_line 2)" "♻️$3$2%${RESET}"
 }
 
 function _sl_economics {
@@ -287,6 +345,24 @@ function _sl_economics {
   _sl_hit_case 0.89 89 "${YELLOW}"
   _sl_hit_case 0.7 70 "${YELLOW}"
   _sl_hit_case 0.69 69 "${RED}"
+
+  _sl_ttl_case "TTL dim while comfortable" true 1800 " ${_SL_DIM}30m${RESET}"
+  _sl_ttl_case "TTL yellow inside 5 min" true 240 " ${YELLOW}4m${RESET}"
+  _sl_ttl_case "cold once expired" true 0 " ${RED}cold${RESET}"
+  _sl_ttl_case "cold when not warm" false 1800 " ${RED}cold${RESET}"
+}
+
+function _sl_ttl_case {
+  # <label> <warm> <seconds to expiry> <expected tail of row 2>
+  local row
+  _sl_run 140 "$(_sl_json ".prompt_cache = {warm: $2, caching_observed: true,
+    expires_at: (\$now + $3), hit_ratio: 0.95}")"
+  row="$(_sl_line 2)"
+  if [[ "${row}" == *"♻️${GREEN}95%${RESET}$4" ]]; then
+    _pass "cache $1"
+  else
+    _fail "cache $1 — wanted row ending $(printf '%q' "$4"), got $(printf '%q' "${row}")"
+  fi
 }
 
 # ── (9) cache_alert ────────────────────────────────────────────────────────
@@ -338,7 +414,19 @@ function _sl_cache_alert {
   _sl_alert_silent "already expired" '"s5"' true 0 60000
   _sl_alert_silent "no session_id" null true 240 60000
   _sl_run 140 "$(_sl_alert_payload '"s6"' true 300 50000)"
-  _sl_expect_eq "cache_alert fires at exactly 5 min / 50K" "$(_sl_alert_markers)" "1"
+  _sl_expect_eq "cache_alert claims at exactly 5 min / 50K" "$(_sl_alert_markers)" "1"
+
+  # Delivery is backgrounded, so the log can only be checked after a settle.
+  # Expected: the s1 alert and the s6 boundary alert, nothing from the silent
+  # cases or the s1 repeat. Timing can only hide an extra notification (a
+  # false pass under heavy load), never invent one.
+  for (( i = 0; i < 20; i++ )); do
+    [[ -f "${log}" ]] && (( $(/usr/bin/grep -c 'cache goes cold' "${log}") >= 2 )) && break
+    sleep 0.1
+  done
+  sleep 1
+  _sl_expect_eq "cache_alert delivered exactly twice (s1 once, s6 boundary)" \
+    "$(/usr/bin/grep -c 'cache goes cold' "${log}" 2>/dev/null)" "2"
 }
 
 # ── (10) subagent-statusline ───────────────────────────────────────────────
@@ -349,11 +437,14 @@ function _sl_subagent {
     {id: "a", name: "Explore", status: "running", description: "d", model: "sonnet", effort: "high", tokenCount: 199999},
     {id: "b", name: "Explore", status: "running", tokenCount: 200000},
     {id: "c", name: "Explore", status: "completed", tokenCount: 400000},
-    {id: "d", name: "Explore", status: "running"}]}')"
+    {id: "d", name: "Explore", status: "running"},
+    {id: "e", name: "Explore", status: "running", tokenCount: 399999},
+    {id: "f", name: "Explore", effort: "max"}]}')"
   rc=0
   out="$(printf '%s' "${payload}" | /bin/zsh "${script}" 2>/dev/null)" || rc=$?
   _sl_expect_eq "subagent: exit 0 with tasks" "${rc}" "0"
-  _sl_expect_eq "subagent: one row per task" "$(wc -l <<< "${out}" | tr -d ' ')" "4"
+  _sl_expect_eq "subagent: exactly one row per task id" \
+    "$(jq -r .id <<< "${out}" 2>/dev/null | sort | tr '\n' ' ')" "a b c d e f "
   while IFS= read -r line; do
     if ! jq -e 'has("id") and has("content")' <<< "${line}" >/dev/null 2>&1; then
       _fail "subagent: row is not JSON with id + content: $(printf '%q' "${line}")"
@@ -362,9 +453,15 @@ function _sl_subagent {
     id="$(jq -r .id <<< "${line}")"
     content="$(jq -r .content <<< "${line}")"
     case "${id}" in
-      a) _sl_expect_has "subagent: 199,999 tokens green" "${content}" "${GREEN}199K${RESET}" ;;
+      a) _sl_expect_has "subagent: 199,999 tokens green" "${content}" "${GREEN}199K${RESET}"
+         # The whole row once, at >= 90 cols: status colour, description,
+         # model and effort badge, not only the token segment
+         _sl_expect_eq "subagent: full row at 100 cols" "${content}" \
+           "${_SL_CYAN}Explore${RESET} ${_SL_DIM}·${RESET} ${_SL_CYAN}running${RESET} ${_SL_DIM}·${RESET} ${_SL_DIM}d${RESET} ${_SL_DIM}·${RESET} ${_SL_DIM}sonnet${RESET} ${_SL_DIM}·${RESET} ${_SL_MAGENTA}▲ high${RESET} ${_SL_DIM}·${RESET} ${GREEN}199K${RESET}" ;;
       b) _sl_expect_has "subagent: 200,000 tokens yellow" "${content}" "${YELLOW}200K${RESET}" ;;
       c) _sl_expect_has "subagent: 400,000 tokens red" "${content}" "${RED}400K${RESET}" ;;
+      e) _sl_expect_has "subagent: 399,999 tokens yellow" "${content}" "${YELLOW}399K${RESET}" ;;
+      f) _sl_expect_has "subagent: max effort badge red" "${content}" "${RED}▲▲▲ max${RESET}" ;;
       d) _sl_expect_eq "subagent: no tokenCount → no token segment" \
            "$(_sl_plain "${content}")" "Explore · running" ;;
       *) _fail "subagent: unexpected id ${id}" ;;
@@ -395,6 +492,10 @@ function run_statusline {
     return 0
   fi
 
+  # Remove the sandbox even if a set -e abort ends the run early, setup
+  # included (an empty _SL_SB makes this a no-op)
+  _SL_SB=""
+  trap '[[ -n "${_SL_SB}" ]] && /bin/rm -rf "${_SL_SB}"' EXIT
   _sl_setup
   _sl_exit_codes
   _sl_context
@@ -405,4 +506,5 @@ function run_statusline {
   _sl_cache_alert
   _sl_subagent
   /bin/rm -rf "${_SL_SB}"
+  trap - EXIT
 }
