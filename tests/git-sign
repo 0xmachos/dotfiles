@@ -1,9 +1,10 @@
 #!/bin/zsh
 # dotfiles/tests/git-sign
 #
-# Behavioural tests for claude/git-sign-hook (signature-state push gate +
-# signing-failure fallback + re-sign nudge) and bin/git-sign-unpushed (batch
-# re-sign of the unpushed range).
+# Behavioural tests for claude/git-sign-hook (signing-failure fallback +
+# re-sign nudge — its PreToolUse push-gate leg was removed 2026-09-25; the
+# pre-push cases below exercise the actual boundary) and bin/git-sign-unpushed
+# (batch re-sign of the unpushed range).
 #
 # Git-touching assertions run in sandbox repos under $TMPDIR with
 # GIT_CONFIG_GLOBAL/SYSTEM nulled and a throwaway on-disk ed25519 key, so there
@@ -11,10 +12,12 @@
 # config.
 #
 # Guards the findings that shaped the design:
-#   * push-gate scope must equal the range git-sign-unpushed can fix. A
-#     repo-wide scan denied pushes over an unsigned commit on a branch the
-#     fixer never touches, and the deny was unclearable — hook said "run
-#     git-sign-unpushed", the tool said "nothing to do", hook denied again.
+#   * the re-sign nudge's unsigned-range scope must equal the range
+#     git-sign-unpushed can fix. A repo-wide scan used to deny every push in
+#     the repo over an unsigned commit on a branch the fixer never touches,
+#     and the deny was unclearable — hook said "run git-sign-unpushed", the
+#     tool said "nothing to do", hook denied again (that was the PreToolUse
+#     push-gate leg, removed 2026-09-25; pre-push is the boundary now).
 #   * commits are never pre-emptively unsigned any more (the lock probe was
 #     removed 2026-08-08): the hook reacts to a real signing refusal instead.
 #   * PostToolUse fires only on success and PostToolUseFailure only on failure
@@ -256,13 +259,6 @@ function run_git_sign {
 
 function _git_sign_claude_cases {
 
-  # --- Commits are never pre-emptively unsigned (lock probe removed) ---
-  _gs_expect PASS PreToolUse 'git commit -m x' '' '' 'commit is never rewritten'
-  _gs_expect PASS PreToolUse 'git tag v1.0' '' '' 'tag is never rewritten'
-  _gs_expect PASS PreToolUse 'git log --oneline' '' '' 'non-commit git subcommand'
-  _gs_expect PASS PreToolUse 'echo git push' '' '' 'git not at command position'
-  _gs_expect PASS PreToolUse 'GIT_SIGN_SKIP=1 git push' '' '' 'inline skip'
-
   local sandbox repo
   sandbox="$(mktemp -d "${TMPDIR}git-sign-test.XXXXXX")"
   repo="$(_gs_newrepo "${sandbox}")"
@@ -274,17 +270,6 @@ function _git_sign_claude_cases {
     _gs_commit c1 '2026-02-02T11:00:00+00:00' '2026-03-02T11:00:00+00:00'
     _gs_commit c2 '2026-02-03T12:00:00+00:00' '2026-03-03T12:00:00+00:00'
   )
-
-  # --- Push gate ---
-  _gs_expect DENY PreToolUse 'git push' "${repo}" '' 'push gate: unsigned unpushed'
-  _gs_expect DENY PreToolUse 'sudo git push' "${repo}" '' 'wrapper: sudo'
-  _gs_expect DENY PreToolUse 'timeout 30 git push' "${repo}" '' 'wrapper with duration'
-  _gs_expect DENY PreToolUse 'git commit -m x && git push' "${repo}" '' 'compound commit+push'
-  _gs_expect PASS PreToolUse 'git commit -m "note about git push"' "${repo}" '' \
-    'push inside quoted message is not a push'
-  env "${GS_ENV[@]}" git -C "${repo}" config commit.gpgsign false
-  _gs_expect PASS PreToolUse 'git push' "${repo}" '' 'push gate: repo does not sign'
-  env "${GS_ENV[@]}" git -C "${repo}" config commit.gpgsign true
 
   # --- PostToolUseFailure: signing refusal parks the work, never a retry ---
   local refusal out
@@ -347,9 +332,12 @@ fatal: failed to write commit object'
   _gs_expect CONTEXT PostToolUse 'git commit -m x' "${repo}" '' 'successful commit, debt present'
   _gs_expect PASS PostToolUse 'git status' "${repo}" '' 'non-commit command, debt present'
 
-  # --- Push-gate scope must match what git-sign-unpushed can fix ---
-  # Regression: an unsigned commit on a branch that is not checked out used to
-  # deny every push in the repo, and git-sign-unpushed reported "nothing to do".
+  # --- Unsigned-range scope must match what git-sign-unpushed can fix ---
+  # Regression (in the now-removed PreToolUse push-gate leg): an unsigned
+  # commit on a branch that is not checked out used to deny every push in the
+  # repo, and git-sign-unpushed reported "nothing to do". _unsigned_count's
+  # same HEAD-only scoping also governs the PostToolUse re-sign nudge below,
+  # which is what this now tests directly.
   local scoperepo
   scoperepo="$(_gs_newrepo "$(mktemp -d "${TMPDIR}git-sign-scope.XXXXXX")")"
   (
@@ -360,8 +348,6 @@ fatal: failed to write commit object'
     git checkout -q main
     _gs_commit_signed work '2026-02-03T12:00:00+00:00'
   )
-  _gs_expect PASS PreToolUse 'git push' "${scoperepo}" '' \
-    'unsigned commit on another branch does not gate HEAD'
   _gs_expect PASS PostToolUse 'git commit -m x' "${scoperepo}" '' \
     'another branch does not trigger the re-sign nudge'
   /bin/rm -rf "${scoperepo:h}"
@@ -428,7 +414,6 @@ function _git_sign_resign_cases {
     _fail "pushed base commit was rewritten"
   fi
   if [[ -f "${SCRIPT_DIR}/claude/git-sign-hook" ]] && command -v jq >/dev/null; then
-    _gs_expect PASS PreToolUse 'git push' "${repo}" '' 'push gate: all signed'
     _gs_expect PASS PostToolUse 'git commit -m x' "${repo}" '' 'no nudge once the range is clean'
   fi
 
