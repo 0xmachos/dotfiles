@@ -396,6 +396,83 @@ function run_muse_exec {
     $'container exec c sh <<EOF\ntimeout 60 muse exec hi\nEOF' \
     'container exec ... sh <<EOF — accepted gap, not a pass-through wrapper unwrap'
 
+  # --- C3: N>&M / >&N / <&N / &>/&>> are redirections, not separators ----
+  # A bare & is a command boundary, but the & in 2>&1, >&2, <&1, &>out and
+  # &>>out is part of a redirection operator — treating it as a boundary
+  # split `bash 2>&1 <<EOF` at the &, throwing away `bash` and losing the
+  # consumer entirely. |& (merge stderr into the pipe) still resets like a
+  # plain pipe: its & is preceded by | rather than >/<.
+
+  _muse_exec_expect DENY \
+    $'bash 2>&1 <<EOF\ntimeout 60 muse exec hi\nEOF' \
+    'bash 2>&1 <<EOF — the & in 2>&1 is a redirection, not a boundary'
+
+  _muse_exec_expect PASS \
+    $'cat 2>&1 <<EOF\ntimeout 60 muse exec hi\nEOF' \
+    'cat 2>&1 <<EOF — same redirection shape, non-shell consumer, plain-text body is data'
+
+  _muse_exec_expect DENY \
+    $'bash >&2 <<EOF\ntimeout 60 muse exec hi\nEOF' \
+    'bash >&2 <<EOF'
+
+  _muse_exec_expect DENY \
+    $'bash &>out <<EOF\ntimeout 60 muse exec hi\nEOF' \
+    'bash &>out <<EOF'
+
+  _muse_exec_expect DENY \
+    $'cmd |& bash <<EOF\ntimeout 60 muse exec hi\nEOF' \
+    'cmd |& bash <<EOF — |& still resets, so bash is a fresh consumer'
+
+  # --- C4: every heredoc on one line must resolve to the same consumer ---
+  # `bash <<A <<B` feeds BOTH heredocs to bash — seg was being reset right
+  # after the first heredoc's delimiter was parsed, so the second lost its
+  # consumer and fell back to data. Neither heredoc may lose a shell
+  # consumer this way, whichever one carries the dangerous line.
+
+  _muse_exec_expect DENY \
+    $'bash <<A <<B\necho hi\nA\ntimeout 60 muse exec hi\nB' \
+    'bash <<A <<B — danger in B, the second heredoc, must still deny'
+
+  _muse_exec_expect DENY \
+    $'bash <<A <<B\ntimeout 60 muse exec hi\nA\necho hi\nB' \
+    'bash <<A <<B — danger in A, the first heredoc, must still deny'
+
+  _muse_exec_expect PASS \
+    $'bash <<A | cat <<\'B\'\nharmless\nA\ntimeout 60 muse exec hi\nB' \
+    'bash <<A | cat <<B — a real pipe resets the consumer, so B belongs to cat, not bash'
+
+  # --- C2: an unquoted heredoc delimiter still expands $(...)/backticks --
+  # The OUTER shell performs command/parameter/arithmetic expansion on an
+  # UNQUOTED heredoc's body before handing the result to the consumer, even
+  # when the consumer itself never interprets the body as a script —
+  # `cat <<EOF` / `$(timeout 60 muse exec hi)` / `EOF` really runs it. A
+  # quoted delimiter (<<'EOF' or <<"EOF") suppresses all of that
+  # expansion, so the body stays fully inert there.
+
+  _muse_exec_expect DENY \
+    $'cat <<EOF\n$(timeout 60 muse exec hi)\nEOF' \
+    'cat <<EOF with $(...) in the body — unquoted delimiter still expands it'
+
+  _muse_exec_expect PASS \
+    $'cat <<\'EOF\'\n$(timeout 60 muse exec hi)\nEOF' \
+    "cat <<'EOF' with \$(...) in the body — single-quoted delimiter suppresses expansion"
+
+  _muse_exec_expect PASS \
+    $'cat <<"EOF"\n$(timeout 60 muse exec hi)\nEOF' \
+    'cat <<"EOF" with $(...) in the body — double-quoted delimiter suppresses expansion'
+
+  _muse_exec_expect DENY \
+    $'cat <<EOF\n`timeout 60 muse exec hi`\nEOF' \
+    'cat <<EOF with a backtick substitution in the body — unquoted delimiter still expands it'
+
+  _muse_exec_expect PASS \
+    $'cat <<EOF\n\\$(timeout 60 muse exec hi)\nEOF' \
+    'cat <<EOF with $(...) (escaped) in the body — literal, never a substitution'
+
+  _muse_exec_expect DENY \
+    $'python3 - <<EOF\nx = "$(timeout 60 muse exec hi)"\nEOF' \
+    'python3 - <<EOF with $(...) inside a double-quoted Python string — the outer shell still expands it'
+
   # --- Combined: every rule at once, one deny naming all of them ----------
 
   local reason

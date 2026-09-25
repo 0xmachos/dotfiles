@@ -448,6 +448,74 @@ EOF"
   hd="container exec c sh <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
   _md5_guard_expect PASS "${hd}" 'container exec ... sh <<EOF — accepted gap, not a pass-through wrapper unwrap'
 
+  # --- C3: N>&M / >&N / <&N / &>/&>> are redirections, not separators ----
+  # A bare & is a command boundary, but the & in 2>&1, >&2, <&1, &>out and
+  # &>>out is part of a redirection operator — treating it as a boundary
+  # split `bash 2>&1 <<EOF` at the &, throwing away `bash` and losing the
+  # consumer entirely. |& (merge stderr into the pipe) still resets like a
+  # plain pipe: its & is preceded by | rather than >/<.
+
+  hd="bash 2>&1 <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
+  _md5_guard_expect DENY "${hd}" 'bash 2>&1 <<EOF — the & in 2>&1 is a redirection, not a boundary'
+
+  hd="cat 2>&1 <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
+  _md5_guard_expect PASS "${hd}" 'cat 2>&1 <<EOF — same redirection shape, non-shell consumer, plain-text body is data'
+
+  hd="bash >&2 <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
+  _md5_guard_expect DENY "${hd}" 'bash >&2 <<EOF'
+
+  hd="bash &>out <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
+  _md5_guard_expect DENY "${hd}" 'bash &>out <<EOF'
+
+  hd="cmd |& bash <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
+  _md5_guard_expect DENY "${hd}" 'cmd |& bash <<EOF — |& still resets, so bash is a fresh consumer'
+
+  # --- C4: every heredoc on one line must resolve to the same consumer ---
+  # `bash <<A <<B` feeds BOTH heredocs to bash — seg was being reset right
+  # after the first heredoc's delimiter was parsed, so the second lost its
+  # consumer and fell back to data. Neither heredoc may lose a shell
+  # consumer this way, whichever one carries the dangerous line.
+
+  hd="bash <<A <<B"$'\n'"echo hi"$'\n'"A"$'\n'"${md5word} f"$'\n'"B"
+  _md5_guard_expect DENY "${hd}" 'bash <<A <<B — danger in B, the second heredoc, must still deny'
+
+  hd="bash <<A <<B"$'\n'"${md5word} f"$'\n'"A"$'\n'"echo hi"$'\n'"B"
+  _md5_guard_expect DENY "${hd}" 'bash <<A <<B — danger in A, the first heredoc, must still deny'
+
+  hd="bash <<A | cat <<'B'"$'\n'"harmless"$'\n'"A"$'\n'"${md5word} f"$'\n'"B"
+  _md5_guard_expect PASS "${hd}" 'bash <<A | cat <<B — a real pipe resets the consumer, so B belongs to cat, not bash'
+
+  # --- C2: an unquoted heredoc delimiter still expands $(...)/backticks --
+  # The OUTER shell performs command/parameter/arithmetic expansion on an
+  # UNQUOTED heredoc's body before handing the result to the consumer, even
+  # when the consumer itself never interprets the body as a script —
+  # `cat <<EOF` / `$(md5 f)` / `EOF` really runs md5. A quoted delimiter
+  # (<<'EOF' or <<"EOF") suppresses all of that expansion, so the body
+  # stays fully inert there.
+
+  hd="cat <<EOF"$'\n'"\$(${md5word} f)"$'\n'"EOF"
+  # shellcheck disable=SC2016
+  _md5_guard_expect DENY "${hd}" 'cat <<EOF with $(md5 f) in the body — unquoted delimiter still expands it'
+
+  hd="cat <<'EOF'"$'\n'"\$(${md5word} f)"$'\n'"EOF"
+  _md5_guard_expect PASS "${hd}" "cat <<'EOF' with \$(md5 f) in the body — single-quoted delimiter suppresses expansion"
+
+  hd='cat <<"EOF"'$'\n'"\$(${md5word} f)"$'\n'"EOF"
+  # shellcheck disable=SC2016
+  _md5_guard_expect PASS "${hd}" 'cat <<"EOF" with $(md5 f) in the body — double-quoted delimiter suppresses expansion'
+
+  hd="cat <<EOF"$'\n'"\`${md5word} f\`"$'\n'"EOF"
+  # shellcheck disable=SC2016
+  _md5_guard_expect DENY "${hd}" 'cat <<EOF with a backtick substitution in the body — unquoted delimiter still expands it'
+
+  hd="cat <<EOF"$'\n'"\\\$(${md5word} f)"$'\n'"EOF"
+  # shellcheck disable=SC2016
+  _md5_guard_expect PASS "${hd}" 'cat <<EOF with \$(md5 f) (escaped) in the body — literal, never a substitution'
+
+  hd="python3 - <<EOF"$'\n'"x = \"\$(${md5word} f)\""$'\n'"EOF"
+  # shellcheck disable=SC2016
+  _md5_guard_expect DENY "${hd}" 'python3 - <<EOF with $(md5 f) inside a double-quoted Python string — the outer shell still expands it'
+
   # Malformed / non-Bash payloads must fail open, never block.
   if [[ -z "$(printf '%s' '{}' | /bin/zsh "${SCRIPT_DIR}/claude/md5-guard-hook")" ]]; then
     _pass "fail-open: payload with no command allowed through"
