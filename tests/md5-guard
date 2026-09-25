@@ -516,6 +516,10 @@ EOF"
   # shellcheck disable=SC2016
   _md5_guard_expect DENY "${hd}" 'python3 - <<EOF with $(md5 f) inside a double-quoted Python string — the outer shell still expands it'
 
+  hd="cat <<EOF"$'\n'"\$(date)"$'\n'"\$(${md5word} f)"$'\n'"EOF"
+  # shellcheck disable=SC2016
+  _md5_guard_expect DENY "${hd}" 'cat <<EOF with two substitution lines — the deny stays valid JSON'
+
   # Malformed / non-Bash payloads must fail open, never block.
   if [[ -z "$(printf '%s' '{}' | /bin/zsh "${SCRIPT_DIR}/claude/md5-guard-hook")" ]]; then
     _pass "fail-open: payload with no command allowed through"

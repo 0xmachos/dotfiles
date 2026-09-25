@@ -473,6 +473,10 @@ function run_muse_exec {
     $'python3 - <<EOF\nx = "$(timeout 60 muse exec hi)"\nEOF' \
     'python3 - <<EOF with $(...) inside a double-quoted Python string — the outer shell still expands it'
 
+  _muse_exec_expect DENY \
+    $'cat <<EOF\n$(date)\n$(timeout 60 muse exec hi)\nEOF' \
+    'cat <<EOF with two substitution lines — the deny stays valid JSON'
+
   # --- Combined: every rule at once, one deny naming all of them ----------
 
   local reason
