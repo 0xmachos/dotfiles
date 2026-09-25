@@ -227,6 +227,175 @@ function run_muse_exec {
     $'cat <<EOF\ntimeout 90 muse exec --workspace "$PWD"' \
     'unterminated heredoc, non-shell consumer, body treated as data'
 
+  # --- Newly covered heredoc consumers (2026-09-25, second pass) ----------
+  # Same expansion as claude/md5-guard-hook's _md5_guard_scan_heredocs
+  # (credited there, ported here): ssh (any invocation), su (every form),
+  # sudo -s/-i/--shell/--login, doas -s/-i, absolute/relative shell paths,
+  # and any consumer word this hook cannot resolve at all (anything
+  # starting with $) are now treated as shell consumers. Each DENY is
+  # paired with a same-shape PASS to prove the match is on the exact
+  # resolved word, not a prefix or a coincidence. The DENY body line is
+  # `timeout 60 muse exec hi` per the task spec — it denies for its own
+  # reasons (a sub-120s timeout, open stdin) once it is actually scanned.
+
+  _muse_exec_expect DENY \
+    $'ssh host <<EOF\ntimeout 60 muse exec hi\nEOF' \
+    'ssh host <<EOF — remote command reads the body as commands'
+
+  _muse_exec_expect DENY \
+    $'ssh -T host bash <<EOF\ntimeout 60 muse exec hi\nEOF' \
+    'ssh -T host bash <<EOF — still ssh regardless of the remote command word'
+
+  _muse_exec_expect PASS \
+    $'ssh-keygen <<EOF\ntimeout 60 muse exec hi\nEOF' \
+    'ssh-keygen is not ssh — exact word match, not a prefix match'
+
+  _muse_exec_expect DENY \
+    $'su <<EOF\ntimeout 60 muse exec hi\nEOF' \
+    'bare su <<EOF'
+
+  _muse_exec_expect DENY \
+    $'su - <<EOF\ntimeout 60 muse exec hi\nEOF' \
+    'su - <<EOF'
+
+  _muse_exec_expect DENY \
+    $'su - someone <<EOF\ntimeout 60 muse exec hi\nEOF' \
+    'su - user <<EOF'
+
+  _muse_exec_expect DENY \
+    $'su -c \'true\' <<EOF\ntimeout 60 muse exec hi\nEOF' \
+    'su -c ... <<EOF'
+
+  _muse_exec_expect PASS \
+    $'subl <<EOF\ntimeout 60 muse exec hi\nEOF' \
+    'subl is not su — exact word match, not a prefix match'
+
+  _muse_exec_expect DENY \
+    $'sudo -s <<EOF\ntimeout 60 muse exec hi\nEOF' \
+    'sudo -s <<EOF — bare flag spawns an interactive shell'
+
+  _muse_exec_expect DENY \
+    $'sudo -i <<EOF\ntimeout 60 muse exec hi\nEOF' \
+    'sudo -i <<EOF'
+
+  _muse_exec_expect DENY \
+    $'sudo --shell <<EOF\ntimeout 60 muse exec hi\nEOF' \
+    'sudo --shell <<EOF (long flag)'
+
+  _muse_exec_expect DENY \
+    $'sudo --login <<EOF\ntimeout 60 muse exec hi\nEOF' \
+    'sudo --login <<EOF (long flag)'
+
+  _muse_exec_expect DENY \
+    $'doas -s <<EOF\ntimeout 60 muse exec hi\nEOF' \
+    'doas -s <<EOF'
+
+  _muse_exec_expect PASS \
+    $'sudo -s tee f <<EOF\ntimeout 60 muse exec hi\nEOF' \
+    'sudo -s with a following command is not the bare shell-spawning form'
+
+  _muse_exec_expect DENY \
+    $'sudo -u root bash <<EOF\ntimeout 60 muse exec hi\nEOF' \
+    'sudo -u root bash <<EOF — already resolved via the pre-existing wrapper unwrap'
+
+  _muse_exec_expect PASS \
+    $'sudo -u root tee f <<EOF\ntimeout 60 muse exec hi\nEOF' \
+    'sudo -u root tee f <<EOF — tee is not a shell'
+
+  _muse_exec_expect DENY \
+    $'/bin/sh <<EOF\ntimeout 60 muse exec hi\nEOF' \
+    '/bin/sh <<EOF — absolute path, basename match'
+
+  _muse_exec_expect DENY \
+    $'./sh <<EOF\ntimeout 60 muse exec hi\nEOF' \
+    './sh <<EOF — relative path, basename match'
+
+  _muse_exec_expect DENY \
+    $'/usr/bin/env bash <<EOF\ntimeout 60 muse exec hi\nEOF' \
+    '/usr/bin/env bash <<EOF'
+
+  _muse_exec_expect DENY \
+    $'env sh <<EOF\ntimeout 60 muse exec hi\nEOF' \
+    'env sh <<EOF'
+
+  _muse_exec_expect DENY \
+    $'command bash <<EOF\ntimeout 60 muse exec hi\nEOF' \
+    'command bash <<EOF'
+
+  _muse_exec_expect DENY \
+    $'exec bash <<EOF\ntimeout 60 muse exec hi\nEOF' \
+    'exec bash <<EOF'
+
+  _muse_exec_expect PASS \
+    $'/usr/bin/python3 - <<EOF\ntimeout 60 muse exec hi\nEOF' \
+    '/usr/bin/python3 - <<EOF — a path is not automatically a shell'
+
+  _muse_exec_expect PASS \
+    $'env python3 - <<EOF\ntimeout 60 muse exec hi\nEOF' \
+    'env python3 - <<EOF'
+
+  # Dynamic/unresolvable consumer words fail toward scanning: anything at a
+  # heredoc-owning command position that begins with $ is treated as shell.
+  _muse_exec_expect DENY \
+    $'$SHELL <<EOF\ntimeout 60 muse exec hi\nEOF' \
+    '$SHELL <<EOF — unresolvable consumer word fails toward scanning'
+
+  _muse_exec_expect DENY \
+    $'${I:-bash} <<EOF\ntimeout 60 muse exec hi\nEOF' \
+    '${I:-bash} <<EOF — unresolvable consumer word fails toward scanning'
+
+  _muse_exec_expect DENY \
+    $'${I:=bash} <<EOF\ntimeout 60 muse exec hi\nEOF' \
+    '${I:=bash} <<EOF — assignment-shaped expansion still fails toward scanning'
+
+  _muse_exec_expect DENY \
+    $'"$SH" <<EOF\ntimeout 60 muse exec hi\nEOF' \
+    '"$SH" <<EOF — quoted dynamic word still fails toward scanning'
+
+  _muse_exec_expect PASS \
+    $'cat "$f" <<EOF\ntimeout 60 muse exec hi\nEOF' \
+    'dollar in argument position does not trigger the dynamic-consumer rule'
+
+  # Two heredocs on one line, neither consumer dynamic: isolates a separate,
+  # pre-existing bug from the ${...}/pdepth one below (same as
+  # claude/md5-guard-hook's _md5_guard_scan_heredocs, ported here). zsh's
+  # `local`/`typeset` on a bare name (no `=value`) that is ALREADY set at
+  # the current scope prints it as `name=value` to stdout unless
+  # TYPESET_SILENT is set. `local hdelim='' hdstack=P hdch` and
+  # `local hconsumer hshell=0` are both bare and run once per heredoc found
+  # on a line — a line's SECOND heredoc redeclares the same already-set
+  # locals and echoes the first heredoc's stale value, corrupting the
+  # hook's JSON stdout. Predates this task; fixed by giving both an
+  # explicit initial value.
+  _muse_exec_expect PASS \
+    $'cat <<A; cat <<B\nharmless\nA\ntimeout 60 muse exec hi\nB' \
+    'two heredocs, one line, neither consumer dynamic — bare-local echo must not corrupt stdout'
+
+  # Two heredocs on one line: the first consumer is a ${...} expansion
+  # (parsed via a brace-depth counter, pdepth, so `{`/`}` inside it don't
+  # look like command separators). pdepth must return to exactly 0 once
+  # that expansion closes, even from inside a double-quoted "${...}" —
+  # otherwise it stays stuck "open" for the rest of the line, swallows the
+  # `;` reset, and the second `<<` is never recognised as a heredoc at all
+  # (advisor review finding, 2026-09-25). PASS only holds if the
+  # second heredoc (cat, non-shell) is correctly recognised as its own,
+  # separate, data-only body.
+  _muse_exec_expect PASS \
+    $'"${I:-bash}" <<A; cat <<B\nharmless\nA\ntimeout 60 muse exec hi\nB' \
+    'two heredocs on one line — pdepth from the first ${...} consumer must not corrupt the second heredoc-open'
+
+  # docker exec / container exec: not trivially reachable through the
+  # existing wrapper unwrap (their own "exec" is a subcommand name, not the
+  # shell exec builtin this hook already sees through), so left as an
+  # accepted gap rather than forced in — see _muse_exec_guard_scan_heredocs.
+  _muse_exec_expect PASS \
+    $'docker exec -i c sh <<EOF\ntimeout 60 muse exec hi\nEOF' \
+    'docker exec ... sh <<EOF — accepted gap, not a pass-through wrapper unwrap'
+
+  _muse_exec_expect PASS \
+    $'container exec c sh <<EOF\ntimeout 60 muse exec hi\nEOF' \
+    'container exec ... sh <<EOF — accepted gap, not a pass-through wrapper unwrap'
+
   # --- Combined: every rule at once, one deny naming all of them ----------
 
   local reason

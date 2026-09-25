@@ -80,6 +80,8 @@ function run_md5_guard {
   _md5_guard_expect DENY 'gmd5sum foo'
   _md5_guard_expect DENY 'md5deep -r .'
   _md5_guard_expect DENY 'md5 -s hello'          # string mode is still MD5
+  # shellcheck disable=SC2016  # literal ${#x}: it is the hook's input
+  _md5_guard_expect DENY 'echo ${#x}; md5 file.txt'   # ${#x} is not a comment
   _md5_guard_expect DENY '/sbin/md5 x'           # absolute path, basename match
   _md5_guard_expect DENY '/usr/local/bin/md5sum x'
 
@@ -298,6 +300,153 @@ EOF"
 
   hd="cat <<EOF"$'\n'"${md5word} f"
   _md5_guard_expect PASS "${hd}" 'unterminated heredoc, non-shell consumer, body treated as data'
+
+  # --- Newly covered heredoc consumers (2026-09-25, second pass) ----------
+  # Closes the gap _md5_guard_scan_heredocs used to document as accepted:
+  # ssh (any invocation), su (every form), sudo -s/-i/--shell/--login, doas
+  # -s/-i, absolute/relative shell paths, and any consumer word this hook
+  # cannot resolve at all (anything starting with $) are now treated as
+  # shell consumers — the body is scanned exactly as a bash/sh consumer's
+  # always was. Each DENY is paired with a same-shape PASS to prove the
+  # match is on the exact resolved word, not a prefix or a coincidence.
+
+  hd="ssh host <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
+  _md5_guard_expect DENY "${hd}" 'ssh host <<EOF — remote command reads the body as commands'
+
+  hd="ssh -T host bash <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
+  _md5_guard_expect DENY "${hd}" 'ssh -T host bash <<EOF — still ssh regardless of the remote command word'
+
+  hd="ssh-keygen <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
+  _md5_guard_expect PASS "${hd}" 'ssh-keygen is not ssh — exact word match, not a prefix match'
+
+  hd="su <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
+  _md5_guard_expect DENY "${hd}" 'bare su <<EOF'
+
+  hd="su - <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
+  _md5_guard_expect DENY "${hd}" 'su - <<EOF'
+
+  hd="su - someone <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
+  _md5_guard_expect DENY "${hd}" 'su - user <<EOF'
+
+  hd="su -c 'true' <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
+  _md5_guard_expect DENY "${hd}" 'su -c ... <<EOF'
+
+  hd="subl <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
+  _md5_guard_expect PASS "${hd}" 'subl is not su — exact word match, not a prefix match'
+
+  hd="sudo -s <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
+  _md5_guard_expect DENY "${hd}" 'sudo -s <<EOF — bare flag spawns an interactive shell'
+
+  hd="sudo -i <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
+  _md5_guard_expect DENY "${hd}" 'sudo -i <<EOF'
+
+  hd="sudo --shell <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
+  _md5_guard_expect DENY "${hd}" 'sudo --shell <<EOF (long flag)'
+
+  hd="sudo --login <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
+  _md5_guard_expect DENY "${hd}" 'sudo --login <<EOF (long flag)'
+
+  hd="doas -s <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
+  _md5_guard_expect DENY "${hd}" 'doas -s <<EOF'
+
+  hd="sudo -s tee f <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
+  _md5_guard_expect PASS "${hd}" 'sudo -s with a following command is not the bare shell-spawning form'
+
+  hd="sudo -u root bash <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
+  _md5_guard_expect DENY "${hd}" 'sudo -u root bash <<EOF — already resolved via the pre-existing wrapper unwrap'
+
+  hd="sudo -u root tee f <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
+  _md5_guard_expect PASS "${hd}" 'sudo -u root tee f <<EOF — tee is not a shell'
+
+  hd="/bin/sh <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
+  _md5_guard_expect DENY "${hd}" '/bin/sh <<EOF — absolute path, basename match'
+
+  hd="./sh <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
+  _md5_guard_expect DENY "${hd}" './sh <<EOF — relative path, basename match'
+
+  hd="/usr/bin/env bash <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
+  _md5_guard_expect DENY "${hd}" '/usr/bin/env bash <<EOF'
+
+  hd="env sh <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
+  _md5_guard_expect DENY "${hd}" 'env sh <<EOF'
+
+  hd="command bash <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
+  _md5_guard_expect DENY "${hd}" 'command bash <<EOF'
+
+  hd="exec bash <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
+  _md5_guard_expect DENY "${hd}" 'exec bash <<EOF'
+
+  hd="/usr/bin/python3 - <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
+  _md5_guard_expect PASS "${hd}" '/usr/bin/python3 - <<EOF — a path is not automatically a shell'
+
+  hd="env python3 - <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
+  _md5_guard_expect PASS "${hd}" 'env python3 - <<EOF'
+
+  # Dynamic/unresolvable consumer words fail toward scanning: anything at a
+  # heredoc-owning command position that begins with $ is treated as shell.
+  # shellcheck disable=SC2016
+  hd='$SHELL <<EOF'$'\n'"${md5word} f"$'\n'"EOF"
+  # shellcheck disable=SC2016
+  _md5_guard_expect DENY "${hd}" '$SHELL <<EOF — unresolvable consumer word fails toward scanning'
+
+  # shellcheck disable=SC2016
+  hd='${I:-bash} <<EOF'$'\n'"${md5word} f"$'\n'"EOF"
+  # shellcheck disable=SC2016
+  _md5_guard_expect DENY "${hd}" '${I:-bash} <<EOF — unresolvable consumer word fails toward scanning'
+
+  # shellcheck disable=SC2016
+  hd='${I:=bash} <<EOF'$'\n'"${md5word} f"$'\n'"EOF"
+  # shellcheck disable=SC2016
+  _md5_guard_expect DENY "${hd}" '${I:=bash} <<EOF — assignment-shaped expansion still fails toward scanning'
+
+  # shellcheck disable=SC2016
+  hd='"$SH" <<EOF'$'\n'"${md5word} f"$'\n'"EOF"
+  # shellcheck disable=SC2016
+  _md5_guard_expect DENY "${hd}" '"$SH" <<EOF — quoted dynamic word still fails toward scanning'
+
+  # shellcheck disable=SC2016
+  hd='cat "$f" <<EOF'$'\n'"${md5word} f"$'\n'"EOF"
+  # shellcheck disable=SC2016
+  _md5_guard_expect PASS "${hd}" 'dollar in argument position does not trigger the dynamic-consumer rule'
+
+  # Two heredocs on one line, neither consumer dynamic: isolates a separate,
+  # pre-existing bug from the ${...}/pdepth one below. _md5_guard_scan_heredocs
+  # declares `local hdelim='' hdstack=P hdch` and `local hconsumer hshell=0`
+  # — both bare, no `=value` — inside the outer while loop, so they run once
+  # per heredoc found on a line. zsh's `local`/`typeset` on a bare name that
+  # is ALREADY set at the current scope prints it as `name=value` to stdout
+  # unless TYPESET_SILENT is set (documented zsh behaviour, not a shell bug).
+  # A line's first heredoc declares them fresh (silent); its second heredoc
+  # redeclares the same already-set locals and echoes the first heredoc's
+  # stale value, corrupting the hook's JSON stdout. Predates this task —
+  # never exercised because no existing fixture had two heredocs on one
+  # line. Fixed by giving both an explicit initial value.
+  hd="cat <<A; cat <<B"$'\n'"harmless"$'\n'"A"$'\n'"${md5word} f"$'\n'"B"
+  _md5_guard_expect PASS "${hd}" 'two heredocs, one line, neither consumer dynamic — bare-local echo must not corrupt stdout'
+
+  # Two heredocs on one line: the first consumer is a ${...} expansion
+  # (parsed via a brace-depth counter, pdepth, so `{`/`}` inside it don't
+  # look like command separators). pdepth must return to exactly 0 once
+  # that expansion closes, even from inside a double-quoted "${...}" —
+  # otherwise it stays stuck "open" for the rest of the line, swallows the
+  # `;` reset, and the second `<<` is never recognised as a heredoc at all
+  # (advisor review finding, 2026-09-25). PASS only holds if the
+  # second heredoc (cat, non-shell) is correctly recognised as its own,
+  # separate, data-only body.
+  # shellcheck disable=SC2016
+  hd='"${I:-bash}" <<A; cat <<B'$'\n'"harmless"$'\n'"A"$'\n'"${md5word} f"$'\n'"B"
+  # shellcheck disable=SC2016
+  _md5_guard_expect PASS "${hd}" 'two heredocs on one line — pdepth from the first ${...} consumer must not corrupt the second heredoc-open'
+
+  # docker exec / container exec: not trivially reachable through the
+  # existing wrapper unwrap (their own "exec" is a subcommand name, not the
+  # shell exec builtin this hook already sees through), so left as an
+  # accepted gap rather than forced in — see _md5_guard_scan_heredocs.
+  hd="docker exec -i c sh <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
+  _md5_guard_expect PASS "${hd}" 'docker exec ... sh <<EOF — accepted gap, not a pass-through wrapper unwrap'
+
+  hd="container exec c sh <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
+  _md5_guard_expect PASS "${hd}" 'container exec ... sh <<EOF — accepted gap, not a pass-through wrapper unwrap'
 
   # Malformed / non-Bash payloads must fail open, never block.
   if [[ -z "$(printf '%s' '{}' | /bin/zsh "${SCRIPT_DIR}/claude/md5-guard-hook")" ]]; then
