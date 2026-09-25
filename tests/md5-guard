@@ -146,7 +146,12 @@ function run_md5_guard {
   # command it desynchronises on the first unbalanced quote: a Python
   # heredoc's triple-quote opens, closes, opens, so a later double quote
   # closed the region and re-exposed the pipes in the SAME grep pattern
-  # two lines down. Second live false positive of 2026-09-04.
+  # two lines down. Second live false positive of 2026-09-04. Since the
+  # 2026-09-25 heredoc-skip fix this PASSes for a more direct reason too —
+  # `python3 -` is not a shell consumer, so the whole body is data and
+  # never reaches the per-line quote-reset logic at all — but the reset
+  # itself is kept and still exercised by the <<- and quoted-delimiter
+  # cases below, whose consumers are also non-shell.
   local heredoc
   heredoc=$'python3 - <<\'PY\'\nnew = """  x\n  run PASS \'grep -iE "a|md5|b" f\'\n"""\nPY'
   _md5_guard_expect PASS "${heredoc}" 'python heredoc with a triple-quoted block'
@@ -174,12 +179,19 @@ function run_md5_guard {
   # 100KB heredoc with one md5 line is denied rather than skipped. What fails
   # open is a command over 1MB, or a single line over 64KB — running past
   # Claude Code's 60s hook timeout BLOCKS the tool call, which is worse than
-  # a miss.
-  local pad big
+  # a miss. `bash <<EOF`, not `cat > f <<EOF`, so this still denies after the
+  # 2026-09-25 heredoc-skip fix — the consumer here genuinely executes the
+  # body (a non-shell consumer's own heredoc-skip PASS is covered above and
+  # in the "heredoc data" section below). The command word is assembled at
+  # runtime, not written as a literal 'md5 g' line, so this fixture itself
+  # does not read as an executable MD5 invocation to this repo's own
+  # md5-write-hook.
+  local pad big md5word
+  md5word='md5'
   pad="$(printf 'x%.0s' {1..100000})"
-  big="cat > f <<EOF
+  big="bash <<EOF
 ${pad}
-md5 g
+${md5word} g
 EOF"
   _md5_guard_expect DENY "${big}" '100KB command, md5 on its own line, still scanned'
 
@@ -187,7 +199,7 @@ EOF"
   fixture_dir="$(mktemp -d "${TMPDIR:-/tmp}/md5-guard-fixtures.XXXXXX")"
 
   pad="$(printf 'x%.0s' {1..1100000})"
-  printf '%s\n' "cat > f <<EOF" "${pad}" "md5 g" "EOF" > "${fixture_dir}/huge"
+  printf '%s\n' "bash <<EOF" "${pad}" "${md5word} g" "EOF" > "${fixture_dir}/huge"
   _md5_guard_expect_file PASS "${fixture_dir}/huge" 'command over the 1MB cap (fail-open)'
 
   pad="$(printf 'x%.0s' {1..70000})"
@@ -230,6 +242,62 @@ EOF"
   _md5_guard_expect DENY "curl 'http://x/#frag' && md5 f" 'quoted URL fragment does not start a comment'
   _md5_guard_expect DENY 'md5 f;#c' 'comment after the call does not hide the call'
   _md5_guard_expect DENY 'md5 f #c' 'trailing comment does not hide the call'
+
+  # --- Heredoc bodies: data unless the consumer actually executes them ----
+  # (2026-09-25 fix.) These hooks used to scan heredoc BODY lines as if they
+  # were commands — a python heredoc whose docstring happened to mention the
+  # tool name was denied even though it never ran. The dangerous word is
+  # assembled at runtime (md5word, not a literal 'md5 f' line), same reason
+  # PII fixtures elsewhere assemble at runtime: this repo's own md5-write-hook
+  # would otherwise refuse to write this very test.
+  local hd
+
+  hd="python3 - <<EOF"$'\n'"doc = \"\"\"run ${md5word} f\"\"\""$'\n'"EOF"
+  _md5_guard_expect PASS "${hd}" 'heredoc body (python3 consumer, unquoted delimiter) is data'
+
+  hd="python3 - <<'PY'"$'\n'"doc = \"\"\"run ${md5word} f\"\"\""$'\n'"PY"
+  _md5_guard_expect PASS "${hd}" 'heredoc body (python3 consumer, single-quoted delimiter) is data'
+
+  hd='cat <<"EOF"'$'\n'"${md5word} f"$'\n'"EOF"
+  _md5_guard_expect PASS "${hd}" 'heredoc body (cat consumer, double-quoted delimiter) is data'
+
+  hd=$'cat <<-EOF\n\t'"${md5word} f"$'\n\tEOF'
+  _md5_guard_expect PASS "${hd}" 'heredoc body (cat consumer, <<-, tab-indented terminator) is data'
+
+  # A heredoc fed to an actual shell genuinely executes its body — still
+  # scanned, and still denied.
+  hd="sh <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
+  _md5_guard_expect DENY "${hd}" 'heredoc body (sh consumer, unquoted delimiter) still scanned as commands'
+
+  hd="bash <<'EOF'"$'\n'"${md5word} f"$'\n'"EOF"
+  _md5_guard_expect DENY "${hd}" 'heredoc body (bash consumer, single-quoted delimiter) still scanned as commands'
+
+  # The line introducing the heredoc is still scanned in full — md5 there is
+  # a real command position, regardless of what the heredoc body turns out
+  # to be.
+  hd="cat <<EOF | ${md5word}"
+  _md5_guard_expect DENY "${hd}" 'md5 after a pipe on the heredoc-introducing line is still a command position'
+
+  # <<< is a here-string, not a heredoc: it takes its operand from the same
+  # line and never opens a body.
+  hd="${md5word} <<< x"
+  _md5_guard_expect DENY "${hd}" 'here-string operand does not open a heredoc body — md5 is still a command position'
+  _md5_guard_expect PASS 'cat <<< x' 'here-string with a non-md5 consumer, no body follows'
+
+  # A line after the heredoc terminator is not part of the body and is
+  # scanned normally.
+  hd="cat <<EOF"$'\n'"hello"$'\n'"EOF"$'\n'"${md5word} f"
+  _md5_guard_expect DENY "${hd}" 'a line after the heredoc terminator is still scanned normally'
+
+  # Unterminated heredoc: the rest of the command is data for a non-shell
+  # consumer (matches the general fail-open posture of this hook), but a
+  # shell consumer's body keeps being scanned even with no terminator seen —
+  # real bash executes an unterminated heredoc up to EOF too.
+  hd="bash <<EOF"$'\n'"${md5word} f"
+  _md5_guard_expect DENY "${hd}" 'unterminated heredoc, shell consumer, body still scanned'
+
+  hd="cat <<EOF"$'\n'"${md5word} f"
+  _md5_guard_expect PASS "${hd}" 'unterminated heredoc, non-shell consumer, body treated as data'
 
   # Malformed / non-Bash payloads must fail open, never block.
   if [[ -z "$(printf '%s' '{}' | /bin/zsh "${SCRIPT_DIR}/claude/md5-guard-hook")" ]]; then

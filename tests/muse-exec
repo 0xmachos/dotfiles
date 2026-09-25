@@ -169,6 +169,64 @@ function run_muse_exec {
     'timeout 1800 muse --json exec --provider echo --workspace "$PWD" < /dev/null' \
     'a root option before the exec subcommand is skipped, not mistaken for it'
 
+  # --- Heredoc bodies: data unless the consumer actually executes them ----
+  # (2026-09-25 fix.) This hook used to scan heredoc BODY lines as if they
+  # were commands — the exact repro that motivated the fix: a python
+  # heredoc writing a docstring that itself quotes a `muse exec` call as
+  # example text was denied even though nothing ran.
+
+  _muse_exec_expect PASS \
+    $'python3 - <<\'EOF\'\ndoc = """run `timeout 1800 muse exec --prompt-file f --workspace\n"$PWD" < /dev/null`"""\nEOF' \
+    'heredoc body (python3 consumer, single-quoted delimiter) is data — the exact task repro'
+
+  _muse_exec_expect PASS \
+    $'cat <<EOF\ntimeout 90 muse exec --workspace "$PWD"\nEOF' \
+    'heredoc body (cat consumer, unquoted delimiter) is data'
+
+  _muse_exec_expect PASS \
+    $'cat <<-EOF\n\ttimeout 90 muse exec --workspace "$PWD"\n\tEOF' \
+    'heredoc body (cat consumer, <<-, tab-indented terminator) is data'
+
+  # A heredoc fed to an actual shell genuinely executes its body — still
+  # scanned, and still denied.
+  _muse_exec_expect DENY \
+    $'sh <<EOF\ntimeout 90 muse exec --workspace "$PWD"\nEOF' \
+    'heredoc body (sh consumer, unquoted delimiter) still scanned as commands'
+
+  _muse_exec_expect DENY \
+    $'bash <<\'EOF\'\ntimeout 90 muse exec --workspace "$PWD"\nEOF' \
+    'heredoc body (bash consumer, single-quoted delimiter) still scanned as commands'
+
+  # The line introducing the heredoc is still scanned in full — a real
+  # muse exec after a pipe there is a real command position regardless of
+  # what the heredoc body turns out to be.
+  _muse_exec_expect DENY 'cat <<EOF | timeout 30 muse exec --workspace "$PWD" < /dev/null' \
+    'muse exec after a pipe on the heredoc-introducing line is still a command position'
+
+  # <<< is a here-string, not a heredoc: it takes its operand from the same
+  # line and never opens a body, so a real violation on the NEXT line is
+  # still reached (a false heredoc-open here would wrongly swallow it).
+  _muse_exec_expect DENY \
+    $'cat <<< data\ntimeout 90 muse exec --workspace "$PWD" < /dev/null' \
+    'here-string does not open a heredoc body — the next line is still scanned'
+
+  # A line after the heredoc terminator is not part of the body and is
+  # scanned normally.
+  _muse_exec_expect DENY \
+    $'cat <<EOF\nhello\nEOF\ntimeout 90 muse exec --workspace "$PWD" < /dev/null' \
+    'a line after the heredoc terminator is still scanned normally'
+
+  # Unterminated heredoc: the rest of the command is data for a non-shell
+  # consumer, but a shell consumer's body keeps being scanned even with no
+  # terminator seen — real bash executes an unterminated heredoc too.
+  _muse_exec_expect DENY \
+    $'bash <<EOF\ntimeout 90 muse exec --workspace "$PWD"' \
+    'unterminated heredoc, shell consumer, body still scanned'
+
+  _muse_exec_expect PASS \
+    $'cat <<EOF\ntimeout 90 muse exec --workspace "$PWD"' \
+    'unterminated heredoc, non-shell consumer, body treated as data'
+
   # --- Combined: every rule at once, one deny naming all of them ----------
 
   local reason
