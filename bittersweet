@@ -608,6 +608,7 @@ function install_dotfiles {
     "claude/md5-guard-hook:md5-guard-hook"
     "claude/md5-write-hook:md5-write-hook"
     "claude/fetch-route-hook:fetch-route-hook"
+    "claude/muse-exec-hook:muse-exec-hook"
     "claude/gh-publish-hook:gh-publish-hook"
     "claude/session-host-context:session-host-context"
     "claude/hosts:hosts"

@@ -36,6 +36,14 @@
 # was not exercised by the author's own harness (its classifier refused to
 # run muse with the sandbox off); flag semantics are from the help text
 # and dev.meta.ai/docs/muse-code/permissions.
+#
+# Headless runs (2026-09-25, Muse 1.3.0-R3401.1): `exec` gets
+# MUSE_EXPERIMENTAL_VERIFY_REMINDER=0 unless the caller set it. The built-in
+# verify-reminder is a second model pass after the answer, and exec holds
+# stdout until it finishes, so a caller's timeout can kill a run that had
+# already answered. Interactive launches keep the reminder. Verified by
+# session log: with the variable at 0 no verify-reminder child starts and
+# the end-of-turn gate is gone.
 
 function muse {
   local arg
@@ -45,7 +53,12 @@ function muse {
   fi
   for arg in "$@"; do
     case "${arg}" in
-      exec|config|export|trace|skills|sandbox|schema|serve|session-message|auth|login|logout|init|plugins)
+      exec)
+        MUSE_EXPERIMENTAL_VERIFY_REMINDER="${MUSE_EXPERIMENTAL_VERIFY_REMINDER:-0}" \
+          command muse "$@"
+        return
+        ;;
+      config|export|trace|skills|sandbox|schema|serve|session-message|auth|login|logout|init|plugins)
         command muse "$@"
         return
         ;;

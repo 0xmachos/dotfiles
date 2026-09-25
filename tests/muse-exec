@@ -1,0 +1,221 @@
+#!/bin/zsh
+# dotfiles/tests/muse-exec
+#
+# Behavioural test for claude/muse-exec-hook — the PreToolUse hook that
+# guards headless `muse exec` invocations. Feeds commands to the hook as
+# stdin JSON and asserts the verdict: DENY for each of the five rules (short
+# timeout, open stdin, forbidden flags, a non-bare muse word missing the
+# verify-reminder env var — with the --provider echo exemption on rules 2
+# and 5), PASS for the compliant canonical shapes, PASS for commands that
+# only mention "muse"/"exec" as data (grep/cat arguments, `--help`, other
+# subcommands), and PASS for the MUSE_EXEC_GUARD_SKIP=1 bypass.
+#
+# Run: ./test muse-exec    (or ./test for the full suite)
+#
+# ShellCheck: lint with `shellcheck --shell=bash tests/muse-exec`.
+# This file is sourced, not executed — chmod 644.
+#
+# File-level disable: SC2016 (every fixture below is a literal string handed
+# to jq via --arg — $PWD, $HOME and the env-var assignments inside it must
+# stay unexpanded here, since that raw text is what a Bash tool call would
+# actually carry) and SC2088 (the ~/.local/bin/muse fixture is the same kind
+# of literal text, not a path this shell should expand).
+# shellcheck disable=SC2016,SC2088
+#
+# shellcheck source=tests/lib
+
+function _muse_exec_run {
+  # Echo the hook's stdout for Bash command $1.
+  jq -n --arg c "$1" '{tool_name:"Bash", tool_input:{command:$c}}' \
+    | /bin/zsh "${SCRIPT_DIR}/claude/muse-exec-hook"
+}
+
+function _muse_exec_expect {
+  local want="$1" cmd="$2" label="${3:-$2}" out got
+  out="$(_muse_exec_run "${cmd}")"
+  got="$(_hook_verdict "${out}")"
+  if [[ "${got}" == "${want}" ]]; then
+    _pass "${want}: ${label}"
+  else
+    _fail "${label} — expected ${want}, got ${got}"
+  fi
+}
+
+function run_muse_exec {
+  _section "muse exec guard hook"
+
+  # claude/ is gitignored and synced out of band — absent hook means the
+  # sync hasn't reached this machine, not a regression. Skip, don't die.
+  if [[ ! -f "${SCRIPT_DIR}/claude/muse-exec-hook" ]]; then
+    _skip "claude/muse-exec-hook absent — claude/ not yet synced to this machine"
+    return 0
+  fi
+
+  if ! [[ -x "$(command -v jq)" ]]; then
+    _skip "jq not installed (brew install jq)"
+    return
+  fi
+
+  # A session-wide export of the bypass would silently turn every DENY case
+  # into PASS and the suite would still report green. Clear it for this run.
+  unset MUSE_EXEC_GUARD_SKIP
+
+  # --- Non-firing cases: never a muse-exec command position at all --------
+
+  _muse_exec_expect PASS "grep 'muse exec' file.txt" 'muse exec mentioned inside a grep pattern'
+  _muse_exec_expect PASS 'cat muse-review.txt' 'a filename containing muse is not the tool'
+  _muse_exec_expect PASS "sed -n '/muse exec/p' notes.txt" 'muse exec mentioned inside a sed pattern'
+  _muse_exec_expect PASS 'echo "run muse exec later"' 'muse exec mentioned inside an echo argument'
+  _muse_exec_expect PASS 'muse skills list' 'a different muse subcommand'
+  _muse_exec_expect PASS 'muse' 'bare interactive launch, no subcommand at all'
+  _muse_exec_expect PASS 'muse "fix the tests"' 'interactive launch with an opening prompt'
+
+  # --- --help is read-only regardless of anything else on the line --------
+
+  _muse_exec_expect PASS 'muse exec --help' 'muse exec --help is read-only'
+  _muse_exec_expect PASS 'timeout 5 muse exec --sandbox --help' '--help exempts an otherwise-violating line'
+
+  # --- Rule 1: --provider echo exempts rules 2 and 5 only ------------------
+
+  _muse_exec_expect PASS 'timeout 60 muse exec --provider echo --workspace "$PWD" < /dev/null' \
+    'echo provider with a 60s timeout (rule 2 exempt)'
+  _muse_exec_expect PASS 'timeout 60 muse-bin-2 exec --provider echo --workspace "$PWD" < /dev/null' \
+    'echo provider on a non-bare muse word (rule 5 exempt too)'
+  _muse_exec_expect DENY 'timeout 60 muse exec --provider echo --workspace "$PWD"' \
+    'echo provider still needs closed stdin (rule 3 is not exempt)'
+
+  # --- Rule 2: timeout wrapper must be >= 120s, or absent entirely --------
+
+  _muse_exec_expect DENY 'timeout 90 muse exec --workspace "$PWD" < /dev/null' 'timeout under 120s'
+  _muse_exec_expect DENY 'timeout 90s muse exec --workspace "$PWD" < /dev/null' 'timeout 90s explicit suffix'
+  _muse_exec_expect PASS 'timeout 2m muse exec --workspace "$PWD" < /dev/null' 'timeout 2m == 120s, allowed'
+  _muse_exec_expect PASS 'timeout 120 muse exec --workspace "$PWD" < /dev/null' 'timeout exactly 120s'
+  _muse_exec_expect PASS 'timeout 1800 muse exec --workspace "$PWD" < /dev/null' 'timeout 1800s'
+  _muse_exec_expect PASS 'gtimeout 1800 muse exec --workspace "$PWD" < /dev/null' 'gtimeout wrapper'
+  _muse_exec_expect PASS 'muse exec --workspace "$PWD" < /dev/null' 'no timeout at all is allowed'
+  _muse_exec_expect DENY 'timeout -k 5 90 muse exec --workspace "$PWD" < /dev/null' \
+    'timeout -k flag with operand before a too-short duration'
+
+  # --- Rule 3: stdin must be closed ----------------------------------------
+
+  _muse_exec_expect DENY 'timeout 1800 muse exec --workspace "$PWD"' 'stdin left open'
+  _muse_exec_expect PASS 'timeout 1800 muse exec --workspace "$PWD" </dev/null' 'no space before /dev/null'
+  _muse_exec_expect PASS 'timeout 1800 muse exec --workspace "$PWD" < /dev/null' 'space before /dev/null'
+
+  # --- Rule 4: forbidden flags ---------------------------------------------
+
+  _muse_exec_expect DENY 'timeout 1800 muse exec --sandbox --workspace "$PWD" < /dev/null' '--sandbox flag'
+  _muse_exec_expect PASS 'timeout 1800 muse exec --sandbox-network --workspace "$PWD" < /dev/null' \
+    '--sandbox-network is a different flag, allowed'
+  _muse_exec_expect DENY 'timeout 1800 muse exec --approval-mode never --workspace "$PWD" < /dev/null' \
+    '--approval-mode flag'
+  _muse_exec_expect DENY 'timeout 1800 muse exec --prompt-file /dev/stdin --workspace "$PWD" < /dev/null' \
+    '--prompt-file /dev/stdin (two words)'
+  _muse_exec_expect DENY 'timeout 1800 muse exec --prompt-file=/dev/stdin --workspace "$PWD" < /dev/null' \
+    '--prompt-file=/dev/stdin (attached)'
+  _muse_exec_expect PASS 'timeout 1800 muse exec --prompt-file /tmp/p.md --workspace "$PWD" < /dev/null' \
+    '--prompt-file pointed at a real file is fine'
+
+  # --- Backslash-newline continuations fold before line-splitting ---------
+  #
+  # Lines are split before the tokeniser and quote state resets at every
+  # newline, so a long muse exec invocation written the normal way — across
+  # `\`-continued lines — would otherwise land its < /dev/null and its flags
+  # on a DIFFERENT segment than its command word, and get denied for missing
+  # them. That includes the exact canonical form the deny reason itself
+  # recommends, so this is proven discriminating, not just plausible: the
+  # first case below denied before the continuation fold was added.
+  # $'...' does no parameter expansion, so "$PWD" inside it stays literal —
+  # same reason the file-level SC2016 disable above is needed.
+  _muse_exec_expect PASS $'timeout 1800 muse exec \\\n  --prompt-file prompt.md \\\n  --workspace "$PWD" \\\n  < /dev/null > out.txt 2> err.txt &' \
+    'canonical form written across backslash-continued lines'
+  _muse_exec_expect PASS 'timeout 1800 muse exec --prompt-file prompt.md --workspace "$PWD" --reasoning-effort high < /dev/null > out.txt 2> err.txt &' \
+    'the exact one-line form the deny reason recommends, backgrounded'
+  _muse_exec_expect PASS 'timeout 1800 muse exec --prompt-file prompt.md --workspace "$PWD" < /dev/null > out.txt 2>&1 &' \
+    '2>&1 merge does not hide the closed stdin'
+  _muse_exec_expect DENY $'timeout 1800 muse exec \\\n  --sandbox --workspace "$PWD" < /dev/null' \
+    'a forbidden flag on a continuation line is still seen'
+
+  # --- Rule 5: a non-bare muse word needs the verify-reminder env var -----
+
+  _muse_exec_expect DENY 'timeout 1800 command muse exec --workspace "$PWD" < /dev/null' \
+    '`command muse` without the env var'
+  _muse_exec_expect PASS \
+    'MUSE_EXPERIMENTAL_VERIFY_REMINDER=0 timeout 1800 command muse exec --workspace "$PWD" < /dev/null' \
+    '`command muse` with the env var as a prefix'
+  _muse_exec_expect DENY 'timeout 1800 muse-bin-2 exec --workspace "$PWD" < /dev/null' \
+    'muse-bin-* alias without the env var'
+  _muse_exec_expect PASS \
+    'export MUSE_EXPERIMENTAL_VERIFY_REMINDER=0; timeout 1800 muse-bin-2 exec --workspace "$PWD" < /dev/null' \
+    'muse-bin-* alias with the env var exported first'
+  _muse_exec_expect DENY 'timeout 1800 ~/.local/bin/muse exec --workspace "$PWD" < /dev/null' \
+    '~/.local/bin/muse absolute path without the env var'
+  # A neutral username — never the real one, tests/ is public (AGENTS.md).
+  _muse_exec_expect DENY 'timeout 1800 /Users/someone/.local/bin/muse exec --workspace "$PWD" < /dev/null' \
+    '/Users/<anything>/.local/bin/muse without the env var'
+  _muse_exec_expect PASS \
+    'MUSE_EXPERIMENTAL_VERIFY_REMINDER=0 timeout 1800 /Users/someone/.local/bin/muse exec --workspace "$PWD" < /dev/null' \
+    '/Users/<anything>/.local/bin/muse with the env var'
+  _muse_exec_expect DENY 'timeout 1800 $HOME/.local/bin/muse exec --workspace "$PWD" < /dev/null' \
+    '$HOME/.local/bin/muse (literal, unexpanded) without the env var'
+  _muse_exec_expect DENY 'echo ${#x}; muse exec --prompt-file p.md --sandbox x < /dev/null' \
+    'a ${#x} expansion earlier on the line does not hide a later muse exec'
+  _muse_exec_expect PASS 'timeout 1800 muse exec --workspace "$PWD" < /dev/null' \
+    'bare muse never needs the env var'
+
+  # --- Root options between the muse word and the exec subcommand ---------
+
+  _muse_exec_expect PASS \
+    'timeout 1800 muse --json exec --provider echo --workspace "$PWD" < /dev/null' \
+    'a root option before the exec subcommand is skipped, not mistaken for it'
+
+  # --- Combined: every rule at once, one deny naming all of them ----------
+
+  local reason
+  reason="$(_muse_exec_run 'timeout 90 muse-bin-2 exec --sandbox --workspace "$PWD"')"
+  if [[ "${reason}" == *"120 seconds"* ]]; then
+    _pass "combined deny names the timeout violation"
+  else
+    _fail "combined deny does not name the timeout violation"
+  fi
+  if [[ "${reason}" == *"stdin is not closed"* ]]; then
+    _pass "combined deny names the open-stdin violation"
+  else
+    _fail "combined deny does not name the open-stdin violation"
+  fi
+  if [[ "${reason}" == *"--sandbox"* ]]; then
+    _pass "combined deny names the --sandbox violation"
+  else
+    _fail "combined deny does not name the --sandbox violation"
+  fi
+  if [[ "${reason}" == *"MUSE_EXPERIMENTAL_VERIFY_REMINDER"* ]]; then
+    _pass "combined deny names the missing env var"
+  else
+    _fail "combined deny does not name the missing env var"
+  fi
+  if [[ "${reason}" == *'Canonical form: timeout 1800 muse exec'* && "${reason}" == *'judge success by the output file'* ]]; then
+    _pass "deny reason ends with the canonical form"
+  else
+    _fail "deny reason does not carry the canonical form"
+  fi
+
+  # --- Skip var, mirroring MD5_GUARD_SKIP's mechanics ----------------------
+
+  _muse_exec_expect PASS 'MUSE_EXEC_GUARD_SKIP=1 timeout 90 muse exec --sandbox --workspace "$PWD"' \
+    'MUSE_EXEC_GUARD_SKIP=1 override, prefixed'
+  MUSE_EXEC_GUARD_SKIP=1 _muse_exec_expect PASS 'timeout 90 muse exec --sandbox --workspace "$PWD"' \
+    'MUSE_EXEC_GUARD_SKIP=1 override, exported'
+
+  # --- Malformed / non-Bash payloads must fail open, never block ----------
+
+  if [[ -z "$(printf '%s' '{}' | /bin/zsh "${SCRIPT_DIR}/claude/muse-exec-hook")" ]]; then
+    _pass "fail-open: payload with no command allowed through"
+  else
+    _fail "fail-open: payload with no command produced a verdict"
+  fi
+  if [[ -z "$(printf '%s' 'not json' | /bin/zsh "${SCRIPT_DIR}/claude/muse-exec-hook")" ]]; then
+    _pass "fail-open: unparseable payload allowed through"
+  else
+    _fail "fail-open: unparseable payload produced a verdict"
+  fi
+}
