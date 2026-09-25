@@ -426,7 +426,89 @@ function _sl_expired {
     | .rate_limits.five_hour.used_percentage = 41')"
   _sl_expect_eq "ledger: second render appends the delta" "$(cat "${u}/spend" 2>/dev/null)" "${_SL_NOW} 0.500000"
   _sl_expect_eq "ledger: 5h sample recorded" "$(cat "${u}/five" 2>/dev/null)" "${_SL_NOW} 41"
+
+  # A resumed session's counter restarts below its last value: all of the new
+  # figure is fresh spend
+  _sl_run 140 "$(_sl_json '.session_id = "rec" | .cost.total_cost_usd = 0.25
+    | .rate_limits.five_hour.used_percentage = 41')"
+  _sl_expect_eq "ledger: restarted counter counts in full" "$(tail -1 "${u}/spend")" "${_SL_NOW} 0.250000"
+
+  _sl_ledger_prune
+  _sl_ledger_concurrent
   _sl_usage_reset
+}
+
+# _sl_touch_old <file> <seconds before _SL_NOW> — backdate an mtime
+function _sl_touch_old {
+  /usr/bin/touch -t "$(date -r $(( _SL_NOW - $2 )) +%Y%m%d%H%M.%S)" "$1"
+}
+
+function _sl_ledger_prune {
+  local u="${_SL_SB}/Library/Caches/statusline/usage"
+  _sl_usage_reset
+  mkdir -p "${u}"
+  # Lines 7h and 5h old; a 5h sample over a minute old, so this render ticks
+  printf '%s 9.0\n%s 1.0\n' $(( _SL_NOW - 25200 )) $(( _SL_NOW - 18000 )) > "${u}/spend"
+  printf '%s 50\n%s 20\n' $(( _SL_NOW - 25200 )) $(( _SL_NOW - 18000 )) > "${u}/five"
+  _sl_touch_old "${u}/five" 120
+  printf '1' > "${u}/last-pr"
+  printf '1' > "${u}/last-stale"
+  printf '1' > "${u}/last-fresh"
+  _sl_touch_old "${u}/last-stale" 345600
+  _sl_run 140 "$(_sl_json '.session_id = "pr" | .cost.total_cost_usd = 2
+    | .rate_limits.five_hour.used_percentage = 30')"
+  _sl_expect_eq "prune: spend keeps only the last 6h" "$(cat "${u}/spend")" \
+    "$(( _SL_NOW - 18000 )) 1.0"$'\n'"${_SL_NOW} 1.000000"
+  _sl_expect_eq "prune: 5h samples keep only the last 6h" "$(cat "${u}/five")" \
+    "$(( _SL_NOW - 18000 )) 20"$'\n'"${_SL_NOW} 30"
+  _sl_expect_eq "prune: no temp files left" "$(/bin/ls "${u}" | /usr/bin/grep -c prune)" "0"
+  _sl_expect_eq "sweep: 4-day-old session baseline removed" \
+    "$([[ -f "${u}/last-stale" ]] && echo kept || echo gone)" "gone"
+  _sl_expect_eq "sweep: recent session baseline kept" \
+    "$([[ -f "${u}/last-fresh" ]] && echo kept || echo gone)" "kept"
+  # Another session appends while the ledger is mid-prune: its line survives.
+  # Deterministic, unlike the concurrent case below, which never lost a line
+  # even against the old rewrite-in-place prune (40 parallel runs, 2026-09-25).
+  _sl_usage_reset
+  mkdir -p "${u}"
+  printf '%s 1.0\n' $(( _SL_NOW - 600 )) > "${u}/spend"
+  printf '%s 10\n' $(( _SL_NOW - 600 )) > "${u}/five"
+  _sl_touch_old "${u}/five" 120
+  printf '1' > "${u}/last-pr"
+  # shellcheck disable=SC2016  # $1 belongs to the hook, not this shell
+  printf '#!/bin/zsh\n[[ $1 == */spend ]] && print -r -- "%s 7.0" >> "$1"\nexit 0\n' "${_SL_NOW}" \
+    > "${_SL_SB}/prune-hook"
+  chmod 755 "${_SL_SB}/prune-hook"
+  _sl_run 140 "$(_sl_json '.session_id = "pr" | .cost.total_cost_usd = 2
+    | .rate_limits.five_hour.used_percentage = 30')" STATUSLINE_PRUNE_HOOK="${_SL_SB}/prune-hook"
+  _sl_expect_eq "prune: an append during the prune is kept" \
+    "$(awk '{ s += $2 } END { printf "%.1f", s }' "${u}/spend")" "9.0"
+}
+
+# Eight sessions render at once, each with a baseline, while every one of
+# them also ticks the prune: no appended line may be lost
+function _sl_ledger_concurrent {
+  local u="${_SL_SB}/Library/Caches/statusline/usage" i rcs=""
+  _sl_usage_reset
+  mkdir -p "${u}"
+  printf '%s 0.5\n' $(( _SL_NOW - 600 )) > "${u}/spend"
+  printf '%s 10\n' $(( _SL_NOW - 600 )) > "${u}/five"
+  _sl_touch_old "${u}/five" 120
+  for i in 1 2 3 4 5 6 7 8; do
+    printf '1' > "${u}/last-c${i}"
+    ( _sl_json ".session_id = \"c${i}\" | .cost.total_cost_usd = 2
+        | .rate_limits.five_hour.used_percentage = 20" \
+      | env HOME="${_SL_SB}" COLUMNS=140 STATUSLINE_NOW="${_SL_NOW}" \
+        GIT_CEILING_DIRECTORIES="${_SL_SB}" STATUSLINE_OSASCRIPT="${_SL_SB}/osascript-stub" \
+        /bin/zsh "${SCRIPT_DIR}/claude/statusline-command" >/dev/null 2>&1
+      print -r -- $? > "${_SL_SB}/rc-c${i}" ) &
+  done
+  wait
+  for i in 1 2 3 4 5 6 7 8; do rcs+="$(cat "${_SL_SB}/rc-c${i}")"; done
+  _sl_expect_eq "concurrent: every run exits 0" "${rcs}" "00000000"
+  _sl_expect_eq "concurrent: seeded line plus all eight deltas kept" \
+    "$(awk '{ n++; s += $2 } END { printf "%d %.2f", n, s }' "${u}/spend")" "9 8.50"
+  _sl_expect_eq "concurrent: no temp files left" "$(/bin/ls "${u}" | /usr/bin/grep -c prune)" "0"
 }
 
 # ── (9) cache_alert ────────────────────────────────────────────────────────
