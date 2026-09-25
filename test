@@ -37,7 +37,7 @@ cd "${SCRIPT_DIR}"
 # shellcheck source=tests/lib disable=SC1091
 source "${SCRIPT_DIR}/tests/lib"
 
-readonly -a SUITES=(shellcheck test-helpers sha sidebar extensions plutil linkage completions okf agents-md jump rm-redirect npm-attest ssh-redirect git-sign gh-auth container-tmp md5-guard md5-write gh-publish hook-links pii-hook agent-reset bao-mcp-env pii-tree message-policy statusline fetch-route muse-exec)
+readonly -a SUITES=(shellcheck test-helpers sha sidebar extensions plutil linkage completions okf agents-md jump rm-redirect ssh-redirect git-sign gh-auth container-tmp md5-guard md5-write gh-publish hook-links pii-hook agent-reset bao-mcp-env pii-tree message-policy statusline fetch-route muse-exec)
 
 # Optional, per-clone suites: one name per line in .extra_test_suites
 # (gitignored by the .extra* pattern, like .extra_gitexclude). They cover

@@ -601,7 +601,6 @@ function install_dotfiles {
     "claude/lint-hook:lint-hook"
     "claude/exa-redirect-hook:exa-redirect-hook"
     "claude/rm-redirect-hook:rm-redirect-hook"
-    "claude/npm-attest-hook:npm-attest-hook"
     "claude/ssh-redirect-hook:ssh-redirect-hook"
     "claude/git-sign-hook:git-sign-hook"
     "claude/container-tmp-hook:container-tmp-hook"
