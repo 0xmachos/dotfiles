@@ -361,7 +361,10 @@ function run_gh_publish {
   _gp_test_expect DENY "gh issue create -t t --body-file ${_gp_dir}/good.md" \
     'invalid ERE in denylist fails closed' "${_gp_dir}/bad-regex"
 
-  # A gitleaks ERROR (exit not 0/9) must fail closed — distinct from a finding.
+  # A gitleaks ERROR (exit not 0/9) must fail closed — distinct from a
+  # finding. gitleaks is resolved by absolute path (2026-09-25 restore), so
+  # a PATH-prepended stub alone no longer reaches it — GH_PUBLISH_GITLEAKS
+  # is the seam that does (kept alongside the PATH override for belt/braces).
   mkdir -p "${_gp_dir}/stubbin"
   printf '#!/bin/zsh\nexit 3\n' > "${_gp_dir}/stubbin/gitleaks"
   chmod +x "${_gp_dir}/stubbin/gitleaks"
@@ -369,6 +372,7 @@ function run_gh_publish {
   out="$(jq -n --arg c "gh issue create -t t --body-file ${_gp_dir}/good.md" \
       '{tool_name:"Bash", tool_input:{command:$c}}' \
     | PATH="${_gp_dir}/stubbin:${PATH}" \
+      GH_PUBLISH_GITLEAKS="${_gp_dir}/stubbin/gitleaks" \
       GH_PUBLISH_PATTERNS="${_gp_dir}/patterns" \
       GH_PUBLISH_SSH_CONFIG="${_gp_dir}/sshcfg" \
       GH_PUBLISH_NO_GITLEAKS='' GH_PUBLISH_NO_IDENTITY=1 \
@@ -410,6 +414,258 @@ function run_gh_publish {
   _gp_test_reason_has 'gh issue create -t t --body x' '.reviewed' 'the sidecar workflow'
   _gp_test_reason_has "gh issue create -t t --body-file ${_gp_dir}/noenv.md" \
     '## Environment' 'the env-section shape'
+
+  # --- Command-position tokeniser hardening (2026-09-25 restore) ----------
+  # md5-guard-hook's normaliser + command-position walk closes the gaps the
+  # 2026-08-03 archive left open: quoting/escaping around the gh
+  # word, wrapper words, shell reserved words, and gh reachable only through
+  # a command substitution. Each fixture below uses an inline --body, which
+  # this hook already denies outright — so a DENY here proves gh was
+  # actually reached and dispatched, not that some unrelated check tripped.
+  _gp_test_expect DENY '"gh" issue create -t t --body inline' \
+    'quoted gh command word is still recognised'
+  _gp_test_expect DENY 'g\h issue create -t t --body inline' \
+    'escaped gh command word is still recognised'
+  _gp_test_expect DENY 'command gh issue create -t t --body inline' \
+    'gh seen through the command wrapper'
+  _gp_test_expect DENY 'env gh issue create -t t --body inline' \
+    'gh seen through the env wrapper'
+  _gp_test_expect DENY 'timeout 30 gh issue create -t t --body inline' \
+    'gh seen through timeout N'
+  _gp_test_expect DENY 'if true; then gh issue create -t t --body inline; fi' \
+    'gh seen through an if/then reserved word'
+  _gp_test_expect DENY '! gh issue create -t t --body inline' \
+    'gh seen through a leading ! negation'
+  # shellcheck disable=SC2016  # single-quoted literal fixture text, never expanded by this shell — it travels to jq --arg unmodified
+  _gp_test_expect DENY 'echo "$(gh issue create -t t --body inline)"' \
+    'gh inside a nested command substitution, even inside double quotes'
+  # shellcheck disable=SC2016  # single-quoted literal fixture text, never expanded by this shell — it travels to jq --arg unmodified
+  _gp_test_expect DENY 'echo `gh issue create -t t --body inline`' \
+    'gh inside a backtick command substitution'
+
+  # The next four are fail-closed on content this tokeniser cannot resolve
+  # to real gh arguments (an eval/sh -c string, xargs, a variable command
+  # word) — denied on sight, never scanned, per the dedicated reason text.
+  _gp_test_expect DENY 'eval "gh issue create -t t --body inline"' \
+    'gh publish verb inside an eval argument fails closed'
+  _gp_test_reason_has 'eval "gh issue create -t t --body inline"' \
+    'run gh directly so the body can be checked' 'the eval fail-closed reason'
+  _gp_test_expect DENY 'sh -c "gh issue create -t t --body inline"' \
+    'gh publish verb inside an sh -c string fails closed'
+  _gp_test_expect DENY 'echo x | xargs gh issue create -t t --body inline' \
+    'gh publish verb after xargs fails closed'
+  # shellcheck disable=SC2016  # single-quoted literal fixture text, never expanded by this shell — it travels to jq --arg unmodified
+  _gp_test_expect DENY 'G=gh; $G issue create -t t --body inline' \
+    'gh publish verb as a variable command word fails closed'
+
+  # A script FILE (not a -c string) handed to bash/sh/zsh is an accepted,
+  # documented gap, not a fail-closed case — must not over-deny.
+  _gp_test_expect PASS 'bash /tmp/does-not-exist-review-script.sh' \
+    'bash running a script file (not -c) is an accepted gap, not denied'
+
+  # --- Assignments, continuations and comments (2026-09-25 restore) -----
+  # _gp_classify_segment's VAR=value skip must not require a
+  # slash-free value — that exclusion let exactly these two spellings land
+  # the assignment itself as the command word and skip every check.
+  _gp_test_expect DENY 'GH_REPO=owner/repo gh issue create -t t --body x' \
+    'GH_REPO=owner/repo assignment prefix does not mask gh'
+  _gp_test_expect DENY 'PATH=/usr/bin gh issue create -t t --body x' \
+    'PATH=/usr/bin assignment prefix does not mask gh'
+  _gp_test_expect DENY 'FOO=a/b BAR=baz gh issue create -t t --body x' \
+    'second-position assignment prefix with a slash-shaped value'
+
+  # A backslash-newline continuation must be removed entirely (real
+  # shell semantics), not replaced with a space — a continuation landing
+  # inside the command word itself, or inside a verb, must still resolve.
+  _gp_test_expect DENY "g\\"$'\n'"h issue create -t t --body x" \
+    'mid-word continuation in the command word resolves to gh'
+  _gp_test_expect DENY "gh issue cre\\"$'\n'"ate -t t --body x" \
+    'mid-word continuation inside the verb resolves to create'
+
+  # An unquoted, word-start '#' begins a comment — the hook must not
+  # scan past it, but must still check anything gh-shaped BEFORE it, and
+  # must not treat a gh publish visible only inside a comment as reachable.
+  _gp_test_expect PASS "gh issue create -t t --body-file ${_gp_dir}/good.md # -b inline" \
+    'trailing comment after a reviewed body-file publish is not denied'
+  _gp_test_expect DENY 'gh issue create -t t --body x # comment' \
+    'inline body before a trailing comment is still denied'
+  _gp_test_expect PASS 'echo done # gh issue create --body x' \
+    'a gh publish visible only inside a comment is never run, so not denied'
+  # shellcheck disable=SC2016  # single-quoted literal fixture text, never expanded by this shell — it travels to jq --arg unmodified
+  _gp_test_expect DENY 'echo ${#x}; gh issue create -t t --body x' \
+    '${#x} array-length form is not mistaken for a word-start # comment'
+
+  # --- Verb-list broadening (close/reopen/merge, gist, release upload) ----
+  _gp_test_expect DENY 'gh issue close 5 --comment done' \
+    'issue close with inline --comment text'
+  _gp_test_expect DENY 'gh pr reopen 5 -c done' \
+    'pr reopen with inline -c text'
+  _gp_test_expect DENY 'gh pr merge 5 --subject done' \
+    'pr merge with inline --subject text'
+  _gp_test_expect PASS 'gh issue close 5' \
+    'issue close with no text needs no review'
+  _gp_test_expect DENY 'gh gist create notes.md' \
+    'gh gist create denied outright'
+  _gp_test_expect DENY 'gh release upload v1 asset.zip' \
+    'gh release upload denied outright'
+  _gp_test_expect DENY \
+    'gh api -X PUT repos/o/r/contents/path/to/file.md -f message=m -f content=c' \
+    'gh api PUT to a contents path'
+
+  # --- Reads still pass, including through a command substitution --------
+  # shellcheck disable=SC2016  # single-quoted literal fixture text, never expanded by this shell — it travels to jq --arg unmodified
+  _gp_test_expect PASS 'echo "$(gh issue view 268 --repo o/r)"' \
+    'gh issue view inside a command substitution is not over-blocked'
+  _gp_test_expect PASS 'gh pr list' 'gh pr list (read)'
+
+  # --- Dispatch dequoting and the literal-arguments rule (2026-09-25) ---
+  # Dispatch must de-quote every word before matching subcommand/verb,
+  # and must skip gh's global -R/--repo/--hostname wherever it sits before
+  # the verb, not only at the very front.
+  _gp_test_expect DENY 'gh "issue" create -t t --body x' \
+    'quoted "issue" subcommand word is still recognised'
+  _gp_test_expect DENY 'gh issue "create" -t t --body x' \
+    'quoted "create" verb word is still recognised'
+  _gp_test_expect DENY 'gh issue --repo o/r create -t t --body x' \
+    'global --repo BETWEEN subcommand and verb is still skipped'
+
+  # Opaque command words — a variable command word matched by
+  # "contains $" not "starts with $", sh/bash/zsh/dash/ksh with ANY
+  # single-dash flag cluster containing c (not only the exact word -c), and
+  # the eval/opaque-context probe must also catch a gh api WRITE shape.
+  # shellcheck disable=SC2016  # single-quoted literal fixture text, never expanded by this shell — it travels to jq --arg unmodified
+  _gp_test_expect DENY 'G=gh; $G issue create -t t --body x' \
+    'variable command word still resolves via the opaque-context probe'
+  _gp_test_expect DENY 'sh -lc "gh issue create -t t --body x"' \
+    'combined -lc flag cluster is opaque, not an accepted script-file gap'
+  _gp_test_expect DENY 'eval "gh api repos/o/r/issues -f title=x"' \
+    'gh api write shape inside an eval argument fails closed'
+
+  # A real gh publish must run alone, with literal
+  # arguments. A dynamic value the hook cannot see the resolved content of,
+  # and a same-call rewrite of the reviewed file before gh reads it, both
+  # deny even though the body-file/sidecar checks alone would not catch
+  # them. The CONTROL alongside each proves the same call, run genuinely
+  # solo with a literal path, still passes.
+  # shellcheck disable=SC2016  # single-quoted literal fixture text, never expanded by this shell — it travels to jq --arg unmodified
+  _gp_test_expect DENY "gh pr create -t \"\$SECRET\" --body-file ${_gp_dir}/good.md" \
+    'a live $SECRET in the title denies even with a clean reviewed body'
+  _gp_test_expect DENY "printf 'x' > ${_gp_dir}/noenv.md; gh pr comment 1 --body-file ${_gp_dir}/noenv.md" \
+    'a same-call rewrite of the reviewed file before gh reads it denies'
+  _gp_test_expect PASS "gh pr comment 1 --body-file ${_gp_dir}/noenv.md" \
+    'the same reviewed body-file publish, run genuinely solo, still passes (control)'
+
+  # release new (create alias), gist edit (not just create), and a
+  # positional asset argument on release create (an unreviewed upload, same
+  # as gh release upload).
+  _gp_test_expect DENY 'gh release new v1 --notes x' \
+    'release new is the create alias, so inline --notes still denies'
+  _gp_test_expect DENY 'gh gist edit abc --filename x file.md' \
+    'gh gist edit denied outright, same as gist create'
+  _gp_test_expect DENY "gh release create v1 --notes-file ${_gp_dir}/noenv.md asset.zip" \
+    'a positional asset after the tag on release create denies'
+
+  # An explicit GET method is a read even when field flags are present.
+  _gp_test_expect PASS 'gh api -X GET repos/o/r/issues -f state=open' \
+    'explicit -X GET with fields is still a read'
+  _gp_test_expect PASS 'gh api --method GET repos/o/r/issues -f state=open' \
+    'explicit --method GET with fields is still a read'
+
+  # Reads stay allowed, including in forms not previously exercised.
+  _gp_test_expect PASS 'gh issue view 5' 'gh issue view'
+  _gp_test_expect PASS 'gh pr list' 'gh pr list'
+  _gp_test_expect PASS 'gh api repos/o/r/issues' 'gh api read'
+  _gp_test_expect PASS 'gh search issues x' 'gh search is a read'
+  _gp_test_expect PASS 'ls -la' 'non-gh command'
+  # shellcheck disable=SC2016  # single-quoted literal fixture text, never expanded by this shell — it travels to jq --arg unmodified
+  _gp_test_expect PASS 'git commit -m "gh issue create --body x"' \
+    'quoted data in a non-opaque command stays data, not a command'
+  _gp_test_expect PASS 'echo done # gh issue create --body x' \
+    'a gh publish visible only inside a comment is not run'
+
+  # --- Dynamic command word backstop (2026-09-25) ------------------------
+  # ${G}/${G:-gh}/$(echo gh) each land their literal "gh" text on
+  # the far side of a command-position split this tokeniser itself
+  # introduces (`${`/`}` and `$(`/`)` are split points regardless of
+  # context), so neither resulting segment alone ever resolves to a literal
+  # gh word or looks like a publish call on its own. The coarse backstop
+  # denies when NO segment anywhere dispatched a real gh command, the whole
+  # RAW command still textually resembles a publish call, and the command
+  # contains a live (unquoted/double-quoted) $ or backtick anywhere.
+  # shellcheck disable=SC2016  # single-quoted literal fixture text, never expanded by this shell — it travels to jq --arg unmodified
+  _gp_test_expect DENY '${G} issue create -t t --body x' \
+    'brace-expansion dynamic command word denies via the backstop'
+  # shellcheck disable=SC2016  # single-quoted literal fixture text, never expanded by this shell — it travels to jq --arg unmodified
+  _gp_test_expect DENY '${G:-gh} issue create -t t --body x' \
+    'default-value brace expansion dynamic command word denies via the backstop'
+  # shellcheck disable=SC2016  # single-quoted literal fixture text, never expanded by this shell — it travels to jq --arg unmodified
+  _gp_test_expect DENY '$(echo gh) issue create -t t --body x' \
+    'command-substitution dynamic command word denies via the backstop'
+
+  # The backstop must NOT fire once a real gh call was already found and
+  # dispatched normally (even a bare read, and even alongside an unrelated
+  # live expansion elsewhere in the same call), when there is no live
+  # expansion anywhere in the command, or when the only $ present is inert
+  # (single-quoted).
+  # shellcheck disable=SC2016  # single-quoted literal fixture text, never expanded by this shell — it travels to jq --arg unmodified
+  _gp_test_expect PASS 'echo $HOME; gh pr list' \
+    'a real dispatched gh read elsewhere in the call suppresses the backstop'
+  # shellcheck disable=SC2016  # single-quoted literal fixture text, never expanded by this shell — it travels to jq --arg unmodified
+  _gp_test_expect PASS 'gh issue view $N' \
+    'a live expansion inside an already-dispatched gh read does not trigger the backstop'
+  _gp_test_expect PASS 'git commit -m "gh issue create --body x"' \
+    'no live expansion at all does not trigger the backstop'
+  _gp_test_expect PASS "echo '\$x issue create'" \
+    'a single-quoted, inert $ does not trigger the backstop'
+  _gp_test_expect PASS 'gh pr list | head' \
+    'a real dispatched gh read piped to another command suppresses the backstop'
+
+  # --- Quoted flags, joined -R, aliases, --attach, discussions (2026-09-25)
+  # A quoted flag spelling must still match — de-quote BEFORE matching,
+  # not only when extracting an already-matched flag's value.
+  _gp_test_expect DENY 'gh issue edit 5 "--body" "unreviewed text"' \
+    'quoted --body flag still recognised as inline'
+  _gp_test_expect DENY 'gh api repos/o/r/issues "-f" title=x' \
+    'quoted -f flag still recognised as a field write'
+
+  # The joined -R<value> short-flag form must be skipped the same as
+  # the separate `-R <value>` form.
+  _gp_test_expect DENY 'gh -Ro/r issue create -t t --body x' \
+    'joined -Ro/r global flag is still skipped before the subcommand'
+
+  # `issue new`/`pr new` are create aliases too, same as `release new`.
+  _gp_test_expect DENY 'gh issue new -t t --body x' \
+    'issue new is the create alias, so inline --body still denies'
+  _gp_test_expect DENY 'gh pr new -t t --body x' \
+    'pr new is the create alias, so inline --body still denies'
+
+  # --attach uploads a file with no scanning path in this hook, on both
+  # a fresh publish (edit) and a reply (comment).
+  _gp_test_expect DENY 'gh issue edit 5 --attach ./login.png' \
+    '--attach on issue edit denies outright'
+  _gp_test_expect DENY 'gh issue comment 5 --attach ./login.png' \
+    '--attach on issue comment denies outright'
+
+  # gh discussion is a write-capable preview group with no scanning
+  # path at all — every verb except the two reads (list, view) denies.
+  _gp_test_expect DENY \
+    'gh discussion create --repo o/r --title t --category General --body x' \
+    'gh discussion create denies outright, no scanning path exists'
+
+  # The dynamic-command-word backstop must stay armed even when a real
+  # gh READ was already dispatched earlier in the same compound call — only
+  # a dispatched PUBLISH may suppress it.
+  # shellcheck disable=SC2016  # single-quoted literal fixture text, never expanded by this shell — it travels to jq --arg unmodified
+  _gp_test_expect DENY 'gh pr list; ${G:-gh} issue create -t t --body x' \
+    'a dispatched gh READ does not suppress the backstop for a later dynamic word'
+
+  # New PASS coverage: reads must stay allowed through all of the above.
+  _gp_test_expect PASS 'gh discussion list --repo o/r' \
+    'gh discussion list is a read'
+  _gp_test_expect PASS 'gh issue view 5 "--json" title' \
+    'a quoted read-only flag does not turn a read into anything else'
+  _gp_test_expect PASS 'gh -Ro/r pr list' \
+    'joined -Ro/r global flag before a read verb still passes'
 
   /bin/rm -rf "${_gp_dir}"
   trap - EXIT
