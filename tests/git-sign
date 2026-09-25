@@ -43,18 +43,30 @@ GS_ENV=(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
         PII_HOOK_PATTERNS=/dev/null PII_HOOK_SSH_CONFIG=/dev/null)
 
 function _gs_hook {
-  # Echo the hook's stdout. $1 event, $2 command, $3 cwd, $4 tool_response.
-  jq -n --arg e "$1" --arg c "$2" --arg d "${3:-${SCRIPT_DIR}}" --arg r "${4:-}" \
+  # Echo the hook's stdout. $1 event, $2 command, $3 cwd, $4 failure/response
+  # text, $5 optional payload field override. Defaults to the field the LIVE
+  # payload actually carries for that event — `error` for PostToolUseFailure
+  # (Claude Code 2.1.282: only a success carries `tool_response`), `tool_response`
+  # otherwise — so a case that passes here proves the real payload shape, not
+  # just a fixture's. Pass `tool_response` explicitly on a PostToolUseFailure
+  # case to exercise the hook's `.error // .tool_response` legacy fallback.
+  local event="$1" field="${5:-}"
+  if [[ -z "${field}" ]]; then
+    field=tool_response
+    [[ "${event}" == PostToolUseFailure ]] && field=error
+  fi
+  jq -n --arg e "${event}" --arg c "$2" --arg d "${3:-${SCRIPT_DIR}}" --arg r "${4:-}" --arg f "${field}" \
     '{hook_event_name:$e, tool_name:"Bash", cwd:$d,
-      tool_input:{command:$c, description:"t"}, tool_response:$r}' \
+      tool_input:{command:$c, description:"t"}} + {($f): $r}' \
     | env "${GS_ENV[@]}" /bin/zsh "${SCRIPT_DIR}/claude/git-sign-hook"
 }
 
 function _gs_expect {
-  # $1 want (DENY|CONTEXT|PASS), $2 event, $3 cmd, $4 cwd, $5 response, $6 label
-  local want="$1" event="$2" cmd="$3" cwd="${4:-}" resp="${5:-}" label="${6:-$3}"
+  # $1 want (DENY|CONTEXT|PASS), $2 event, $3 cmd, $4 cwd, $5 response, $6
+  # label, $7 optional payload field override (see _gs_hook)
+  local want="$1" event="$2" cmd="$3" cwd="${4:-}" resp="${5:-}" label="${6:-$3}" field="${7:-}"
   local out got
-  out="$(_gs_hook "${event}" "${cmd}" "${cwd}" "${resp}")"
+  out="$(_gs_hook "${event}" "${cmd}" "${cwd}" "${resp}" "${field}")"
   if [[ "${out}" == *'"permissionDecision": "deny"'* ]]; then
     got=DENY
   elif [[ "${out}" == *additionalContext* ]]; then
@@ -274,7 +286,7 @@ function _git_sign_claude_cases {
   _gs_expect PASS PreToolUse 'git push' "${repo}" '' 'push gate: repo does not sign'
   env "${GS_ENV[@]}" git -C "${repo}" config commit.gpgsign true
 
-  # --- PostToolUseFailure: signing refusal returns the unsigned retry ---
+  # --- PostToolUseFailure: signing refusal parks the work, never a retry ---
   local refusal out
   refusal='Couldn'"'"'t sign message (signer): agent refused operation?
 fatal: failed to write commit object'
@@ -284,12 +296,51 @@ fatal: failed to write commit object'
     'unrelated commit failure is left alone'
   _gs_expect PASS PostToolUseFailure 'git status' "${repo}" "${refusal}" \
     'refusal text on a non-commit command'
+  # Legacy payload shape: a pre-2.1.282 build carried the failure text under
+  # .tool_response instead of .error. The hook's `.error // .tool_response`
+  # fallback must still catch it (the field the live payload actually uses
+  # is exercised by every other PostToolUseFailure case above, via
+  # _gs_hook's default; this one pins the fallback path specifically).
+  _gs_expect CONTEXT PostToolUseFailure 'git commit -m x' "${repo}" "${refusal}" \
+    'legacy .tool_response payload still triggers the fallback' tool_response
   out="$(_gs_hook PostToolUseFailure 'git commit -m x' "${repo}" "${refusal}")"
-  if [[ "${out}" == *'GIT_CONFIG_KEY_0=commit.gpgsign'* && "${out}" == *'git commit -m x'* \
-        && "${out}" == *'git-sign-unpushed'* ]]; then
-    _pass "fallback context carries the unsigned prefix, the command, and the recovery"
+  if [[ "${out}" == *'NO ready-made retry'* && "${out}" == *'git-sign-unpushed'* \
+        && "${out}" != *'GIT_CONFIG_KEY_0=commit.gpgsign'* && "${out}" != *'git commit -m x'* ]]; then
+    _pass "fallback context is park-and-hand-off, names git-sign-unpushed, never echoes the command or a runnable unsigned recipe"
   else
     _fail "fallback context malformed: ${out}"
+  fi
+  if [[ "${out}" == *'SecretAgent'* && "${out}" == *'ssh-add -l'* ]]; then
+    _pass "refusal diagnosis names the SecretAgent-wedged cause and its ssh-add -l check"
+  else
+    _fail "refusal diagnosis missing the SecretAgent-wedged cause: ${out}"
+  fi
+  # A tag failure gets tag recovery, never the commit recipe.
+  out="$(_gs_hook PostToolUseFailure 'git tag -s -m x v2.0' "${repo}" "${refusal}")"
+  if [[ "${out}" == *'this tag was NOT created'* && "${out}" == *'git tag -s -F'* \
+        && "${out}" != *'git commit -S'* ]]; then
+    _pass "tag refusal names the tag and its re-create step, not a commit recipe"
+  else
+    _fail "tag refusal context malformed: ${out}"
+  fi
+
+  # --- PostToolUseFailure: "communication with agent failed" is transient ---
+  # Distinct symptom from an outright refusal: retry once, unmodified: if the
+  # exact same communication error recurs right after that retry, the SAME
+  # (stateless) hook must tell the agent to stop, not retry a third time.
+  local commfail out2
+  commfail='Couldn'"'"'t sign message (signer): communication with agent failed?'
+  out="$(_gs_hook PostToolUseFailure 'git commit -m x' "${repo}" "${commfail}")"
+  if [[ "${out}" == *'transient'* && "${out}" == *'ONCE'* && "${out}" != *'GIT_CONFIG_KEY_0=commit.gpgsign'* ]]; then
+    _pass "communication-with-agent-failed: transient guidance, retry once, no runnable recipe"
+  else
+    _fail "communication-with-agent-failed guidance malformed: ${out}"
+  fi
+  out2="$(_gs_hook PostToolUseFailure 'git commit -m x' "${repo}" "${commfail}")"
+  if [[ "${out2}" == "${out}" && "${out2}" == *'a repeat is a refusal'* ]]; then
+    _pass "communication-with-agent-failed: a second, identical call still tells the agent to stop and park rather than retry again"
+  else
+    _fail "second communication-with-agent-failed call diverged or dropped the stop-retrying guidance"
   fi
 
   # --- PostToolUse: nudge to re-sign before stacking more commits ---
@@ -917,9 +968,10 @@ function _git_sign_refusal_cases {
   refusal_resp='Couldn'"'"'t sign message (signer): agent refused operation?
 fatal: failed to write commit object'
   # The property under test is that the ORIGINAL command is never echoed back
-  # runnable. The refusal text legitimately quotes the env prefix as a
-  # template with a `<…>` placeholder, so asserting on the prefix alone would
-  # be meaningless — assert on the verbatim command instead.
+  # runnable — no branch of the hook hands back any command any more, so
+  # asserting on the verbatim command's absence pins that for the compound
+  # case specifically, where a partial/templated echo would be easiest to
+  # slip back in by accident.
   compound="$(_gs_hook PostToolUseFailure 'git commit -m x && git push' "${repo}" "${refusal_resp}")"
   if [[ "${compound}" == *'NO ready-made retry'* && "${compound}" != *'git commit -m x && git push'* ]]; then
     _pass "compound commit+push is not handed back as a signing-disabled retry"
@@ -936,11 +988,16 @@ fatal: failed to write commit object'
   else
     _fail "chained command was reproduced with signing disabled"
   fi
+  # A standalone commit used to get a ready-made unsigned retry here —
+  # the exact recipe an unattended session could run without a human
+  # decision. Only the user may authorise an unsigned commit now, so the
+  # standalone case must get the SAME park-and-hand-off text as the compound
+  # cases above, never a runnable recipe.
   simple="$(_gs_hook PostToolUseFailure 'git commit -m x' "${repo}" "${refusal_resp}")"
-  if [[ "${simple}" == *'GIT_CONFIG_KEY_0=commit.gpgsign'* ]]; then
-    _pass "a standalone commit still gets a ready-made unsigned retry"
+  if [[ "${simple}" == *'NO ready-made retry'* && "${simple}" != *'GIT_CONFIG_KEY_0=commit.gpgsign'* ]]; then
+    _pass "a standalone commit gets park-and-hand-off text too, never a ready-made unsigned retry"
   else
-    _fail "standalone commit lost its retry command"
+    _fail "standalone commit unexpectedly got a runnable unsigned retry: ${simple}"
   fi
 
   /bin/rm -rf "${sandbox}"
