@@ -122,9 +122,11 @@ function _sl_exit_codes {
                          hit_ratio: 0.96, recache_tokens_if_cold: 1000}")"
     [no-rate-limits]="$(_sl_json '.prompt_cache = {warm: false, caching_observed: true}')"
     [no-prompt-cache]="$(_sl_json '.rate_limits.five_hour = {used_percentage: 60}')"
+    [expired]="$(_sl_json '.prompt_cache = {warm: false, caching_observed: true,
+      recache_tokens_if_cold: 142000}')"
     [empty-input]=""
   )
-  for name in calm busy no-rate-limits no-prompt-cache empty-input; do
+  for name in calm busy no-rate-limits no-prompt-cache expired empty-input; do
     payload="${payloads[${name}]}"
     for cols in 140 80 50 30; do
       _sl_run "${cols}" "${payload}"
@@ -312,13 +314,7 @@ function _sl_identity {
   _sl_expect_eq "Fable 5.1 (1M context) → Fable" "$(_sl_plain "$(_sl_line 1)")" "work Fable"
 }
 
-# ── (7, 8) API share, cost and cache-hit bands ─────────────────────────────
-function _sl_api_case {
-  # <api ms over 600000 ms wall> <expected>
-  _sl_run 140 "$(_sl_json ".cost = {total_cost_usd: 0, total_duration_ms: 600000, total_api_duration_ms: $1}")"
-  _sl_expect_has "API share $1/600000 → $2" "$(_sl_plain "$(_sl_line 2)")" "$2"
-}
-
+# ── (7, 8) cost and cache-hit bands ────────────────────────────────────────
 function _sl_cost_case {
   # <usd> <colour> — the sandbox FX rate is 1, so £ equals USD
   _sl_run 140 "$(_sl_json ".cost.total_cost_usd = $1")"
@@ -332,9 +328,11 @@ function _sl_hit_case {
 }
 
 function _sl_economics {
-  _sl_api_case 282000 "10m (47%)"
-  _sl_api_case 600000 "10m (100%)"
-  _sl_api_case 1320000 "10m (2.2×)"
+  # Session time stays; the API-share ratio beside it is gone
+  _sl_run 140 "$(_sl_json ".cost = {total_cost_usd: 0, total_duration_ms: 600000, total_api_duration_ms: 1320000}")"
+  _sl_expect_eq "session time, no API share" "$(_sl_plain "$(_sl_line 2)")" "░░░░░░░░░░ 0K · 10m"
+  _sl_run 140 "$(_sl_json ".cost = {total_cost_usd: 0, total_duration_ms: 70920000}")"
+  _sl_expect_eq "session time in hours" "$(_sl_plain "$(_sl_line 2)")" "░░░░░░░░░░ 0K · 19h 42m"
 
   _sl_cost_case 4.99 "${GREEN}"
   _sl_cost_case 5 "${YELLOW}"
@@ -347,10 +345,12 @@ function _sl_economics {
   _sl_hit_case 0.7 70 "${YELLOW}"
   _sl_hit_case 0.69 69 "${RED}"
 
-  _sl_ttl_case "TTL dim while comfortable" true 1800 " ${_SL_DIM}30m${RESET}"
-  _sl_ttl_case "TTL yellow inside 5 min" true 240 " ${YELLOW}4m${RESET}"
-  _sl_ttl_case "cold once expired" true 0 " ${RED}cold${RESET}"
-  _sl_ttl_case "cold when not warm" false 1800 " ${RED}cold${RESET}"
+  local warm="♻️${GREEN}95%${RESET}"
+  local expired="${_SL_DIM}·${RESET} ${RED}Cache Expired${RESET}"
+  _sl_ttl_case "TTL dim while comfortable" true 1800 "${warm} ${_SL_DIM}30m${RESET}"
+  _sl_ttl_case "TTL yellow inside 5 min" true 240 "${warm} ${YELLOW}4m${RESET}"
+  _sl_ttl_case "expired once past expiry" true 0 "${expired}"
+  _sl_ttl_case "expired when not warm" false 1800 "${expired}"
 }
 
 function _sl_ttl_case {
@@ -359,11 +359,74 @@ function _sl_ttl_case {
   _sl_run 140 "$(_sl_json ".prompt_cache = {warm: $2, caching_observed: true,
     expires_at: (\$now + $3), hit_ratio: 0.95}")"
   row="$(_sl_line 2)"
-  if [[ "${row}" == *"♻️${GREEN}95%${RESET}$4" ]]; then
+  # A tail without the emoji also asserts the row has none (expired drops it)
+  if [[ "${row}" == *"$4" && ( "$4" == *"♻️"* || "${row}" != *"♻️"* ) ]]; then
     _pass "cache $1"
   else
     _fail "cache $1 — wanted row ending $(printf '%q' "$4"), got $(printf '%q' "${row}")"
   fi
+}
+
+# ── (8b) expired-cache takeover and the usage-rate ledger ─────────────────
+# shellcheck disable=SC2016  # $now is a jq variable, expanded by _sl_json
+_SL_EXPIRED='.effort.level = "medium"
+  | .prompt_cache = {warm: false, caching_observed: true, ttl: "1h",
+                     expires_at: ($now - 10), recache_tokens_if_cold: 142000}'
+
+function _sl_usage_reset {
+  /bin/rm -rf "${_SL_SB}/Library/Caches/statusline/usage"
+}
+
+function _sl_expired {
+  local u="${_SL_SB}/Library/Caches/statusline/usage"
+  _sl_usage_reset
+
+  # 142K × $4/MTok (Opus 5.5) × 2 (1h write) = $1.136; FX is 1 in the sandbox
+  _sl_run 140 "$(_sl_json "${_SL_EXPIRED}")"
+  _sl_expect_eq "expired: whole line replaced (1h TTL)" "$(_sl_plain "${_SL_OUT}")" \
+    $'Cache Expired!\n142K tokens to Opus Med is £1.14'
+  _sl_expect_has "expired: row 1 bold red" "$(_sl_line 1)" "${BOLD}${RED}Cache Expired!${RESET}"
+  _sl_run 140 "$(_sl_json "${_SL_EXPIRED} | .prompt_cache.ttl = \"5m\"")"
+  _sl_expect_eq "expired: 5m TTL writes at 1.25×" "$(_sl_plain "$(_sl_line 2)")" \
+    "142K tokens to Opus Med is £0.71"
+  _sl_run 140 "$(_sl_json "${_SL_EXPIRED} | .model = {id: \"claude-fable-5-1\", display_name: \"Fable 5.1\"}
+    | .effort.level = \"xhigh\"")"
+  _sl_expect_eq "expired: Fable price and effort label" "$(_sl_plain "$(_sl_line 2)")" \
+    "142K tokens to Fable XHigh is £2.84"
+  _sl_run 140 "$(_sl_json "${_SL_EXPIRED} | .model = {id: \"claude-new-9\", display_name: \"New\"}")"
+  _sl_expect_eq "expired: unknown model → tokens only" "$(_sl_plain "$(_sl_line 2)")" \
+    "142K tokens to New Med"
+  _sl_run 80 "$(_sl_json "${_SL_EXPIRED}")"
+  _sl_expect_eq "expired: medium tier takes over too" "$(_sl_plain "$(_sl_line 1)")" "Cache Expired!"
+  _sl_run 50 "$(_sl_json "${_SL_EXPIRED}")"
+  _sl_expect_eq "expired: compact tier unchanged" "$(_sl_plain "${_SL_OUT}")" "work · Opus · 0K"
+  _sl_run 140 "$(_sl_json "${_SL_EXPIRED} | .prompt_cache.warm = true
+    | .prompt_cache.expires_at = (\$now + 600)")"
+  _sl_expect_has "warm cache: normal rows" "$(_sl_plain "$(_sl_line 1)")" "work Opus"
+
+  # Seeded ledger: 5h went 20 → 10 (a reset) → 30, with $1 spent after the
+  # reset: 20 points per dollar, so $1.136 → ~23%
+  mkdir -p "${u}"
+  printf '%s 20\n%s 10\n' $(( _SL_NOW - 7000 )) $(( _SL_NOW - 3000 )) > "${u}/five"
+  printf '%s 5.0\n%s 1.0\n' $(( _SL_NOW - 3500 )) $(( _SL_NOW - 1000 )) > "${u}/spend"
+  _sl_run 140 "$(_sl_json "${_SL_EXPIRED} | .rate_limits.five_hour.used_percentage = 30")"
+  _sl_expect_eq "expired: learned rate → % of 5h" "$(_sl_plain "$(_sl_line 2)")" \
+    "142K tokens to Opus Med is £1.14 (~23% of 5h)"
+  _sl_run 140 "$(_sl_json "${_SL_EXPIRED} | .rate_limits.five_hour.used_percentage = 10.5")"
+  _sl_expect_eq "expired: under a point of signal → no %" "$(_sl_plain "$(_sl_line 2)")" \
+    "142K tokens to Opus Med is £1.14"
+
+  # Recording: a session's first render only sets its baseline, the next
+  # appends its spend since then
+  _sl_usage_reset
+  _sl_run 140 "$(_sl_json '.session_id = "rec" | .cost.total_cost_usd = 3
+    | .rate_limits.five_hour.used_percentage = 40')"
+  _sl_expect_eq "ledger: first render records no spend" "$([[ -f "${u}/spend" ]] && echo yes || echo no)" "no"
+  _sl_run 140 "$(_sl_json '.session_id = "rec" | .cost.total_cost_usd = 3.5
+    | .rate_limits.five_hour.used_percentage = 41')"
+  _sl_expect_eq "ledger: second render appends the delta" "$(cat "${u}/spend" 2>/dev/null)" "${_SL_NOW} 0.500000"
+  _sl_expect_eq "ledger: 5h sample recorded" "$(cat "${u}/five" 2>/dev/null)" "${_SL_NOW} 41"
+  _sl_usage_reset
 }
 
 # ── (9) cache_alert ────────────────────────────────────────────────────────
@@ -507,6 +570,7 @@ function run_statusline {
   _sl_countdowns
   _sl_identity
   _sl_economics
+  _sl_expired
   _sl_cache_alert
   _sl_subagent
   /bin/rm -rf "${_SL_SB}"
