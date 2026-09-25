@@ -73,12 +73,21 @@ function _gha_signing {
     _fail "user.signingkey is unset"
   fi
 
+  # The effective value, not a grep: the IdentityAgent line sits inside a
+  # `Match exec "test -S …"` block, so only `ssh -G` shows whether it fires.
+  local sock="${HOME}/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh"
+  local agent
   if [[ ! -f ${HOME}/.ssh/config ]]; then
     _skip "${HOME}/.ssh/config absent on this machine"
-  elif grep -Fq 'IdentityAgent ~/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh' "${HOME}/.ssh/config"; then
-    _pass "${HOME}/.ssh/config routes the agent socket to Secretive"
+  elif [[ ! -S ${sock} ]]; then
+    _skip "Secretive's agent socket absent on this machine"
   else
-    _fail "${HOME}/.ssh/config does not route IdentityAgent to Secretive's socket"
+    agent=$(/usr/bin/ssh -G github.com </dev/null 2>/dev/null) || agent=""
+    if [[ ${agent} == *$'\n'"identityagent ${sock}"$'\n'* ]]; then
+      _pass "${HOME}/.ssh/config routes the agent socket to Secretive"
+    else
+      _fail "${HOME}/.ssh/config does not route IdentityAgent to Secretive's socket"
+    fi
   fi
 }
 
