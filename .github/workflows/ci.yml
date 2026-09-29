@@ -1,6 +1,7 @@
 # dotfiles CI (rewritten 2026-09-29; replaces Shellcheck.yml).
 #
-# Three jobs on push, pull request, a weekly schedule and manual dispatch:
+# Three jobs on push, pull request, manual dispatch and a daily 21:00 UTC
+# schedule that a gate job lets through only after a same-day commit:
 #   test     — `./test --time`, the repo's own suite, on the newest GitHub
 #              macOS runner. The house rule is "always the latest image", so
 #              this uses the `macos-latest` label (macOS 26 arm64 since
@@ -23,8 +24,11 @@ on:
   pull_request:
     branches: [main]
   schedule:
-    # Mondays 06:17 UTC — catches runner-image and Homebrew drift between pushes.
-    - cron: '17 6 * * 1'
+    # Daily at 21:00 UTC (22:00 BST, 21:00 GMT; GitHub cron is UTC only). The
+    # gate job below lets the scheduled run proceed only when main gained a
+    # commit that UTC day, so idle days cost nothing; push, pull_request and
+    # dispatch always run.
+    - cron: '0 21 * * *'
   workflow_dispatch:
 
 permissions:
@@ -39,8 +43,38 @@ env:
   SHELLCHECK_SHA256: '56affdd8de5527894dca6dc3d7e0a99a873b0f004d7aabc30ae407d3f48b0a79'
 
 jobs:
+  gate:
+    name: commit today?
+    runs-on: macos-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      run: ${{ steps.check.outputs.run }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: check
+        name: Run on push and dispatch; on schedule only after a same-day commit
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [[ "${EVENT}" != schedule ]]; then
+            run=true
+          else
+            today="$(TZ=UTC /bin/date +%F)"
+            last="$(TZ=UTC git log -1 --format=%cd --date=format-local:%F)"
+            if [[ "${last}" == "${today}" ]]; then run=true; else run=false; fi
+            echo "last commit ${last}, today ${today}, run=${run}"
+          fi
+          echo "run=${run}" >> "${GITHUB_OUTPUT}"
+
   test:
     name: ./test
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
     runs-on: macos-latest
     timeout-minutes: 20
     permissions:
@@ -101,6 +135,8 @@ jobs:
 
   secrets:
     name: gitleaks (full history)
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
     runs-on: macos-latest
     timeout-minutes: 10
     permissions:
@@ -121,6 +157,8 @@ jobs:
 
   lint:
     name: workflow lint
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
     runs-on: macos-latest
     timeout-minutes: 10
     permissions:
