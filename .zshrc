@@ -67,6 +67,12 @@ fi
 export DO_NOT_TRACK=true
 export GH_TELEMETRY=false
 
+# Claude Code's own temp files (scratchpad, background-task output) go under
+# ~/Library/Caches instead of /tmp, which macOS clears on reboot. Swept of
+# entries idle for 14 days by bin/scratch-sweep. Set here, not in
+# claude/settings.json, because $HOME differs between Macs.
+export CLAUDE_CODE_TMPDIR="${HOME}/Library/Caches/claude-tmp"
+
 # Value must be 1, not YES: ImageIO uses atoi() — atoi("YES") returns 0
 # (disabled), atoi("1") returns 1 (enabled)
 export IIOEnableOOP=1

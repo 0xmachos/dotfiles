@@ -1,0 +1,826 @@
+#!/bin/zsh
+# dotfiles/tests/tmp-guard
+#
+# Behavioural test for claude/tmp-guard-hook - the PreToolUse hook that denies
+# writes into the system scratch roots (/tmp, /private/tmp, /var/tmp,
+# /private/var/tmp, /var/folders, /private/var/folders) and points at
+# ~/Library/Caches/claude-tmp/<name>/ instead. Feeds tool calls to the hook as
+# stdin JSON and asserts the verdict: DENY for Write/Edit/NotebookEdit targets
+# and Bash write positions under a root, PASS for reads, devices, lookalike
+# paths, variable-based paths, text mentions, heredoc data and the body of a
+# multi-line commit or PR message (quotes, substitutions and heredocs carry
+# across newlines).
+#
+# Guards both directions: a tweak that started denying `cat /tmp/x` or
+# `git commit -m "..."`, or stopped catching `cp a /tmp/b`, fails here. Every
+# loop in the hook is driven more than once, and the hook source is checked for
+# a `local` declaration below function level (a repeated untyped `local NAME`
+# in one zsh scope prints NAME=value to stdout and corrupts the deny JSON).
+#
+# Run: ./test tmp-guard    (or ./test for the full suite)
+#
+# ShellCheck: lint with `shellcheck --shell=bash tests/tmp-guard`.
+# This file is sourced, not executed - chmod 644.
+#
+# shellcheck source=tests/lib
+# shellcheck disable=SC2016  # literal $ in fixtures: they are the hook's input
+
+function _tmp_guard_run {
+  # Echo the hook's stdout for Bash command $1.
+  jq -n --arg c "$1" '{tool_name:"Bash", tool_input:{command:$c}}' \
+    | /bin/zsh "${SCRIPT_DIR}/claude/tmp-guard-hook"
+}
+
+function _tmp_guard_run_path {
+  # Echo the hook's stdout for tool $1 with input key $2 set to path $3.
+  jq -n --arg t "$1" --arg k "$2" --arg p "$3" \
+    '{tool_name:$t, tool_input:({($k):$p, content:"x"})}' \
+    | /bin/zsh "${SCRIPT_DIR}/claude/tmp-guard-hook"
+}
+
+function _tmp_guard_run_file {
+  # Feed a command string held in a file (too large for argv).
+  jq -Rs '{tool_name:"Bash", tool_input:{command:.}}' < "$1" \
+    | /bin/zsh "${SCRIPT_DIR}/claude/tmp-guard-hook"
+}
+
+function _tmp_guard_run_env {
+  # Echo the hook's stdout for Bash command $1 run by a zsh that reads the
+  # startup file directory $2 (ZDOTDIR), stderr folded in.
+  jq -n --arg c "$1" '{tool_name:"Bash", tool_input:{command:$c}}' \
+    | ZDOTDIR="$2" /bin/zsh "${SCRIPT_DIR}/claude/tmp-guard-hook" 2>&1 || true
+}
+
+function _tmp_guard_check {
+  local want="$1" out="$2" label="$3" got
+  got="$(_hook_verdict "${out}")"
+  if [[ "${got}" == "${want}" ]]; then
+    _pass "${want}: ${label}"
+  else
+    _fail "${label} - expected ${want}, got ${got}"
+  fi
+}
+
+function _tmp_guard_expect {
+  local want="$1" cmd="$2" label="${3:-$2}"
+  _tmp_guard_check "${want}" "$(_tmp_guard_run "${cmd}")" "${label}"
+}
+
+function _tmp_guard_expect_path {
+  local want="$1" tool="$2" key="$3" target="$4"
+  _tmp_guard_check "${want}" "$(_tmp_guard_run_path "${tool}" "${key}" "${target}")" "${tool} ${target}"
+}
+
+function _tmp_guard_expect_file {
+  local want="$1" file="$2" label="$3"
+  _tmp_guard_check "${want}" "$(_tmp_guard_run_file "${file}")" "${label}"
+}
+
+function run_tmp_guard {
+  _section "tmp scratch write guard hook"
+
+  # claude/ is gitignored and synced out of band - an absent hook means the
+  # sync has not reached this machine, not a regression.
+  if [[ ! -f "${SCRIPT_DIR}/claude/tmp-guard-hook" ]]; then
+    _skip "claude/tmp-guard-hook absent - claude/ not yet synced to this machine"
+    return 0
+  fi
+
+  if ! [[ -x "$(command -v jq)" ]]; then
+    _skip "jq not installed (brew install jq)"
+    return
+  fi
+
+  local hd fixture_dir pad
+  local -i n
+
+  # --- Write / Edit / NotebookEdit: lexical path check ---------------------
+  _tmp_guard_expect_path DENY Write file_path /tmp/x
+  _tmp_guard_expect_path DENY Write file_path /tmp
+  _tmp_guard_expect_path DENY Write file_path /private/tmp/a/b
+  _tmp_guard_expect_path DENY Write file_path /var/tmp/x
+  _tmp_guard_expect_path DENY Write file_path /private/var/tmp/x
+  _tmp_guard_expect_path DENY Write file_path /var/folders/ab/cd_ef/T/x
+  _tmp_guard_expect_path DENY Write file_path /private/var/folders/ab/x
+  _tmp_guard_expect_path DENY Edit file_path /tmp/x
+  _tmp_guard_expect_path DENY NotebookEdit notebook_path /tmp/n.ipynb
+  _tmp_guard_expect_path DENY Write file_path //tmp/x
+  _tmp_guard_expect_path DENY Write file_path /tmp//x
+  _tmp_guard_expect_path DENY Write file_path /tmp/./x
+  _tmp_guard_expect_path DENY Write file_path /Users/x/../../tmp/y
+  _tmp_guard_expect_path DENY Write file_path /var/../tmp/x
+  _tmp_guard_expect_path DENY Write file_path /tmp/../tmp/x
+  _tmp_guard_expect_path DENY Write file_path /TMP/x
+  _tmp_guard_expect_path DENY Write file_path /Private/Var/Folders/x
+  _tmp_guard_expect_path PASS Write file_path /Users/x/tmp/y
+  _tmp_guard_expect_path PASS Write file_path /Users/x/Library/Caches/claude-tmp/a/b
+  _tmp_guard_expect_path PASS Write file_path /tmpfoo/x
+  _tmp_guard_expect_path PASS Write file_path /var/tmpx/y
+  _tmp_guard_expect_path PASS Write file_path /var/folder/x
+  _tmp_guard_expect_path PASS Write file_path /private/tmpx
+  _tmp_guard_expect_path PASS Write file_path tmp/x
+  # shellcheck disable=SC2088  # literal tilde: the hook receives it unexpanded
+  _tmp_guard_expect_path PASS Write file_path '~/tmp/x'
+  _tmp_guard_expect_path PASS Write file_path ./tmp/x
+  _tmp_guard_expect_path PASS Write file_path /tmp/../Users/x/y
+  _tmp_guard_expect_path PASS Write file_path /var/tmp/../../Users/x
+  _tmp_guard_expect_path PASS Edit file_path /Users/x/repo/tmp/f
+  _tmp_guard_expect_path PASS NotebookEdit notebook_path /Users/x/n.ipynb
+
+  # --- Bash: write redirects ----------------------------------------------
+  _tmp_guard_expect DENY 'echo hi > /tmp/x'
+  _tmp_guard_expect DENY 'echo hi >/tmp/x'
+  _tmp_guard_expect DENY 'echo hi >> /tmp/x'
+  _tmp_guard_expect DENY 'echo hi >>/tmp/x'
+  _tmp_guard_expect DENY 'echo hi >| /tmp/x'
+  _tmp_guard_expect DENY 'echo hi >! /tmp/x'
+  _tmp_guard_expect DENY 'cmd &> /tmp/x'
+  _tmp_guard_expect DENY 'cmd &>/tmp/x'
+  _tmp_guard_expect DENY 'cmd &>> /tmp/x'
+  _tmp_guard_expect DENY 'cmd 2> /tmp/err'
+  _tmp_guard_expect DENY 'cmd 2>/tmp/err'
+  _tmp_guard_expect DENY 'cmd 2>>/tmp/err'
+  _tmp_guard_expect DENY 'cmd 3>/tmp/x'
+  _tmp_guard_expect DENY 'cmd >& /tmp/x'
+  _tmp_guard_expect DENY 'cmd <>/tmp/x' 'read-write redirect'
+  _tmp_guard_expect DENY 'cmd >&/tmp/x'
+  _tmp_guard_expect DENY '> /tmp/x'
+  _tmp_guard_expect DENY 'echo hi >/var/folders/ab/T/f'
+  _tmp_guard_expect DENY 'echo hi >/private/var/folders/ab/T/f'
+  _tmp_guard_expect DENY 'echo hi 2>/var/tmp/e'
+  _tmp_guard_expect DENY 'cmd </dev/null >/tmp/x' 'input redirect before a write redirect'
+  _tmp_guard_expect DENY 'echo a a a > /tmp/x' 'redirect after several arguments'
+  _tmp_guard_expect DENY 'a > o1 2> o2 >> o3 > /tmp/x' 'several redirects on one command'
+  _tmp_guard_expect DENY 'echo a >/tmp/x #comment' 'comment after the redirect'
+  _tmp_guard_expect DENY 'echo ${#x} > /tmp/y' 'hash inside a parameter expansion is not a comment'
+  _tmp_guard_expect DENY 'echo ${x:-a b} > /tmp/y' 'space inside a parameter expansion'
+  _tmp_guard_expect DENY 'echo a > "/tmp/my file"' 'quoted target with a space'
+  _tmp_guard_expect DENY 'echo a > /tmp/$name' 'literal root prefix, variable tail'
+  _tmp_guard_expect DENY 'echo a > "/tm"p/x' 'root split across quotes'
+  _tmp_guard_expect DENY 'echo a > \/tmp/x' 'escaped first slash'
+  _tmp_guard_expect DENY 'echo a > /tmp/../tmp/x' 'dot-dot inside the target'
+  _tmp_guard_expect DENY 'echo a > //tmp/x' 'doubled leading slash'
+  _tmp_guard_expect DENY 'echo hi>/tmp/x' 'no space around the operator'
+  _tmp_guard_expect DENY 'echo 1>/tmp/x' 'fd digit before the operator'
+  _tmp_guard_expect DENY "echo a > \$'/tmp/x'" 'ANSI-C quoted target'
+  _tmp_guard_expect DENY 'exec > /tmp/log' 'exec with only a redirect'
+  _tmp_guard_expect DENY '{ echo a; } > /tmp/x' 'redirect after a brace group'
+  _tmp_guard_expect DENY '(echo a) > /tmp/x' 'redirect after a subshell'
+  _tmp_guard_expect DENY 'echo a | { cat > /tmp/x; }' 'redirect inside a brace group'
+  _tmp_guard_expect DENY 'cp -a src/. /tmp/x/' 'trailing-dot source'
+  _tmp_guard_expect DENY 'sudo -u root -- cp a /tmp/b' 'double dash after wrapper flags'
+  _tmp_guard_expect DENY 'echo a > /TMP/x' 'case-insensitive root'
+
+  # --- Bash: tee ----------------------------------------------------------
+  _tmp_guard_expect DENY 'echo a | tee /tmp/x'
+  _tmp_guard_expect DENY 'echo a | tee -a /tmp/x'
+  _tmp_guard_expect DENY 'echo a | tee ~/ok /tmp/z' 'tee with the root as the second operand'
+  _tmp_guard_expect DENY 'echo a | tee /tmp/a /tmp/b'
+  _tmp_guard_expect DENY 'echo a | sudo tee /tmp/x'
+  _tmp_guard_expect PASS 'echo a | tee ~/x'
+  _tmp_guard_expect PASS 'echo a | tee'
+
+  # --- Bash: mkdir / touch / cp / mv / ln / install / rsync / ditto ---------
+  _tmp_guard_expect DENY 'mkdir /tmp/x'
+  _tmp_guard_expect DENY 'mkdir -p /tmp/a/b'
+  _tmp_guard_expect DENY 'mkdir -p ~/ok /tmp/x' 'mkdir with the root as the second operand'
+  _tmp_guard_expect DENY 'mkdir -m 755 /tmp/x'
+  _tmp_guard_expect DENY 'mkdir /tmp/a /tmp/b'
+  _tmp_guard_expect DENY 'mkdir /tmp/{a,b}' 'brace expansion under the root'
+  _tmp_guard_expect DENY 'touch /tmp/x'
+  _tmp_guard_expect DENY 'touch -t 202001010000 /tmp/x'
+  _tmp_guard_expect DENY 'touch ~/a /tmp/b'
+  _tmp_guard_expect DENY 'cp a /tmp/b'
+  _tmp_guard_expect DENY 'cp -r a b /tmp/dir'
+  _tmp_guard_expect DENY 'cp -t /tmp a b'
+  _tmp_guard_expect DENY 'cp --target-directory=/tmp a'
+  _tmp_guard_expect DENY 'cp --target-directory /tmp a'
+  _tmp_guard_expect DENY 'mv a /tmp/b'
+  _tmp_guard_expect DENY 'ln -s a /tmp/l'
+  _tmp_guard_expect DENY 'ln -sfn a /tmp/l'
+  _tmp_guard_expect DENY 'install -m 755 a /tmp/b'
+  _tmp_guard_expect DENY 'install -d /tmp/x /tmp/y'
+  _tmp_guard_expect DENY 'install -d ~/x /tmp/y'
+  _tmp_guard_expect DENY 'rsync -av a/ /tmp/dest/'
+  _tmp_guard_expect DENY 'rsync -e ssh a /private/tmp/d'
+  _tmp_guard_expect DENY 'ditto a /tmp/b'
+  _tmp_guard_expect DENY 'gcp a /tmp/b' 'GNU-prefixed name'
+  _tmp_guard_expect DENY 'CP a /tmp/b' 'upper-case command word'
+  _tmp_guard_expect DENY '/bin/cp a /tmp/b' 'absolute command path'
+  _tmp_guard_expect DENY 'cp "$(pwd)/f" /tmp/y' 'substitution inside an earlier argument'
+  _tmp_guard_expect DENY 'mkdir -p "$(dirname x)" /tmp/z' 'substitution before the root operand'
+  _tmp_guard_expect DENY 'cp a "/tmp/my dir/b"' 'quoted destination with a space'
+  _tmp_guard_expect DENY "cp a '/tmp/b'" 'single-quoted destination'
+  _tmp_guard_expect DENY 'cp a \/tmp/b' 'escaped destination'
+  _tmp_guard_expect DENY 'cp a b c /var/folders/xx/T/d' 'several sources'
+
+  # --- Bash: wrappers and command positions --------------------------------
+  _tmp_guard_expect DENY 'sudo cp a /tmp/b'
+  _tmp_guard_expect DENY 'sudo -u root cp a /tmp/b'
+  _tmp_guard_expect DENY 'env FOO=1 cp a /tmp/b'
+  _tmp_guard_expect DENY 'env -u FOO cp a /tmp/b'
+  _tmp_guard_expect DENY 'FOO=1 touch /tmp/x'
+  _tmp_guard_expect DENY 'timeout 5 curl -o /tmp/x u'
+  _tmp_guard_expect DENY 'timeout -k 5 12 touch /tmp/x'
+  _tmp_guard_expect DENY 'nohup cp a /tmp/b'
+  _tmp_guard_expect DENY 'nice -n 10 cp a /tmp/b'
+  _tmp_guard_expect DENY 'command mkdir /tmp/x'
+  _tmp_guard_expect DENY 'builtin cd /tmp && touch x'
+  _tmp_guard_expect DENY 'find . -name x | xargs -I{} cp {} /tmp/'
+  _tmp_guard_expect DENY '2>/dev/null cp a /tmp/b' 'leading redirection'
+  _tmp_guard_expect DENY 'ls && touch /tmp/x'
+  _tmp_guard_expect DENY 'a; b > /tmp/x'
+  _tmp_guard_expect DENY 'a || touch /tmp/x'
+  _tmp_guard_expect DENY '(cp a /tmp/b)'
+  _tmp_guard_expect DENY '{ cp a /tmp/b; }'
+  _tmp_guard_expect DENY 'if true; then cp a /tmp/b; fi'
+  _tmp_guard_expect DENY 'for f in a b; do cp $f /tmp/; done'
+  _tmp_guard_expect DENY 'while read l; do echo $l >> /tmp/x; done < in'
+  _tmp_guard_expect DENY 'echo $(cp a /tmp/b)' 'command substitution'
+  _tmp_guard_expect DENY 'echo "$(cp a /tmp/b)"' 'command substitution in double quotes'
+  _tmp_guard_expect DENY 'echo `cp a /tmp/b`' 'backtick substitution'
+  _tmp_guard_expect DENY 'X=$(cp a /tmp/b)' 'substitution assigned to a variable'
+  _tmp_guard_expect DENY 'cat <(cp a /tmp/b)' 'process substitution'
+  _tmp_guard_expect DENY 'echo a | tee >(cat > /tmp/x)' 'process substitution body writes'
+  _tmp_guard_expect DENY $'echo a\ncp a /tmp/b' 'second line of a multi-line command'
+  _tmp_guard_expect DENY $'echo a # c\ncp a /tmp/b' 'command after a comment line'
+  _tmp_guard_expect DENY $'cp a \\\n/tmp/b' 'backslash-newline continuation'
+  _tmp_guard_expect DENY "bash -c 'cp a /tmp/b'" 'bash -c string is scanned'
+  _tmp_guard_expect DENY 'sh -c "echo hi > /tmp/x"' 'sh -c string is scanned'
+  _tmp_guard_expect DENY "bash -lc 'cd /tmp && touch x'" 'bash -lc cluster'
+  _tmp_guard_expect DENY 'eval "cp a /tmp/b"' 'eval argument is scanned'
+  _tmp_guard_expect DENY "bash -c \"bash -c 'cp a /tmp/b'\"" 'nested shell -c'
+
+  # --- Bash: mktemp ---------------------------------------------------------
+  _tmp_guard_expect DENY 'mktemp /tmp/foo.XXXXXX'
+  _tmp_guard_expect DENY 'mktemp -d /tmp/foo.XXXX'
+  _tmp_guard_expect DENY 'mktemp -p /tmp'
+  _tmp_guard_expect DENY 'mktemp -d -p /var/folders/x'
+  _tmp_guard_expect DENY 'mktemp --tmpdir=/tmp'
+  _tmp_guard_expect DENY 'mktemp -d -t /tmp/foo'
+  _tmp_guard_expect PASS 'mktemp'
+  _tmp_guard_expect PASS 'mktemp -d'
+  _tmp_guard_expect PASS 'mktemp -d -t foo'
+  _tmp_guard_expect PASS 'mktemp -p ~/x'
+  _tmp_guard_expect PASS 'mktemp --tmpdir'
+  _tmp_guard_expect PASS 'mktemp foo.XXXX'
+
+  # --- Bash: curl / wget / tar / git / unzip / sed / perl / dd ------------
+  _tmp_guard_expect DENY 'curl -o /tmp/x url'
+  _tmp_guard_expect DENY 'curl -sSLo /tmp/x url'
+  _tmp_guard_expect DENY 'curl -o/tmp/x url'
+  _tmp_guard_expect DENY 'curl --output /tmp/x url'
+  _tmp_guard_expect DENY 'curl --output=/tmp/x url'
+  _tmp_guard_expect DENY 'curl --output-dir /tmp -O url'
+  _tmp_guard_expect DENY 'curl -D /tmp/h url'
+  _tmp_guard_expect DENY 'curl -c /tmp/jar url'
+  _tmp_guard_expect DENY 'curl -o ~/a -o /tmp/b u' 'second -o under the root'
+  _tmp_guard_expect DENY 'curl -H "X: y" -o /tmp/x url'
+  _tmp_guard_expect PASS 'curl -o ~/x url'
+  _tmp_guard_expect PASS 'curl http://h/tmp/x'
+  _tmp_guard_expect PASS 'curl -o ~/x http://h/tmp/x'
+  _tmp_guard_expect PASS 'curl -H "X: /tmp/y" -o ~/f u'
+  _tmp_guard_expect PASS 'curl -T /tmp/up http://h/'
+  _tmp_guard_expect DENY 'wget -O /tmp/x url'
+  _tmp_guard_expect DENY 'wget -P /tmp url'
+  _tmp_guard_expect DENY 'wget -O/tmp/x url'
+  _tmp_guard_expect DENY 'wget --output-document=/tmp/x url'
+  _tmp_guard_expect DENY 'wget --directory-prefix /tmp url'
+  _tmp_guard_expect PASS 'wget -O ~/x url'
+  _tmp_guard_expect PASS 'wget -O - url'
+  _tmp_guard_expect DENY 'tar -xzf a.tgz -C /tmp/x'
+  _tmp_guard_expect DENY 'tar xzf a.tgz -C /tmp'
+  _tmp_guard_expect DENY 'tar --extract --directory=/tmp -f a'
+  _tmp_guard_expect DENY 'tar -xzf a.tgz --directory /tmp/x'
+  _tmp_guard_expect DENY 'tar -czf /tmp/a.tgz .'
+  _tmp_guard_expect DENY 'tar cf /tmp/a.tar dir'
+  _tmp_guard_expect DENY 'tar --create --file /tmp/a.tar x'
+  _tmp_guard_expect DENY 'tar --create --file=/tmp/a.tar x'
+  _tmp_guard_expect PASS 'tar -czf ~/a.tgz -C /tmp/x .' 'create reading from -C'
+  _tmp_guard_expect PASS 'tar -tf /tmp/a.tar'
+  _tmp_guard_expect PASS 'tar -xzf /tmp/a.tgz -C ~/out'
+  _tmp_guard_expect PASS 'tar xzf /tmp/a.tgz'
+  _tmp_guard_expect PASS 'tar -tzf /tmp/a.tgz -C /tmp/x'
+  _tmp_guard_expect DENY 'git clone url /tmp/repo'
+  _tmp_guard_expect DENY 'git clone --depth 1 -b main url /tmp/repo'
+  _tmp_guard_expect DENY 'git -C /tmp/x clone url' 'clone into a root via -C'
+  _tmp_guard_expect DENY 'git init /tmp/x'
+  _tmp_guard_expect DENY 'git -C /tmp/x init'
+  _tmp_guard_expect DENY 'git worktree add /tmp/wt'
+  _tmp_guard_expect DENY 'git worktree add -b br /tmp/wt'
+  _tmp_guard_expect DENY 'git clone --separate-git-dir /tmp/g url ~/d'
+  _tmp_guard_expect PASS 'git clone /tmp/src ~/repo'
+  _tmp_guard_expect PASS 'git clone url'
+  _tmp_guard_expect PASS 'git clone --depth 1 url ~/repo'
+  _tmp_guard_expect PASS 'git init'
+  _tmp_guard_expect PASS 'git init ~/x'
+  _tmp_guard_expect PASS 'git worktree add ~/wt'
+  _tmp_guard_expect PASS 'git worktree list'
+  _tmp_guard_expect PASS 'git -C /tmp/x status'
+  _tmp_guard_expect PASS 'git -C ~/repo clone url ~/d'
+  _tmp_guard_expect PASS 'git commit -F /tmp/msg'
+  _tmp_guard_expect PASS 'git log --oneline'
+  _tmp_guard_expect DENY 'unzip a.zip -d /tmp/x'
+  _tmp_guard_expect DENY 'unzip -d/tmp/x a.zip'
+  _tmp_guard_expect PASS 'unzip /tmp/a.zip -d ~/x'
+  _tmp_guard_expect PASS 'unzip -l /tmp/a.zip'
+  _tmp_guard_expect DENY "sed -i 's/a/b/' /tmp/f"
+  _tmp_guard_expect DENY "sed -i '' 's/a/b/' /tmp/f"
+  _tmp_guard_expect DENY "sed -i.bak -e 's/a/b/' /tmp/f"
+  _tmp_guard_expect DENY "sed --in-place -e 's/a/b/' /tmp/f"
+  _tmp_guard_expect DENY "sed -ni 's/a/b/p' ~/ok /tmp/f"
+  _tmp_guard_expect PASS "sed -i 's/a/b/' ~/f"
+  _tmp_guard_expect PASS "sed -i '/tmp/d' ~/f" 'script text that looks like a root'
+  _tmp_guard_expect PASS "sed -i '' '/tmp/d' ~/f"
+  _tmp_guard_expect PASS "sed -n 1,5p /tmp/f"
+  _tmp_guard_expect PASS "sed 's/a/b/' /tmp/f"
+  _tmp_guard_expect DENY "perl -pi -e 's/a/b/' /tmp/f"
+  _tmp_guard_expect DENY "perl -i.bak -pe 's/a/b/' /tmp/f"
+  _tmp_guard_expect PASS "perl -pi -e 's|/tmp|/x|' ~/f"
+  _tmp_guard_expect PASS "perl -ne 'print' /tmp/f"
+  _tmp_guard_expect DENY 'dd if=a of=/tmp/x'
+  _tmp_guard_expect DENY 'dd of=/tmp/x bs=1m'
+  _tmp_guard_expect PASS 'dd if=/tmp/x of=/dev/null'
+  _tmp_guard_expect PASS 'dd if=/tmp/x of=~/y'
+
+  # --- Bash: cd into a root followed by a write -----------------------------
+  _tmp_guard_expect DENY 'cd /tmp && echo x > out'
+  _tmp_guard_expect DENY 'cd /tmp/x; touch y'
+  _tmp_guard_expect DENY 'cd /private/tmp && mkdir z'
+  _tmp_guard_expect DENY 'pushd /tmp; cp a b'
+  _tmp_guard_expect DENY 'cd /tmp && curl -O url'
+  _tmp_guard_expect DENY 'cd /var/folders/x && tar xf a'
+  _tmp_guard_expect DENY 'cd /tmp && git clone url'
+  _tmp_guard_expect DENY 'cd -- /tmp && cp a b'
+  _tmp_guard_expect DENY '(cd /tmp/x && echo y > z)' 'cd inside a subshell'
+  _tmp_guard_expect DENY $'cd /tmp\necho hi > out' 'cd and write on different lines'
+  _tmp_guard_expect PASS 'cd /tmp && ls'
+  _tmp_guard_expect PASS 'cd /tmp && cat x'
+  _tmp_guard_expect PASS 'cd /tmp/x; grep foo *'
+  _tmp_guard_expect PASS 'cd /var/folders/x && ls -la'
+  _tmp_guard_expect PASS 'cd /tmp && ls 2>/dev/null'
+  _tmp_guard_expect PASS 'cd /tmp && ls >/dev/null 2>&1'
+  _tmp_guard_expect PASS 'cd ~/tmp && touch x'
+  _tmp_guard_expect PASS 'cd ~ && touch x'
+  _tmp_guard_expect PASS 'cd "$TMPDIR" && touch x'
+  _tmp_guard_expect PASS 'cd "$(mktemp -d)" && touch x'
+
+  # --- Reads, devices, lookalikes, variables, text mentions -----------------
+  _tmp_guard_expect PASS 'cat /tmp/x'
+  _tmp_guard_expect PASS 'ls /private/tmp'
+  _tmp_guard_expect PASS 'ls -la /var/folders'
+  _tmp_guard_expect PASS 'grep foo /var/folders/ab/cd/T/x'
+  _tmp_guard_expect PASS 'grep -r foo /tmp'
+  _tmp_guard_expect PASS 'head -5 /tmp/x'
+  _tmp_guard_expect PASS 'tail -f /tmp/x'
+  _tmp_guard_expect PASS 'find /tmp -name x'
+  _tmp_guard_expect PASS 'find /tmp -type f | head'
+  _tmp_guard_expect PASS 'wc -l /tmp/x'
+  _tmp_guard_expect PASS 'stat /tmp/x'
+  _tmp_guard_expect PASS 'diff /tmp/a /tmp/b'
+  _tmp_guard_expect PASS 'cp /tmp/a ~/b'
+  _tmp_guard_expect PASS 'cp /tmp/a ./b'
+  _tmp_guard_expect PASS 'cp -r /tmp/a /tmp/b2 ~/dir'
+  _tmp_guard_expect PASS 'mv /tmp/x ~/y'
+  _tmp_guard_expect PASS 'ln -s /tmp/x ~/l'
+  _tmp_guard_expect PASS 'rsync -av /tmp/a/ ~/b/'
+  _tmp_guard_expect PASS 'rsync -av a host:/tmp/x'
+  _tmp_guard_expect PASS 'scp a host:/tmp/x'
+  _tmp_guard_expect PASS "ssh host 'cat > /tmp/x'"
+  _tmp_guard_expect PASS 'xargs cp -t ~/x'
+  _tmp_guard_expect PASS 'ls 2>/dev/null'
+  _tmp_guard_expect PASS 'ls /tmp 2>/dev/null'
+  _tmp_guard_expect PASS 'cmd >/dev/null 2>&1'
+  _tmp_guard_expect PASS 'cmd &>/dev/null'
+  _tmp_guard_expect PASS 'cmd >&2'
+  _tmp_guard_expect PASS 'cmd 2>&1'
+  _tmp_guard_expect PASS 'echo x >&2'
+  _tmp_guard_expect PASS 'echo x 1>&2'
+  _tmp_guard_expect PASS 'cmd >/dev/stderr'
+  _tmp_guard_expect PASS 'cmd 2>&1 >/dev/null | head /tmp/x'
+  _tmp_guard_expect PASS 'cat < /tmp/x'
+  _tmp_guard_expect PASS 'sort < /tmp/in > out.txt'
+  _tmp_guard_expect PASS 'echo hi > out.txt'
+  _tmp_guard_expect PASS 'echo hi > ~/tmp/x'
+  _tmp_guard_expect PASS 'echo hi > ./tmp/x'
+  _tmp_guard_expect PASS 'echo hi > /Users/x/tmp/y'
+  _tmp_guard_expect PASS 'echo hi > ~/Library/Caches/claude-tmp/a/b'
+  _tmp_guard_expect PASS 'mkdir ~/tmp'
+  _tmp_guard_expect PASS 'mkdir -p tmp/x'
+  _tmp_guard_expect PASS 'touch ./tmp/x'
+  _tmp_guard_expect PASS 'cp a /tmpfoo/b'
+  _tmp_guard_expect PASS 'cp a /tmp2/b'
+  _tmp_guard_expect PASS 'cp a /private/tmpx'
+  _tmp_guard_expect PASS 'touch /var/folder/x'
+  _tmp_guard_expect PASS 'echo hi > /var/tmpx'
+  _tmp_guard_expect PASS 'mkdir ~/{a,b}'
+  _tmp_guard_expect PASS 'echo hi > $TMPDIR/x'
+  _tmp_guard_expect PASS 'echo hi > "${TMPDIR}/x"'
+  _tmp_guard_expect PASS 'echo hi > "${TMPDIR:-/tmp}/x"'
+  _tmp_guard_expect PASS 'mkdir "$TMPDIR/x"'
+  _tmp_guard_expect PASS 'cp a "$(mktemp -d)/b"'
+  _tmp_guard_expect PASS 'T=$(mktemp -d); cp a "$T/b"'
+  _tmp_guard_expect PASS 'echo $((1>2))'
+  _tmp_guard_expect PASS '[ 3 -gt 2 ] && echo ok'
+  _tmp_guard_expect PASS 'sudo ls /tmp'
+  _tmp_guard_expect PASS "bash -c 'ls /tmp'"
+  _tmp_guard_expect PASS 'echo "/tmp is wiped"'
+  _tmp_guard_expect PASS 'echo "x > /tmp/y"' 'redirect operator inside double quotes'
+  _tmp_guard_expect PASS "echo 'x > /tmp/y'" 'redirect operator inside single quotes'
+  _tmp_guard_expect PASS "echo 'cp a /tmp/b'"
+  _tmp_guard_expect PASS 'printf "%s\n" "tee /tmp/x"'
+  _tmp_guard_expect PASS 'grep -n "/tmp/" file'
+  _tmp_guard_expect PASS 'grep -n ">/tmp/" file'
+  _tmp_guard_expect PASS 'git commit -m "Move scratch out of /tmp"'
+  _tmp_guard_expect PASS 'git commit -m "write > /tmp/x and cp a /tmp/b"' 'commit message that looks like commands'
+  _tmp_guard_expect PASS 'git commit -m "a; mkdir /tmp/x"'
+  _tmp_guard_expect PASS '# cp a /tmp/b'
+  _tmp_guard_expect PASS 'echo hi # > /tmp/x'
+  _tmp_guard_expect PASS 'echo hi # cp a /tmp/b'
+  _tmp_guard_expect PASS 'echo "a#b" > out'
+  _tmp_guard_expect PASS 'awk "{print \$1}" /tmp/x'
+  _tmp_guard_expect PASS 'some-tool --output=/tmp/x' 'unknown tool: only known write verbs are parsed'
+  _tmp_guard_expect PASS 'ls ~/Library/Caches/claude-tmp/x'
+  _tmp_guard_expect PASS 'echo hi'
+
+  # --- Heredocs -------------------------------------------------------------
+  hd=$'cat > /tmp/x <<\'EOF\'\nhello\nEOF'
+  _tmp_guard_expect DENY "${hd}" 'redirect on the heredoc-introducing line'
+  hd=$'cat <<EOF > /tmp/x\nhello\nEOF'
+  _tmp_guard_expect DENY "${hd}" 'redirect after the heredoc operator'
+  hd=$'cat > ~/x <<EOF\nmkdir /tmp/x\nEOF'
+  _tmp_guard_expect PASS "${hd}" 'heredoc body (cat consumer) is data'
+  hd=$'cat <<\'EOF\'\ncp a /tmp/b\n> /tmp/x\nEOF'
+  _tmp_guard_expect PASS "${hd}" 'heredoc body (quoted delimiter) is data'
+  hd=$'python3 - <<\'EOF\'\nopen("/tmp/x", "w").write("y")\nEOF'
+  _tmp_guard_expect PASS "${hd}" 'interpreter program in a heredoc is not parsed'
+  hd=$'git commit -F - <<\'EOF\'\nmessage mentions > /tmp/x\nEOF'
+  _tmp_guard_expect PASS "${hd}" 'commit message heredoc'
+  hd=$'git commit -m "$(cat <<\'EOF\'\nsubject\n\nbody with cp a /tmp/b\nEOF\n)"'
+  _tmp_guard_expect PASS "${hd}" 'commit message through a command substitution heredoc'
+  hd=$'cat <<-EOF\n\tmkdir /tmp/x\n\tEOF'
+  _tmp_guard_expect PASS "${hd}" 'tab-stripped heredoc body is data'
+  hd=$'bash <<EOF\ncd /tmp\ntouch x\nEOF'
+  _tmp_guard_expect DENY "${hd}" 'heredoc body fed to bash is scanned (cd then write)'
+  hd=$'bash <<\'EOF\'\ncp a /tmp/b\nEOF'
+  _tmp_guard_expect DENY "${hd}" 'heredoc body fed to bash, quoted delimiter'
+  hd=$'sh <<EOF\ntouch /tmp/x\nEOF'
+  _tmp_guard_expect DENY "${hd}" 'heredoc body fed to sh'
+  hd=$'sudo -s <<EOF\ntouch /tmp/x\nEOF'
+  _tmp_guard_expect DENY "${hd}" 'heredoc body fed to sudo -s'
+  hd=$'$SHELL <<EOF\ntouch /tmp/x\nEOF'
+  _tmp_guard_expect DENY "${hd}" 'heredoc body fed to an unresolvable word'
+  hd=$'ssh host <<EOF\ncp a /tmp/b\nEOF'
+  _tmp_guard_expect DENY "${hd}" 'heredoc body fed to ssh is scanned'
+  hd=$'cat <<EOF\n$(cp a /tmp/b)\nEOF'
+  _tmp_guard_expect DENY "${hd}" 'unquoted delimiter expands a substitution in the body'
+  hd=$'cat <<EOF\n`cp a /tmp/b`\nEOF'
+  _tmp_guard_expect DENY "${hd}" 'unquoted delimiter expands a backtick in the body'
+  hd=$'cat <<\'EOF\'\n$(cp a /tmp/b)\nEOF'
+  _tmp_guard_expect PASS "${hd}" 'quoted delimiter suppresses expansion'
+  hd=$'cat <<EOF\n\\$(cp a /tmp/b)\nEOF'
+  _tmp_guard_expect PASS "${hd}" 'escaped substitution in an unquoted body is a literal'
+  hd=$'python3 - <<EOF\nx = "$(touch /tmp/x)"\nEOF'
+  _tmp_guard_expect DENY "${hd}" 'substitution inside a quoted program string'
+  hd=$'cat <<EOF\nplain\nEOF\ncp a /tmp/b'
+  _tmp_guard_expect DENY "${hd}" 'command after the heredoc terminator'
+  hd=$'cat <<EOF\ncp a /tmp/b'
+  _tmp_guard_expect PASS "${hd}" 'unterminated heredoc, non-shell consumer: rest is data'
+  hd=$'bash <<EOF\ncp a /tmp/b'
+  _tmp_guard_expect DENY "${hd}" 'unterminated heredoc, shell consumer: body scanned'
+  _tmp_guard_expect PASS 'cat <<< x' 'here-string opens no body'
+  _tmp_guard_expect DENY 'cat <<< x > /tmp/y' 'redirect after a here-string'
+  hd=$'bash 2>&1 <<EOF\ntouch /tmp/x\nEOF'
+  _tmp_guard_expect DENY "${hd}" 'consumer behind 2>&1'
+  hd=$'bash <<A <<B\necho hi\nA\ntouch /tmp/x\nB'
+  _tmp_guard_expect DENY "${hd}" 'second heredoc of the same consumer'
+  hd=$'docker exec -i c sh <<EOF\ntouch /tmp/x\nEOF'
+  _tmp_guard_expect PASS "${hd}" 'docker exec sh heredoc: accepted gap'
+
+  # --- Multi-line messages: quotes, substitutions and heredocs carry across lines
+  # A commit or PR body that names a write verb and a root is data.
+  hd=$'git commit -m "$(cat <<\'EOF\'\ntmp-guard: deny writes under /tmp\n\nmkdir /tmp/x is now refused; cat /tmp/x still passes.\nEOF\n)"'
+  _tmp_guard_expect PASS "${hd}" 'commit body line that starts with a write verb'
+  hd=$'git commit -m "$(cat <<\'EOF\'\nAdd the tmp guard\n\n- mkdir /tmp/x: denied\n- cat /tmp/x: allowed\nEOF\n)"'
+  _tmp_guard_expect PASS "${hd}" 'commit body bullets'
+  hd=$'git commit -m "$(cat <<\'EOF\'\nAdd the tmp guard\n\n  touch /tmp/x  -> denied\nEOF\n)"'
+  _tmp_guard_expect PASS "${hd}" 'commit body, indented verb line'
+  hd=$'git commit -m "$(cat <<\'EOF\'\nsubject\n\ntee /tmp/x is blocked\nEOF\n)"'
+  _tmp_guard_expect PASS "${hd}" 'commit body, tee line'
+  hd=$'git commit -m "$(cat <<\'EOF\'\nsubject\n\ncurl -o /tmp/x is blocked\nEOF\n)"'
+  _tmp_guard_expect PASS "${hd}" 'commit body, curl line'
+  hd=$'git commit -m "$(cat <<\'EOF\'\nsubject\n\ncp a /tmp/b\nEOF\n)"'
+  _tmp_guard_expect PASS "${hd}" 'commit body, cp line'
+  hd=$'git commit -m "$(cat <<\'EOF\'\nsubject\n\ngit clone url /tmp/x is blocked\nEOF\n)"'
+  _tmp_guard_expect PASS "${hd}" 'commit body, git clone line'
+  hd=$'git commit -m "$(cat <<\'EOF\'\nsubject\n\ncd /tmp && make no longer works\nEOF\n)"'
+  _tmp_guard_expect PASS "${hd}" 'commit body, cd line'
+  hd=$'git commit -m "$(cat <<EOF\nsubject\n\nmkdir /tmp/x is refused\nEOF\n)"'
+  _tmp_guard_expect PASS "${hd}" 'commit body, unquoted delimiter'
+  hd=$'git commit -S -m "$(cat <<\'EOF\'\nsubject\n\nmkdir /tmp/x is refused\nEOF\n)" -- tests/tmp-guard'
+  _tmp_guard_expect PASS "${hd}" 'commit body followed by a pathspec'
+  hd=$'git commit -m "$(cat <<\'EOF\'\nit\'s a body ) with ( unbalanced \\" marks\nmkdir /tmp/x\nEOF\n)"'
+  _tmp_guard_expect PASS "${hd}" 'apostrophe, parentheses and a quote in the body'
+  hd=$'gh pr create --title t --body "$(cat <<\'EOF\'\n## Summary\n\n- mkdir /tmp/x: denied\nEOF\n)"'
+  _tmp_guard_expect PASS "${hd}" 'gh pr create body'
+  hd=$'gh issue comment 1 --body "$(cat <<\'EOF\'\ntouch /tmp/x still works here\nEOF\n)"'
+  _tmp_guard_expect PASS "${hd}" 'gh issue comment body'
+  hd=$'MSG="$(cat <<\'EOF\'\nmkdir /tmp/x\nEOF\n)"; git commit -m "$MSG"'
+  _tmp_guard_expect PASS "${hd}" 'variable assigned from a heredoc substitution'
+  hd=$'echo "$(cat <<\'EOF\'\nmkdir /tmp/x\nEOF\n)"'
+  _tmp_guard_expect PASS "${hd}" 'echo of a heredoc substitution'
+  hd=$'jq -n --arg c "$(cat <<\'EOF\'\nmkdir /tmp/x\nEOF\n)" \'{c:$c}\''
+  _tmp_guard_expect PASS "${hd}" 'jq --arg from a heredoc substitution'
+  hd=$'git commit -F <(cat <<\'EOF\'\nmkdir /tmp/x\nEOF\n)'
+  _tmp_guard_expect PASS "${hd}" 'heredoc inside a process substitution'
+  hd=$'cat <<\'EOF\' | git commit -F -\nmkdir /tmp/x\nEOF'
+  _tmp_guard_expect PASS "${hd}" 'heredoc piped to commit -F -'
+  hd=$'git commit -m "subject\n\ntouch /tmp/x"'
+  _tmp_guard_expect PASS "${hd}" 'verb line inside a multi-line double-quoted -m'
+  hd=$'git commit -m \'subject\n\ntouch /tmp/x\''
+  _tmp_guard_expect PASS "${hd}" 'verb line inside a multi-line single-quoted -m'
+  hd=$'echo "a\nmkdir /tmp/x"'
+  _tmp_guard_expect PASS "${hd}" 'multi-line double-quoted echo argument'
+  hd=$'echo $\'a\nmkdir /tmp/x\''
+  _tmp_guard_expect PASS "${hd}" 'multi-line ANSI-C quoted argument'
+  hd=$'python3 -c "\nimport os\nopen(\'/tmp/x\', \'w\')\n"'
+  _tmp_guard_expect PASS "${hd}" 'multi-line python -c program'
+  hd=$'echo ${x:-a\nmkdir /tmp/y}'
+  _tmp_guard_expect PASS "${hd}" 'newline inside a parameter expansion'
+  hd=$'echo \\\nhi'
+  _tmp_guard_expect PASS "${hd}" 'backslash-newline continuation of a harmless command'
+  # A write outside the message still counts.
+  hd=$'git commit -m "$(cat <<\'EOF\'\nmsg\nEOF\n)" && cp a /tmp/b'
+  _tmp_guard_expect DENY "${hd}" 'write after the message on the same line'
+  hd=$'git commit -m "$(cat <<\'EOF\'\nmsg\nEOF\n)"\ncp a /tmp/b'
+  _tmp_guard_expect DENY "${hd}" 'write on the line after the message'
+  hd=$'echo "a\nb" > /tmp/x'
+  _tmp_guard_expect DENY "${hd}" 'redirect after a multi-line quoted argument'
+  hd=$'echo "line\n$(cp a /tmp/b)\nend"'
+  _tmp_guard_expect DENY "${hd}" 'substitution inside a multi-line quoted argument'
+  hd=$'git commit -m "$(cp a /tmp/b; echo msg)"'
+  _tmp_guard_expect DENY "${hd}" 'writing command inside the message substitution'
+  hd=$'x="$(bash <<\'EOF\'\ncp a /tmp/b\nEOF\n)"'
+  _tmp_guard_expect DENY "${hd}" 'shell heredoc inside a substitution is scanned'
+  hd=$'x="$(cat <<EOF\n$(cp a /tmp/b)\nEOF\n)"'
+  _tmp_guard_expect DENY "${hd}" 'expansion in an unquoted heredoc inside a substitution'
+  _tmp_guard_expect DENY 'echo $(echo $(echo $(cp a /tmp/b)))' 'three nested substitutions'
+  _tmp_guard_expect DENY 'echo "$(echo "$(cp a /tmp/b)")"' 'nested substitutions in double quotes'
+  _tmp_guard_expect DENY 'echo `echo \`cp a /tmp/b\``' 'nested backticks'
+  _tmp_guard_expect DENY 'echo $( (cp a /tmp/b) )' 'subshell inside a substitution'
+  _tmp_guard_expect DENY 'echo $((1+2)) > /tmp/x' 'redirect after arithmetic expansion'
+  _tmp_guard_expect DENY 'echo <(cp a /tmp/b)' 'process substitution body'
+  hd=$'echo $(echo $(echo $(echo $(echo $(echo $(echo $(echo $(echo $(echo $(echo $(echo $(echo $(echo hi))))))))))))))'
+  _tmp_guard_expect PASS "${hd}" 'fourteen nested substitutions (past the depth limit)'
+
+  # --- cd into a root: only relative writes count, and a later cd clears it ---
+  _tmp_guard_expect PASS 'cd /tmp/x && cp out.log ~/y' 'copy out of the root'
+  _tmp_guard_expect PASS 'cd /tmp && tar -czf ~/x.tgz .' 'archive written elsewhere'
+  _tmp_guard_expect PASS 'cd /tmp && ls | tee ~/list.txt' 'tee target elsewhere'
+  _tmp_guard_expect PASS 'cd /tmp && curl -o ~/x u' 'download written elsewhere'
+  _tmp_guard_expect PASS 'cd /tmp && sed -i "" s/a/b/ ~/f' 'in-place edit elsewhere'
+  _tmp_guard_expect PASS 'cd /tmp && cp x "$HOME/y"' 'destination under $HOME'
+  _tmp_guard_expect PASS 'cd /tmp && cp x "$(mktemp -d)/y"' 'destination from a substitution'
+  _tmp_guard_expect PASS 'cd /tmp; cd ~/repo; echo hi > out' 'later cd to a non-root clears'
+  _tmp_guard_expect PASS 'cd /tmp && cd ~ && touch x' 'later cd to ~ clears'
+  _tmp_guard_expect PASS 'cd /tmp && cd && touch x' 'cd with no operand clears'
+  _tmp_guard_expect PASS 'cd /tmp && cd - && touch x' 'cd - clears'
+  _tmp_guard_expect PASS 'cd /tmp && cd .. && touch x' 'cd .. clears'
+  _tmp_guard_expect PASS 'cd /tmp && cd /Users/x/repo && echo hi > out' 'later cd to an absolute non-root clears'
+  _tmp_guard_expect PASS '(cd /tmp && ls); touch x' 'cd inside a subshell does not leak'
+  _tmp_guard_expect PASS 'pushd /tmp; popd; touch x' 'popd clears'
+  _tmp_guard_expect PASS 'echo hi > out; cd /tmp' 'write before the cd'
+  _tmp_guard_expect PASS 'x=$(cd /tmp && ls); touch y' 'cd inside a substitution does not leak'
+  _tmp_guard_expect PASS "bash -c 'cd /tmp'; touch x" 'cd inside a shell string does not leak'
+  _tmp_guard_expect PASS 'cd /tmp && mktemp' 'mktemp with no template uses the temp dir variable'
+  _tmp_guard_expect DENY 'cd /tmp && cd sub && touch y' 'relative cd stays in the root'
+  _tmp_guard_expect DENY 'cd /tmp && (cd sub; touch y)' 'relative cd inside a subshell'
+  _tmp_guard_expect DENY 'cd /tmp; (ls); touch x' 'a subshell that does not cd'
+  _tmp_guard_expect DENY 'cd /tmp && { touch x; }' 'write inside a brace group'
+  _tmp_guard_expect DENY 'cd /tmp && echo $(touch x)' 'write inside a substitution'
+  _tmp_guard_expect DENY "cd /tmp; bash -c 'touch x'" 'shell string inherits the cd'
+  _tmp_guard_expect DENY 'cd /tmp && cp a ./b' 'dot-relative destination'
+  _tmp_guard_expect DENY 'cd /tmp && mktemp foo.XXXX' 'relative mktemp template'
+  _tmp_guard_expect DENY 'cd /tmp && wget url' 'wget with no target'
+  _tmp_guard_expect DENY 'cd /tmp && wget -q url' 'wget -q with no target'
+  _tmp_guard_expect DENY 'cd /tmp && unzip a.zip' 'unzip with no -d'
+  _tmp_guard_expect DENY 'cd /tmp && git init' 'git init with no directory'
+  _tmp_guard_expect DENY 'cd /tmp && tar czf out.tgz .' 'relative archive'
+  _tmp_guard_expect DENY 'cd /tmp && tar xf a' 'extract into the working directory'
+  _tmp_guard_expect DENY 'cd /tmp && curl -o out u' 'relative -o'
+  _tmp_guard_expect DENY 'cd /tmp && cp a ~/y /tmp/z' 'absolute destination under the root still counts'
+  _tmp_guard_expect DENY $'cd /tmp\nls\ntouch x' 'cd, then a write two lines later'
+  _tmp_guard_expect DENY $'cd /tmp\ncd sub\necho hi > out' 'relative cd across lines'
+
+  # --- git -C: the last -C wins; only a relative or missing target is in the root
+  _tmp_guard_expect PASS 'git -C /tmp/x clone url ~/dest' 'clone to ~'
+  _tmp_guard_expect PASS 'git -C /tmp/x clone url "$HOME/dest"' 'clone to $HOME'
+  _tmp_guard_expect PASS 'git -C /tmp/x clone url $(pwd)/dest' 'clone to a substitution path'
+  _tmp_guard_expect PASS 'git -C /tmp/x init ~/dest' 'init in ~'
+  _tmp_guard_expect PASS 'git -C /tmp/x -C ~/y init' 'the last -C wins, not a root'
+  _tmp_guard_expect PASS 'git -C /tmp/x -C ~/y clone url' 'the last -C wins, clone'
+  _tmp_guard_expect PASS 'git -C /tmp/x clone /tmp/src ~/dest' 'source under a root'
+  _tmp_guard_expect DENY 'git -C ~/y -C /tmp/x init' 'the last -C wins, a root'
+  _tmp_guard_expect DENY 'git -C /tmp/x -C sub init' 'a relative -C moves on from the one before'
+  _tmp_guard_expect DENY 'git -C /tmp/x clone url dest' 'relative clone target'
+  _tmp_guard_expect DENY 'cd /tmp && git -C sub init' 'relative -C after cd'
+  _tmp_guard_expect PASS 'cd /tmp && git -C ~/repo init' '-C to a non-root overrides the cd'
+  _tmp_guard_expect DENY 'cd /tmp && git -C ~/repo init; touch x' 'the cd state survives a git -C'
+
+  # --- Spellings of a root: line joins, empty substitutions, ~ traversal --------
+  _tmp_guard_expect DENY $'echo hi > /tm\\\np/x' 'backslash-newline inside the path'
+  _tmp_guard_expect DENY $'cp a /tm\\\np/b' 'backslash-newline inside a copy destination'
+  _tmp_guard_expect DENY 'echo hi > /t$()mp/x' 'empty substitution inside the path'
+  _tmp_guard_expect DENY 'cp a /t$()mp/b' 'empty substitution inside a copy destination'
+  _tmp_guard_expect DENY 'cp a /t``mp/b' 'empty backticks inside a copy destination'
+  _tmp_guard_expect DENY 'cp a ~/../../tmp/b' 'home-relative escape to /tmp'
+  _tmp_guard_expect DENY 'cp a ~/../../../tmp/b' 'home-relative escape, extra dot-dot'
+  _tmp_guard_expect DENY 'cp a ~someuser/../../tmp/b' 'named-home escape to /tmp'
+  _tmp_guard_expect DENY 'cp a ~/../../var/folders/x/b' 'home-relative escape to /var/folders'
+  _tmp_guard_expect PASS 'cp a ~/tmp/b' 'a directory called tmp under home'
+  _tmp_guard_expect PASS 'cp a ~/../x' 'home-relative path that is not a root'
+  _tmp_guard_expect PASS 'cp a ~/Library/Caches/claude-tmp/b'
+
+  # --- More wrappers and env -S ---------------------------------------------
+  _tmp_guard_expect DENY 'exec -a x cp a /tmp/x' 'exec -a name'
+  _tmp_guard_expect DENY 'caffeinate cp a /tmp/x' 'caffeinate'
+  _tmp_guard_expect DENY 'caffeinate -t 5 cp a /tmp/x' 'caffeinate -t N'
+  _tmp_guard_expect DENY 'caffeinate -dimsu cp a /tmp/x' 'caffeinate flag cluster'
+  _tmp_guard_expect DENY 'arch -arm64 cp a /tmp/x' 'arch -arm64'
+  _tmp_guard_expect DENY 'arch -x86_64 cp a /tmp/x' 'arch -x86_64'
+  _tmp_guard_expect DENY 'chronic cp a /tmp/x' 'chronic'
+  _tmp_guard_expect DENY 'watch -n 1 cp a /tmp/x' 'watch -n N'
+  _tmp_guard_expect DENY 'ionice -c 3 cp a /tmp/x' 'ionice -c N'
+  _tmp_guard_expect DENY 'coproc cp a /tmp/x' 'coproc'
+  _tmp_guard_expect DENY 'env -S "cp a /tmp/x"' 'env -S string'
+  _tmp_guard_expect DENY 'env -S"cp a /tmp/x"' 'env -S attached string'
+  _tmp_guard_expect DENY 'env --split-string="cp a /tmp/x"' 'env --split-string='
+  _tmp_guard_expect DENY 'env --split-string "cp a /tmp/x"' 'env --split-string string'
+  _tmp_guard_expect DENY 'env -i -S "cp a /tmp/x"' 'env -i -S string'
+  _tmp_guard_expect DENY $'env -S "cd /tmp\ntouch x"' 'env -S string with a cd and a write'
+  _tmp_guard_expect PASS 'env -S "ls /tmp"' 'env -S string that only reads'
+  _tmp_guard_expect PASS 'caffeinate -t 5 ls /tmp'
+  _tmp_guard_expect PASS 'arch -arm64 ls /tmp'
+  _tmp_guard_expect PASS 'exec -a x ls /tmp'
+  _tmp_guard_expect PASS 'watch -n 1 ls /tmp'
+
+  # --- Scan limits: no line cap, no queue cap ---------------------------------
+  fixture_dir="$(mktemp -d "${TMPDIR:-/tmp}/tmp-guard-fixtures.XXXXXX")"
+  { for (( n = 1; n <= 450; n++ )); do print "echo x${n}"; done; print 'echo $(cp a /tmp/b)'; } > "${fixture_dir}/many"
+  _tmp_guard_expect_file DENY "${fixture_dir}/many" '451 lines, substitution on the last one'
+  { for (( n = 1; n <= 500; n++ )); do print "echo \$(echo /tmp/x${n})"; done; print 'cp a /tmp/b'; } > "${fixture_dir}/subs"
+  _tmp_guard_expect_file DENY "${fixture_dir}/subs" '500 substitution lines, then a write'
+  { for (( n = 1; n <= 300; n++ )); do print "echo \$(cp a /tmp/b${n})"; done; } > "${fixture_dir}/subw"
+  _tmp_guard_expect_file DENY "${fixture_dir}/subw" '300 lines whose substitutions write'
+  { for (( n = 1; n <= 40; n++ )); do print "bash -c 'echo ${n}'"; done; print "bash -c 'cp a /tmp/b'"; } > "${fixture_dir}/shells"
+  _tmp_guard_expect_file DENY "${fixture_dir}/shells" '41 shell strings, the last one writes'
+  pad="$(printf 'x%.0s' {1..30000})"
+  printf '%s\n' "echo ${pad} > /tmp/b" > "${fixture_dir}/line30k"
+  _tmp_guard_expect_file DENY "${fixture_dir}/line30k" '30KB line is still scanned'
+  pad="$(printf 'x%.0s' {1..70000})"
+  printf '%s\n' "echo ${pad} > /tmp/b" > "${fixture_dir}/over"
+  _tmp_guard_expect_file PASS "${fixture_dir}/over" 'write after the scan budget (fail-open)'
+  printf '%s\n' "echo hi > /tmp/b; echo ${pad}" > "${fixture_dir}/before"
+  _tmp_guard_expect_file DENY "${fixture_dir}/before" 'write before the scan budget runs out'
+  /bin/rm -rf "${fixture_dir}"
+
+  # --- Regressions: every loop driven more than once ------------------------
+  # Two heredocs on one line, then a real write after them.
+  hd=$'cat <<A; cat <<B\nx\nA\ny\nB\ncp a /tmp/b'
+  _tmp_guard_expect DENY "${hd}" 'two heredocs on one line, deny stays a single JSON object'
+  hd=$'cat <<A; cat <<B\nx\nA\ny\nB'
+  _tmp_guard_expect PASS "${hd}" 'two heredocs on one line, pass stays empty'
+  hd=$'cat <<A; cat <<B; cat <<C\nx\nA\ny\nB\nz\nC'
+  _tmp_guard_expect PASS "${hd}" 'three heredocs on one line'
+  # Two substitution spans on one body line and on two body lines.
+  hd=$'cat <<EOF\n$(date) $(cp a /tmp/b)\nEOF'
+  _tmp_guard_expect DENY "${hd}" 'two substitutions on one body line'
+  hd=$'cat <<EOF\n$(date)\n$(cp a /tmp/b)\nEOF'
+  _tmp_guard_expect DENY "${hd}" 'two substitution lines in a body'
+  hd=$'cat <<EOF\n`date` `cp a /tmp/b`\nEOF'
+  _tmp_guard_expect DENY "${hd}" 'two backtick spans on one body line'
+  hd=$'cat <<EOF\n$(date)\n$(uname)\nEOF'
+  _tmp_guard_expect PASS "${hd}" 'two harmless substitution lines'
+  # Tokeniser and parser run on many lines, words, redirects and operands.
+  hd=$'echo "a" > o1\necho \'b\' >> o2\nls $(pwd) 2>&1\ncp x y\nmkdir -p a b c\ncp a /tmp/b'
+  _tmp_guard_expect DENY "${hd}" 'six lines, then the write'
+  hd=$'echo "a" > o1\necho \'b\' >> o2\nls $(pwd) 2>&1\ncp x y\nmkdir -p a b c'
+  _tmp_guard_expect PASS "${hd}" 'six lines, no write to a root'
+  _tmp_guard_expect DENY 'echo $(a) $(b) $(c) `d` `e` > /tmp/x' 'many substitutions before the target'
+  _tmp_guard_expect DENY 'cp a b; cp c d; cp e f; mkdir /tmp/x' 'four verbs, last one writes'
+  _tmp_guard_expect PASS 'cp a b; cp c d; cp e f; mkdir ~/x' 'four verbs, none writes'
+  _tmp_guard_expect DENY 'touch ~/a ~/b ~/c /tmp/d' 'operand loop, last operand'
+  _tmp_guard_expect PASS 'touch ~/a ~/b ~/c ~/d'
+  _tmp_guard_expect DENY 'curl -o ~/a -o ~/b -o /tmp/c u' 'option loop, last value'
+  _tmp_guard_expect DENY 'mktemp -p ~/a -p /tmp' 'repeated -p'
+  _tmp_guard_expect DENY 'mktemp --tmpdir=~/a --tmpdir=/tmp'
+  _tmp_guard_expect DENY 'dd if=a of=~/x of=/tmp/y' 'repeated of='
+  _tmp_guard_expect DENY 'bash -c "cd /tmp; touch a; touch b"' 'shell string with several commands'
+  _tmp_guard_expect DENY 'eval "echo a"; eval "cp a /tmp/b"' 'two evals'
+  _tmp_guard_expect PASS 'eval "echo a"; eval "echo b"'
+  _tmp_guard_expect DENY 'tar -xf a -C ~/x -C /tmp/y' 'repeated -C'
+  _tmp_guard_expect DENY 'tar -cf ~/a.tar -f /tmp/b.tar x' 'repeated -f'
+  _tmp_guard_expect DENY 'git -C ~/a -C /tmp/b init' 'repeated git -C'
+  _tmp_guard_expect DENY 'cd ~/a; cd /tmp/b; touch x' 'second cd is the root one'
+  _tmp_guard_expect DENY 'FOO=1 BAR=2 BAZ=3 cp a /tmp/b' 'several assignments'
+  _tmp_guard_expect DENY 'sudo -u root nice -n 5 timeout 9 cp a /tmp/b' 'several wrappers'
+
+  # A `local` declared below function level is a source-level regression
+  # even when no fixture happens to trigger the repeat.
+  if /usr/bin/grep -nE '^ {3,}local ' "${SCRIPT_DIR}/claude/tmp-guard-hook" >/dev/null; then
+    _fail "hook source declares a local below function level"
+  else
+    _pass "hook source declares every local at function level"
+  fi
+  if [[ "$(<"${SCRIPT_DIR}/claude/tmp-guard-hook")" == *_SKIP* ]]; then
+    _fail "hook source mentions a skip variable"
+  else
+    _pass "hook source has no skip variable"
+  fi
+
+  # --- Verdict shape --------------------------------------------------------
+  local out reason rc root length
+  out="$(_tmp_guard_run 'echo hi > /tmp/x')"
+  reason="$(jq -r '.hookSpecificOutput.permissionDecisionReason' <<< "${out}")"
+  if [[ "${reason}" == 'write to /tmp blocked: use ~/Library/Caches/claude-tmp/<name>/ instead.' ]]; then
+    _pass "deny reason is the one-line message"
+  else
+    _fail "deny reason unexpected: ${reason}"
+  fi
+  if [[ "$(jq -r '.hookSpecificOutput.hookEventName' <<< "${out}")" == PreToolUse ]]; then
+    _pass "deny names the PreToolUse event"
+  else
+    _fail "deny does not name the PreToolUse event"
+  fi
+  for root in /tmp /private/tmp /var/tmp /private/var/tmp /var/folders /private/var/folders; do
+    reason="$(jq -r '.hookSpecificOutput.permissionDecisionReason' <<< "$(_tmp_guard_run_path Write file_path "${root}/x")")"
+    length=${#reason}
+    if [[ "${reason}" == "write to ${root} blocked: "* ]] && (( length <= 120 )); then
+      _pass "reason names ${root} (${length} chars)"
+    else
+      _fail "reason for ${root} wrong or over 120 chars: ${reason}"
+    fi
+  done
+  if [[ "${reason}" == *$'\n'* ]]; then
+    _fail "deny reason is not one line"
+  else
+    _pass "deny reason is one line"
+  fi
+  if [[ "${reason}" == *[Bb]ypass* || "${reason}" == *SKIP* || "${reason}" == *export* ]]; then
+    _fail "deny reason offers a bypass"
+  else
+    _pass "deny reason offers no bypass"
+  fi
+  printf '%s' '{"tool_name":"Bash","tool_input":{"command":"echo hi > /tmp/x"}}' \
+    | /bin/zsh "${SCRIPT_DIR}/claude/tmp-guard-hook" >/dev/null
+  rc=$?
+  if (( rc == 0 )); then
+    _pass "exit status 0 on deny"
+  else
+    _fail "exit status ${rc} on deny"
+  fi
+  printf '%s' '{"tool_name":"Bash","tool_input":{"command":"ls"}}' \
+    | /bin/zsh "${SCRIPT_DIR}/claude/tmp-guard-hook" >/dev/null
+  rc=$?
+  if (( rc == 0 )); then
+    _pass "exit status 0 on pass"
+  else
+    _fail "exit status ${rc} on pass"
+  fi
+
+  # --- Malformed payloads fail open, never block ---------------------------
+  local payload
+  for payload in '{}' 'not json' '' '[]' 'null' '{"tool_input":null}' \
+      '{"tool_input":{"command":5}}' '{"tool_input":{"command":""}}' \
+      '{"tool_input":{"command":null}}' '{"tool_input":{"file_path":5}}' \
+      '{"tool_input":{"file_path":""}}' '{"tool_input":"x"}' '{"tool_name":"Bash"}'; do
+    if [[ -z "$(printf '%s' "${payload}" | /bin/zsh "${SCRIPT_DIR}/claude/tmp-guard-hook" 2>/dev/null)" ]]; then
+      _pass "fail-open: payload ${payload:-<empty>} allowed through"
+    else
+      _fail "fail-open: payload ${payload:-<empty>} produced output"
+    fi
+  done
+
+  # --- Size and budget limits fail open --------------------------------------
+  fixture_dir="$(mktemp -d "${TMPDIR:-/tmp}/tmp-guard-fixtures.XXXXXX")"
+  pad="$(printf 'x%.0s' {1..120000})"
+  printf '%s\n' "echo ${pad}" "cp a /tmp/b" > "${fixture_dir}/huge"
+  _tmp_guard_expect_file PASS "${fixture_dir}/huge" 'command over the size cap (fail-open)'
+  pad="$(printf 'x%.0s' {1..15000})"
+  printf '%s\n' "echo ${pad} > /tmp/b" > "${fixture_dir}/okline"
+  _tmp_guard_expect_file DENY "${fixture_dir}/okline" '15KB line is still scanned'
+  /bin/rm -rf "${fixture_dir}"
+
+  # --- Shell options from the user's startup files do not change a verdict -----
+  # zsh reads $ZDOTDIR/.zshenv for every invocation, scripts included.
+  local zdir zout
+  zdir="$(mktemp -d "${TMPDIR:-/tmp}/tmp-guard-zdotdir.XXXXXX")"
+  print -r -- 'setopt ksharrays shwordsplit nobareglobqual nounset errexit noglob nomatch' > "${zdir}/.zshenv"
+  zout="$(_tmp_guard_run_env 'cp a /tmp/b' "${zdir}")"
+  _tmp_guard_check DENY "${zout}" 'deny under ksharrays, shwordsplit and errexit'
+  zout="$(_tmp_guard_run_env $'git commit -m "$(cat <<\'EOF\'\nmkdir /tmp/x\nEOF\n)"' "${zdir}")"
+  _tmp_guard_check PASS "${zout}" 'pass under ksharrays, shwordsplit and errexit, stdout and stderr empty'
+  zout="$(_tmp_guard_run_env 'cat /tmp/x' "${zdir}")"
+  _tmp_guard_check PASS "${zout}" 'read passes under ksharrays'
+  /bin/rm -rf "${zdir}"
+}

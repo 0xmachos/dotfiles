@@ -227,6 +227,7 @@ function run_linkage {
     [dns]=install_scripts
     [jump-user]=install_scripts
     [jump-system]=install_scripts
+    [scratch-sweep]=install_scripts
     [mdview]=install_scripts
     [npm-audit-check]=install_scripts
     [claude-session-audit]=install_scripts
@@ -255,6 +256,7 @@ function run_linkage {
     [container-tmp-hook]=install_dotfiles
     [md5-guard-hook]=install_dotfiles
     [md5-write-hook]=install_dotfiles
+    [tmp-guard-hook]=install_dotfiles
     [fetch-route-hook]=install_dotfiles
     [muse-exec-hook]=install_dotfiles
     [gh-publish-hook]=install_dotfiles

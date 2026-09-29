@@ -96,6 +96,7 @@ typeset -ra LAUNCHAGENT_PLISTS=(
   com.0xmachos.imageio-oop
   com.0xmachos.retrieval-metrics
   com.0xmachos.container-start
+  com.0xmachos.scratch-sweep
 )
 
 # shellcheck source=lib/zsh-sidebar disable=SC1091
@@ -611,6 +612,7 @@ function install_dotfiles {
     "claude/container-tmp-hook:container-tmp-hook"
     "claude/md5-guard-hook:md5-guard-hook"
     "claude/md5-write-hook:md5-write-hook"
+    "claude/tmp-guard-hook:tmp-guard-hook"
     "claude/fetch-route-hook:fetch-route-hook"
     "claude/muse-exec-hook:muse-exec-hook"
     "claude/gh-publish-hook:gh-publish-hook"
@@ -808,7 +810,7 @@ function install_scripts {
   #   Symlink dotfiles/bin/ scripts into /usr/local/bin
   #   Create /usr/local/bin
   #   Symlink files in /usr/local/bin
-  #   launchd-invoked scripts (jump-system, jump-user) are COPIED, not
+  #   launchd-invoked scripts (jump-system, jump-user, scratch-sweep) are COPIED, not
   #   symlinked — see the comments at each for why
   
   local -ar bin_files=(dns mdview npm-audit-check claude-session-audit papercut git-sign-unpushed bao-mcp-env)
@@ -891,6 +893,17 @@ function install_scripts {
     echo "[✅] Successfully installed jump-user to /usr/local/bin/jump-user (root:wheel 755)"
   else
     echo "[❌] Failed to install jump-user to /usr/local/bin/jump-user"
+  fi
+
+  # Copy scratch-sweep rather than symlink, for the same reason as jump-user:
+  # its LaunchAgent cannot exec a program that resolves under ~/Documents/.
+  sudo rm -f "/usr/local/bin/scratch-sweep"
+  if sudo cp "${SCRIPT_DIR}/bin/scratch-sweep" "/usr/local/bin/scratch-sweep"; then
+    sudo chown root:wheel "/usr/local/bin/scratch-sweep"
+    sudo chmod 755 "/usr/local/bin/scratch-sweep"
+    echo "[✅] Successfully installed scratch-sweep to /usr/local/bin/scratch-sweep (root:wheel 755)"
+  else
+    echo "[❌] Failed to install scratch-sweep to /usr/local/bin/scratch-sweep"
   fi
 
   # Symlink bittersweet into /usr/local/bin
