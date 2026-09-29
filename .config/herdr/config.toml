@@ -25,11 +25,23 @@ channel = "preview"
 
 [ui]
 status_indicators = "symbols"
-hide_tab_bar_when_single_tab = true
+hide_tab_bar_when_single_tab = false
+# Attention queue: blocked agents first, then working, then done.
+agent_panel_sort = "priority"
 show_agent_labels_on_pane_borders = true
 prompt_new_tab_name = false
 # Ghostty's tab bar shows this title; the default leads with the hostname.
 window_title = "{workspace} › {tab}"
+
+# Right end of the tab bar: zoom marker, branch with a changed-file count of
+# the focused pane's repo (the sidebar's git status only shows ahead/behind),
+# and the time. The command runs on the herdr server every few seconds.
+tab_bar_right = [
+  { type = "zoom" },
+  { type = "command", command = 'd="${HERDR_ACTIVE_PANE_CWD:-.}"; b=$(git --no-optional-locks -C "$d" branch --show-current 2>/dev/null); [ -n "$b" ] && echo "$b ~$(git --no-optional-locks -C "$d" status --porcelain 2>/dev/null | wc -l | tr -d " ")"', interval_seconds = 5, timeout_seconds = 2 },
+  { type = "datetime", format = "%H:%M" },
+]
+tab_bar_right_separator = " · "
 
 # Ask Ghostty (OSC 9/777) for a macOS notification when a background agent
 # needs attention or finishes; in-app toasts and system delivery are the
@@ -38,12 +50,12 @@ window_title = "{workspace} › {tab}"
 delivery = "terminal"
 
 # Agent rows follow each session's own terminal title, which Claude Code keeps
-# updated, instead of a fixed directory name.
+# updated, instead of a fixed directory name. The spaces panel already names the
+# workspace, so it is not repeated here.
 [ui.sidebar.agents]
 row_gap = 1
 rows = [
-  [{ token = "state_icon" }, { token = "workspace", bold = true }],
-  [{ token = "terminal_title_stripped" }],
+  [{ token = "state_icon" }, { token = "terminal_title_stripped", bold = true }],
 ]
 
 [ui.sidebar.spaces]
@@ -52,6 +64,10 @@ rows = [
   [{ token = "state_icon" }, { token = "workspace", bold = true }],
   [{ token = "branch" }, { token = "git_status" }],
 ]
+
+# Reopen each Claude session in its own conversation after a server restart.
+[session]
+resume_agents_on_restore = true
 
 # Direct alt chords (left Option, per Ghostty macos-option-as-alt = left).
 [keys]
