@@ -143,8 +143,13 @@ function _run_all_parallel {
   local jobs="$1" work s rc
   local -a runnable=()
   work="$(mktemp -d "${TMPDIR:-/tmp}/dotfiles-test.XXXXXX")"
+  # EXIT covers the normal return (a trap set in a function fires when the
+  # function returns); INT/TERM cover a Ctrl-C in the poll loop, which
+  # otherwise leaves the work directory behind in $TMPDIR.
   # shellcheck disable=SC2064  # expand now: the path never changes
   trap "/bin/rm -rf '${work}'" EXIT
+  # shellcheck disable=SC2064  # expand now: the path never changes
+  trap "/bin/rm -rf '${work}'; exit 130" INT TERM
   for s in "${SUITES[@]}"; do runnable+=("${s}"); done
   for s in "${EXTRA_SUITES[@]}"; do
     [[ -f "${SCRIPT_DIR}/tests/${s}" ]] && runnable+=("${s}")
