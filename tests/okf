@@ -92,6 +92,13 @@ function _okf_check_freshness {
 function run_okf {
   _section "OKF internals bundle"
 
+  # internals/ is gitignored and synced out of band, so a fresh clone has no
+  # bundle to check. Skip, don't abort on the empty glob (2026-09-29).
+  if [[ ! -d "${SCRIPT_DIR}/internals" ]]; then
+    _skip "internals/ absent — pending out-of-band sync, bundle checks skipped"
+    return
+  fi
+
   _okf_check_conformance
   _okf_check_freshness
 }

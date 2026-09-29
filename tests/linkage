@@ -328,9 +328,14 @@ function run_linkage {
     _linkage_check_deployed install_launchagents "LaunchDaemons/${name}"
   done
 
-  # 6. claude/ items (files and subdirs, skip .DS_Store)
+  # 6. claude/ items (files and subdirs, skip .DS_Store). claude/ is gitignored
+  # and synced out of band, so a fresh clone has none: skip the walk rather
+  # than let the empty glob abort the suite under nomatch (2026-09-29).
   local claude_item
-  for claude_item in claude/*; do
+  if [[ ! -d claude ]]; then
+    _skip "claude/ absent — pending out-of-band sync, claude/ manifest walk skipped"
+  fi
+  for claude_item in claude/*(N); do
     [[ -e "${claude_item}" ]] || continue
     name="${claude_item##*/}"
     [[ "${name}" == ".DS_Store" ]] && continue

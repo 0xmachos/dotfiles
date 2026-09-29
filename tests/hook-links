@@ -39,6 +39,13 @@ function run_hook_links {
   local settings="${SCRIPT_DIR}/claude/settings.json"
   local bittersweet="${SCRIPT_DIR}/bittersweet"
 
+  # claude/ is gitignored and synced out of band; without its settings.json
+  # there is nothing to check, so skip like the hook suites do (2026-09-29).
+  if [[ ! -f "${settings}" ]]; then
+    _skip "claude/settings.json absent — claude/ not yet synced to this machine"
+    return
+  fi
+
   # Collect every ~/.claude/<file> the settings invoke as a command, deduped.
   # `jq … < file` lets the sourcing zsh open the file (TCC grant is on zsh, not
   # jq). `|| true` absorbs grep's exit-1 on no match under `set -euo pipefail`.
