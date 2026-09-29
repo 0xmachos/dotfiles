@@ -48,11 +48,17 @@ function _sl_json {
 # assertion wants, or an empty line a "hidden" assertion accepts.
 # GIT_CEILING_DIRECTORIES stops git discovery at the sandbox, so a TMPDIR
 # inside a checkout cannot pull in a real repo (or write its /tmp cache).
+# _run_no_tty (tests/lib, setsid) matches production: Claude Code runs the
+# statusline with no controlling terminal (ps shows TTY ??, 2026-09-29). With
+# one, zsh rewrites COLUMNS from the tty window size at startup, even with all
+# stdio redirected, and the case's COLUMNS=<n> is lost (56/142 failed from a
+# real terminal; repro: script -q /dev/null zsh -c 'stty cols 80; ./test
+# statusline' — script's own pty is 0x0, which zsh ignores).
 function _sl_run {
   local cols="$1" payload="$2"
   shift 2
   _SL_RC=0
-  _SL_OUT="$(printf '%s' "${payload}" | env -u CLAUDE_CODE_AUTO_COMPACT_WINDOW \
+  _SL_OUT="$(printf '%s' "${payload}" | _run_no_tty env -u CLAUDE_CODE_AUTO_COMPACT_WINDOW \
     -u GIT_DIR -u GIT_WORK_TREE GIT_CEILING_DIRECTORIES="${_SL_SB}" \
     HOME="${_SL_SB}" COLUMNS="${cols}" STATUSLINE_NOW="${_SL_NOW}" \
     STATUSLINE_OSASCRIPT="${_SL_SB}/osascript-stub" "$@" \
@@ -498,7 +504,7 @@ function _sl_ledger_concurrent {
     printf '1' > "${u}/last-c${i}"
     ( _sl_json ".session_id = \"c${i}\" | .cost.total_cost_usd = 2
         | .rate_limits.five_hour.used_percentage = 20" \
-      | env HOME="${_SL_SB}" COLUMNS=140 STATUSLINE_NOW="${_SL_NOW}" \
+      | _run_no_tty env HOME="${_SL_SB}" COLUMNS=140 STATUSLINE_NOW="${_SL_NOW}" \
         GIT_CEILING_DIRECTORIES="${_SL_SB}" STATUSLINE_OSASCRIPT="${_SL_SB}/osascript-stub" \
         /bin/zsh "${SCRIPT_DIR}/claude/statusline-command" >/dev/null 2>&1
       print -r -- $? > "${_SL_SB}/rc-c${i}" ) &
