@@ -6,7 +6,9 @@
 # (for every matched tool, pointing at the right `gh` command for that URL's
 # shape) or an X status post fetched through WebFetch/Exa (pointing at
 # X's oEmbed endpoint, but allowed through mcp__parallel__web_fetch, which
-# does handle X). Feeds tool payloads as stdin JSON, the same shape as tests/md5-write,
+# does handle X). Also denies every WebSearch and mcp__parallel__web_search
+# call outright, pointing at Exa.
+# Feeds tool payloads as stdin JSON, the same shape as tests/md5-write,
 # and asserts the verdict and (for GitHub) the specific gh command named.
 #
 # Every fixture URL below is invented for this suite (example-org/
@@ -41,8 +43,17 @@ function _fr_run_urls {
     | /bin/zsh "${SCRIPT_DIR}/claude/fetch-route-hook"
 }
 
+function _fr_run_search {
+  # Echo the hook's stdout for a search-shaped payload; tool defaults to WebSearch.
+  local query="$1" tool="${2:-WebSearch}"
+  jq -n --arg q "${query}" --arg t "${tool}" '{tool_name:$t, tool_input:{query:$q}}' \
+    | /bin/zsh "${SCRIPT_DIR}/claude/fetch-route-hook"
+}
+
 function _fr_reason {
   # Echo the deny reason of hook output $1, or empty if it was not a deny.
+  # Non-zero on empty input: callers under errexit must capture it with
+  # `|| true` so a regression is a FAIL line, not an aborted run.
   printf '%s' "$1" | jq -er '.hookSpecificOutput.permissionDecisionReason' 2>/dev/null
 }
 
@@ -68,7 +79,7 @@ function _fr_expect_reason_has {
   local label="${4:-$url}"
   out="$(_fr_run_url "${tool}" "${url}")"
   verdict="$(_hook_verdict "${out}")"
-  reason="$(_fr_reason "${out}")"
+  reason="$(_fr_reason "${out}" || true)"
   if [[ "${verdict}" == DENY && "${reason}" == *"${substring}"* ]]; then
     _pass "DENY + reason has '${substring}': ${label}"
   else
@@ -94,7 +105,8 @@ function run_fetch_route {
   # --- GitHub: every shape gets the right gh command, for every matched tool ---
 
   local -a tools=(WebFetch mcp__exa__web_fetch_exa mcp__exa__crawling_exa mcp__parallel__web_fetch)
-  local tool
+  local tool out mixed_reason
+  local -a reason_lines
   for tool in "${tools[@]}"; do
     _fr_expect_url DENY "${tool}" 'https://github.com/example-org/example-repo' "github root denied for ${tool}"
   done
@@ -140,7 +152,7 @@ function run_fetch_route {
   _fr_expect_reason_has WebFetch 'https://raw.githubusercontent.com/example-org/example-repo/main/src/foo.py' \
     "gh api 'repos/example-org/example-repo/contents/src/foo.py?ref=main' -H \"Accept: application/vnd.github.raw\"" 'raw.githubusercontent.com'
   _fr_expect_reason_has WebFetch 'https://raw.githubusercontent.com/example-org/example-repo/main/src/foo.py' \
-    'may itself contain slashes' 'raw.githubusercontent.com ambiguity noted'
+    'ref may contain slashes' 'raw.githubusercontent.com ambiguity noted'
 
   # Hosts with no shape-specific branch still get a generic gh pointer.
   _fr_expect_reason_has WebFetch 'https://gist.github.com/example-user/deadbeefcafe' 'gh api' 'gist.github.com generic'
@@ -176,23 +188,23 @@ function run_fetch_route {
   # every dynamic value in a suggested command must be quoted before it is
   # safe to paste into zsh.
 
-  # Note: the reason string is "${url}: ${FR_REASON}" (main() labels each
+  # Note: the reason string is "${url} blocked: ${FR_REASON}" (main() labels each
   # denied URL with its own raw form before the reason text), so the label
   # itself legitimately carries the unquoted URL/query — that is not a
   # "suggested command" and is out of scope here. The leak-checks below are
-  # scoped to the command text after "Use: "/inside the backticks, not the
+  # scoped to the command text after "use "/inside the backticks, not the
   # whole reason.
 
   local quote_out quote_reason want_quoted cmd_part
   quote_out="$(_fr_run_url WebFetch 'https://github.com/o/$(id)')"
-  quote_reason="$(_fr_reason "${quote_out}")"
+  quote_reason="$(_fr_reason "${quote_out}" || true)"
   want_quoted="'o/\$(id)'"
   if [[ "${quote_reason}" == *"${want_quoted}"* ]]; then
     _pass "a repo name shaped like a command substitution is quoted in the suggested command"
   else
     _fail "expected the quoted form ${want_quoted} in reason: ${quote_reason}"
   fi
-  cmd_part="${quote_reason#*Use: }"
+  cmd_part="${quote_reason#*use }"
   cmd_part="${cmd_part//"${want_quoted}"/}"
   if [[ "${cmd_part}" != *'$(id)'* ]]; then
     _pass "no unquoted \$(id) leaks into the suggested command outside the quoted form"
@@ -201,7 +213,7 @@ function run_fetch_route {
   fi
 
   quote_out="$(_fr_run_url WebFetch 'https://x.com/someuser/status/1234567890?s=20&x=1')"
-  quote_reason="$(_fr_reason "${quote_out}")"
+  quote_reason="$(_fr_reason "${quote_out}" || true)"
   cmd_part="${quote_reason#*\`}"
   cmd_part="${cmd_part%%\`*}"
   if [[ "${cmd_part}" == *"'https://x.com/someuser/status/1234567890'"* ]]; then
@@ -222,7 +234,6 @@ function run_fetch_route {
 
   # GitHub via the urls[] (MCP) shape, one URL in the batch.
   _fr_expect_url DENY mcp__exa__web_fetch_exa 'https://github.com/example-org/example-repo' 'exa web_fetch denied for github'
-  local out
   out="$(_fr_run_urls mcp__parallel__web_fetch 'https://github.com/example-org/example-repo')"
   if [[ "$(_hook_verdict "${out}")" == DENY ]]; then
     _pass "DENY: github via urls[] MCP shape"
@@ -235,7 +246,7 @@ function run_fetch_route {
   local -a x_deny_tools=(WebFetch mcp__exa__web_fetch_exa mcp__exa__crawling_exa)
   for tool in "${x_deny_tools[@]}"; do
     _fr_expect_url DENY "${tool}" 'https://x.com/someuser/status/1234567890' "x.com status denied for ${tool}"
-    _fr_expect_reason_has "${tool}" 'https://x.com/someuser/status/1234567890' 'oEmbed' "oEmbed named for ${tool}"
+    _fr_expect_reason_has "${tool}" 'https://x.com/someuser/status/1234567890' 'mcp__parallel__web_fetch' "X fallback named for ${tool}"
   done
   _fr_expect_url PASS mcp__parallel__web_fetch 'https://x.com/someuser/status/1234567890' 'X status allowed through mcp__parallel__web_fetch'
 
@@ -257,6 +268,69 @@ function run_fetch_route {
   _fr_expect_url PASS WebFetch 'https://x.com/someuser' 'x.com profile page allowed'
   _fr_expect_url PASS WebFetch 'https://x.com/search?q=example' 'x.com search allowed'
 
+  # --- WebSearch / mcp__parallel__web_search: denied outright, any query ----
+
+  local ws_tool ws_out ws_reason ws_empty_out ws_want
+  ws_want='web search blocked: use mcp__exa__web_search_exa; if Exa fails, stop and tell the user.'
+  for ws_tool in WebSearch mcp__parallel__web_search; do
+    ws_out="$(_fr_run_search 'whatever the query is' "${ws_tool}")"
+    if [[ "$(_hook_verdict "${ws_out}")" == DENY ]]; then
+      _pass "DENY: ${ws_tool} denied outright"
+    else
+      _fail "${ws_tool} was not denied"
+    fi
+    ws_reason="$(_fr_reason "${ws_out}" || true)"
+    if [[ "${ws_reason}" == "${ws_want}" ]]; then
+      _pass "${ws_tool} deny reason is the one-line Exa pointer"
+    else
+      _fail "${ws_tool} deny reason unexpected: ${ws_reason}"
+    fi
+    if [[ -n "${ws_reason}" && "${ws_reason}" != *$'\n'* && ${#ws_reason} -le 120 ]]; then
+      _pass "${ws_tool} deny reason is a single line of ${#ws_reason} chars (<= 120)"
+    else
+      _fail "${ws_tool} deny reason is not one line under 121 chars: ${ws_reason}"
+    fi
+
+    # Empty query still denied — the rule is unconditional.
+    ws_empty_out="$(_fr_run_search '' "${ws_tool}")"
+    if [[ "$(_hook_verdict "${ws_empty_out}")" == DENY ]]; then
+      _pass "DENY: ${ws_tool} with an empty query still denied"
+    else
+      _fail "${ws_tool} with an empty query was not denied"
+    fi
+  done
+
+  # Other tools' payloads with a query are not search tools: silent allow.
+  ws_out="$(_fr_run_search 'q' mcp__exa__web_search_exa)"
+  if [[ "$(_hook_verdict "${ws_out}")" == PASS ]]; then
+    _pass "PASS: mcp__exa__web_search_exa is never denied by the search rule"
+  else
+    _fail "mcp__exa__web_search_exa was denied or produced invalid output"
+  fi
+
+  # Rule-2 regression: a batch that runs the per-URL classifier repeatedly in
+  # one process must still print exactly one JSON object.
+  out="$(_fr_run_urls mcp__exa__web_fetch_exa \
+    'https://github.com/example-org/example-repo/blob/main/a.py' \
+    'https://github.com/example-org/example-repo/blob/main/b.py' \
+    'https://github.com/example-org/example-repo/pull/1' \
+    'https://github.com/example-org/example-repo/pull/2' \
+    'https://raw.githubusercontent.com/example-org/example-repo/main/c.py' \
+    'https://raw.githubusercontent.com/example-org/example-repo/main/d.py')"
+  if [[ "$(_hook_verdict "${out}")" == DENY ]]; then
+    _pass "DENY: repeated same-shape URLs yield one valid JSON verdict"
+  else
+    _fail "repeated same-shape URLs produced an invalid verdict: ${out}"
+  fi
+  mixed_reason="$(_fr_reason "${out}" || true)"
+  # shellcheck disable=SC2296  # zsh (f) splits on newlines
+  reason_lines=("${(@f)mixed_reason}")
+  if (( ${#reason_lines[@]} == 6 )); then
+    _pass "one reason line per denied URL"
+  else
+    _fail "expected six reason lines, got ${#reason_lines[@]}: ${mixed_reason}"
+  fi
+
   # --- unrelated URLs -------------------------------------------------------
 
   _fr_expect_url PASS WebFetch 'https://example.com/whatever' 'unrelated host allowed'
@@ -273,8 +347,7 @@ function run_fetch_route {
   else
     _fail "mixed batch was not denied"
   fi
-  local mixed_reason
-  mixed_reason="$(_fr_reason "${out}")"
+  mixed_reason="$(_fr_reason "${out}" || true)"
   if [[ "${mixed_reason}" == *'github.com/example-org/example-repo/blob/main/foo.py'* ]]; then
     _pass "mixed batch: github offender named"
   else
