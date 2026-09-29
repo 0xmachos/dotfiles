@@ -1,0 +1,595 @@
+#!/bin/zsh
+# dotfiles/tests/git-bypass
+#
+# Behavioural test for claude/git-bypass-hook, the PreToolUse hook that
+# denies, at a real git command position, the forms that switch this repo's
+# own git hooks or commit signing off: `--no-verify` (its abbreviations and the
+# `-n` short form, including short-flag clusters), hooks.* / core.hooksPath
+# config writes and -c overrides, config section edits, alias values carrying a
+# bypass, `--no-gpg-sign` and gpgsign=false, the environment names that
+# redirect git's config or switch a git hook off, and a faked terminal
+# (script, expect, unbuffer, socat, ssh -t to loopback) around git. The quoted
+# string of eval, sh -c and env -S is re-scanned one level deep.
+#
+# Feeds commands to the hook as stdin JSON and asserts the verdict, same
+# shape as tests/md5-guard. Every DENY is also checked for a one-line reason of
+# at most 120 characters, and every PASS must print nothing at all (a stray
+# line from the hook would corrupt a later verdict). Guards the parser against silent regressions in
+# both directions: a tweak that started denying `git log -n 5`, or stopped
+# catching `git commit -an`, would fail here.
+#
+# Run: ./test git-bypass    (or ./test for the full suite)
+#
+# ShellCheck: lint with `shellcheck --shell=bash tests/git-bypass`.
+# This file is sourced, not executed — chmod 644.
+#
+# shellcheck source=tests/lib
+
+function _hbg_test_run {
+  # Echo the hook's stdout for Bash command $1.
+  jq -n --arg c "$1" '{tool_name:"Bash", tool_input:{command:$c}}' \
+    | /bin/zsh "${SCRIPT_DIR}/claude/git-bypass-hook"
+}
+
+function _hbg_test_expect {
+  local want="$1" cmd="$2" label="${3:-$2}" out got reason
+  out="$(_hbg_test_run "${cmd}")"
+  got="$(_hook_verdict "${out}")"
+  if [[ "${got}" == DENY ]]; then
+    reason="$(jq -r '.hookSpecificOutput.permissionDecisionReason' <<< "${out}")"
+    if [[ "${reason}" == *$'\n'* || ${#reason} -gt 120 || -z "${reason}" ]]; then
+      _fail "${label} — deny reason is not one line of at most 120 characters: ${reason}"
+      return
+    fi
+  fi
+  if [[ "${got}" == "${want}" ]]; then
+    _pass "${want}: ${label}"
+  else
+    _fail "${label} — expected ${want}, got ${got}: ${out:0:200}"
+  fi
+}
+
+# Assert the exact deny reason for a command.
+function _hbg_test_reason {
+  local want="$1" cmd="$2" label="${3:-$2}" out reason
+  out="$(_hbg_test_run "${cmd}")"
+  reason="$(jq -r '.hookSpecificOutput.permissionDecisionReason // empty' <<< "${out}" 2>/dev/null)"
+  if [[ "${reason}" == "${want}" ]]; then
+    _pass "reason: ${label}"
+  else
+    _fail "${label} — expected reason '${want}', got '${reason}'"
+  fi
+}
+
+# shellcheck disable=SC2016
+function run_git_bypass {
+  _section "git hook-escape guard"
+
+  # claude/ is gitignored and synced out of band — absent hook means the
+  # sync hasn't reached this machine, not a regression. Skip, don't die.
+  if [[ ! -f "${SCRIPT_DIR}/claude/git-bypass-hook" ]]; then
+    _skip "claude/git-bypass-hook absent — claude/ not yet synced to this machine"
+    return 0
+  fi
+
+  if ! [[ -x "$(command -v jq)" ]]; then
+    _skip "jq not installed (brew install jq)"
+    return
+  fi
+
+  # --- --no-verify / -n on commit ------------------------------------------
+  _hbg_test_expect DENY 'git commit -m "x" --no-verify' 'commit --no-verify'
+  _hbg_test_expect DENY 'git commit -n' 'bare commit -n'
+  _hbg_test_expect DENY 'git commit -n -m x' 'commit -n before -m'
+  _hbg_test_expect DENY 'git commit -an' 'commit -an cluster (n second)'
+  _hbg_test_expect DENY 'git commit -na' 'commit -na cluster (n first)'
+  _hbg_test_expect DENY 'git commit -anm' 'commit -anm cluster — n reached before m'
+  _hbg_test_expect DENY 'git commit --amend --no-verify' 'commit --amend --no-verify'
+
+  # -m/-F/-C/-c consume a value — the flag's own value must never be misread
+  # as a flag, whether attached or in the next token.
+  # shellcheck disable=SC2016
+  _hbg_test_expect PASS 'git commit -m "no --no-verify"' 'quoted value mentioning --no-verify stays one token'
+  _hbg_test_expect PASS 'git commit -mnope' 'attached -m value containing n'
+  _hbg_test_expect PASS 'git commit -amn' 'cluster -amn — m consumes the trailing n as its value'
+  _hbg_test_expect PASS 'git commit -ac HEAD~1' 'cluster -ac — next token is -c value, never scanned'
+  _hbg_test_expect PASS 'git commit -a' 'commit -a alone, no n or m'
+  _hbg_test_expect PASS 'git commit -c HEAD' 'bare -c with a value token, no crash at end of argv'
+  _hbg_test_expect PASS 'git commit --amend' 'commit --amend alone'
+
+  # --- --no-verify on push/merge/am/rebase/cherry-pick ---------------------
+  _hbg_test_expect DENY 'git push origin main --no-verify' 'push --no-verify'
+  _hbg_test_expect DENY 'git merge --no-verify feature' 'merge --no-verify'
+  _hbg_test_expect DENY 'git am --no-verify < patch' 'am --no-verify'
+  _hbg_test_expect DENY 'git rebase --no-verify -i HEAD~3' 'rebase --no-verify'
+  _hbg_test_expect DENY 'git cherry-pick --no-verify abc123' 'cherry-pick --no-verify'
+
+  # -n on these subcommands is NOT --no-verify (push/merge/rebase/
+  # cherry-pick's own -n is a dry-run or no-commit flag; the commit-only
+  # -n-cluster check must never fire here), and log's -n is unrelated.
+  _hbg_test_expect PASS 'git push -n' 'push -n is --dry-run, not commit -n'
+  _hbg_test_expect PASS 'git merge -n' 'merge -n is --no-stat, not commit -n'
+  _hbg_test_expect PASS 'git rebase -n' 'rebase -n, not commit -n'
+  _hbg_test_expect PASS 'git cherry-pick -n' 'cherry-pick -n is --no-commit, not commit -n'
+  _hbg_test_expect PASS 'git log -n 5' 'log -n 5 — log is never checked for --no-verify at all'
+  _hbg_test_expect PASS 'git push origin main' 'ordinary push'
+  _hbg_test_expect PASS 'git status' 'unrelated subcommand'
+
+  # --- hooks.* / core.hooksPath config writes -------------------------------
+  _hbg_test_expect DENY 'git config hooks.pre-commit /bin/true' 'old-style config write'
+  _hbg_test_expect DENY 'git config --global hooks.pre-commit /bin/true' '--global config write'
+  _hbg_test_expect DENY 'git config --file /tmp/f hooks.pre-commit /bin/true' '--file-scoped config write'
+  _hbg_test_expect DENY 'git config --worktree hooks.pre-commit /bin/true' '--worktree-scoped config write'
+  _hbg_test_expect DENY 'git config --system hooks.pre-commit /bin/true' '--system-scoped config write'
+  _hbg_test_expect DENY 'git config core.hooksPath /tmp/x' 'core.hooksPath write'
+  _hbg_test_expect DENY 'git config --unset hooks.pre-commit' '--unset hooks.*'
+  _hbg_test_expect DENY 'git config --unset-all hooks.pre-commit' '--unset-all hooks.*'
+  _hbg_test_expect DENY 'git config --replace-all hooks.pre-commit x' '--replace-all hooks.*'
+  _hbg_test_expect DENY 'git config --add hooks.pre-commit x' '--add hooks.*'
+  _hbg_test_expect DENY 'git config set hooks.pre-commit /bin/true' 'new-style set subcommand'
+  _hbg_test_expect DENY 'git config unset hooks.pre-commit' 'new-style unset subcommand'
+  _hbg_test_expect DENY 'git config Core.HooksPath /tmp/x' 'case-insensitive core.hookspath key'
+  _hbg_test_expect DENY 'git config HOOKS.pre-commit x' 'case-insensitive hooks.* key'
+
+  # Reads must PASS — a bare key alone is a read, same as --get.
+  _hbg_test_expect PASS 'git config --get hooks.pre-commit' '--get hooks.*'
+  _hbg_test_expect PASS 'git config --get-all hooks.pre-commit' '--get-all hooks.*'
+  _hbg_test_expect PASS 'git config --get-regexp hooks' '--get-regexp hooks'
+  _hbg_test_expect PASS 'git config -l' 'bare -l list'
+  _hbg_test_expect PASS 'git config --list' 'bare --list'
+  _hbg_test_expect PASS 'git config hooks.pre-commit' 'bare key, no value, is a read'
+  _hbg_test_expect PASS 'git config get hooks.pre-commit' 'new-style get subcommand'
+  _hbg_test_expect PASS 'git config list' 'new-style list subcommand'
+  _hbg_test_expect PASS 'git config user.name' 'bare read of an unrelated key'
+  _hbg_test_expect PASS 'git config user.name "A Name"' 'write to an unrelated key'
+  _hbg_test_expect DENY 'git config hooks.pre-commit get' 'value that looks like a mode word still counts as the value'
+
+  # Config KEY containing a literal double quote (shell-quoted so the
+  # command itself is valid): the deny reason must still be well-formed
+  # JSON, not silently swallowed into an INVALID verdict by an unescaped
+  # quote landing in permissionDecisionReason.
+  # shellcheck disable=SC2016
+  _hbg_test_expect DENY 'git config '"'"'hooks.a"b'"'"' x' 'a quote inside the config key does not corrupt the deny JSON'
+
+  # --- -c hooks.*/core.hooksPath as a global option -------------------------
+  _hbg_test_expect DENY 'git -c core.hooksPath=/tmp status' '-c core.hooksPath overrides on any subcommand'
+  _hbg_test_expect DENY 'git -c hooks.pre-commit=/bin/true commit -m x' '-c hooks.* on commit'
+  _hbg_test_expect DENY 'git -C repo -c core.hooksPath=/tmp log' '-C then -c core.hooksPath'
+  _hbg_test_expect PASS 'git -c user.name=x status' '-c on an unrelated key'
+
+  # --- GIT_CONFIG_KEY_<n>= env-var override form ----------------------------
+  _hbg_test_expect DENY 'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/tmp/x git status' 'GIT_CONFIG_KEY_0=core.hooksPath'
+  _hbg_test_expect DENY 'GIT_CONFIG_KEY_2=hooks.pre-commit GIT_CONFIG_VALUE_2=/bin/true git log' 'GIT_CONFIG_KEY_2=hooks.*'
+  _hbg_test_expect PASS 'GIT_CONFIG_KEY_0=user.name GIT_CONFIG_VALUE_0=x git status' 'GIT_CONFIG_KEY_0 on an unrelated key'
+
+  # --- PII_HOOK_BYPASS / MSG_POLICY_SKIP / GIT_SIGN_SKIP --------------------
+  # Whole-command, not same-segment: an export earlier in the same command
+  # string denies exactly like a same-segment prefix does.
+  _hbg_test_expect DENY 'PII_HOOK_BYPASS=1 git commit -m x' 'PII_HOOK_BYPASS same-segment prefix'
+  _hbg_test_expect DENY 'MSG_POLICY_SKIP=1 git commit -m x' 'MSG_POLICY_SKIP same-segment prefix'
+  _hbg_test_expect DENY 'GIT_SIGN_SKIP=1 git push' 'GIT_SIGN_SKIP same-segment prefix'
+  _hbg_test_expect DENY 'export GIT_SIGN_SKIP=1; git push' 'export then git in a later segment'
+  _hbg_test_expect DENY 'GIT_SIGN_SKIP=1 && git push' 'GIT_SIGN_SKIP && git in a later segment'
+  _hbg_test_expect PASS 'GIT_SIGN_SKIP=1 npm test' 'bypass var set, no git anywhere in the command — whole-command pre-filter exits before the line loop'
+  _hbg_test_expect PASS 'MD5_GUARD_SKIP=1 md5 f; git status' 'an unrelated bypass var name is not ours'
+  _hbg_test_expect PASS 'npm test; git status' 'unrelated command followed by plain git'
+
+  # --- wrappers, redirections, VAR= prefixes --------------------------------
+  _hbg_test_expect DENY 'sudo git commit --no-verify' 'through sudo wrapper'
+  _hbg_test_expect DENY 'env git commit --no-verify' 'through env wrapper'
+  _hbg_test_expect DENY 'timeout 5 git commit --no-verify' 'through timeout wrapper with duration'
+  _hbg_test_expect DENY 'FOO=bar git commit --no-verify' 'unrelated VAR= prefix does not hide git'
+  _hbg_test_expect DENY '/usr/bin/git commit --no-verify' 'absolute path, basename match'
+  _hbg_test_expect DENY 'a && git commit --no-verify' 'command position after &&'
+  _hbg_test_expect DENY 'a; git commit --no-verify' 'command position after ;'
+  _hbg_test_expect DENY 'a | git commit --no-verify' 'command position after pipe (unusual but a real position)'
+  _hbg_test_expect PASS 'echo git commit --no-verify' 'not a command position — an argument to echo'
+  _hbg_test_expect PASS 'git log --grep=--no-verify' 'lookalike inside an unrelated flag value'
+
+  # Tab as a word separator: _hbg_words splits on a literal space only (see
+  # its header), so _hbg_walk has to turn an unquoted TAB into a space, or a
+  # tab-separated command never splits into words and the whole line reads as
+  # one unmatched word.
+  _hbg_test_expect DENY $'git\tcommit\t--no-verify' 'tab-separated command without quote characters'
+  _hbg_test_expect DENY 'git commit -m "x"'$'\t''--no-verify' 'tab before --no-verify after a quoted word'
+
+  # --- heredoc bodies: data unless the consumer actually executes them -----
+  local hd
+  hd="bash <<EOF"$'\n'"git config hooks.pre-commit /bin/true"$'\n'"EOF"
+  _hbg_test_expect DENY "${hd}" 'heredoc body, bash consumer — genuinely executes, still scanned'
+
+  hd="sh <<EOF"$'\n'"git commit --no-verify -m x"$'\n'"EOF"
+  _hbg_test_expect DENY "${hd}" 'heredoc body, sh consumer — still scanned'
+
+  hd='python3 - <<'"'"'PY'"'"''$'\n''doc = """git config hooks.pre-commit /bin/true"""'$'\n''PY'
+  _hbg_test_expect PASS "${hd}" 'heredoc body, python3 consumer, quoted delimiter — data, never scanned'
+
+  hd="cat <<EOF"$'\n'"git commit --no-verify"$'\n'"EOF"
+  # shellcheck disable=SC2016
+  _hbg_test_expect PASS "${hd}" 'heredoc body, cat consumer, unquoted delimiter — data (no $()/backtick to expand)'
+
+  hd="bash <<EOF"$'\n\t'"git commit --no-verify"$'\n'"EOF"
+  _hbg_test_expect DENY "${hd}" 'tab-indented heredoc body, bash consumer — the leading tab must not swallow the word split'
+
+  # --- verdicts stay a single JSON object across repeated loop iterations ---
+  # Each loop in the hook runs its body more than once here; a stray line on
+  # stdout (from a re-declared local) would turn these into INVALID.
+  _hbg_test_expect DENY 'git commit -a -s -m x -n' 'two short-flag words before -n'
+  _hbg_test_expect DENY 'git commit -a -a --no-verify' 'repeated short flag before --no-verify'
+  _hbg_test_expect DENY 'git commit -a -s -v -q -n' 'four short-flag words before -n'
+  _hbg_test_expect PASS 'git commit -a -s -v -q -m x' 'four short-flag words, no n: empty stdout'
+  _hbg_test_expect PASS 'git add -A && git commit -s -m x' 'two git segments: empty stdout'
+  _hbg_test_expect PASS 'git add -- tests/lint-hook test && git commit -S -F /tmp/msg' 'add then signed commit: empty stdout'
+  _hbg_test_expect PASS 'git add a && git commit -s -m x && git status && git log && git diff' 'five git segments: empty stdout'
+  _hbg_test_expect DENY 'X=1 git status; Y=2 git status; GIT_CONFIG_KEY_0=core.hooksPath git status' 'three git segments, hook path on the last'
+  _hbg_test_expect PASS 'GIT_CONFIG_KEY_0=user.name git status; GIT_CONFIG_KEY_1=user.email git status' 'two key assignments on unrelated keys'
+  _hbg_test_expect DENY 'git config a.b c; git config d.e f; git config core.hooksPath x' 'two harmless config writes then a hook path'
+  _hbg_test_expect PASS 'git -c a.b=c -c d.e=f status' 'two -c options on unrelated keys'
+  _hbg_test_expect DENY 'git -c a.b=c -c d.e=f -c core.hooksPath=x status' 'two -c options then a hook path'
+  hd=$'cat <<EOF\n$(echo a)\n`echo b`\n$(echo c)\nEOF\ngit commit --no-verify'
+  _hbg_test_expect DENY "${hd}" 'three expansion lines in an unquoted heredoc body, then --no-verify'
+  hd=$'cat <<EOF\n$(echo a)\n`echo b`\n$(echo c)\nEOF\ngit status'
+  _hbg_test_expect PASS "${hd}" 'three expansion lines in an unquoted heredoc body, plain git after'
+
+  # --- commands spanning lines: one buffer, newline only at top level -------
+  hd=$'git commit -m "$(cat <<\'EOF\'\nmsg\nEOF\n)" --no-verify'
+  _hbg_test_expect DENY "${hd}" 'heredoc message substitution, then --no-verify'
+  hd=$'git commit -m "$(cat <<\'EOF\'\nmsg\nEOF\n)" -n'
+  _hbg_test_expect DENY "${hd}" 'heredoc message substitution, then -n'
+  _hbg_test_expect DENY $'git commit -m "a\nb" --no-verify' 'newline inside a double-quoted message'
+  _hbg_test_expect DENY $'git commit -m \'a\nb\' --no-verify' 'newline inside a single-quoted message'
+  _hbg_test_expect DENY $'git push origin main \\\n --no-verify' 'backslash-newline joins the flag to the command'
+  _hbg_test_expect DENY $'git commit\\\n --no-verify' 'backslash-newline with no space before it'
+  _hbg_test_expect PASS $'git commit -m "a \\\nb"' 'backslash-newline inside a double-quoted message'
+  _hbg_test_expect DENY $'git status\ngit commit --no-verify' 'newline separates two commands'
+  _hbg_test_expect DENY $'# note\ngit commit --no-verify' 'a comment ends at the newline'
+  _hbg_test_expect PASS 'git commit -m x # --no-verify' 'flag inside a trailing comment'
+  _hbg_test_expect DENY 'echo "$(git commit -n)"' 'command substitution inside double quotes'
+  _hbg_test_expect DENY 'echo `git commit -n`' 'backtick substitution'
+  _hbg_test_expect DENY 'git commit -m "$(git log -1 --format=%s; git push --no-verify)"' 'second command inside a substitution'
+  hd=$'git commit -m "$(cat <<\'EOF\'\nDon\'t use it\nsee --no-verify\ngit push --no-verify\nEOF\n)"'
+  _hbg_test_expect PASS "${hd}" 'quoted-heredoc message that only mentions the flag, with an apostrophe'
+  hd=$'git commit -m "$(cat <<EOF\nline one\nEOF\n)"'
+  _hbg_test_expect PASS "${hd}" 'unquoted-heredoc message substitution'
+  hd=$'cat > /tmp/f <<\'EOF\'\ngit commit --no-verify\nEOF\ngit status'
+  _hbg_test_expect PASS "${hd}" 'quoted heredoc written to a file, then plain git'
+  hd=$'cat > /tmp/f <<\'EOF\'\nx\nEOF\ngit commit --no-verify'
+  _hbg_test_expect DENY "${hd}" 'quoted heredoc, then --no-verify after the terminator'
+  hd=$'cat <<EOF\n$(git commit -n)\nEOF'
+  _hbg_test_expect DENY "${hd}" 'unquoted heredoc body expands a substitution that runs git commit -n'
+  hd=$'cat <<\'EOF\'\n$(git commit -n)\nEOF'
+  _hbg_test_expect PASS "${hd}" 'quoted heredoc body is data'
+  _hbg_test_expect DENY $'echo "it\'s"; git commit -n' 'apostrophe inside double quotes'
+  _hbg_test_expect PASS $'git status # don\'t\ngit log' 'apostrophe inside a comment'
+  _hbg_test_expect DENY 'git commit -m "${x:-y}" --no-verify' 'parameter expansion before the flag'
+  _hbg_test_expect PASS 'git commit -m "${x:-y}" --amend' 'parameter expansion, no bypass'
+  _hbg_test_expect DENY 'git commit -m "$((1+2))" -n' 'arithmetic expansion before -n'
+
+  # --- reserved words and grouping reach the command word -------------------
+  _hbg_test_expect DENY 'if true; then git commit --no-verify; fi' 'if/then'
+  _hbg_test_expect DENY '! git commit -n' 'negation'
+  _hbg_test_expect DENY 'for x in 1; do git commit -n; done' 'for/do'
+  _hbg_test_expect DENY 'while true; do git push --no-verify; done' 'while/do'
+  _hbg_test_expect DENY 'f() { git commit -n; }; f' 'function body'
+  _hbg_test_expect DENY 'case x in a) git commit -n ;; esac' 'case arm'
+  _hbg_test_expect DENY '(git commit -n)' 'subshell'
+  _hbg_test_expect DENY '{ git commit -n; }' 'brace group'
+  _hbg_test_expect DENY 'time git commit -n' 'time'
+  _hbg_test_expect DENY 'nohup git commit --no-verify &' 'nohup'
+  _hbg_test_expect DENY 'xargs git commit -n' 'xargs'
+  _hbg_test_expect DENY 'command git commit --no-verify' 'command'
+
+  # --- --no-verify abbreviations (git accepts unambiguous prefixes) ---------
+  _hbg_test_expect DENY 'git commit --no-veri -m x' 'commit --no-veri'
+  _hbg_test_expect DENY 'git commit --no-v -m x' 'commit --no-v (six characters)'
+  _hbg_test_expect DENY 'git push --no-ver' 'push --no-ver'
+  _hbg_test_expect PASS 'git commit --no- -m x' 'five characters is below the abbreviation floor'
+  _hbg_test_expect PASS 'git merge --no-verify-signatures' 'a longer, different flag is not an abbreviation'
+
+  # --- commit short options with attached values ----------------------------
+  _hbg_test_expect PASS 'git status -uno' 'status -uno'
+  _hbg_test_expect PASS 'git status -unormal' 'status -unormal'
+  _hbg_test_expect PASS 'git log -Sn' 'log -Sn'
+  _hbg_test_expect PASS 'git commit -uno -m x' 'commit -uno is untracked-files=no'
+  _hbg_test_expect PASS 'git commit -unormal -m x' 'commit -unormal'
+  _hbg_test_expect PASS 'git commit -Sn -m x' 'commit -Sn is a key id'
+  _hbg_test_expect DENY 'git commit -uno -n -m x' 'commit -uno then a real -n'
+  _hbg_test_expect DENY 'git commit -am "x" -n' 'commit -am consumes the message, then -n'
+  _hbg_test_expect DENY 'git commit -nm x' 'commit -nm'
+  _hbg_test_expect DENY 'git commit -m "x" -s -n' 'message, -s, then -n'
+  _hbg_test_expect PASS 'git commit -m "fix: dont use -n"' 'message text mentioning -n'
+
+  # --- empty and concatenated quoted arguments ------------------------------
+  _hbg_test_expect DENY 'git commit -m "" -n' 'empty message argument does not swallow -n'
+  _hbg_test_expect DENY "git commit -m '' --no-verify" 'empty single-quoted argument'
+  _hbg_test_expect DENY 'git commit --no-ver""ify -m x' 'quotes inside the flag'
+  _hbg_test_expect DENY 'git commit --no-verify$(true) -m x' 'substitution glued to the flag'
+  _hbg_test_expect PASS 'git commit -m $(cat msg) -F f' 'substitution as the message value'
+  _hbg_test_expect DENY 'git commit -m $(cat msg) -n' 'substitution as the message value, then -n'
+
+  # --- $'...' quoting is stripped -------------------------------------------
+  _hbg_test_expect DENY "git commit \$'--no-verify' -m x" 'ANSI-C quoted flag'
+  _hbg_test_expect DENY "git commit -m x \$'-n'" 'ANSI-C quoted -n'
+  _hbg_test_expect PASS "git commit -m \$'no --no-verify'" 'ANSI-C quoted message mentioning the flag'
+
+  # --- redirections never split argv ----------------------------------------
+  _hbg_test_expect PASS 'git commit -m x 2>&1 | tail' 'commit piped with 2>&1'
+  _hbg_test_expect DENY 'git commit -m x 2>&1 --no-verify' 'flag after 2>&1'
+  _hbg_test_expect DENY 'git commit 2>&1 -n' '-n after 2>&1'
+  _hbg_test_expect DENY 'git commit &>/dev/null --no-verify' 'flag after &>'
+  _hbg_test_expect DENY 'git push >&2 --no-verify' 'flag after >&2'
+  _hbg_test_expect PASS 'git push origin main >/dev/null 2>&1' 'push with both streams redirected'
+
+  # --- a bare -- ends flag scanning -----------------------------------------
+  _hbg_test_expect PASS 'git commit -m x -- --no-verify' 'commit pathspec after --'
+  _hbg_test_expect PASS 'git push origin -- --no-verify' 'push refspec after --'
+  _hbg_test_expect DENY 'git commit --no-verify -- file' 'flag before --'
+
+  # --- config sections, edit, aliases ---------------------------------------
+  _hbg_test_expect DENY 'git config --remove-section hooks' '--remove-section hooks'
+  _hbg_test_expect DENY 'git config --global --rename-section core x' '--rename-section core'
+  _hbg_test_expect DENY 'git config remove-section hooks' 'remove-section subcommand'
+  _hbg_test_expect DENY 'git config rename-section core x' 'rename-section subcommand'
+  _hbg_test_expect PASS 'git config --remove-section user' 'removing an unrelated section'
+  _hbg_test_expect PASS 'git config --remove-section a --remove-section b' 'two unrelated sections'
+  _hbg_test_expect DENY 'git config -e' 'config -e'
+  _hbg_test_expect DENY 'git config --edit' 'config --edit'
+  _hbg_test_expect DENY 'git config --global --edit' 'config --global --edit'
+  _hbg_test_expect DENY 'git config alias.ci "commit --no-verify"' 'alias carrying --no-verify'
+  _hbg_test_expect DENY 'git config alias.ci "!git commit --no-veri -m"' 'alias carrying an abbreviation'
+  _hbg_test_expect DENY 'git -c alias.ci="commit --no-verify" ci' '-c alias carrying --no-verify'
+  _hbg_test_expect DENY 'git config alias.x "config core.hooksPath /x"' 'alias writing core.hooksPath'
+  _hbg_test_expect DENY 'git config alias.x "config hooks.a b"' 'alias writing hooks.*'
+  _hbg_test_expect DENY 'git config alias.x "commit --no-gpg-sign"' 'alias carrying --no-gpg-sign'
+  _hbg_test_expect PASS 'git config alias.st status' 'harmless alias'
+  _hbg_test_expect PASS 'git config alias.mg "merge --no-verify-signatures"' 'alias with a longer, different flag'
+
+  # --- signing --------------------------------------------------------------
+  _hbg_test_expect DENY 'git commit --no-gpg-sign -m x' 'commit --no-gpg-sign'
+  _hbg_test_expect DENY 'git commit --no-gpg -m x' 'commit --no-gpg abbreviation'
+  _hbg_test_expect DENY 'git rebase --no-gpg-sign main' 'rebase --no-gpg-sign'
+  _hbg_test_expect DENY 'git merge --no-gpg-sign x' 'merge --no-gpg-sign'
+  _hbg_test_expect DENY 'git cherry-pick --no-gpg-sign x' 'cherry-pick --no-gpg-sign'
+  _hbg_test_expect DENY 'git revert --no-gpg-sign x' 'revert --no-gpg-sign'
+  _hbg_test_expect DENY 'git am --no-gpg-sign p' 'am --no-gpg-sign'
+  _hbg_test_expect DENY 'git tag --no-gpg-sign v1' 'tag --no-gpg-sign'
+  _hbg_test_expect DENY 'git -c commit.gpgsign=false commit -m x' '-c commit.gpgsign=false'
+  _hbg_test_expect DENY 'git -c tag.gpgsign=off tag v1' '-c tag.gpgsign=off'
+  _hbg_test_expect DENY 'git -c commit.gpgsign=0 commit -m x' '-c commit.gpgsign=0'
+  _hbg_test_expect DENY 'git -c commit.gpgsign= commit -m x' '-c commit.gpgsign= (empty is false)'
+  _hbg_test_expect PASS 'git -c commit.gpgsign=true commit -m x' '-c commit.gpgsign=true'
+  _hbg_test_expect DENY 'git config commit.gpgsign false' 'config write commit.gpgsign'
+  _hbg_test_expect DENY 'git config --global tag.gpgsign false' 'config write tag.gpgsign'
+  _hbg_test_expect DENY 'git config --unset commit.gpgsign' 'config unset commit.gpgsign'
+  _hbg_test_expect PASS 'git config commit.gpgsign' 'bare read of commit.gpgsign'
+  _hbg_test_expect PASS 'git config --get commit.gpgsign' '--get commit.gpgsign'
+  _hbg_test_expect PASS 'git commit -S -m x' 'commit -S'
+  _hbg_test_expect PASS 'git tag -s v1 -m msg' 'tag -s'
+  _hbg_test_expect DENY 'GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false git commit -m x' 'GIT_CONFIG_KEY naming commit.gpgsign'
+
+  # --- whole-command environment forms --------------------------------------
+  _hbg_test_expect DENY 'export GIT_CONFIG_KEY_0=core.hooksPath; git commit -m x' 'exported hook-path key, git in a later segment'
+  _hbg_test_expect DENY 'GIT_CONFIG_KEY_1=hooks.pre-commit; git status' 'hook key assignment on its own segment'
+  _hbg_test_expect DENY 'GIT_CONFIG_PARAMETERS="core.hooksPath=/x" git commit -m x' 'GIT_CONFIG_PARAMETERS'
+  _hbg_test_expect DENY 'export GIT_CONFIG_PARAMETERS=x; git status' 'exported GIT_CONFIG_PARAMETERS'
+  _hbg_test_expect DENY 'git --config-env=core.hooksPath=X commit -m x' '--config-env=...'
+  _hbg_test_expect DENY 'git --config-env core.hooksPath=X commit -m x' '--config-env <pair>'
+  _hbg_test_expect DENY 'GIT_CONFIG_GLOBAL=/dev/null git commit -m x' 'GIT_CONFIG_GLOBAL'
+  _hbg_test_expect DENY 'GIT_CONFIG_SYSTEM=/dev/null git commit -m x' 'GIT_CONFIG_SYSTEM'
+  _hbg_test_expect DENY 'GIT_CONFIG_NOSYSTEM=1 git commit -m x' 'GIT_CONFIG_NOSYSTEM'
+  _hbg_test_expect DENY 'HOME=/tmp/x git commit -m x' 'HOME'
+  _hbg_test_expect DENY 'XDG_CONFIG_HOME=/tmp/x git commit -m x' 'XDG_CONFIG_HOME'
+  _hbg_test_expect DENY 'env -i git commit -m x' 'env -i drops the home directory'
+  _hbg_test_expect DENY 'env -u HOME git commit -m x' 'env -u HOME'
+  _hbg_test_expect DENY 'REPO_VISIBILITY_FORCE=private git push' 'REPO_VISIBILITY_FORCE'
+  _hbg_test_expect DENY 'REPO_VISIBILITY_GH=/bin/true git push' 'REPO_VISIBILITY_GH'
+  _hbg_test_expect DENY 'PII_HOOK_PATTERNS=/dev/null git commit -m x' 'PII_HOOK_PATTERNS'
+  _hbg_test_expect DENY 'PII_HOOK_SSH_CONFIG=/dev/null git push' 'PII_HOOK_SSH_CONFIG'
+  _hbg_test_expect DENY 'GIT_GLOBAL_HOOKS_SEEN=1 git commit -m x' 'GIT_GLOBAL_HOOKS_SEEN'
+  _hbg_test_expect DENY $'export PII_HOOK_BYPASS=1\ngit commit -m x' 'export on its own line'
+  _hbg_test_expect PASS 'HOME=/tmp/x npm test' 'HOME assigned, no git anywhere'
+  _hbg_test_expect PASS 'TMPDIR=/tmp/x git status' 'TMPDIR is not a verdict seam'
+  _hbg_test_expect PASS 'cd "$HOME" && git status' 'reading HOME is not assigning it'
+
+  # --- faked terminal --------------------------------------------------------
+  _hbg_test_expect DENY 'script -q /dev/null git commit -m x' 'script'
+  _hbg_test_expect DENY 'PII_HOOK_BYPASS=1 script -q /dev/null git commit -m x' 'script with a bypass variable'
+  _hbg_test_expect DENY "script -q /dev/null zsh -c 'PII_HOOK_BYPASS=1 git commit -m x'" 'script around zsh -c'
+  _hbg_test_expect DENY "expect -c 'spawn env GIT_SIGN_SKIP=1 git push; interact'" 'expect'
+  _hbg_test_expect DENY 'GIT_SIGN_SKIP=1 unbuffer git push' 'unbuffer with a bypass variable'
+  _hbg_test_expect DENY 'unbuffer git push' 'unbuffer'
+  _hbg_test_expect DENY 'socat EXEC:"git push",pty STDIO' 'socat'
+  _hbg_test_expect DENY 'sudo script -q /dev/null git push' 'script behind a wrapper'
+  _hbg_test_expect DENY 'ssh -t localhost git push' 'ssh -t localhost'
+  _hbg_test_expect DENY 'ssh -tt user@127.0.0.1 "git commit -m x"' 'ssh -tt to a loopback address'
+  _hbg_test_expect DENY 'ssh -o RequestTTY=force localhost git push' 'ssh RequestTTY=force'
+  _hbg_test_expect PASS 'ssh -t example-host ls -t; echo git' 'ssh -t to a remote host'
+  _hbg_test_expect PASS 'ssh localhost git status' 'ssh to loopback without a tty'
+  _hbg_test_expect PASS 'ssh -p 22 -i key example-host git status' 'ssh with option values'
+  _hbg_test_expect PASS 'script -q /dev/null ls' 'script with no git in the command'
+  _hbg_test_expect DENY "eval 'git commit -n'" 'eval of a quoted string'
+  _hbg_test_expect DENY 'eval git commit -n' 'eval of bare words'
+  _hbg_test_expect DENY "bash -c 'git commit --no-verify'" 'bash -c'
+  _hbg_test_expect DENY "zsh -lc 'GIT_SIGN_SKIP=1 git push'" 'zsh -lc with a bypass variable'
+  _hbg_test_expect DENY "sh -c 'git commit -n'" 'sh -c'
+  _hbg_test_expect DENY 'bash -c "git commit -n" && sh -c "git commit -n"' 'two -c strings'
+  _hbg_test_expect DENY "env -S 'git commit -n'" 'env -S'
+  _hbg_test_expect DENY "env -S'git commit -n'" 'env -S attached'
+  _hbg_test_expect DENY "sudo bash -c 'git commit -n'" 'sudo bash -c'
+  _hbg_test_expect PASS "bash -c 'git status'" 'bash -c with harmless git'
+  _hbg_test_expect PASS "eval 'git status'" 'eval with harmless git'
+
+  # --- ordinary git stays quiet ---------------------------------------------
+  _hbg_test_expect PASS 'git log --oneline | head -5' 'log piped to head'
+  _hbg_test_expect PASS 'git diff HEAD~1 -- claude/git-bypass-hook' 'diff with a path'
+  _hbg_test_expect PASS 'git commit -F /tmp/msg.txt' 'commit -F'
+  _hbg_test_expect PASS 'git commit --amend -C HEAD' 'commit --amend -C'
+  _hbg_test_expect PASS 'git fetch origin && git rebase origin/main' 'fetch then rebase'
+  _hbg_test_expect PASS 'git rebase -i HEAD~3' 'interactive rebase'
+  _hbg_test_expect PASS 'git config --get core.hooksPath' 'read core.hooksPath'
+  _hbg_test_expect PASS 'git config user.email "a@b.c"' 'write user.email'
+  _hbg_test_expect PASS "echo 'git commit -n'" 'quoted text passed to echo'
+  _hbg_test_expect PASS "grep -n 'no-verify' file; git status" 'grep for the flag'
+  _hbg_test_expect PASS 'git -C /tmp/x log -n 3' 'log -n after -C'
+  _hbg_test_expect PASS 'git stash -n' 'stash -n'
+  _hbg_test_expect PASS 'git tag -a v1 -m msg' 'annotated tag'
+  _hbg_test_expect PASS 'git revert HEAD' 'revert'
+  _hbg_test_expect PASS 'git worktree add ../x -b y' 'worktree add'
+  _hbg_test_expect PASS 'git commit -m "a && b; c | d"' 'separators inside a quoted message'
+  _hbg_test_expect PASS 'git log --format=%H -n1' 'log -n1'
+
+  # --- a redirection glued to a word ends the word ---------------------------
+  _hbg_test_expect DENY 'git commit -m x --no-verify>/dev/null' 'flag glued to > file'
+  _hbg_test_expect DENY 'git commit -m x --no-verify>&2' 'flag glued to >&2'
+  _hbg_test_expect DENY 'git commit -m x --no-verify</dev/null' 'flag glued to < file'
+  _hbg_test_expect DENY 'git commit -m x --no-verify>>log' 'flag glued to >> file'
+  _hbg_test_expect DENY 'git commit -m x --no-verify&>/dev/null' 'flag glued to &> file'
+  _hbg_test_expect DENY 'git push origin main --no-verify>/dev/null 2>&1' 'push flag glued to > then 2>&1'
+  _hbg_test_expect DENY 'git commit --no-gpg-sign>/dev/null -m x' '--no-gpg-sign glued to > file'
+  _hbg_test_expect DENY 'git config core.hooksPath>/dev/null /x' 'config key glued to > file'
+  _hbg_test_expect DENY 'git >/dev/null commit -n' 'redirection before the subcommand'
+  _hbg_test_expect DENY 'git 2>&1 commit --no-verify' '2>&1 before the subcommand'
+  _hbg_test_expect DENY 'git >out.txt -c core.hooksPath=/x status' 'redirection before a global -c'
+  _hbg_test_expect PASS 'git commit -m x --no-verify2>&1' 'a word ending in a digit is not the flag'
+  _hbg_test_expect PASS 'git commit -m x>/dev/null' 'plain commit with a glued redirection'
+  _hbg_test_expect PASS 'git push origin main>/dev/null 2>&1' 'push with glued and fd redirections'
+  _hbg_test_expect PASS 'git status>out.txt' 'status glued to a redirection'
+  _hbg_test_expect PASS 'git log --oneline >> /tmp/l' 'spaced append redirection'
+  _hbg_test_expect PASS 'git log &>/dev/null' 'log with &>'
+  _hbg_test_expect PASS 'git commit -m "a>b" -F msg' 'quoted > is data'
+
+  # --- git config options that take a separate argument ----------------------
+  _hbg_test_expect DENY 'git config --type path core.hooksPath /x' '--type <t> before the key'
+  _hbg_test_expect DENY 'git config --comment c core.hooksPath /z' '--comment <c> before the key'
+  _hbg_test_expect DENY 'git config set --type path core.hooksPath /x' 'set --type <t>'
+  _hbg_test_expect DENY 'git config set --comment c core.hooksPath /x' 'set --comment <c>'
+  _hbg_test_expect DENY 'git config set --value v hooks.x y' 'set --value <v>'
+  _hbg_test_expect DENY 'git config --default d core.hooksPath /x' '--default <d>'
+  _hbg_test_expect PASS 'git config --type bool commit.gpgsign' '--type <t> read of a bare key'
+  _hbg_test_expect PASS 'git config --get-color color.diff.new green' '--get-color is a read'
+  _hbg_test_expect PASS 'git config --get-colorbool color.ui' '--get-colorbool is a read'
+  _hbg_test_expect PASS 'git config --type path --get core.hooksPath' '--type with --get'
+  _hbg_test_expect PASS 'git config get --url https://x.example/ http.proxy' 'get --url <u>'
+
+  # --- config values that start with a dash, and words after -- --------------
+  _hbg_test_expect DENY 'git config alias.c "-c core.hooksPath=/x commit"' 'alias value starting with -c'
+  _hbg_test_expect DENY 'git config alias.c -- "-c core.hooksPath=/x commit"' 'alias value after --'
+  _hbg_test_expect DENY 'git config alias.c "--no-verify"' 'alias value that is the flag'
+  _hbg_test_expect DENY 'git config core.hooksPath -- -x' 'hooksPath value after --'
+  _hbg_test_expect DENY 'git config -- core.hooksPath -x' 'key after -- and a dash value'
+  _hbg_test_expect DENY 'git config hooks.x -y' 'dash-leading value after a hooks key'
+  _hbg_test_expect DENY 'git config --global core.hooksPath -x' 'scoped write with a dash value'
+  _hbg_test_expect PASS 'git config --get -- user.name' 'read after --'
+  _hbg_test_expect PASS 'git config -- user.name' 'bare key after --'
+  _hbg_test_expect PASS 'git config --global user.name -x' 'dash value on an unrelated key'
+
+  # --- include.path pulls in another config file ------------------------------
+  _hbg_test_expect DENY 'git -c include.path=/x commit -m x' '-c include.path'
+  _hbg_test_expect DENY 'git -c includeIf.gitdir:/.path=/x status' '-c includeIf.<cond>.path'
+  _hbg_test_expect DENY 'git config include.path /x' 'config write include.path'
+  _hbg_test_expect DENY 'git config --global include.path /x' '--global include.path'
+  _hbg_test_expect DENY 'git config --add includeIf.gitdir:/a/.path /x' '--add includeIf.<cond>.path'
+  _hbg_test_expect DENY 'GIT_CONFIG_KEY_0=include.path GIT_CONFIG_VALUE_0=/x git commit -m x' 'GIT_CONFIG_KEY naming include.path'
+  _hbg_test_expect DENY 'GIT_CONFIG_KEY_0=includeIf.gitdir:/a/.path GIT_CONFIG_VALUE_0=/x git status' 'GIT_CONFIG_KEY naming includeIf.<cond>.path'
+  _hbg_test_expect PASS 'git config include.path' 'read of include.path'
+  _hbg_test_expect PASS 'git config --get-all include.path' '--get-all include.path'
+  _hbg_test_expect PASS 'git -c include.foo=1 status' '-c on a different include key'
+
+  # --- taking a variable out of the environment -------------------------------
+  _hbg_test_expect DENY 'unset HOME; git commit -m x' 'unset HOME'
+  _hbg_test_expect DENY 'unset -v HOME; git commit -m x' 'unset -v HOME'
+  _hbg_test_expect DENY 'unset FOO HOME; git commit -m x' 'unset with HOME second'
+  _hbg_test_expect DENY 'typeset +x HOME; git commit -m x' 'typeset +x HOME'
+  _hbg_test_expect DENY 'declare +x XDG_CONFIG_HOME; git commit -m x' 'declare +x XDG_CONFIG_HOME'
+  _hbg_test_expect DENY 'export -n HOME; git commit -m x' 'export -n HOME'
+  _hbg_test_expect DENY 'unset PII_HOOK_BYPASS && git push' 'unset of a seam name'
+  _hbg_test_expect PASS 'unset FOO; git commit -m x' 'unset of an unrelated name'
+  _hbg_test_expect PASS 'export -n FOO; git status' 'export -n of an unrelated name'
+  _hbg_test_expect PASS 'typeset +x FOO; git status' 'typeset +x of an unrelated name'
+  _hbg_test_expect PASS 'unset HOME' 'unset HOME with no git anywhere'
+  _hbg_test_expect PASS 'typeset HOME; git status' 'typeset without +x keeps the export'
+
+  # --- =git, and a probe that sees through glued empty expansions -------------
+  _hbg_test_expect DENY '=git commit -n' '=git is git (zsh EQUALS expansion)'
+  _hbg_test_expect DENY '=git commit --no-verify -m x' '=git with the long flag'
+  _hbg_test_expect DENY 'gi$()t commit -n' 'empty command substitution inside the word'
+  _hbg_test_expect DENY $'gi\\\nt commit -n' 'backslash-newline inside the word'
+  _hbg_test_expect DENY 'gi``t commit -n' 'empty backticks inside the word'
+  _hbg_test_expect PASS '=git status' '=git with a harmless subcommand'
+  _hbg_test_expect PASS 'x==y git status' 'a word with two equals signs is an assignment'
+
+  # --- nesting depth ----------------------------------------------------------
+  _hbg_test_expect DENY "bash -c \"bash -c 'git commit -n'\"" 'bash -c inside bash -c'
+  _hbg_test_expect DENY "sh -c 'sh -c \"git commit -n\"'" 'sh -c inside sh -c'
+  _hbg_test_expect DENY "eval eval 'git commit -n'" 'eval eval'
+  _hbg_test_expect DENY "eval 'bash -c \"git commit -n\"'" 'bash -c inside eval'
+  _hbg_test_expect DENY "bash -c 'eval \"git commit -n\"'" 'eval inside bash -c'
+  _hbg_test_expect DENY "env -S 'bash -c \"git commit -n\"'" 'bash -c inside env -S'
+  _hbg_test_expect DENY "bash -c \"bash -c \\\"bash -c 'git commit -n'\\\"\"" 'three levels of bash -c'
+  _hbg_test_expect PASS "bash -c \"bash -c 'git status'\"" 'nested bash -c with harmless git'
+
+  # --- more wrappers and words that introduce a command -----------------------
+  _hbg_test_expect DENY 'caffeinate git commit -n' 'caffeinate'
+  _hbg_test_expect DENY 'caffeinate -t 60 git commit -n' 'caffeinate -t <secs>'
+  _hbg_test_expect DENY 'caffeinate -di -w 123 git commit --no-verify' 'caffeinate flag cluster and -w <pid>'
+  _hbg_test_expect DENY 'arch -arm64 git commit -n' 'arch -arm64'
+  _hbg_test_expect DENY 'arch -x86_64 git commit -n' 'arch -x86_64'
+  _hbg_test_expect DENY 'arch -arm64 -e HOME=/x git commit -m x' 'arch -e HOME='
+  _hbg_test_expect DENY 'arch -d HOME git commit -m x' 'arch -d HOME'
+  _hbg_test_expect DENY 'chronic git commit -n' 'chronic'
+  _hbg_test_expect DENY 'ionice -c 3 git commit -n' 'ionice -c <class>'
+  _hbg_test_expect DENY 'exec -a x git commit -n' 'exec -a <name>'
+  _hbg_test_expect DENY 'coproc git commit -n' 'coproc'
+  _hbg_test_expect PASS 'caffeinate git status' 'caffeinate with harmless git'
+  _hbg_test_expect PASS 'arch -arm64 git status' 'arch with harmless git'
+  _hbg_test_expect PASS 'exec -a x git status' 'exec -a with harmless git'
+  _hbg_test_expect PASS 'coproc git status' 'coproc with harmless git'
+
+  # --- the user's zsh startup files cannot change a verdict -------------------
+  local zd zout
+  zd="$(mktemp -d "${TMPDIR:-/tmp}/git-bypass.XXXXXX")"
+  printf 'setopt ksharrays errexit shwordsplit\n' > "${zd}/.zshenv"
+  zout="$(jq -n --arg c 'git commit -n' '{tool_name:"Bash", tool_input:{command:$c}}' \
+    | ZDOTDIR="${zd}" /bin/zsh "${SCRIPT_DIR}/claude/git-bypass-hook" 2>/dev/null)"
+  if [[ "$(_hook_verdict "${zout}")" == DENY ]]; then
+    _pass "DENY: git commit -n with ksharrays/errexit/shwordsplit set in .zshenv"
+  else
+    _fail "git commit -n with option-changing .zshenv — expected DENY, got: ${zout:0:120}"
+  fi
+  zout="$(jq -n --arg c 'git status' '{tool_name:"Bash", tool_input:{command:$c}}' \
+    | ZDOTDIR="${zd}" /bin/zsh "${SCRIPT_DIR}/claude/git-bypass-hook" 2>&1)"
+  if [[ -z "${zout}" ]]; then
+    _pass "PASS: git status with option-changing .zshenv prints nothing"
+  else
+    _fail "git status with option-changing .zshenv printed: ${zout:0:120}"
+  fi
+  /bin/rm -rf "${zd}"
+
+  # --- malformed / non-Bash payloads must fail open, never block -----------
+  if [[ -z "$(printf '%s' '{}' | /bin/zsh "${SCRIPT_DIR}/claude/git-bypass-hook")" ]]; then
+    _pass "fail-open: payload with no command allowed through"
+  else
+    _fail "fail-open: payload with no command produced a verdict"
+  fi
+  if [[ -z "$(printf '%s' 'not json' | /bin/zsh "${SCRIPT_DIR}/claude/git-bypass-hook")" ]]; then
+    _pass "fail-open: unparseable payload allowed through"
+  else
+    _fail "fail-open: unparseable payload produced a verdict"
+  fi
+
+  # --- deny reason text -------------------------------------------------------
+  _hbg_test_reason 'git commit --no-verify: give the user the exact command to run.' \
+    'git commit --no-verify' 'commit --no-verify'
+  _hbg_test_reason 'git commit -n (--no-verify): give the user the exact command to run.' \
+    'git commit -an' 'commit -n cluster'
+  _hbg_test_reason 'GIT_SIGN_SKIP set in a git command: give the user the exact command to run.' \
+    'GIT_SIGN_SKIP=1 git push' 'seam variable named, value not echoed'
+  _hbg_test_reason 'unsigned commit: give the user the exact command to run.' \
+    'git commit --no-gpg-sign -m x' 'signing off'
+  _hbg_test_reason 'a pseudo-terminal around git is blocked: give the user the exact command to run.' \
+    'script -q /dev/null git commit -m x' 'faked terminal'
+  # A very long config key is cut, so the reason stays within 120 characters.
+  local longkey
+  longkey="hooks.$(printf 'k%.0s' {1..300})"
+  _hbg_test_expect DENY "git config ${longkey} x" 'over-long config key still yields a short one-line reason'
+}

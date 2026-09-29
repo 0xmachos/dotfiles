@@ -258,6 +258,7 @@ function run_linkage {
     [fetch-route-hook]=install_dotfiles
     [muse-exec-hook]=install_dotfiles
     [gh-publish-hook]=install_dotfiles
+    [git-bypass-hook]=install_dotfiles
     [session-host-context]=install_dotfiles
     [hosts]=install_dotfiles                 # Dynamic (per-host context files)
     [output-styles]=install_dotfiles         # Dynamic (custom output styles)
