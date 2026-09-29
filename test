@@ -6,14 +6,33 @@
 # aggregate into a single final summary.
 #
 # Usage:
-#   ./test                       # runs all suites
+#   ./test                       # runs all suites, in parallel
+#   ./test -j 1                  # runs all suites serially, in one shell
+#   ./test --time                # ...and prints a per-suite wall-time table
 #   ./test <suite>               # runs one suite
 #   ./test --help                # lists suites
+#
+# The full run is parallel by default (2026-09-29): every suite already
+# sandboxes its writes under $TMPDIR (mktemp), reads real $HOME read-only and
+# passed standalone, so suites are order-independent and the only cost of the
+# serial run was wall time — 164 s measured, of which git-sign alone was 39 s.
+# Each worker is `./test <suite>` in child mode (DOTFILES_TEST_CHILD set): it
+# sources tests/lib and the one suite exactly as before, then writes its
+# counters to a file instead of printing a summary. The parent prints each
+# child's captured output in SUITES order as it lands, sums the counters into
+# the one final summary, and turns a child that died without reporting (a
+# stray `exit`, a `set -e` abort) into a FAIL naming the suite and exit code —
+# the serial run used to truncate silently in that case. `-j 1` keeps the
+# original in-process path: one shell, suites sourced in sequence.
 
 set -euo pipefail
 # -e exit if any command returns non-zero status code
 # -u prevent using undefined variables
 # -o pipefail force pipelines to fail on first non-zero status code
+
+# $EPOCHREALTIME is 0 until this module is loaded (a 2026-09-25 timing loop
+# printed 0.0 s for every suite for exactly that reason).
+zmodload zsh/datetime
 
 # Reset terminal attributes only when there is a terminal to reset: over a
 # non-tty SSH session TERM is unset, tput exits 2, and -e would abort the
@@ -63,10 +82,17 @@ function _load_extra_suites {
 }
 _load_extra_suites
 
+# Per-suite wall time in seconds, filled by both the serial and the parallel
+# full run, printed by --time.
+typeset -A SUITE_SECONDS=()
+typeset -a SUITE_ORDER=()
+
 function _usage {
-  echo "Usage: ./test [suite [arg]]"
+  echo "Usage: ./test [-j N] [--time] [suite [arg]]"
   echo "Suites: ${SUITES[*]}"
   (( ${#EXTRA_SUITES[@]} )) && echo "Extra (per-clone): ${EXTRA_SUITES[*]}"
+  echo "  -j N    workers for the full run (default 4; 1 = serial, one shell)"
+  echo "  --time  print per-suite wall time after the full run"
 }
 
 function _run_suite {
@@ -77,27 +103,146 @@ function _run_suite {
   "run_${suite//-/_}" "$@"
 }
 
+# Four workers, not hw.ncpu. The suites are bound by process-spawn latency,
+# not CPU (2026-09-29: 200 spawns of /usr/bin/true took 1.2 s serially and
+# eight such loops in parallel gained only 1.8x throughput), so more workers
+# mostly queue behind the same serialised exec path. Measured on the same afternoon: serial 163 s, -j 2 120 s,
+# -j 4 71 s, -j 10 129 s. Override with -j N or TEST_JOBS.
+function _default_jobs {
+  echo 4
+}
+
+# Serial full run: the original path — every suite sourced into this shell.
+function _run_all_serial {
+  local s t0
+  for s in "${SUITES[@]}"; do
+    t0="${EPOCHREALTIME}"
+    _run_suite "${s}"
+    SUITE_SECONDS[${s}]="$(( EPOCHREALTIME - t0 ))"
+    SUITE_ORDER+=("${s}")
+  done
+  for s in "${EXTRA_SUITES[@]}"; do
+    if [[ -f "${SCRIPT_DIR}/tests/${s}" ]]; then
+      t0="${EPOCHREALTIME}"
+      _run_suite "${s}"
+      SUITE_SECONDS[${s}]="$(( EPOCHREALTIME - t0 ))"
+      SUITE_ORDER+=("${s}")
+    else
+      _section "${s}"
+      _skip "${s}: listed in .extra_test_suites but tests/${s} is absent on this clone"
+    fi
+  done
+}
+
+# Parallel full run: one `./test <suite>` child per suite, N at a time via
+# xargs -P. Child output goes to <work>/<suite>.out, its exit code to
+# <suite>.rc, and its counters (see _child_main) to <suite>.counts. The parent
+# replays the outputs in SUITES order — an absent extra suite is skipped
+# inline at its position, exactly where the serial run reports it.
+function _run_all_parallel {
+  local jobs="$1" work s rc
+  local -a runnable=()
+  work="$(mktemp -d "${TMPDIR:-/tmp}/dotfiles-test.XXXXXX")"
+  # shellcheck disable=SC2064  # expand now: the path never changes
+  trap "/bin/rm -rf '${work}'" EXIT
+  for s in "${SUITES[@]}"; do runnable+=("${s}"); done
+  for s in "${EXTRA_SUITES[@]}"; do
+    [[ -f "${SCRIPT_DIR}/tests/${s}" ]] && runnable+=("${s}")
+  done
+
+  # -I{} runs one child per line; the argv-passed work dir and script path
+  # keep the child command free of quoting. Stdout and stderr both land in
+  # .out so a child's diagnostics stay next to its PASS/FAIL lines.
+  # shellcheck disable=SC2016  # the child shell expands $1..$3, not this one
+  printf '%s\n' "${runnable[@]}" \
+    | /usr/bin/xargs -P "${jobs}" -I{} /bin/zsh -c \
+        'DOTFILES_TEST_CHILD="$1" "$2" "$3" > "$1/$3.out" 2>&1; echo $? > "$1/$3.rc"' \
+        _ "${work}" "${SCRIPT_DIR}/test" {} &
+  local xargs_pid=$!
+
+  for s in "${SUITES[@]}" "${EXTRA_SUITES[@]}"; do
+    if (( ${runnable[(Ie)${s}]} == 0 )); then
+      _section "${s}"
+      _skip "${s}: listed in .extra_test_suites but tests/${s} is absent on this clone"
+      continue
+    fi
+    until [[ -f "${work}/${s}.rc" ]]; do
+      if ! kill -0 "${xargs_pid}" 2>/dev/null && [[ ! -f "${work}/${s}.rc" ]]; then
+        break
+      fi
+      sleep 0.1
+    done
+    [[ -f "${work}/${s}.out" ]] && cat "${work}/${s}.out"
+    rc="$(cat "${work}/${s}.rc" 2>/dev/null || echo none)"
+    if [[ -f "${work}/${s}.counts" ]]; then
+      local p f k secs
+      read -r p f k secs < "${work}/${s}.counts"
+      # `: $(( ))`, not `(( ))`: a zero result would read as failure under -e.
+      : $(( pass_count += p, fail_count += f, skip_count += k ))
+      SUITE_SECONDS[${s}]="${secs}"
+      SUITE_ORDER+=("${s}")
+    else
+      _fail "${s}: suite aborted (exit ${rc}) before reporting its counters"
+    fi
+  done
+  wait "${xargs_pid}" || true
+}
+
+function _print_times {
+  local s
+  echo ""
+  echo "${BOLD}── Suite times ──${RESET}"
+  for s in "${SUITE_ORDER[@]}"; do
+    printf '%7.1fs  %s\n' "${SUITE_SECONDS[${s}]}" "${s}"
+  done | /usr/bin/sort -rn
+}
+
+# Child mode: run the one suite this worker owns, then hand the counters back
+# to the parent through a file. No summary — the parent prints the only one.
+function _child_main {
+  local suite="$1" t0="${EPOCHREALTIME}"
+  _run_suite "${suite}"
+  printf '%d %d %d %.1f\n' "${pass_count}" "${fail_count}" "${skip_count}" \
+    "$(( EPOCHREALTIME - t0 ))" > "${DOTFILES_TEST_CHILD}/${suite}.counts"
+  return $(( fail_count > 0 ))
+}
+
 function main {
+  local jobs="${TEST_JOBS:-}" show_time=0
+  while (( $# )); do
+    case "$1" in
+      -j)  jobs="${2:-}"; shift 2 ;;
+      -j*) jobs="${1#-j}"; shift ;;
+      --time) show_time=1; shift ;;
+      -h|--help)
+        _usage
+        exit 0
+        ;;
+      --) shift; break ;;
+      -*)
+        echo "[FAIL] Unknown option: $1"
+        _usage
+        exit 1
+        ;;
+      *) break ;;
+    esac
+  done
+  if [[ -n "${jobs}" && ! "${jobs}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "[FAIL] -j needs a positive integer, got '${jobs}'"
+    exit 1
+  fi
+  [[ -z "${jobs}" ]] && jobs="$(_default_jobs)"
+
   local filter="${1:-all}"
+  local t_start="${EPOCHREALTIME}"
 
   case "${filter}" in
-    -h|--help)
-      _usage
-      exit 0
-      ;;
     all)
-      local s
-      for s in "${SUITES[@]}"; do
-        _run_suite "${s}"
-      done
-      for s in "${EXTRA_SUITES[@]}"; do
-        if [[ -f "${SCRIPT_DIR}/tests/${s}" ]]; then
-          _run_suite "${s}"
-        else
-          _section "${s}"
-          _skip "${s}: listed in .extra_test_suites but tests/${s} is absent on this clone"
-        fi
-      done
+      if (( jobs == 1 )); then
+        _run_all_serial
+      else
+        _run_all_parallel "${jobs}"
+      fi
       ;;
     *)
       # zsh: (Ie) returns the 1-based index of an exact match, 0 if missing.
@@ -111,10 +256,18 @@ function main {
         exit 1
       fi
       shift
+      if [[ -n "${DOTFILES_TEST_CHILD:-}" ]]; then
+        _child_main "${filter}"
+        return
+      fi
       _run_suite "${filter}" "$@"
       ;;
   esac
 
+  if (( show_time )); then
+    _print_times
+    printf '%7.1fs  wall (%d workers)\n' "$(( EPOCHREALTIME - t_start ))" "${jobs}"
+  fi
   _print_summary
 }
 

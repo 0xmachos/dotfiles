@@ -120,8 +120,51 @@ function _gs_unsigned_count {
   echo "${n}"
 }
 
+# Fixture templates (2026-09-29). Building a sandbox repo is ~30 process
+# spawns (ssh-keygen, two git inits, seven configs, a commit, a push) and this
+# suite builds 19 of them; process creation is the slow path on this Mac
+# (~6 ms a spawn, 2026-09-29), so the builds alone were most of a 39 s run.
+# Each shape is now built once per run into ${_GS_TEMPLATES} by run_git_sign
+# (the parent shell — the builders below run inside $(...) subshells, so a
+# lazy build there would never persist) and copied per call. The copy is
+# byte-identical apart from the three absolute paths that point back at the
+# template (signing key, origin URL, hooksPath), which are re-pointed at the
+# copy. Fixed commit dates mean a case's SHAs are the same as before; every
+# case compares SHAs within its own copy only.
+typeset -g _GS_TEMPLATES=""
+
+function _gs_build_templates {
+  _GS_TEMPLATES="$(mktemp -d "${TMPDIR}git-sign-templates.XXXXXX")"
+  mkdir "${_GS_TEMPLATES}/newrepo" "${_GS_TEMPLATES}/prepush"
+  _gs_build_newrepo "${_GS_TEMPLATES}/newrepo"
+  _gs_build_prepush_repo "${_GS_TEMPLATES}/prepush"
+}
+
+function _gs_copy_template {
+  # $1 template name, $2 destination sandbox (exists). `cp -R src/. dst/`
+  # copies the contents, keeping the key's 0600 mode.
+  local name="$1" dest="$2"
+  cp -R "${_GS_TEMPLATES}/${name}/." "${dest}/"
+  (
+    export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+    cd "${dest}/repo" || exit 1
+    git config user.signingkey "${dest}/key"
+    git remote set-url origin "${dest}/remote.git"
+    if [[ -d "${dest}/hooks" ]]; then
+      git config core.hooksPath "${dest}/hooks"
+    fi
+  )
+}
+
 function _gs_newrepo {
   # Sandbox repo with a pushed base commit. $1 = sandbox dir. Echoes repo path.
+  local sandbox="$1"
+  _gs_copy_template newrepo "${sandbox}"
+  echo "${sandbox}/repo"
+}
+
+function _gs_build_newrepo {
+  # The newrepo shape, built from scratch into $1.
   local sandbox="$1"
   (
     export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
@@ -140,13 +183,19 @@ function _gs_newrepo {
     git remote add origin "${sandbox}/remote.git"
     git push -qu origin main 2>/dev/null
   )
-  echo "${sandbox}/repo"
 }
 
 function _gs_prepush_repo {
   # Sandbox repo whose core.hooksPath holds ONLY the global pre-push hook, so
   # these tests exercise git's real hook path without dragging the pre-commit
   # scanner (gitleaks + PII) into every fixture commit. $1 = sandbox dir.
+  local sb="$1"
+  _gs_copy_template prepush "${sb}"
+  echo "${sb}/repo"
+}
+
+function _gs_build_prepush_repo {
+  # The prepush shape, built from scratch into $1.
   local sb="$1"
   (
     export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
@@ -174,7 +223,6 @@ function _gs_prepush_repo {
     _gs_commit_signed base '2026-02-01T10:00:00+00:00'
     git push -qu origin main 2>/dev/null
   )
-  echo "${sb}/repo"
 }
 
 function _gs_quad_expect {
@@ -244,6 +292,7 @@ function run_git_sign {
   # became load-bearing when commit messages became the ledger (2026-08-17).
   # Split into functions (zsh dynamic scoping keeps the claude cases' locals
   # visible to the refusal cases they call).
+  _gs_build_templates
   if [[ ! -f "${SCRIPT_DIR}/claude/git-sign-hook" ]]; then
     _skip "claude/git-sign-hook absent — claude/ not yet synced (pre-push cases still run)"
   elif ! [[ -x "$(command -v jq)" ]]; then
@@ -255,6 +304,7 @@ function run_git_sign {
   _git_sign_resign_cases
   _git_sign_batch_cases
   _git_sign_prepush_cases
+  /bin/rm -rf "${_GS_TEMPLATES}"
 }
 
 function _git_sign_claude_cases {
