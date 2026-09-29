@@ -238,10 +238,15 @@ function main {
   [[ -z "${jobs}" ]] && jobs="$(_default_jobs)"
 
   local filter="${1:-all}"
-  local t_start="${EPOCHREALTIME}"
+  local t_start="${EPOCHREALTIME}" mode
 
   case "${filter}" in
     all)
+      # Print something before any suite runs: the parallel parent stays
+      # silent until the first suite in SUITES order finishes, which reads
+      # as a hung run. Never reached by a child (children get a suite name).
+      mode="${jobs} workers"; (( jobs == 1 )) && mode="serial"
+      echo "./test started $(strftime '%Y-%m-%d %H:%M:%S' "${EPOCHSECONDS}") (${mode})"
       if (( jobs == 1 )); then
         _run_all_serial
       else

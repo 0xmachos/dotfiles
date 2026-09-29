@@ -33,9 +33,13 @@ function _skip {
   (( skip_count += 1 ))
 }
 
+# Each header carries the wall-clock time the suite reached it. In the
+# parallel run that is when the suite started in its worker, not when the
+# parent replayed the line, which is the useful number: it shows where the
+# queue stalled and lines up with `/usr/bin/log show` timestamps.
 function _section {
   echo ""
-  echo "${BOLD}── $1 ──${RESET}"
+  echo "$(strftime '%H:%M:%S' "${EPOCHSECONDS}") ${BOLD}── $1 ──${RESET}"
 }
 
 # These hooks emit either nothing or one deny object. An allow response,
