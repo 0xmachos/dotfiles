@@ -1,14 +1,21 @@
 #!/bin/zsh
 # dotfiles/tests/ssh-redirect
 #
-# Behavioural test for claude/ssh-redirect-hook — the PreToolUse hook that denies
-# ssh/scp/sftp to a human alias or raw IP and points the model at the
-# `<host>-claude` (1Password + BatchMode) alias. Feeds commands to the hook as
-# stdin JSON and asserts DENY (redirect emitted) vs PASS (allowed through).
+# Behavioural test for claude/ssh-redirect-hook — the PreToolUse hook that
+# denies ssh/scp/sftp/rsync/sshfs/mosh to the user's own, human-oriented SSH
+# alias (or its `tail-` overlay-network variant) and points at the non-interactive
+# `<host>-claude` twin instead. Feeds commands to the hook as stdin JSON and
+# asserts DENY (redirect emitted) vs PASS (allowed through).
 #
-# Guards the command-position + host-extraction logic against silent regressions:
-# a tweak that started denying `ssh hostd-claude 'grep hostb …'` (alias name in
-# the remote payload), or stopped catching `cd /x && ssh hostd`, would fail here.
+# The human/twin map here is DERIVED at run time from a fixture SSH config
+# under tests/fixtures/ssh-redirect/, via the hook's own SSH_REDIRECT_CONFIG
+# (and, for the two Include cases, HOME) environment seam — never from any
+# real host name. Fixture names are placeholders only: hosta/hosta-claude
+# (plus tail-hosta) is the base pair; hostb has no twin; hostc/hostc-claude
+# come from a relative, glob Include; hosth/hosth-claude from a tilde
+# Include; hostd/hoste/hostf are extra pairs for the wrapper/option cases;
+# hostg-claude is declared with no bare hostg; hostw* is a wildcarded Host
+# line paired with a real hostw-claude.
 #
 # Run: ./test ssh-redirect    (or ./test for the full suite)
 #
@@ -17,15 +24,48 @@
 #
 # shellcheck source=tests/lib
 
+typeset -g SSHR_T_HOME=''
+typeset -g SSHR_T_CONFIG=''
+
 function _ssh_redirect_run {
-  # Echo the hook's stdout for Bash command $1.
+  # Echo the hook's combined stdout+stderr for Bash command $1, run against
+  # the fixture config/home. stderr is merged into the capture on purpose:
+  # any stray output on that stream — a bare `local` re-declared inside a
+  # loop prints `name=value` to STDOUT in zsh, which is exactly the class
+  # of bug this hook's own header documents finding and fixing here — must
+  # fail every assertion below via _hook_verdict's INVALID case, not vanish
+  # into a discarded stderr.
   jq -n --arg c "$1" '{tool_name:"Bash", tool_input:{command:$c}}' \
-    | /bin/zsh "${SCRIPT_DIR}/claude/ssh-redirect-hook"
+    | SSH_REDIRECT_CONFIG="${SSHR_T_CONFIG}" HOME="${SSHR_T_HOME}" \
+      /bin/zsh "${SCRIPT_DIR}/claude/ssh-redirect-hook" 2>&1
+}
+
+function _ssh_redirect_run_env {
+  # Like _ssh_redirect_run, but with an explicit SSH_REDIRECT_CONFIG/HOME
+  # pair instead of the fixture default — for the config-derivation edge
+  # cases (missing/empty/unreadable config, real env vs. command-text
+  # prefix).
+  local cfg="$1" home="$2" cmd="$3"
+  jq -n --arg c "${cmd}" '{tool_name:"Bash", tool_input:{command:$c}}' \
+    | SSH_REDIRECT_CONFIG="${cfg}" HOME="${home}" \
+      /bin/zsh "${SCRIPT_DIR}/claude/ssh-redirect-hook" 2>&1
 }
 
 function _ssh_redirect_expect {
   local want="$1" cmd="$2" label="${3:-$2}" out got
   out="$(_ssh_redirect_run "${cmd}")"
+  got="$(_hook_verdict "${out}")"
+  if [[ "${got}" == "${want}" ]]; then
+    _pass "${want}: ${label}"
+  else
+    _fail "${label} — expected ${want}, got ${got}"
+  fi
+}
+
+function _ssh_redirect_expect_env {
+  local cfg="$1" home="$2" want="$3" cmd="$4" out got
+  local label="${5:-$cmd}"
+  out="$(_ssh_redirect_run_env "${cfg}" "${home}" "${cmd}")"
   got="$(_hook_verdict "${out}")"
   if [[ "${got}" == "${want}" ]]; then
     _pass "${want}: ${label}"
@@ -49,90 +89,198 @@ function run_ssh_redirect {
     return
   fi
 
-  # Human aliases (and tail-*/user@/port/options/compound forms) → DENY.
-  _ssh_redirect_expect DENY 'ssh hostb'
-  _ssh_redirect_expect DENY 'ssh tail-hostb uptime'
-  _ssh_redirect_expect DENY 'ssh hostc'
-  _ssh_redirect_expect DENY 'ssh tail-hostc'
-  _ssh_redirect_expect DENY 'ssh hostd'
-  _ssh_redirect_expect DENY 'ssh root@hoste'
-  _ssh_redirect_expect DENY 'ssh -p 2222 hostf'
+  SSHR_T_HOME="${SCRIPT_DIR}/tests/fixtures/ssh-redirect/home"
+  SSHR_T_CONFIG="${SSHR_T_HOME}/.ssh/config"
+
+  if [[ ! -f "${SSHR_T_CONFIG}" ]]; then
+    _fail "fixture config missing at ${SSHR_T_CONFIG}"
+    return
+  fi
+
+  # Human alias, tail- variant (declared and derived-without-declaration),
+  # user@/option/wrapper forms → DENY.
+  _ssh_redirect_expect DENY 'ssh hosta'
+  _ssh_redirect_expect DENY 'ssh "hosta"'
+  _ssh_redirect_expect DENY 'ssh tail-hosta'
+  _ssh_redirect_expect DENY 'ssh tail-hostc' 'tail-hostc denies without tail-hostc ever being declared'
+  _ssh_redirect_expect DENY 'ssh root@hosta'
+  _ssh_redirect_expect DENY 'ssh -p 2222 hosta'
+  _ssh_redirect_expect DENY 'ssh -p2222 hosta' 'attached -p value'
+  _ssh_redirect_expect DENY 'ssh -vp2222 hosta' 'value-taking letter mid-cluster'
   _ssh_redirect_expect DENY 'ssh -o User=root hostd uptime'
-  _ssh_redirect_expect DENY 'ssh -i ~/.ssh/k hostb'
+  _ssh_redirect_expect DENY 'ssh -i ~/.ssh/k hosta'
   _ssh_redirect_expect DENY 'cd /tmp && ssh hostd ls'
-  _ssh_redirect_expect DENY 'sftp hostb'
-  _ssh_redirect_expect DENY 'scp file.txt hostd:/tmp/'
-  _ssh_redirect_expect DENY 'scp -P 2222 -r dir hostf:/srv'
+  _ssh_redirect_expect DENY 'ssh -l root hosta' '-l user host form'
 
-  # Raw IP literals (v4 + v6, RFC5737/RFC3849 docs ranges) → DENY.
-  _ssh_redirect_expect DENY 'ssh 192.0.2.1'
-  _ssh_redirect_expect DENY 'ssh user@198.51.100.11 uptime'
-  _ssh_redirect_expect DENY 'scp x 203.0.113.5:/tmp/'
-  _ssh_redirect_expect DENY 'ssh 2001:db8::1'
-  _ssh_redirect_expect DENY 'ssh user@2001:db8::1 uptime'
+  # -J / ProxyJump.
+  _ssh_redirect_expect DENY 'ssh -J hosta hostb-claude' '-J hop denies even though the destination is already correct'
+  _ssh_redirect_expect DENY 'ssh -o ProxyJump=hosta hostb-claude' '-o ProxyJump= form'
+  _ssh_redirect_expect DENY 'ssh -oProxyJump=hosta hostb-claude' 'attached -o form'
+  _ssh_redirect_expect PASS 'ssh -J hosta-claude hostb-claude' 'both hops already -claude'
 
-  # Wrapper-prefixed invocations → DENY. Automation is what adds the wrapper, so
-  # the hook was weakest in exactly the unattended case it exists to protect.
-  # Covers each wrapper's own arg grammar (timeout's DURATION, -k/-n values,
-  # env's VAR=val) and nesting.
-  _ssh_redirect_expect DENY 'timeout 12 ssh tail-hostb uptime'
-  _ssh_redirect_expect DENY 'timeout 12 ssh -o BatchMode=yes tail-hostb uptime'
+  # Include-derived hosts: a relative, glob Include (hostc) and a tilde
+  # Include (hosth) — neither is declared directly in the primary config.
+  _ssh_redirect_expect DENY 'ssh hostc'
+  _ssh_redirect_expect DENY 'ssh hosth'
+
+  # A wildcarded Host line never manufactures a literal name.
+  _ssh_redirect_expect PASS 'ssh hostw' 'the wildcard stem itself, exact'
+  _ssh_redirect_expect PASS 'ssh hostw-something'
+
+  # A -claude twin declared with no bare host behind it: documented gap, PASS.
+  _ssh_redirect_expect PASS 'ssh hostg'
+
+  # No twin at all → PASS.
+  _ssh_redirect_expect PASS 'ssh hostb'
+  _ssh_redirect_expect PASS 'ssh hostb-unlock'
+
+  # Raw IP literals (v4 + v6) → PASS. No Host config line is ever
+  # address-shaped, so an IP simply never has a twin to deny against.
+  _ssh_redirect_expect PASS 'ssh 192.0.2.1'
+  _ssh_redirect_expect PASS 'ssh user@198.51.100.11 uptime'
+  _ssh_redirect_expect PASS 'scp x 203.0.113.5:/tmp/'
+  _ssh_redirect_expect PASS 'ssh 2001:db8::1'
+  _ssh_redirect_expect PASS 'ssh user@2001:db8::1 uptime'
+  _ssh_redirect_expect PASS 'timeout 5 ssh 192.0.2.1' 'raw IP behind a wrapper'
+
+  # scp/sftp/rsync/sshfs/mosh.
+  _ssh_redirect_expect DENY 'sftp hosta'
+  _ssh_redirect_expect DENY 'scp file.txt hosta:/tmp/'
+  _ssh_redirect_expect DENY 'scp -P 2222 -r dir hosta:/srv'
+  _ssh_redirect_expect DENY 'rsync -avz f hosta:/tmp/' 'rsync is in scope'
+  _ssh_redirect_expect DENY 'rsync -e ssh f hosta:/x'
+  _ssh_redirect_expect PASS 'rsync -avz hosta::module/f /tmp/' 'rsync daemon transport, no ssh'
+  _ssh_redirect_expect PASS 'rsync -avz rsync://hosta/module/f /tmp/' 'rsync:// URI, no ssh'
+  _ssh_redirect_expect DENY 'sshfs hosta:/dir /mnt'
+  _ssh_redirect_expect DENY 'mosh hosta'
+
+  # Wrappers — each one's own arg grammar (timeout's DURATION and -k/-s
+  # values, nice's -n, stdbuf's -o, env's VAR=val) and nesting.
+  _ssh_redirect_expect DENY 'timeout 12 ssh tail-hosta uptime'
+  _ssh_redirect_expect DENY 'timeout 12 ssh -o BatchMode=yes tail-hosta uptime'
   _ssh_redirect_expect DENY 'timeout --preserve-status 5 ssh hostd'
   _ssh_redirect_expect DENY 'timeout -k 5 10 ssh hoste'
   _ssh_redirect_expect DENY 'nice -n 10 ssh hostc'
-  _ssh_redirect_expect DENY 'nohup scp f.txt hostb:/tmp/'
-  _ssh_redirect_expect DENY 'env FOO=1 ssh hostb uptime'
+  _ssh_redirect_expect DENY 'nohup scp f.txt hosta:/tmp/'
+  _ssh_redirect_expect DENY 'env FOO=1 ssh hosta uptime'
   _ssh_redirect_expect DENY 'stdbuf -oL ssh hostd'
-  _ssh_redirect_expect DENY 'nohup timeout 5 ssh hostb'   # nested wrappers
-  _ssh_redirect_expect DENY 'timeout 5 ssh 192.0.2.1'     # raw IP behind a wrapper
+  _ssh_redirect_expect DENY 'doas ssh hosta'
+  _ssh_redirect_expect DENY 'nohup timeout 5 ssh hosta' 'nested wrappers'
+  _ssh_redirect_expect DENY 'sudo ssh hosta'
+  _ssh_redirect_expect DENY 'sudo timeout 5 ssh hosta'
 
-  # sudo is a wrapper too, but gets its own reason: root's ~/.ssh has no
-  # .extra_ssh, so "use hostb-claude" would be advice that cannot work.
-  _ssh_redirect_expect DENY 'sudo ssh hostb'
-  _ssh_redirect_expect DENY 'sudo timeout 5 ssh hostb'
+  # A bare `VAR=val` prefix is a wrapper by another name → DENY, and this
+  # is exactly what makes the SSH_REDIRECT_CONFIG prefix case (below) inert
+  # rather than a bypass: it is skipped the same generic way, by shape, with
+  # its name never inspected.
+  _ssh_redirect_expect DENY 'FOO=1 ssh hosta'
+  _ssh_redirect_expect DENY 'FOO=1 BAR=2 ssh tail-hosta uptime'
+  _ssh_redirect_expect DENY 'FOO=1 timeout 5 ssh hosta'
+  _ssh_redirect_expect DENY 'SSH_REDIRECT_CONFIG=/dev/null ssh hosta' \
+    'a command-text SSH_REDIRECT_CONFIG prefix does not change the verdict'
 
-  # A bare `VAR=val` prefix is a wrapper by another name → DENY.
-  _ssh_redirect_expect DENY 'FOO=1 ssh hostb'
-  _ssh_redirect_expect DENY 'FOO=1 BAR=2 ssh tail-hostb uptime'
-  _ssh_redirect_expect DENY 'FOO=1 timeout 5 ssh hostb'
-
-  # Already-correct -claude aliases, the interactive unlock op, external hosts,
-  # ssh-as-argument, and out-of-scope tools → PASS.
-  _ssh_redirect_expect PASS 'ssh hostb-claude'
+  # Already-correct -claude aliases, no-connection ssh flags, ssh's own
+  # non-connecting sibling tools, ssh-as-argument, and out-of-scope PASS.
+  _ssh_redirect_expect PASS 'ssh hosta-claude'
   _ssh_redirect_expect PASS 'ssh hostd-claude uptime'
   _ssh_redirect_expect PASS 'ssh hostf-claude'
-  _ssh_redirect_expect PASS 'ssh hostd-claude grep hostb /etc/hosts'  # alias in payload
-  _ssh_redirect_expect PASS 'ssh hostb-unlock'
+  _ssh_redirect_expect PASS 'ssh hostd-claude grep hosta /etc/hosts' 'alias name in the remote payload'
   _ssh_redirect_expect PASS 'ssh github.com'
   _ssh_redirect_expect PASS 'ssh git@github.com'
   _ssh_redirect_expect PASS 'ssh -V'
-  _ssh_redirect_expect PASS 'echo ssh hostb'               # ssh is an argument
-  _ssh_redirect_expect PASS 'rsync -avz f hostb:/tmp/'     # rsync out of scope
-  _ssh_redirect_expect PASS 'timeout 12 ssh hostb-claude uptime'   # wrapped, already correct
-  _ssh_redirect_expect PASS 'timeout 12 ls'                # wrapper, no ssh
-  _ssh_redirect_expect PASS 'sudo ssh git@github.com'      # external host, as bare
-  _ssh_redirect_expect PASS 'ssh hostd-claude timeout 5 grep hostb'  # wrapper+alias in payload
+  _ssh_redirect_expect PASS 'ssh -G hosta' 'prints config, never connects'
+  _ssh_redirect_expect PASS 'ssh -Q cipher' 'queries algorithms, never connects'
+  _ssh_redirect_expect PASS 'ssh-keygen -R hosta' 'a different tool entirely'
+  _ssh_redirect_expect PASS 'ssh-keyscan hosta'
+  _ssh_redirect_expect PASS 'ssh-add'
+  _ssh_redirect_expect PASS 'echo ssh hosta' 'ssh is an argument'
+  _ssh_redirect_expect PASS 'timeout 12 ssh hosta-claude uptime' 'wrapped, already correct'
+  _ssh_redirect_expect PASS 'timeout 12 ls' 'wrapper, no ssh'
+  _ssh_redirect_expect PASS 'sudo ssh git@github.com' 'external host, as bare'
+  _ssh_redirect_expect PASS 'ssh hostd-claude timeout 5 grep hosta' 'wrapper name in the remote payload'
+  _ssh_redirect_expect PASS 'ssh hosta-claude ssh hosta' 'ssh is the remote payload, not a new command position'
 
-  # Escape hatch: SSH_REDIRECT_SKIP in the hook's environment suppresses it.
-  if [[ -z "$(jq -n --arg c 'ssh hostb' '{tool_name:"Bash", tool_input:{command:$c}}' | SSH_REDIRECT_SKIP=1 /bin/zsh "${SCRIPT_DIR}/claude/ssh-redirect-hook")" ]]; then
-    _pass "PASS: SSH_REDIRECT_SKIP=1 env override"
+  # Heredoc bodies: data unless the consumer actually executes them.
+  _ssh_redirect_expect PASS $'cat <<EOF\nssh hosta\nEOF' 'heredoc fed to a non-shell consumer is data'
+  _ssh_redirect_expect PASS $'python3 - <<\'EOF\'\nssh hosta\nEOF' 'quoted delimiter, non-shell consumer'
+  _ssh_redirect_expect DENY $'bash <<EOF\nssh hosta\nEOF' 'heredoc fed to a real shell is scanned'
+  _ssh_redirect_expect DENY $'ssh hosta-claude <<EOF\nssh hosta\nEOF' \
+    'ssh itself stays a heredoc shell-consumer — the body becomes the remote stdin either way'
+  _ssh_redirect_expect DENY $'cat <<EOF\n$(ssh hosta)\nEOF' \
+    'an unquoted delimiter still expands a command substitution in the body before any consumer sees it'
+  _ssh_redirect_expect PASS $'cat <<EOF\n$(ssh hostb)\nEOF' \
+    'same shape, but the substituted host has no twin'
+  _ssh_redirect_expect DENY $'cat <<EOF1\n$(ssh hosta)\nEOF1\ncat <<EOF2\n$(ssh hostb)\nEOF2' \
+    'two data heredocs with substitutions in the same command'
+
+  # Config derivation: SSH_REDIRECT_CONFIG lives in the hook's own
+  # environment, never in the command text.
+  _ssh_redirect_expect_env /dev/null "${SSHR_T_HOME}" PASS 'ssh hosta' \
+    'SSH_REDIRECT_CONFIG=/dev/null in the real environment fails open'
+  _ssh_redirect_expect_env "${SSHR_T_HOME}/.ssh/does-not-exist" "${SSHR_T_HOME}" PASS 'ssh hosta' \
+    'a nonexistent config path fails open'
+  _ssh_redirect_expect_env "${SSHR_T_HOME}/.ssh/empty-config" "${SSHR_T_HOME}" PASS 'ssh hosta' \
+    'an empty config file fails open'
+
+  # No bypass: SSH_REDIRECT_SKIP is not read anywhere in this hook, even
+  # exported in its own real environment (the only place a genuine escape
+  # hatch could live, since a PreToolUse hook never sees the command's own
+  # would-be exports either).
+  local skip_out skip_got
+  skip_out="$(jq -n --arg c 'ssh hosta' '{tool_name:"Bash", tool_input:{command:$c}}' \
+    | SSH_REDIRECT_CONFIG="${SSHR_T_CONFIG}" HOME="${SSHR_T_HOME}" SSH_REDIRECT_SKIP=1 \
+      /bin/zsh "${SCRIPT_DIR}/claude/ssh-redirect-hook" 2>&1)"
+  skip_got="$(_hook_verdict "${skip_out}")"
+  if [[ "${skip_got}" == DENY ]]; then
+    _pass "no bypass: SSH_REDIRECT_SKIP=1 in the hook's own environment still denies"
   else
-    _fail "SSH_REDIRECT_SKIP=1 did not suppress the hook"
+    _fail "SSH_REDIRECT_SKIP=1 changed the verdict to ${skip_got} — a bypass exists"
   fi
 
-  # …and as a command prefix. A PreToolUse hook is spawned with Claude Code's
-  # env, never the command's, so the prefix form is the only override usable
-  # from the Bash tool — and it must survive the `VAR=val` closure above, which
-  # would otherwise swallow it and silently break the documented escape hatch.
-  _ssh_redirect_expect PASS 'SSH_REDIRECT_SKIP=1 ssh hostb'
-  _ssh_redirect_expect PASS 'SSH_REDIRECT_SKIP=1 timeout 5 ssh hostb'
+  # Privacy: the deny reason names only the Host pattern, never anything
+  # the fixture declares alongside it under the same stanza.
+  local privacy_out
+  privacy_out="$(_ssh_redirect_run 'ssh hosta')"
+  if [[ "${privacy_out}" == *'192.0.2.10'* || "${privacy_out}" == *'rootfixture'* \
+        || "${privacy_out}" == *'id_fixture_hosta'* ]]; then
+    _fail "deny reason for hosta leaks HostName/User/IdentityFile detail"
+  else
+    _pass "deny reason for hosta names no HostName/User/IdentityFile detail"
+  fi
 
-  # The deny message must name the CORRECT replacement alias for each host —
-  # a per-host check catches a CLAUDE_OF map typo (right DENY, wrong twin).
+  # Deny text: exactly one line, "<X> is the user's SSH alias: use <X>-claude instead."
+  local one_out one_want
+  one_out="$(_ssh_redirect_run 'ssh hosta')"
+  one_want="$(jq -cn --arg r "hosta is the user's SSH alias: use hosta-claude instead." \
+    '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}')"
+  if [[ "${one_out}" == "${one_want}" ]]; then
+    _pass "deny text is the one-line alias pointer"
+  else
+    _fail "deny text unexpected: ${one_out}"
+  fi
+  one_out="$(_ssh_redirect_run 'ssh tail-hosta')"
+  if [[ "$(jq -r .hookSpecificOutput.permissionDecisionReason <<< "${one_out}")" == "tail-hosta is the user's SSH alias: use hosta-claude instead." ]]; then
+    _pass "deny text for a tail- alias names the matched name and its twin"
+  else
+    _fail "tail- alias deny text unexpected: ${one_out}"
+  fi
+
+  # Loop-twice regressions: several segments, several substitutions and
+  # several ssh option letters in one command must still print one JSON
+  # object (deny) or nothing (pass) - never a stray `name=value` line.
+  _ssh_redirect_expect DENY 'ssh -o A=b -o C=d -p 22 -i k -l u hosta uptime' 'many ssh option letters before the destination'
+  _ssh_redirect_expect DENY 'echo ok; ssh hosta-claude uptime; scp f hosta:/x; ssh hostc uptime' 'several segments, first hit denies'
+  _ssh_redirect_expect PASS 'echo ok; ssh hosta-claude uptime; ssh hostb uptime; scp f hosta-claude:/x' 'several segments, all clean: empty output'
+  _ssh_redirect_expect DENY $'echo $(true) $(true) $(ssh hosta) `true` `true`' 'several substitutions of both kinds, then a hit'
+  _ssh_redirect_expect PASS $'echo $(true) $(true) `true` `true` $(ssh hostb)' 'several substitutions, all clean: empty output'
+
+  # The deny reason must name the CORRECT twin for each host — a per-host
+  # check catches a right-DENY-wrong-twin regression the DENY assertions
+  # above cannot see.
   local pair twin
-  for pair in 'hostb:hostb-claude' 'tail-hostb:hostb-claude' 'hostc:hostc-claude' \
+  for pair in 'hosta:hosta-claude' 'tail-hosta:hosta-claude' 'hostc:hostc-claude' \
               'tail-hostc:hostc-claude' 'hostd:hostd-claude' 'hoste:hoste-claude' \
-              'hostf:hostf-claude'; do
+              'hostf:hostf-claude' 'hosth:hosth-claude'; do
     twin="${pair#*:}"
     if [[ "$(_ssh_redirect_run "ssh ${pair%%:*}")" == *"${twin}"* ]]; then
       _pass "deny reason names ${twin} for ${pair%%:*}"
@@ -140,13 +288,4 @@ function run_ssh_redirect {
       _fail "deny reason for ${pair%%:*} does not name ${twin}"
     fi
   done
-
-  # sudo must get its own reason. Without this, a right-DENY-wrong-message
-  # regression (telling the user to run `sudo ssh hostb-claude`, an alias that
-  # does not exist in root's ~/.ssh) would pass the DENY assertion above.
-  if [[ "$(_ssh_redirect_run 'sudo ssh hostb')" == *'Drop the'* ]]; then
-    _pass "sudo deny reason says to drop the sudo"
-  else
-    _fail "sudo deny reason does not say to drop the sudo"
-  fi
 }
