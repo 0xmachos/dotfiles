@@ -43,9 +43,21 @@
 # the producer into exit 141 — fail-OPEN for a scanner. Targets arrive
 # materialised; grep output is captured, never piped.
 #
-# Bypass: PII_HOOK_BYPASS=1 skips both layers loudly (gitleaks, where a
-# caller runs it, is unaffected; --no-verify skips the calling hook wholesale
-# and silently).
+# Bypass (2026-09-25): PII_HOOK_BYPASS=1 skips both layers loudly, but ONLY
+# when a real controlling terminal is attached — --check-terminal below is
+# the shared implementation of that test, also called by commit-msg
+# (MSG_POLICY_SKIP) and pre-push (GIT_SIGN_SKIP, MSG_POLICY_SKIP), so there
+# is exactly one place that decides "is this a terminal or a tool call". Set
+# from a call with no controlling terminal (verified 2026-09-25 for an
+# agent's tool call — stdin/stdout/stderr are not TTYs and /dev/tty cannot
+# be opened), the variable is IGNORED: the scan below still runs, and one
+# loud line says the bypass was refused and that an agent must hand the user
+# the exact command to run in the user's OWN terminal, rather than retry it.
+# No environment seam may re-enable this check (any seam an agent can set is
+# a bypass again). A pty allocated around git (`script`, `expect`) would
+# satisfy the test; for Claude Code, claude/hook-bypass-guard denies that shape. gitleaks, where a caller runs it, is unaffected;
+# --no-verify skips the calling hook wholesale and silently, and — being
+# git's own — cannot be refused from inside a hook at all.
 # Test seams: PII_HOOK_PATTERNS / PII_HOOK_SSH_CONFIG override the pattern
 # list and ssh-config paths (used by ./test pii-hook); both warn when active
 # so a seam can never quietly stand in for the real lists.
@@ -54,12 +66,29 @@
 
 set -euo pipefail
 
+# --check-terminal: exit 0 when a real controlling terminal is attached to
+# this process, exit 1 when none is. `/dev/tty` names the CALLING PROCESS's
+# own controlling terminal — unlike `[[ -t 0 ]]` etc. on stdin/stdout/stderr,
+# it cannot be satisfied by a terminal session whose I/O happens to be
+# redirected to a file; opening it fails (no such device) only when the
+# process truly has no controlling terminal, which is the case for an agent
+# tool call and for any daemonised/launchd-spawned process. Every hook with
+# a bypass variable calls into THIS check (directly, if it is pii-scan
+# itself, or as a subprocess otherwise) so the test has one implementation.
+if [[ "${1:-}" == --check-terminal ]]; then
+  ( exec 3</dev/tty ) 2>/dev/null
+  exit $?
+fi
+
 target="$1"
 label="${2:-Scanned content}"
 
 if [[ "${PII_HOOK_BYPASS:-0}" == "1" ]]; then
-  echo "[⚠️ ] PII_HOOK_BYPASS=1 — PII denylist and token scans SKIPPED." >&2
-  exit 0
+  if "${0:A}" --check-terminal; then
+    echo "[⚠️ ] PII_HOOK_BYPASS=1 — PII denylist and token scans SKIPPED." >&2
+    exit 0
+  fi
+  echo "[❌] PII_HOOK_BYPASS=1 ignored: no controlling terminal; give the user the exact command to run in their OWN terminal." >&2
 fi
 
 # Resolve the dotfiles checkout from this script's own location so the

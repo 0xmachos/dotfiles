@@ -20,6 +20,20 @@
 # the machine's real pattern list and ssh config, keeping results
 # deterministic on any host.
 #
+# PII_HOOK_BYPASS is honoured only with a real controlling terminal attached
+# (2026-09-25; pii-scan's --check-terminal). Cases that expect the bypass to
+# WORK run under /usr/bin/script -q /dev/null (_pii_hook_run_tty /
+# _pii_msg_run_tty below), which allocates a real pty regardless of how this
+# suite itself was invoked. Cases proving the bypass is REFUSED run under
+# tests/lib's _run_no_tty (_pii_hook_run_notty / _pii_msg_run_notty below),
+# which detaches the hook from any controlling terminal via POSIX setsid —
+# needed because the suite's OWN invocation is not reliably terminal-less: an
+# agent's tool call never has one, but a human's interactive `./test` does,
+# and that is this gate's primary real-world path. Neither helper depends on
+# the caller's own tty state, so both sides are deterministic under `./test`
+# and under `script -q /dev/null zsh test pii-hook` alike (the latter
+# reproduces the human-terminal case from a no-tty seat).
+#
 # ShellCheck: lint with `shellcheck --shell=bash tests/pii-hook`.
 # This file is sourced, not executed — chmod 644.
 #
@@ -34,6 +48,28 @@ function _pii_hook_run {
   hook_rc=0
   hook_out="$(cd "${pii_sandbox}" && \
     env PII_HOOK_PATTERNS="${pii_seam_patterns}" PII_HOOK_SSH_CONFIG=/dev/null \
+        "$@" "${pii_hook}" 2>&1)" || hook_rc=$?
+}
+
+function _pii_hook_run_tty {
+  # Like _pii_hook_run, but wrapped in /usr/bin/script -q /dev/null so the
+  # hook runs with a real controlling terminal no matter how this suite
+  # itself was invoked — for cases that need PII_HOOK_BYPASS to be honoured.
+  git -C "${pii_sandbox}" add -A
+  hook_rc=0
+  hook_out="$(cd "${pii_sandbox}" && \
+    /usr/bin/script -q /dev/null env PII_HOOK_PATTERNS="${pii_seam_patterns}" PII_HOOK_SSH_CONFIG=/dev/null \
+        "$@" "${pii_hook}" </dev/null 2>&1)" || hook_rc=$?
+}
+
+function _pii_hook_run_notty {
+  # Like _pii_hook_run, but wrapped in tests/lib's _run_no_tty so the hook
+  # runs with NO controlling terminal no matter how this suite itself was
+  # invoked — for cases that need PII_HOOK_BYPASS to be refused.
+  git -C "${pii_sandbox}" add -A
+  hook_rc=0
+  hook_out="$(cd "${pii_sandbox}" && \
+    _run_no_tty env PII_HOOK_PATTERNS="${pii_seam_patterns}" PII_HOOK_SSH_CONFIG=/dev/null \
         "$@" "${pii_hook}" 2>&1)" || hook_rc=$?
 }
 
@@ -74,6 +110,26 @@ function _pii_msg_run {
   hook_rc=0
   hook_out="$(cd "${pii_sandbox}" && \
     env PII_HOOK_PATTERNS="${pii_seam_patterns}" PII_HOOK_SSH_CONFIG=/dev/null \
+        "$@" "${hook}" "${pii_msgfile}" 2>&1)" || hook_rc=$?
+}
+
+function _pii_msg_run_tty {
+  # Like _pii_msg_run, but wrapped in /usr/bin/script -q /dev/null (see
+  # _pii_hook_run_tty) for cases that need PII_HOOK_BYPASS to be honoured.
+  local hook="$1"; shift
+  hook_rc=0
+  hook_out="$(cd "${pii_sandbox}" && \
+    /usr/bin/script -q /dev/null env PII_HOOK_PATTERNS="${pii_seam_patterns}" PII_HOOK_SSH_CONFIG=/dev/null \
+        "$@" "${hook}" "${pii_msgfile}" </dev/null 2>&1)" || hook_rc=$?
+}
+
+function _pii_msg_run_notty {
+  # Like _pii_msg_run, but wrapped in tests/lib's _run_no_tty (see
+  # _pii_hook_run_notty) for cases that need PII_HOOK_BYPASS to be refused.
+  local hook="$1"; shift
+  hook_rc=0
+  hook_out="$(cd "${pii_sandbox}" && \
+    _run_no_tty env PII_HOOK_PATTERNS="${pii_seam_patterns}" PII_HOOK_SSH_CONFIG=/dev/null \
         "$@" "${hook}" "${pii_msgfile}" 2>&1)" || hook_rc=$?
 }
 
@@ -287,14 +343,29 @@ function run_pii_hook {
   _pii_expect_pass "same-repo sentinel short-circuits re-entry"
   _pii_reset
 
-  # 12. PII_HOOK_BYPASS=1 skips PII layers, loudly
+  # 12. PII_HOOK_BYPASS=1 skips PII layers, loudly — only with a real
+  #     controlling terminal attached (2026-09-25); forced via script here.
   echo "zorblefrobnicate and ${mac}" > "${pii_sandbox}/notes.md"
-  _pii_hook_run PII_HOOK_BYPASS=1
-  _pii_expect_pass "PII_HOOK_BYPASS=1 passes"
+  _pii_hook_run_tty PII_HOOK_BYPASS=1
+  _pii_expect_pass "PII_HOOK_BYPASS=1 passes (with a terminal)"
   if [[ "${hook_out}" == *"SKIPPED"* ]]; then
     _pass "bypass warns loudly"
   else
     _fail "bypass warns loudly — no SKIPPED warning in output"
+  fi
+  _pii_reset
+
+  # 12b. Without a controlling terminal (forced via _run_no_tty regardless of
+  #      this suite's own invocation — see tests/lib), the variable is
+  #      IGNORED: the scan still runs and blocks, with a refusal line naming
+  #      the user's own terminal.
+  echo "zorblefrobnicate and ${mac}" > "${pii_sandbox}/notes.md"
+  _pii_hook_run_notty PII_HOOK_BYPASS=1
+  _pii_expect_block "PII_HOOK_BYPASS=1 is refused without a controlling terminal" "PII pattern"
+  if [[ "${hook_out}" == *"ignored: no controlling terminal"* && "${hook_out}" == *"OWN terminal"* ]]; then
+    _pass "refusal names the missing terminal and points at the user's own"
+  else
+    _fail "refusal line missing or malformed: ${hook_out}"
   fi
   _pii_reset
 
@@ -421,14 +492,27 @@ function run_pii_hook {
   _pii_msg_run "${msg_hook}"
   _pii_expect_pass "content below the scissors line is not scanned"
 
-  # 22. PII_HOOK_BYPASS=1 skips the message scan, loudly
+  # 22. PII_HOOK_BYPASS=1 skips the message scan, loudly — only with a real
+  #     controlling terminal attached; forced via script here.
   printf 'deployed to zorblefrobnicate\n' > "${pii_msgfile}"
-  _pii_msg_run "${msg_hook}" PII_HOOK_BYPASS=1
-  _pii_expect_pass "PII_HOOK_BYPASS=1 passes the message gate"
+  _pii_msg_run_tty "${msg_hook}" PII_HOOK_BYPASS=1
+  _pii_expect_pass "PII_HOOK_BYPASS=1 passes the message gate (with a terminal)"
   if [[ "${hook_out}" == *"SKIPPED"* ]]; then
     _pass "message-gate bypass warns loudly"
   else
     _fail "message-gate bypass warns loudly — no SKIPPED warning in output"
+  fi
+
+  # 22b. Without a controlling terminal (forced via _run_no_tty), the
+  #      message gate ignores the variable, still blocks, and names the
+  #      user's own terminal.
+  printf 'deployed to zorblefrobnicate\n' > "${pii_msgfile}"
+  _pii_msg_run_notty "${msg_hook}" PII_HOOK_BYPASS=1
+  _pii_expect_block "PII_HOOK_BYPASS=1 is refused without a terminal on the message gate" "PII pattern"
+  if [[ "${hook_out}" == *"ignored: no controlling terminal"* && "${hook_out}" == *"OWN terminal"* ]]; then
+    _pass "message-gate refusal names the missing terminal and the user's own"
+  else
+    _fail "message-gate refusal line missing or malformed: ${hook_out}"
   fi
 
   # 23. applypatch-msg is a working symlink to commit-msg (`git am` coverage;

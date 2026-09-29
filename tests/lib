@@ -52,6 +52,22 @@ function _hook_verdict {
   fi
 }
 
+# Run "$@" detached from any controlling terminal, regardless of whether the
+# CALLING process (this test suite) has one or not (2026-09-25, added for the
+# git-hook terminal-gated bypass variables: PII_HOOK_BYPASS, MSG_POLICY_SKIP,
+# GIT_SIGN_SKIP). A case proving one of those is REFUSED without a terminal
+# must be deterministic whether the suite itself runs from an agent's tool
+# call (no ctty already) or a human's interactive `./test` at a real
+# terminal (a ctty the hook would otherwise inherit) — the latter is the
+# gate's primary real-world path, so relying on the suite's own ambient tty
+# state is not enough. POSIX::setsid() moves the perl process into a new
+# session with no controlling terminal; it fails only when the CALLING
+# process is already a process-group leader, which a plain command
+# substitution or `( … )` subshell child never is. perl is stock on macOS.
+function _run_no_tty {
+  /usr/bin/perl -MPOSIX -e 'POSIX::setsid() != -1 or die "setsid: $!"; exec @ARGV or die "exec: $!: $ARGV[0]"' -- "$@"
+}
+
 # Print the aggregated summary. Caller decides exit code via $?.
 function _print_summary {
   echo ""

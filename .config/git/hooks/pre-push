@@ -41,11 +41,20 @@
 # is the last barrier before a permanent, public SHA. Everything else here
 # fails open.
 #
-# Bypass: `git push --no-verify` (silent, git-level) skips everything;
+# Bypass (2026-09-25): `git push --no-verify` (silent, git-level) skips
+# everything and — being git's own — cannot be refused from inside a hook;
 # GIT_SIGN_SKIP=1 (loud) skips the signature layer ONLY; PII_HOOK_BYPASS=1
 # (loud, inside pii-scan) skips the PII layers of the message scan while
 # gitleaks still runs — mirroring pre-commit; MSG_POLICY_SKIP=1 (loud) skips
-# Layers 3 and 4 only.
+# Layers 3 and 4 only. GIT_SIGN_SKIP and MSG_POLICY_SKIP (this hook's own
+# variables) and PII_HOOK_BYPASS (pii-scan's) are honoured ONLY when a real
+# controlling terminal is attached — pii-scan's --check-terminal is the
+# shared implementation of that test, called here as a subprocess for the
+# same reason commit-msg calls it. From an agent's tool call each variable
+# is ignored, the layer it would have skipped still runs, and the hook
+# prints one loud refusal line naming the exact command to hand the user.
+# A pty allocated around git (`script`, `expect`) would satisfy the test;
+# for Claude Code, claude/hook-bypass-guard denies that shape at the tool call.
 #
 # Layers 3 and 4 (added 2026-09-22) apply to PUBLIC repositories only, as
 # decided by the sibling `repo-visibility` script (explicit
@@ -113,9 +122,13 @@ typeset -i sign_commits=0 sign_tags=0
 [[ "$(git config --bool --get tag.gpgsign 2>/dev/null || true)" == "true" ]] && sign_tags=1
 
 if [[ -n "${GIT_SIGN_SKIP:-}" ]]; then
-  print -u2 "[⚠️ ] GIT_SIGN_SKIP=1 — pre-push signature gate skipped (message scan still runs)"
-  sign_commits=0
-  sign_tags=0
+  if "${0:A:h}/pii-scan" --check-terminal; then
+    print -u2 "[⚠️ ] GIT_SIGN_SKIP=1 — pre-push signature gate skipped (message scan still runs)"
+    sign_commits=0
+    sign_tags=0
+  else
+    print -u2 "[❌] GIT_SIGN_SKIP=1 ignored: no controlling terminal; give the user the exact command to run in their OWN terminal."
+  fi
 fi
 
 # Commit signature presence is checked by the shared commit-signatures helper
@@ -248,7 +261,7 @@ if (( ${#unsigned_tags} )); then
     print -u2 "       ${t}"
   done
   print -u2 "     Re-create with \`git tag -s -f <name> <commit>\`, then push again."
-  print -u2 "     Override: GIT_SIGN_SKIP=1 git push …   (or git push --no-verify)"
+  print -u2 "     Override (the user, in their OWN terminal): GIT_SIGN_SKIP=1 git push …"
   exit 1
 fi
 
@@ -260,7 +273,7 @@ if (( ${#unsigned} )); then
   done
   print -u2 "     Re-signing rewrites SHAs and a pushed SHA is permanent, so this is"
   print -u2 "     blocked. Run \`git-sign-unpushed\` in the repo, then push again."
-  print -u2 "     Override: GIT_SIGN_SKIP=1 git push …   (or git push --no-verify)"
+  print -u2 "     Override (the user, in their OWN terminal): GIT_SIGN_SKIP=1 git push …"
   exit 1
 fi
 
@@ -321,8 +334,12 @@ visibility="$("${0:A:h}/repo-visibility" 2>/dev/null || print unknown)"
 typeset -i public_repo=1
 [[ "${visibility}" == private ]] && public_repo=0
 if [[ -n "${MSG_POLICY_SKIP:-}" ]]; then
-  print -u2 "[⚠️ ] MSG_POLICY_SKIP=1 — public-repo message policy and tree scan skipped"
-  public_repo=0
+  if "${0:A:h}/pii-scan" --check-terminal; then
+    print -u2 "[⚠️ ] MSG_POLICY_SKIP=1 — public-repo message policy and tree scan skipped"
+    public_repo=0
+  else
+    print -u2 "[❌] MSG_POLICY_SKIP=1 ignored: no controlling terminal; give the user the exact command to run in their OWN terminal."
+  fi
 fi
 
 if (( public_repo && ${#outgoing} )); then
@@ -358,7 +375,7 @@ if (( public_repo && ${#outgoing} )); then
     done
     print -u2 "     A public commit message says WHAT changed, in a subject and at most a short body."
     print -u2 "     Reword (git commit --amend / rebase -i), drop empty commits, then push again."
-    print -u2 "     Override: MSG_POLICY_SKIP=1 git push …   (private repo: git config hooks.repoVisibility private)"
+    print -u2 "     Override (the user, in their OWN terminal): MSG_POLICY_SKIP=1 git push …"
     exit 1
   fi
 fi

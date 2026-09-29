@@ -30,8 +30,12 @@
 # reference-transaction and post-index-change hook types are deliberately
 # not forwarded (hook-forward header has the rationale).
 #
-# Bypass: PII_HOOK_BYPASS=1 git commit …  skips layers 2+3 loudly; gitleaks
-# still runs (--no-verify skips the whole hook, silently).
+# Bypass (2026-09-25): PII_HOOK_BYPASS=1 git commit … skips layers 2+3
+# loudly, but ONLY in the user's own terminal (see pii-scan's header for the
+# shared --check-terminal test) — from an agent's tool call it is ignored
+# and the scan runs anyway. gitleaks still runs either way; --no-verify
+# skips the whole hook, silently, and — being git's own — cannot be refused
+# from inside a hook at all.
 
 set -euo pipefail
 

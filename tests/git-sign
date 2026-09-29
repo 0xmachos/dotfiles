@@ -28,6 +28,16 @@
 #     see-through (sudo/timeout git push), committer-date preservation, and
 #     gpgsig-presence (not %G?) detection.
 #
+# GIT_SIGN_SKIP and PII_HOOK_BYPASS are honoured only with a real controlling
+# terminal attached (2026-09-25; pii-scan's --check-terminal). Cases expecting
+# the bypass to WORK use _gs_push_expect_tty (/usr/bin/script -q /dev/null, a
+# real pty regardless of how this suite was invoked); cases proving refusal
+# use _gs_push_expect_notty (tests/lib's _run_no_tty, POSIX setsid) and
+# assert the refusal LINE, not just the verdict — needed because an agent's
+# tool call has no controlling terminal already, but a human's interactive
+# `./test` does, and that is this gate's primary real-world path (see
+# tests/pii-hook's header for the mechanism in more detail).
+#
 # Run: ./test git-sign    (or ./test for the full suite)
 #
 # ShellCheck: lint with `shellcheck --shell=bash tests/git-sign`.
@@ -280,6 +290,55 @@ function _gs_push_expect {
   else
     _fail "pre-push ${label} — expected ${want}, got ${got}"
   fi
+}
+
+function _gs_push_expect_tty {
+  # Like _gs_push_expect, but the whole command runs under
+  # /usr/bin/script -q /dev/null, which allocates a real pty regardless of
+  # how this suite itself was invoked — needed when GIT_SIGN_SKIP or
+  # PII_HOOK_BYPASS is expected to be HONOURED (2026-09-25: honoured only
+  # with a real controlling terminal attached; see tests/pii-hook's header
+  # for the mechanism behind the refusal-side cases in more detail).
+  local want="$1" label="$2" dir="$3"
+  shift 3
+  local got
+  if ( cd "${dir}" && /usr/bin/script -q /dev/null env "${GS_ENV[@]}" "$@" </dev/null ) >/dev/null 2>&1; then
+    got=ALLOWED
+  else
+    got=BLOCKED
+  fi
+  if [[ "${got}" == "${want}" ]]; then
+    _pass "pre-push ${want}: ${label}"
+  else
+    _fail "pre-push ${label} — expected ${want}, got ${got}"
+  fi
+}
+
+function _gs_push_expect_notty {
+  # Like _gs_push_expect, but the whole command runs under tests/lib's
+  # _run_no_tty, detaching from any controlling terminal regardless of how
+  # this suite itself was invoked — needed when GIT_SIGN_SKIP or
+  # PII_HOOK_BYPASS is expected to be REFUSED (2026-09-25). $4 = a needle
+  # that MUST appear in the hook's output — asserting BLOCKED alone would
+  # also pass if the shim died for an unrelated reason, so the refusal LINE
+  # is the proof.
+  local want="$1" label="$2" dir="$3" needle="$4"
+  shift 4
+  local got out
+  if out="$( cd "${dir}" && _run_no_tty env "${GS_ENV[@]}" "$@" 2>&1 )"; then
+    got=ALLOWED
+  else
+    got=BLOCKED
+  fi
+  if [[ "${got}" != "${want}" ]]; then
+    _fail "pre-push ${label} — expected ${want}, got ${got}: $(print -r -- "${out}" | /usr/bin/head -c 600)"
+    return
+  fi
+  if [[ -n "${needle}" && "${out}" != *"${needle}"* ]]; then
+    _fail "pre-push ${label} — ${want}, but output missing '${needle}': $(print -r -- "${out}" | /usr/bin/head -c 600)"
+    return
+  fi
+  _pass "pre-push ${want}: ${label}"
 }
 
 function run_git_sign {
@@ -693,7 +752,17 @@ function _git_sign_prepush_cases {
     cd "${ppa}" || exit 1; _gs_commit u1 '2026-02-03T10:00:00+00:00'
   )
   _gs_push_expect BLOCKED "unsigned commit on the pushed branch" "${ppa}" git push origin main
-  _gs_push_expect ALLOWED "GIT_SIGN_SKIP=1 override" "${ppa}" env GIT_SIGN_SKIP=1 git push origin main
+  # GIT_SIGN_SKIP=1 is honoured only with a real controlling terminal
+  # (2026-09-25): the _tty case forces one via script and publishes u1; a
+  # fresh unsigned commit then proves the same override is refused, and
+  # still blocks, without one.
+  _gs_push_expect_tty ALLOWED "GIT_SIGN_SKIP=1 override (with a terminal)" "${ppa}" env GIT_SIGN_SKIP=1 git push origin main
+  (
+    export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+    cd "${ppa}" || exit 1; _gs_commit u2 '2026-02-04T10:00:00+00:00'
+  )
+  _gs_push_expect_notty BLOCKED "GIT_SIGN_SKIP=1 is refused without a terminal" "${ppa}" \
+    "ignored: no controlling terminal" env GIT_SIGN_SKIP=1 git push origin main
   /bin/rm -rf "${ppa:h}"
 
   # Spellings and refspecs the command-string matcher cannot see.
@@ -778,8 +847,24 @@ function _git_sign_prepush_cases {
   )
   _gs_push_expect BLOCKED "control: fresh dirty message blocks" "${ppf}" \
     env PII_HOOK_PATTERNS="${msgpat}" git push origin main
-  _gs_push_expect ALLOWED "PII_HOOK_BYPASS=1 overrides the message scan" "${ppf}" \
+  _gs_push_expect_tty ALLOWED "PII_HOOK_BYPASS=1 overrides the message scan (with a terminal)" "${ppf}" \
     env PII_HOOK_PATTERNS="${msgpat}" PII_HOOK_BYPASS=1 git push origin main
+  # PII_HOOK_BYPASS=1 is honoured only with a real controlling terminal
+  # (2026-09-25). A dedicated fixture (not ppf, whose remaining cases below
+  # depend on its exact commit sequence) proves the same override is
+  # refused, and still blocks, without one.
+  local ppg
+  ppg="$(_gs_prepush_repo "$(mktemp -d "${TMPDIR}git-sign-ppg.XXXXXX")")"
+  (
+    export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+    export PII_HOOK_PATTERNS=/dev/null PII_HOOK_SSH_CONFIG=/dev/null
+    cd "${ppg}" || exit 1
+    echo m1 >> f; git add f
+    git commit -qn -S -m "redeployed zorblefrobnicate to prod"
+  )
+  _gs_push_expect_notty BLOCKED "PII_HOOK_BYPASS=1 is refused without a terminal" "${ppg}" \
+    "ignored: no controlling terminal" env PII_HOOK_PATTERNS="${msgpat}" PII_HOOK_BYPASS=1 git push origin main
+  /bin/rm -rf "${ppg:h}"
   # MAC-shaped token in a message blocks with NO denylist at all (layer 3).
   local msgmac="0f:1e:2d:3c:4b"
   msgmac="${msgmac}:5a"

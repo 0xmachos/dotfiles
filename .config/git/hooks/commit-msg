@@ -36,9 +36,14 @@
 # message gate runs gitleaks over the whole outgoing range; doing it per
 # commit would double gitleaks latency machine-wide for no coverage gain.
 #
-# Bypass: --no-verify (whole hook, silent) or PII_HOOK_BYPASS=1 (scan
-# layers, loud — handled inside pii-scan); MSG_POLICY_SKIP=1 (loud) skips
-# the public-repo policy layer only.
+# Bypass (2026-09-25): --no-verify (whole hook, silent, git's own — cannot
+# be refused from inside a hook) or PII_HOOK_BYPASS=1 (scan layers, loud —
+# handled inside pii-scan) or MSG_POLICY_SKIP=1 (loud, public-repo policy
+# layer only, handled below). The latter two are honoured ONLY when a real
+# controlling terminal is attached (see pii-scan's header for the shared
+# --check-terminal test) — from an agent's tool call either is ignored, the
+# layer it would have skipped runs anyway, and the hook prints one loud
+# refusal line naming the exact command to hand the user.
 #
 # Public-repo message policy (added 2026-09-22, fast feedback for the
 # pre-push Layer 3 boundary): in a repository the sibling `repo-visibility`
@@ -107,8 +112,11 @@ fi
 # --- Layer 4: public-repository message policy (fast feedback) --------------
 
 if [[ -n "${MSG_POLICY_SKIP:-}" ]]; then
-  echo "[⚠️ ] MSG_POLICY_SKIP=1 — public-repo message policy skipped for this commit" >&2
-  exit 0
+  if "${0:A:h}/pii-scan" --check-terminal; then
+    echo "[⚠️ ] MSG_POLICY_SKIP=1 — public-repo message policy skipped for this commit" >&2
+    exit 0
+  fi
+  echo "[❌] MSG_POLICY_SKIP=1 ignored: no controlling terminal; give the user the exact command to run in their OWN terminal." >&2
 fi
 visibility="$("${0:A:h}/repo-visibility" 2>/dev/null || echo unknown)"
 if [[ "${visibility}" != private ]]; then
@@ -131,7 +139,7 @@ if [[ "${visibility}" != private ]]; then
     for h in "${policy_hits[@]}"; do echo "       ${h}" >&2; done
     echo "     A public commit message says WHAT changed: a subject and at most a short body." >&2
     echo "     The message text is preserved in ${git_dir:-.git}/COMMIT_EDITMSG." >&2
-    echo "     Override: MSG_POLICY_SKIP=1 git commit …   (private repo: git config hooks.repoVisibility private)" >&2
+    echo "     Override (the user, in their OWN terminal): MSG_POLICY_SKIP=1 git commit …" >&2
     exit 1
   fi
 fi
