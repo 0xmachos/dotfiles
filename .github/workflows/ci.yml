@@ -1,6 +1,6 @@
 # dotfiles CI (rewritten 2026-09-29; replaces Shellcheck.yml).
 #
-# Three jobs on push, pull request, manual dispatch and a daily 21:00 UTC
+# Three jobs on push, pull request, manual dispatch and a daily 23:55 UTC
 # schedule that a gate job lets through only after a same-day commit:
 #   test     — `./test --time`, the repo's own suite, on the newest GitHub
 #              macOS runner. The house rule is "always the latest image", so
@@ -24,11 +24,11 @@ on:
   pull_request:
     branches: [main]
   schedule:
-    # Daily at 21:00 UTC (22:00 BST, 21:00 GMT; GitHub cron is UTC only). The
+    # Daily at 23:55 UTC (GitHub cron is UTC only; the day check below is UTC too). The
     # gate job below lets the scheduled run proceed only when main gained a
     # commit that UTC day, so idle days cost nothing; push, pull_request and
     # dispatch always run.
-    - cron: '0 21 * * *'
+    - cron: '55 23 * * *'
   workflow_dispatch:
 
 permissions:
