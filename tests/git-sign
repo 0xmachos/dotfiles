@@ -1072,7 +1072,11 @@ function _git_sign_prepush_cases {
   local declared
   declared="$(env "${GS_ENV[@]}" git config --file "${SCRIPT_DIR}/.config/git/config" \
     --path --get core.hooksPath 2>/dev/null || true)"
-  if [[ -z "${declared}" ]]; then
+  if [[ -n "${declared}" && ! -d "${declared}" && "${SCRIPT_DIR:A}" != "${HOME:A}/Documents/Projects/dotfiles" ]]; then
+    # A CI runner or a scratch clone: the declared path names the deployed
+    # checkout, which is not this one, so there is nothing to resolve.
+    _skip "declared global core.hooksPath ${declared} is not on this machine — repo is not at its deployed path"
+  elif [[ -z "${declared}" ]]; then
     _fail "core.hooksPath is not declared in .config/git/config — no repo gets the global hooks"
   elif [[ -x "${declared}/pre-push" && -x "${declared}/pre-commit" ]]; then
     _pass "declared global core.hooksPath resolves to executable hooks"

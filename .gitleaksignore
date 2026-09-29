@@ -2,3 +2,5 @@
 # Fingerprints of known false positives (one per line)
 # Format: commit:file:rule:line
 # Generate via: gitleaks detect --verbose
+# 2019 .gitconfig: user.signingkey held a public GPG key fingerprint, not a secret
+ef7f8bd2bf65d2fb3b2d99da14d22a704331b763:.gitconfig:generic-api-key:6

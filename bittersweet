@@ -31,14 +31,19 @@ fi
 
 ### Define Colours ###
 
-/usr/bin/tput sgr0;
-# reset colors
-RESET=$(/usr/bin/tput sgr0);
-readonly RESET
-BOLD=$(/usr/bin/tput bold);
-readonly BOLD
-RED=$(/usr/bin/tput setaf 1);
-readonly RED
+# tput needs a terminal type; without one (a CI runner, a non-tty ssh command)
+# it exits 2 and, under -e, took the whole script with it (2026-09-29). Fall
+# back to no colour rather than no run.
+if [[ -n "${TERM:-}" ]] && /usr/bin/tput sgr0 2>/dev/null; then
+  RESET=$(/usr/bin/tput sgr0)
+  BOLD=$(/usr/bin/tput bold)
+  RED=$(/usr/bin/tput setaf 1)
+else
+  RESET=''
+  BOLD=''
+  RED=''
+fi
+readonly RESET BOLD RED
 
 ### END Colours ###
 

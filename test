@@ -140,7 +140,7 @@ function _run_all_serial {
 # replays the outputs in SUITES order — an absent extra suite is skipped
 # inline at its position, exactly where the serial run reports it.
 function _run_all_parallel {
-  local jobs="$1" work s rc
+  local jobs="$1" work s rc p f k secs
   local -a runnable=()
   work="$(mktemp -d "${TMPDIR:-/tmp}/dotfiles-test.XXXXXX")"
   # EXIT covers the normal return (a trap set in a function fires when the
@@ -180,7 +180,6 @@ function _run_all_parallel {
     [[ -f "${work}/${s}.out" ]] && cat "${work}/${s}.out"
     rc="$(cat "${work}/${s}.rc" 2>/dev/null || echo none)"
     if [[ -f "${work}/${s}.counts" ]]; then
-      local p f k secs
       read -r p f k secs < "${work}/${s}.counts"
       # `: $(( ))`, not `(( ))`: a zero result would read as failure under -e.
       : $(( pass_count += p, fail_count += f, skip_count += k ))

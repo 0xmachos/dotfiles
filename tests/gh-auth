@@ -240,7 +240,19 @@ function _gha_server_ruleset {
 }
 
 function run_gh_auth {
-  _gha_signing
+  # The signing and credential-helper checks read the global git config
+  # that `bittersweet dotfiles` symlinks from this repo. On a machine where
+  # that link is absent (a CI runner, a scratch clone) they would report the
+  # runner's empty config as a posture failure, so they skip instead.
+  local live_cfg="${HOME}/.config/git/config"
+  if [[ "${live_cfg:A}" != "${SCRIPT_DIR:A}/.config/git/config" ]]; then
+    _section "gh-auth — signing is Secretive-gated"
+    _skip "${live_cfg} is not this repo's .config/git/config — global git config not deployed here, signing and helper checks skipped"
+    GHA_CONFIG_DEPLOYED=0
+  else
+    GHA_CONFIG_DEPLOYED=1
+    _gha_signing
+  fi
 
   _section "gh-auth — push credential is gh's narrowed token, nothing else"
   if ! [[ -x "$(command -v gh)" ]]; then
@@ -249,7 +261,9 @@ function run_gh_auth {
   fi
 
   _gha_token_scopes
-  _gha_credential_helper
+  if (( GHA_CONFIG_DEPLOYED )); then
+    _gha_credential_helper
+  fi
   _gha_no_stray_credentials
 
   _section "gh-auth — server refuses unsigned commits on this repo's default branch"
