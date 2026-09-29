@@ -651,20 +651,23 @@ PLIST
 
     # A non-numeric or zero LINT_HOOK_DEADLINE must not disable the
     # deadline (perl's alarm(0) means "no alarm"): the 5 second default
-    # applies, so a linter sleeping 9 seconds is still cut off well before.
-    local lh_slow9 lh_bad_deadline
-    lh_slow9="$(/usr/bin/mktemp "${TMPDIR:-/tmp}/lint-hook-slow.XXXXXX")"
+    # applies, so a linter sleeping 30 seconds is cut off near 5. The 20 s bound
+    # leaves room for hook start-up under parallel load (an 8 s bound over a
+    # 9 s sleep failed at 8 s under load, 2026-09-29) while a disabled
+    # deadline still takes 30 s and fails.
+    local lh_slow30 lh_bad_deadline
+    lh_slow30="$(/usr/bin/mktemp "${TMPDIR:-/tmp}/lint-hook-slow.XXXXXX")"
     {
       echo '#!/bin/zsh'
-      echo 'exec /bin/sleep 9'
-    } > "${lh_slow9}"
-    /bin/chmod +x "${lh_slow9}"
+      echo 'exec /bin/sleep 30'
+    } > "${lh_slow30}"
+    /bin/chmod +x "${lh_slow30}"
     for lh_bad_deadline in abc 0; do
       lh_t0="$(/bin/date +%s)"
-      _lh_exec "$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s"}}' "${LH_BARE}/timeout.sh")" "LINT_HOOK_SHELLCHECK=${lh_slow9}" "LINT_HOOK_DEADLINE=${lh_bad_deadline}"
+      _lh_exec "$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s"}}' "${LH_BARE}/timeout.sh")" "LINT_HOOK_SHELLCHECK=${lh_slow30}" "LINT_HOOK_DEADLINE=${lh_bad_deadline}"
       lh_t1="$(/bin/date +%s)"
       lh_elapsed=$(( lh_t1 - lh_t0 ))
-      if [[ "$(_lint_hook_verdict "${LH_LAST_STDOUT}")" == PASS && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" && "${lh_elapsed}" -lt 8 ]]; then
+      if [[ "$(_lint_hook_verdict "${LH_LAST_STDOUT}")" == PASS && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" && "${lh_elapsed}" -lt 20 ]]; then
         _pass "PASS, exit 0, empty stderr, ${lh_elapsed}s: LINT_HOOK_DEADLINE=${lh_bad_deadline} falls back to the 5s default"
       else
         _fail "LINT_HOOK_DEADLINE=${lh_bad_deadline} did not fall back to the default deadline (rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR} elapsed=${lh_elapsed}s)"
