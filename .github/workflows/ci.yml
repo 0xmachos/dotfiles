@@ -1,0 +1,142 @@
+# dotfiles CI (rewritten 2026-09-29; replaces Shellcheck.yml).
+#
+# Three jobs on push, pull request, a weekly schedule and manual dispatch:
+#   test     — `./test --time`, the repo's own suite, on the newest GitHub
+#              macOS runner. The house rule is "always the latest image", so
+#              this uses the `macos-latest` label (macOS 26 arm64 since
+#              2026-07; `xcode-27` is a preview label, not a release image).
+#              A clean clone has none of the gitignored config, so the suites
+#              that need it skip; what runs is every tracked script, the git
+#              hooks, the tracked Claude Code guard hooks and the statusline.
+#   secrets  — gitleaks over the whole history, behind the pre-push gate.
+#   lint     — actionlint and zizmor over this directory.
+# The macOS image ships neither shellcheck nor gitleaks. gitleaks comes from
+# Homebrew; shellcheck is the pinned release tarball, verified by SHA-256
+# before it is unpacked, because the local suite and CI must lint with the
+# same version (0.10.0 failed four files that 0.11.0 passes).
+# Every action is pinned to a full commit SHA; Dependabot keeps them current.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Mondays 06:17 UTC — catches runner-image and Homebrew drift between pushes.
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SHELLCHECK_VERSION: '0.11.0'
+  SHELLCHECK_SHA256: '56affdd8de5527894dca6dc3d7e0a99a873b0f004d7aabc30ae407d3f48b0a79'
+
+jobs:
+  test:
+    name: ./test
+    runs-on: macos-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: zsh {0}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          brew install --quiet gitleaks
+          gitleaks version
+
+      - name: Install shellcheck (pinned release, SHA-256 verified)
+        run: |
+          set -euo pipefail
+          cd "${RUNNER_TEMP}"
+          tarball="shellcheck-v${SHELLCHECK_VERSION}.darwin.aarch64.tar.xz"
+          curl --silent --show-error --location --fail --output "${tarball}" \
+            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/${tarball}"
+          printf '%s  %s\n' "${SHELLCHECK_SHA256}" "${tarball}" | shasum -a 256 --check --strict
+          tar -xf "${tarball}"
+          mkdir -p "${RUNNER_TEMP}/bin"
+          mv "shellcheck-v${SHELLCHECK_VERSION}/shellcheck" "${RUNNER_TEMP}/bin/shellcheck"
+          "${RUNNER_TEMP}/bin/shellcheck" --version
+          echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
+
+      - name: Run the suite
+        env:
+          # Several suites build sandbox paths as "${TMPDIR}name", so the
+          # value must end in a slash, as macOS's own TMPDIR does.
+          TMPDIR: ${{ runner.temp }}/
+        run: |
+          set -uo pipefail
+          log="${RUNNER_TEMP}/test.log"
+          ./test --time 2>&1 | tee "${log}"
+          rc=${pipestatus[1]}
+          {
+            echo '## ./test'
+            echo '```'
+            /usr/bin/sed 's/\x1b\[[0-9;]*m//g' "${log}" | /usr/bin/sed -n '/── Suite times ──/,$p'
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+          exit "${rc}"
+
+      - name: Upload the suite log
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-log
+          path: ${{ runner.temp }}/test.log
+          retention-days: 14
+
+  secrets:
+    name: gitleaks (full history)
+    runs-on: macos-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: zsh {0}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Scan every commit
+        run: |
+          set -euo pipefail
+          brew install --quiet gitleaks
+          gitleaks git --no-banner --redact --verbose .
+
+  lint:
+    name: workflow lint
+    runs-on: macos-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: zsh {0}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: actionlint and zizmor
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          brew install --quiet actionlint zizmor
+          actionlint -color -shellcheck=
+          zizmor --format github .github/workflows
