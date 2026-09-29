@@ -48,6 +48,8 @@ keybind = super+k=text:\x0c
 # passes the keys through to the app.
 keybind = super+d=unbind
 keybind = super+shift+d=unbind
+# Cmd+W closes the focused herdr pane, not Ghostty's window.
+keybind = super+w=unbind
 # Copy/ Paste
 # Clear selection after copy (default false)
 selection-clear-on-copy = true
