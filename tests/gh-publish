@@ -24,12 +24,17 @@
 function _gp_test_run {
   # Hook stdout for Bash command $1; $2 optionally overrides the pattern file,
   # $3 the NO_GITLEAKS seam, $4 the NO_IDENTITY seam (defaults isolate both).
+  # GH_CONFIG_DIR (2026-09-25) points every invocation
+  # at the sandbox gh config this suite writes below, so alias resolution
+  # is hermetic — the real gh binary parses it, but never the real
+  # ~/.config/gh, whether or not gh itself is installed on this machine.
   jq -n --arg c "$1" '{tool_name:"Bash", tool_input:{command:$c}}' \
     | GH_PUBLISH_PATTERNS="${2:-${_gp_dir}/patterns}" \
       GH_PUBLISH_SSH_CONFIG="${_gp_dir}/sshcfg" \
       GH_PUBLISH_NO_GITLEAKS="${3-1}" \
       GH_PUBLISH_NO_IDENTITY="${4-1}" \
       GH_PUBLISH_OS="7.7:99Z999z" \
+      GH_CONFIG_DIR="${_gp_dir}/gh" \
       /bin/zsh "${SCRIPT_DIR}/claude/gh-publish-hook"
 }
 
@@ -47,6 +52,34 @@ function _gp_test_expect {
     _pass "${want}: ${label}"
   else
     _fail "${label} — expected ${want}, got ${got}"
+  fi
+}
+
+function _gp_test_terse {
+  # Deny text for command $1: one line per violation, at most 120 characters
+  # each, no numbering, no header line and no closing paragraph.
+  local cmd="$1" label="$2" out reason line bad='' dups
+  out="$(_gp_test_run "${cmd}")"
+  if [[ "$(_hook_verdict "${out}")" != DENY ]]; then
+    _fail "terse deny text: ${label} — expected one valid DENY object"
+    return
+  fi
+  reason="$(jq -r '.hookSpecificOutput.permissionDecisionReason' <<< "${out}")"
+  while IFS= read -r line; do
+    if [[ -z "${line}" ]]; then
+      bad="an empty line"
+    elif (( ${#line} > 120 )); then
+      bad="a line of ${#line} characters"
+    elif [[ "${line}" == [0-9]*'. '* || "${line}" == *'blocked:' || "${line}" == *'really wanted'* ]]; then
+      bad="a numbered, header or closing line: ${line}"
+    fi
+  done <<< "${reason}"
+  dups="$(sort <<< "${reason}" | uniq -d)"
+  [[ -n "${dups}" ]] && bad="a repeated line: ${dups}"
+  if [[ -z "${bad}" ]]; then
+    _pass "terse deny text: ${label}"
+  else
+    _fail "terse deny text: ${label} — ${bad}"
   fi
 }
 
@@ -86,6 +119,25 @@ function run_gh_publish {
   printf '%s\n' "${fixture_token}" > "${_gp_dir}/patterns"
   printf 'Host %s\n' "${fixture_alias}" > "${_gp_dir}/sshcfg"
 
+  # Sandbox gh config (2026-09-25): a safe read alias
+  # (co: pr checkout, matching the live default so the "known alias" case
+  # exercises a realistic entry), a publish alias (an unknown word that
+  # expands to a real gh publish, so it must still deny), a
+  # shell alias (expansion starts with `!`, always denied), and an
+  # alias whose expansion ends on a flag that still needs an operand
+  # (postbody — used to check that a trailing --help/-h on the outer
+  # invocation is not assumed to be a help request before the expansion
+  # is even resolved). GH_CONFIG_DIR is injected by _gp_test_run above,
+  # so `gh alias list` reads only this.
+  mkdir -p "${_gp_dir}/gh"
+  {
+    printf 'aliases:\n'
+    printf '    co: pr checkout\n'
+    printf '    ghpubtest: issue create --body x\n'
+    printf '    ghpubtestsh: "!echo hi"\n'
+    printf '    postbody: issue create --title t --body\n'
+  } > "${_gp_dir}/gh/config.yml"
+
   # A clean, reviewed, env-carrying body.
   printf 'One full-width paragraph, no wrapping at all.\n\n## Environment\n\n- test hardware, test OS build\n' \
     > "${_gp_dir}/good.md"
@@ -101,8 +153,8 @@ function run_gh_publish {
     'issue create: reviewed body with env section'
   _gp_test_expect PASS "gh issue edit 5 --add-label bug" 'issue edit: label only'
   _gp_test_expect PASS 'gh issue create --web' 'issue create --web (human flow)'
-  _gp_test_expect PASS "GH_PUBLISH_BYPASS=1 gh issue create -t t --body inline" \
-    'bypass prefix'
+  _gp_test_expect DENY "GH_PUBLISH_BYPASS=1 gh issue create -t t --body inline" \
+    'an env-var prefix on the command line has no special effect any more, inline body still denies'
 
   # PR and comment bodies do not need an Environment section.
   printf 'No env section here, one line.\n' > "${_gp_dir}/noenv.md"
@@ -262,77 +314,77 @@ function run_gh_publish {
     _skip "gitleaks not installed — secrets-layer case skipped"
   fi
 
-  # --- Review-round regressions (adversarial review 2026-08-03) ------------
-  # F1: backslash continuation must be joined before parsing.
+  # --- Parsing edge cases (2026-08-03) --------------------------------------
+  # Backslash continuation must be joined before parsing.
   _gp_test_expect DENY "gh issue edit 5 \\"$'\n'"  --body-file ${_gp_dir}/pii.md" \
-    'continued edit --body-file is scanned (F1)'
+    'continued edit --body-file is scanned'
   _gp_test_expect PASS "gh issue create -t t \\"$'\n'"  --body-file ${_gp_dir}/good.md" \
-    'continued create with clean body passes (F1)'
+    'continued create with clean body passes'
 
-  # F2: joined short flags.
+  # Joined short flags.
   _gp_test_expect DENY "gh issue edit 5 -b${fixture_token}" \
-    'joined -bBODY inline is denied (F2)'
+    'joined -bBODY inline is denied'
   _gp_test_expect DENY "gh issue create -t${fixture_token} --body-file ${_gp_dir}/good.md" \
-    'joined -tTITLE is PII-scanned (F2)'
+    'joined -tTITLE is PII-scanned'
 
-  # F3: leading global flags before the subcommand.
+  # Leading global flags before the subcommand.
   _gp_test_expect DENY 'gh -R o/r issue create -t t --body x' \
-    'global -R before subcommand still dispatched (F3)'
+    'global -R before subcommand still dispatched'
 
-  # F4/F5: gh api option values must not steal the path; graphql is covered.
+  # gh api option values must not steal the path; graphql is covered.
   _gp_test_expect DENY "gh api -H 'Accept: application/vnd.github+json' repos/o/r/issues -f title=x" \
-    'gh api with -H header before path (F4)'
-  _gp_test_expect DENY "gh api graphql -f query=x" 'gh api graphql write (F5)'
+    'gh api with -H header before path'
+  _gp_test_expect DENY "gh api graphql -f query='mutation { x }'" 'gh api graphql write'
 
-  # F6: pr review publishes a body.
+  # pr review publishes a body.
   _gp_test_expect DENY 'gh pr review 5 --approve --body lgtm' \
-    'pr review inline body denied (F6)'
+    'pr review inline body denied'
   _gp_test_expect PASS 'gh pr review 5 --approve' \
-    'bare pr review --approve passes (F6)'
+    'bare pr review --approve passes'
 
-  # F8: an emptied PII denylist must fail closed even with ssh aliases present.
+  # An emptied PII denylist must fail closed even with ssh aliases present.
   : > "${_gp_dir}/empty-patterns"
   _gp_test_expect DENY "gh issue create -t t --body-file ${_gp_dir}/good.md" \
-    'empty PII denylist fails closed despite ssh aliases (F8)' \
+    'empty PII denylist fails closed despite ssh aliases' \
     "${_gp_dir}/empty-patterns"
 
-  # F10: a directory as --body-file must deny, not slip through unhashed.
+  # A directory as --body-file must deny, not slip through unhashed.
   mkdir -p "${_gp_dir}/dirbody.md"
   printf 'r\n' > "${_gp_dir}/dirbody.md.reviewed"
   _gp_test_expect DENY "gh pr create -t t --body-file ${_gp_dir}/dirbody.md" \
-    'directory body-file denied (F10)'
+    'directory body-file denied'
 
-  # P1/P2/P4/P5: legitimate markdown must not deny.
+  # Legitimate markdown must not deny.
   printf -- '- top item\n  - nested item\n    continuation is a wrap though\n\n## Environment\n\n- b\n' \
     > "${_gp_dir}/nested.md"
   _gp_test_review "${_gp_dir}/nested.md"
   _gp_test_expect DENY "gh issue create -t t --body-file ${_gp_dir}/nested.md" \
-    'wrapped list continuation still denied (P1 guard)'
+    'wrapped list continuation still denied'
   printf -- '- top item\n  - nested item\n  - second nested\n\n## Environment\n\n- b\n' \
     > "${_gp_dir}/nested2.md"
   _gp_test_review "${_gp_dir}/nested2.md"
   _gp_test_expect PASS "gh issue create -t t --body-file ${_gp_dir}/nested2.md" \
-    'nested bullets pass (P1)'
+    'nested bullets pass'
 
   printf '<details>\n<summary>Full log</summary>\n\nOne line inside.\n\n</details>\n\n## Environment\n\n- b\n' \
     > "${_gp_dir}/details.md"
   _gp_test_review "${_gp_dir}/details.md"
   _gp_test_expect PASS "gh issue create -t t --body-file ${_gp_dir}/details.md" \
-    'multi-line details/summary block passes (P2)'
+    'multi-line details/summary block passes'
 
   printf 'Intro.\n\n~~~\nwrapped\ninside tilde fence\n~~~\n\n## Environment\n\n- b\n' \
     > "${_gp_dir}/tilde.md"
   _gp_test_review "${_gp_dir}/tilde.md"
   _gp_test_expect PASS "gh issue create -t t --body-file ${_gp_dir}/tilde.md" \
-    'tilde fence recognised (P4)'
+    'tilde fence recognised'
 
   printf 'Setext Title\n============\n\nOne paragraph line.\n\n## Environment\n\n- b\n' \
     > "${_gp_dir}/setext.md"
   _gp_test_review "${_gp_dir}/setext.md"
   _gp_test_expect PASS "gh issue create -t t --body-file ${_gp_dir}/setext.md" \
-    'setext heading underline passes (P5)'
+    'setext heading underline passes'
 
-  # --- Coverage round 2: parse forms, error paths, seams -------------------
+  # --- Parse forms, error paths, seams --------------------------------------
   # Equals-joined flag forms; discriminators chosen so a parse failure flips
   # the verdict (an unparsed -t= on edit would PASS, not DENY differently).
   _gp_test_expect DENY "gh issue create --title=${fixture_token} --body-file ${_gp_dir}/good.md" \
@@ -362,7 +414,7 @@ function run_gh_publish {
     'invalid ERE in denylist fails closed' "${_gp_dir}/bad-regex"
 
   # A gitleaks ERROR (exit not 0/9) must fail closed — distinct from a
-  # finding. gitleaks is resolved by absolute path (2026-09-25 restore), so
+  # secret hit. gitleaks is resolved by absolute path (2026-09-25), so
   # a PATH-prepended stub alone no longer reaches it — GH_PUBLISH_GITLEAKS
   # is the seam that does (kept alongside the PATH override for belt/braces).
   mkdir -p "${_gp_dir}/stubbin"
@@ -382,18 +434,6 @@ function run_gh_publish {
     _pass "DENY: gitleaks error exit fails closed"
   else
     _fail "gitleaks error exit did not fail closed"
-  fi
-
-  # Session-env bypass form (the string-prefix form is tested above).
-  out="$(jq -n --arg c 'gh issue create -t t --body inline' \
-      '{tool_name:"Bash", tool_input:{command:$c}}' \
-    | GH_PUBLISH_BYPASS=1 GH_PUBLISH_PATTERNS="${_gp_dir}/patterns" \
-      GH_PUBLISH_SSH_CONFIG="${_gp_dir}/sshcfg" \
-      /bin/zsh "${SCRIPT_DIR}/claude/gh-publish-hook")"
-  if [[ "${out}" != *permissionDecision* ]]; then
-    _pass "PASS: session-env bypass"
-  else
-    _fail "session-env GH_PUBLISH_BYPASS=1 did not bypass"
   fi
 
   # Hostname half of the identity watchlist (guarded: needs scutil + a
@@ -449,7 +489,7 @@ function run_gh_publish {
   _gp_test_expect DENY 'eval "gh issue create -t t --body inline"' \
     'gh publish verb inside an eval argument fails closed'
   _gp_test_reason_has 'eval "gh issue create -t t --body inline"' \
-    'run gh directly so the body can be checked' 'the eval fail-closed reason'
+    'run gh directly instead' 'the eval fail-closed reason'
   _gp_test_expect DENY 'sh -c "gh issue create -t t --body inline"' \
     'gh publish verb inside an sh -c string fails closed'
   _gp_test_expect DENY 'echo x | xargs gh issue create -t t --body inline' \
@@ -666,6 +706,461 @@ function run_gh_publish {
     'a quoted read-only flag does not turn a read into anything else'
   _gp_test_expect PASS 'gh -Ro/r pr list' \
     'joined -Ro/r global flag before a read verb still passes'
+
+  # --- Harmless redirects on a publish command (2026-09-25) ----------------
+  _gp_test_expect PASS "gh issue create -t t --body-file ${_gp_dir}/good.md >/dev/null" \
+    'trailing >/dev/null on a reviewed publish is harmless'
+  _gp_test_expect PASS "gh issue create -t t --body-file ${_gp_dir}/good.md 2>/dev/null" \
+    'trailing 2>/dev/null on a reviewed publish is harmless'
+  _gp_test_expect PASS "gh issue create -t t --body-file ${_gp_dir}/good.md 2>&1" \
+    'trailing 2>&1 on a reviewed publish is harmless'
+  _gp_test_expect PASS "gh issue create -t t --body-file ${_gp_dir}/good.md &>/dev/null" \
+    'trailing &>/dev/null on a reviewed publish is harmless'
+  _gp_test_expect DENY "gh issue create -t t --body-file ${_gp_dir}/good.md > out.txt" \
+    'trailing > out.txt is still a write redirect'
+  _gp_test_expect DENY "gh issue create -t t --body-file ${_gp_dir}/good.md 2> err.txt" \
+    'trailing 2> err.txt is still a write redirect'
+  _gp_test_expect DENY "gh issue create -t t --body-file ${_gp_dir}/good.md &> out" \
+    'trailing &> out is still a write redirect'
+  _gp_test_expect DENY "gh issue create -t t --body-file ${_gp_dir}/good.md >&file" \
+    'trailing >&file is still a write redirect (target is not a bare fd or -)'
+
+  # --- Heredoc bodies are data unless fed to a shell (2026-09-25) — the live
+  # false positive this closes: a docstring or a `cat > f` body that merely
+  # mentions a gh publish shape. ----------------------------------------------
+  # shellcheck disable=SC2016  # literal fixture text, never expanded by this shell — it travels to jq --arg unmodified
+  _gp_test_expect PASS $'python3 - <<\'EOF\'\nprint("gh issue create --body x")\nEOF' \
+    'a python heredoc body mentioning a gh publish shape is data, not scanned'
+  # shellcheck disable=SC2016  # literal fixture text, never expanded by this shell — it travels to jq --arg unmodified
+  _gp_test_expect PASS $'cat > /tmp/gp-heredoc-fixture.md <<\'EOF\'\ngh issue create --body x\nEOF' \
+    'a heredoc piped to cat mentioning a gh publish shape is data, not scanned'
+  # shellcheck disable=SC2016  # literal fixture text, never expanded by this shell — it travels to jq --arg unmodified
+  _gp_test_expect DENY $'bash <<\'EOF\'\ngh issue create -t t --body x\nEOF' \
+    'a heredoc fed to bash is scanned as commands, so an inline-body publish inside it still denies'
+  # shellcheck disable=SC2016  # literal fixture text, never expanded by this shell — it travels to jq --arg unmodified
+  _gp_test_expect DENY $'cat <<EOF\n$(gh issue create --title t --body x)\nEOF' \
+    'an unquoted heredoc still lets the outer shell run a $(...) inside its body'
+  # shellcheck disable=SC2016  # literal fixture text, never expanded by this shell — it travels to jq --arg unmodified
+  _gp_test_expect PASS $'cat <<\'EOF\'\n$(gh issue create --title t --body x)\nEOF' \
+    'a quoted heredoc delimiter suppresses all expansion, so the same $(...) text stays inert data'
+  # shellcheck disable=SC2016  # literal fixture text, never expanded by this shell — it travels to jq --arg unmodified
+  _gp_test_expect DENY $'bash 2>&1 <<EOF\ngh issue create --title t --body x\nEOF' \
+    'an fd-duplication redirect before the heredoc operator must not drop the shell consumer'
+  # shellcheck disable=SC2016  # literal fixture text, never expanded by this shell — it travels to jq --arg unmodified
+  _gp_test_expect DENY $'bash <<FIRST <<SECOND\necho hi\nFIRST\ngh issue create --title t --body x\nSECOND' \
+    'a second heredoc on the same intro line still resolves to the same shell consumer as the first'
+
+  # An unquoted heredoc body is checked as RAW TEXT, with no shell-quoting
+  # rules of its own: a single-quoted, commented-out, or multi-line
+  # $(...)/backtick inside it still counts, the same as a bare one would.
+  # shellcheck disable=SC2016  # literal fixture text, never expanded by this shell — it travels to jq --arg unmodified
+  _gp_test_expect DENY $'cat <<EOF\n\'$(gh issue create --body x)\'\nEOF' \
+    'a single-quoted $(...) inside an unquoted heredoc body still expands'
+  # shellcheck disable=SC2016  # literal fixture text, never expanded by this shell — it travels to jq --arg unmodified
+  _gp_test_expect DENY $'cat <<EOF\n# $(gh issue create --body x)\nEOF' \
+    'a commented-out $(...) inside an unquoted heredoc body still expands'
+  # shellcheck disable=SC2016  # literal fixture text, never expanded by this shell — it travels to jq --arg unmodified
+  _gp_test_expect DENY $'cat <<EOF\n$(\ngh issue create --body x\n)\nEOF' \
+    'a $(...) opened on one heredoc body line and closed on another still expands'
+
+  # --- --help/-h is a read (2026-09-25) -------------------------------------
+  _gp_test_expect PASS 'gh gist create --help' \
+    'gh gist create --help is a read, not the outright gist-create deny'
+  _gp_test_expect PASS 'gh issue create -h' 'gh issue create -h is a read'
+  _gp_test_expect PASS 'gh help issue create' 'gh help issue create is a read'
+  _gp_test_expect DENY 'gh issue create --title -h --body x' \
+    'a -h consumed as the --title operand value is not a help request'
+
+  # Outside the six checked publish verbs, --help/-h only counts as help
+  # when it is the SOLE argument after the verb — anything else might be
+  # a preceding flag's own string operand, and gh does not treat it as
+  # help either.
+  _gp_test_expect DENY "gh gist create --desc -h ${_gp_dir}/good.md" \
+    '-h after --desc is that flag operand, not help, on a group with no flag table'
+  _gp_test_expect DENY "gh gist create --desc --help ${_gp_dir}/good.md" \
+    '--help after --desc is that flag operand, not help, on a group with no flag table'
+  _gp_test_expect DENY 'gh api repos/o/r/issues --jq -h -f title=x' \
+    '-h after --jq is that flag operand, not help, and the write still sends'
+
+  # A help request must not hide a DIFFERENT publish elsewhere in the same
+  # call, and must discard only the denies its OWN parsing raised.
+  # shellcheck disable=SC2016  # literal fixture text, never expanded by this shell — it travels to jq --arg unmodified
+  _gp_test_expect DENY 'gh issue create --help; ${G:-gh} issue create --body x' \
+    'a help request earlier in the call does not hide an unresolved publish later in it'
+  # shellcheck disable=SC2016  # literal fixture text, never expanded by this shell — it travels to jq --arg unmodified
+  _gp_test_expect DENY $'gh pr create -h; cat <<EOF\n$(gh issue create --body x)\nEOF' \
+    'a help request earlier in the call does not hide an unreviewed heredoc publish later in it'
+  _gp_test_expect PASS 'gh pr create --fill --help' \
+    'a genuine help request discards the --fill deny raised before --help was reached'
+  _gp_test_expect PASS 'gh release create --generate-notes --help' \
+    'a genuine help request discards the --generate-notes deny raised before --help was reached'
+
+  # --- Per-verb flag allowlist (2026-09-25) ---------------------------------
+  _gp_test_expect DENY "gh issue create --bogus --body-file ${_gp_dir}/good.md" \
+    'unrecognised flag on a known verb fails closed'
+  _gp_test_expect DENY 'gh issue frobnicate 5' \
+    'unrecognised verb on a known group fails closed'
+  _gp_test_expect DENY 'gh issue transfer 5 o/r2' \
+    'issue transfer denies outright (no scanning path)'
+  _gp_test_expect DENY 'gh pr create --fill' \
+    'pr create --fill denies (unreviewed commit-message body)'
+  _gp_test_expect DENY 'gh issue create -t t --recover x' \
+    'issue create --recover denies (unreviewed saved input)'
+  _gp_test_expect DENY 'gh pr create -t t -e' \
+    'pr create -e denies (unscannable editor flow)'
+  _gp_test_expect DENY 'gh pr merge 5 -t "x"' \
+    'pr merge -t is --subject, inline and denied (not a scanned title)'
+  _gp_test_expect DENY 'gh release create v1 --notes-from-tag' \
+    'release create --notes-from-tag denies (unreviewed tag/commit content)'
+  _gp_test_expect DENY 'gh pr create -dz' \
+    'a cluster with an unknown trailing char fails closed'
+
+  _gp_test_expect PASS "gh pr review 5 --comment --body-file ${_gp_dir}/good.md" \
+    'pr review --comment is a boolean review type, so --body-file still scans normally'
+  _gp_test_expect PASS 'gh pr review 5 --approve' \
+    'pr review --approve alone still passes'
+  _gp_test_expect PASS 'gh issue comment 5 --delete-last --yes' \
+    '--delete-last publishes nothing, so no missing-body-file deny'
+  _gp_test_expect PASS 'gh pr checkout 5' 'pr checkout is a known non-publishing verb'
+  _gp_test_expect PASS 'gh repo view' 'gh repo is a known-but-uncovered group, still passes'
+  _gp_test_expect PASS 'gh pr list 2>&1' 'a trailing 2>&1 on a read still passes'
+
+  # --- Top-level word gate and alias resolution (2026-09-25). Alias-expansion
+  # cases need the real gh binary (it parses its
+  # own YAML) — skipped, not failed, when absent (claude/ sync gap posture,
+  # same as the suite-wide claude/gh-publish-hook guard above). The
+  # unknown-word-with-no-alias case denies either way (gh missing also
+  # fails closed) so it runs unconditionally.
+  if command -v gh &>/dev/null; then
+    _gp_test_expect PASS 'gh co 5' \
+      'gh co resolves through the sandbox alias to pr checkout (a read)'
+    _gp_test_expect DENY 'gh ghpubtest' \
+      'an unknown word aliased to issue create --body x still denies through the expansion'
+    _gp_test_expect DENY 'gh ghpubtestsh' \
+      'an unknown word aliased to a shell command (!) denies — this hook cannot see what it runs'
+  else
+    _skip 'gh not installed — alias-resolution cases skipped'
+  fi
+  _gp_test_expect DENY 'gh totallynotarealghcommand' \
+    'an unknown top-level word with no alias entry denies'
+
+  # --- Backstop regex false positive (2026-09-25) ---------------------------
+  # shellcheck disable=SC2016  # literal fixture text, never expanded by this shell — it travels to jq --arg unmodified
+  _gp_test_expect PASS 'ghost="$X"; printf "hi" > issue-create.txt' \
+    'the backstop no longer matches the issue-create.txt filename shape'
+
+  # --- Redirects and short-flag clusters on a publish command (2026-09-25) -
+  _gp_test_expect PASS "gh pr create -t '> comparison' --body-file ${_gp_dir}/good.md" \
+    'a quoted argument that starts with > is not mistaken for a redirect'
+  _gp_test_expect PASS "gh pr create -t t --body-file ${_gp_dir}/good.md -d=false" \
+    'a short-cluster boolean followed by = consumes the rest of the token as its value'
+
+  # --- Boolean flag values (2026-09-25) -------------------------------------
+  # An explicit =value on a boolean flag is read as true/false, not just
+  # treated as present, and the LAST occurrence of a given flag wins over
+  # an earlier one — both long and short spellings.
+  _gp_test_expect DENY 'gh issue create --title t --body x --web=false' \
+    '--web=false does not exempt an inline body from scanning'
+  _gp_test_expect DENY 'gh issue create --body x --web --web=false' \
+    'a later --web=false overrides an earlier bare --web'
+  _gp_test_expect DENY 'gh issue create --body x --help --help=false' \
+    'a later --help=false overrides an earlier bare --help'
+  _gp_test_expect DENY 'gh issue create --body x -h -h=false' \
+    'a later -h=false overrides an earlier bare -h'
+  _gp_test_expect DENY 'gh issue comment 1 --delete-last --delete-last=false' \
+    'a later --delete-last=false overrides an earlier bare --delete-last'
+
+  # --- Alias resolution: a trailing --help/-h is not a shortcut (2026-09-25)
+  # A word this hook does not recognise is always resolved through gh's own
+  # alias table first — whether the invocation ends in --help/-h makes no
+  # difference to what that resolution finds. A shell alias runs regardless
+  # of any argument (gh's own alias mechanism disables its flag parsing
+  # entirely for a `!`-prefixed expansion); an expansion whose own trailing
+  # flag still needs an operand swallows a following --help/-h as that
+  # flag's value, exactly as it would swallow any other word.
+  if command -v gh &>/dev/null; then
+    _gp_test_expect DENY 'gh postbody --help' \
+      'an alias expansion ending on an operand-taking flag swallows --help as that operand'
+    _gp_test_expect DENY 'gh postbody -h' \
+      'same alias, with -h'
+    _gp_test_expect DENY 'gh postbody x' \
+      'control: a non-help argument through the same alias still denies'
+    _gp_test_expect DENY 'gh ghpubtestsh --help' \
+      'a shell alias runs regardless of a trailing --help — this hook cannot see what it runs'
+    _gp_test_expect DENY 'gh ghpubtestsh -h' \
+      'same shell alias, with -h'
+    _gp_test_expect PASS 'gh co --help' \
+      'an alias resolving to a read verb still gets that verb own help exemption once resolved'
+  else
+    _skip 'gh not installed — alias --help resolution cases skipped'
+  fi
+
+  # --- Unterminated heredocs still execute their own live expansions
+  # (2026-09-25). A heredoc with no closing delimiter before the end of the
+  # command is still executed by a real shell as though EOF had closed it —
+  # the body it already read is not discarded, and any $(...) or backtick
+  # inside an unquoted delimiter's body still expands. A quoted delimiter
+  # stays fully inert either way, terminated or not.
+  # shellcheck disable=SC2016  # literal fixture text, not a shell expansion here — it travels to jq --arg unmodified
+  _gp_test_expect DENY $'cat <<EOF\n$(gh issue create --title t --body x)' \
+    'an unterminated heredoc body still expands a $(...) inside it'
+  # shellcheck disable=SC2016  # literal fixture text, not a shell expansion here — it travels to jq --arg unmodified
+  _gp_test_expect DENY $'cat <<EOF\n`gh issue create --title t --body x`' \
+    'an unterminated heredoc body still expands a backtick command substitution inside it'
+  _gp_test_expect PASS $'cat <<\x27EOF\x27\n$(gh issue create --title t --body x)' \
+    'a quoted heredoc delimiter stays inert even when the heredoc never terminates'
+
+  # --- Browser mode does not hide a separate publish in the same call
+  # (2026-09-25). --web opens a human's browser to compose there — that
+  # exempts the --web call itself, but it must not suppress scanning of an
+  # unrelated, unreviewed publish elsewhere in the same overall command.
+  # shellcheck disable=SC2016  # literal fixture text, not a shell expansion here — it travels to jq --arg unmodified
+  _gp_test_expect DENY 'gh issue create --web; ${G:-gh} issue create --title t --body x' \
+    '--web does not suppress a later dynamic-command-word publish in the same call'
+  _gp_test_expect DENY $'gh issue create --web; cat <<EOF\n$(gh issue create --title t --body x)\nEOF' \
+    '--web does not suppress a later heredoc publish in the same call'
+  # shellcheck disable=SC2016  # literal fixture text, not a shell expansion here — it travels to jq --arg unmodified
+  _gp_test_expect DENY '${G:-gh} issue create --title t --body x; gh issue create --web' \
+    'the same still denies with --web coming second'
+
+  # --- gh api: short-flag clusters and every documented flag (2026-09-25).
+  # A write is decided by whether the method is absent-or-GET and whether
+  # any token looks field-like — a single-dash cluster containing f/F, or a
+  # long --field/--raw-field/--input form — never by the endpoint path.
+  # Every other documented api flag (help/api.txt) is safely ignored: none
+  # of -i/-H/-p/-q/-t/--hostname/--cache/--paginate/--silent/--slurp/
+  # --verbose/--allow-escape-sequences contains f/F or matches a field
+  # long-form prefix.
+  _gp_test_expect DENY 'gh api repos/o/r/issues -if title=x' \
+    'a short-flag cluster -if is a field flag'
+  _gp_test_expect DENY 'gh api repos/o/r/issues -iF title=x' \
+    'a short-flag cluster -iF is a field flag'
+  _gp_test_expect PASS 'gh api repos/o/r/issues -i' \
+    '-i alone (no f/F) is not field-like'
+  _gp_test_expect DENY "gh api -t '{{.number}}' repos/o/r/issues -f title=x" \
+    '-t/--template no longer steals the endpoint slot from -f'
+  _gp_test_expect PASS "gh api -t '{{.number}}' repos/o/r/issues" \
+    '-t alone with no field flag is still a read'
+  _gp_test_expect PASS 'gh api repos/o/r/issues -H "Accept: x"' \
+    '-H/--header is ignored'
+  _gp_test_expect PASS 'gh api repos/o/r/issues -q .foo' \
+    '-q/--jq is ignored'
+  _gp_test_expect PASS 'gh api repos/o/r/issues -p corsair' \
+    '-p/--preview is ignored'
+  _gp_test_expect PASS 'gh api repos/o/r/issues --hostname example.com' \
+    '--hostname is ignored'
+  _gp_test_expect PASS 'gh api repos/o/r/issues --cache 60m' \
+    '--cache is ignored'
+  _gp_test_expect PASS 'gh api repos/o/r/issues --paginate' \
+    '--paginate is ignored'
+  _gp_test_expect PASS 'gh api repos/o/r/issues --silent' \
+    '--silent is ignored'
+  _gp_test_expect PASS 'gh api repos/o/r/issues --slurp' \
+    '--slurp is ignored'
+  _gp_test_expect PASS 'gh api repos/o/r/issues --verbose' \
+    '--verbose is ignored'
+  _gp_test_expect PASS 'gh api repos/o/r/issues --allow-escape-sequences' \
+    '--allow-escape-sequences is ignored'
+  _gp_test_expect DENY 'gh api repos/o/r/issues --raw-field title=x' \
+    'long form --raw-field denies'
+  _gp_test_expect DENY "gh api repos/o/r/issues --field title=x" \
+    'long form --field denies'
+  _gp_test_expect DENY 'gh api repos/o/r/issues --input -' \
+    'long form --input denies'
+  _gp_test_expect DENY 'gh api repos/o/r/issues -X DELETE' \
+    'an explicit non-GET method denies even with zero field-like tokens'
+  _gp_test_expect DENY 'gh api repos/o/r/issues -iXPOST' \
+    'a cluster ending in X with an attached value sets the method (POST)'
+  _gp_test_expect DENY 'gh api repos/o/r/issues -iX POST' \
+    'a cluster ending in bare X consumes the next token as the method'
+  _gp_test_expect PASS 'gh api repos/o/r/issues -iXGET' \
+    'the cluster form of an explicit GET is still a read'
+  _gp_test_expect DENY 'eval "gh api repos/o/r/issues -if title=x"' \
+    'an api short-flag cluster write shape inside an eval argument fails closed'
+
+  # --- Braces are text mid-argument, not a command boundary (2026-09-25).
+  # {owner}/{repo}/{branch} placeholders are documented gh api syntax
+  # (help/api.txt) and ordinary text everywhere else — they only ever
+  # bound a command when they stand alone as their own word (a brace-group
+  # command, `{ cmd; }`), never when embedded in an argument.
+  _gp_test_expect DENY 'gh api repos/{owner}/{repo}/issues -f title=x' \
+    'an unquoted {owner}/{repo} endpoint no longer fragments the command'
+  # shellcheck disable=SC2016  # literal fixture text, not a shell expansion here — it travels to jq --arg unmodified
+  _gp_test_expect DENY '${G:-gh} issue create --title t --body x' \
+    'a dynamic command word built from ${G:-gh} still denies once its closing brace is no longer a split point'
+  _gp_test_expect PASS 'gh issue view repos/{owner}/{repo}' \
+    'unquoted braces mid-argument on an unrelated read do not fragment the command'
+  _gp_test_expect DENY $'bash /dev/null{txt} <<EOF\ngh issue create --title t --body x\nEOF' \
+    'a brace in a heredoc-introducing line no longer breaks shell-consumer resolution'
+
+  # --- Root and group-only help reads (2026-09-25). `gh --help`/`gh -h`
+  # (no subcommand at all) and `gh <group> --help`/`-h` (a group with no
+  # verb given) are both help reads, same as `gh help ...` and
+  # `gh <group> <verb> --help`. A group-level --help/-h is a read the
+  # moment it appears in flag position, matching real cobra, so it stays
+  # exempt even with trailing text after it (`gh issue -h create` prints
+  # help in real gh, it does not treat `create` as the verb) — unlike root
+  # help, which still requires nothing else on the line.
+  _gp_test_expect PASS 'gh --help' 'gh --help (root help)'
+  _gp_test_expect PASS 'gh -h' 'gh -h (root help)'
+  _gp_test_expect PASS 'gh issue --help' 'gh issue --help (group help, no verb)'
+  _gp_test_expect PASS 'gh pr -h' 'gh pr -h (group help, no verb)'
+  _gp_test_expect PASS 'gh release --help' 'gh release --help (group help, no verb)'
+  _gp_test_expect PASS 'gh issue' 'a bare gh issue with no verb at all still passes'
+  _gp_test_expect PASS 'gh issue --help extra' \
+    'group help stays exempt even with trailing text after it'
+  _gp_test_expect PASS 'gh issue -h create' \
+    'a group-level -h before a would-be verb is still a help read'
+
+
+  # --- Deny text: one line per violation, no numbering, no closing paragraph,
+  # each line at most 120 characters, and a multi-violation deny is still one
+  # valid JSON object.
+  printf 'Wrapped line one of a paragraph\nand its second line.\n\n## Environment\n\n- test hardware, test OS build\n' > "${_gp_dir}/wrapped.md"
+  printf 'A token %s here.\n' "$(printf '%s-%s-%s-%s-%s' 12345678 1234 1234 1234 123456789abc)" > "${_gp_dir}/tok.md"
+  printf 'Thanks @someone for this.\n' > "${_gp_dir}/mention.md"
+  printf 'Has %s in the text.\n' "${fixture_token}" > "${_gp_dir}/piiline.md"
+  printf 'Body with no reviewed sidecar.\n' > "${_gp_dir}/nosidecar.md"
+  printf 'Body whose sidecar is stale.\n' > "${_gp_dir}/stale.md"
+  printf 'reviewed-by: test sha256:%s\n' "$(printf '%064d' 0)" > "${_gp_dir}/stale.md.reviewed"
+  printf 'Env with a wrong build.\n\n## Environment\n\n- macOS 1.0 (11A111)\n' > "${_gp_dir}/wrongenv.md"
+  local _gp_f
+  for _gp_f in wrapped tok mention piiline wrongenv; do
+    _gp_test_review "${_gp_dir}/${_gp_f}.md"
+  done
+  local _gp_long_flag='--a-very-long-flag-name-that-is-not-real'
+  local _gp_terse_cmd
+  # shellcheck disable=SC2016  # literal fixture text, not a shell expansion here
+  for _gp_terse_cmd in \
+      'gh issue create -t t --body x' \
+      'gh issue create -t t' \
+      'gh pr create --fill -Z --body x' \
+      "gh pr create -t t ${_gp_long_flag} v" \
+      "gh release create v1 ${_gp_long_flag} v" \
+      "gh issue comment 5 ${_gp_long_flag} v" \
+      "gh release edit v1 ${_gp_long_flag}=v" \
+      'gh pr create -t t --body-file /nonexistent/file.md' \
+      "gh pr create -t t --body-file ${_gp_dir}/nosidecar.md" \
+      "gh pr create -t t --body-file ${_gp_dir}/stale.md" \
+      "gh pr create -t t --body-file ${_gp_dir}/wrapped.md" \
+      "gh pr create -t t --body-file ${_gp_dir}/tok.md" \
+      "gh pr create -t t --body-file ${_gp_dir}/mention.md" \
+      "gh pr create -t t --body-file ${_gp_dir}/piiline.md" \
+      "gh issue create -t t --body-file ${_gp_dir}/noenv.md" \
+      "gh issue create -t t --body-file ${_gp_dir}/wrongenv.md" \
+      "gh pr create -t ${fixture_token} --body-file ${_gp_dir}/good.md" \
+      'gh api repos/o/r/issues -f title=x' \
+      'gh pr create -t t --body-file f.md ; ls' \
+      'gh pr create --attach f.png -t t' \
+      'gh issue create -e' \
+      'gh release upload v1 asset.zip' \
+      'gh release create v1 asset.zip --notes-file f.md' \
+      'gh gist create f.txt' \
+      'gh discussion create' \
+      'gh issue transfer 5 o/r' \
+      'gh issue frobnicate 5' \
+      'gh pr frobnicate 5' \
+      'gh release frobnicate v1' \
+      'gh frobnicate' \
+      'eval "gh issue create -t t --body x"' \
+      '${G:-gh} issue create -t t --body x' ; do
+    _gp_test_terse "${_gp_terse_cmd}" "${_gp_terse_cmd:0:60}"
+  done
+  _gp_test_terse 'gh pr create --fill -Z --body x' 'several violations stay one line each'
+  _gp_test_terse $'gh pr create -t t --body x\ngh pr create -t t --body x' 'a repeated violation is reported once'
+  local _gp_multi
+  _gp_multi="$(_gp_test_run 'gh pr create --fill -Z --body x' | jq -r '.hookSpecificOutput.permissionDecisionReason' | wc -l | tr -d ' ')"
+  if (( _gp_multi >= 3 )); then
+    _pass "a command with several violations reports one line for each"
+  else
+    _fail "a command with several violations reported ${_gp_multi} line(s), expected at least 3"
+  fi
+
+  # --- gh api graphql: a query without a mutation is a read (with or
+  # without --paginate); any mutation, an unreadable query or a dynamic
+  # value still denies.
+  _gp_test_expect DENY "gh api graphql -f query='mutation { x }'" 'graphql mutation denies'
+  _gp_test_expect DENY "gh api graphql --paginate -f query='mutation { x }'" 'graphql mutation with --paginate denies'
+  _gp_test_expect DENY "gh api graphql -f query='MUTATION{ x }'" 'the mutation token is matched case-insensitively'
+  _gp_test_expect DENY $'gh api graphql -f query=\'query A { a }\nmutation B { b }\'' \
+    'a mutation on a later line of the query text denies'
+  _gp_test_expect PASS "gh api graphql -f query='query { viewer { login } }'" 'graphql query is a read'
+  _gp_test_expect PASS "gh api graphql --paginate -f query='query { viewer { login } }'" \
+    'graphql query with --paginate is a read'
+  _gp_test_expect PASS "gh api graphql -F owner=o -f query='query(\$owner: String!) { a }'" \
+    'graphql query with a variable field is a read'
+  _gp_test_expect PASS "gh api graphql -f query='{ viewer { login } }' --jq .data.viewer" \
+    'graphql shorthand query with --jq is a read'
+  _gp_test_expect PASS "gh api graphql -X POST -f query='query { a }'" 'graphql query with an explicit POST is a read'
+  _gp_test_expect PASS 'gh api graphql -f query=x' 'graphql query text without a mutation token is a read'
+  _gp_test_expect DENY 'gh api graphql -f query=@q.graphql' 'graphql query read from a file cannot be checked'
+  _gp_test_expect DENY 'gh api graphql -F query=@q.graphql' 'graphql query read from a file via -F cannot be checked'
+  _gp_test_expect DENY 'gh api graphql --input q.json' 'graphql --input cannot be checked'
+  _gp_test_expect DENY 'gh api graphql -f owner=o' 'graphql with no query field is not proven to be a read'
+  # shellcheck disable=SC2016  # literal fixture text, not a shell expansion here
+  _gp_test_expect DENY 'gh api graphql -f query="$Q"' 'graphql query from a variable cannot be checked'
+  _gp_test_expect DENY "gh api graphql -X DELETE -f query='query { a }'" 'graphql with a non-POST method denies'
+  _gp_test_expect DENY "gh api repos/o/r/issues -f query='query { a }'" 'a query field on a REST endpoint is still a write'
+  _gp_test_expect DENY "gh api graphql -f query='query { a }' -f query='mutation { b }'" \
+    'a second query field with a mutation denies'
+  _gp_test_expect DENY "gh api graphql -if query='query { a }'" 'a flag cluster on graphql fails closed'
+
+  # --- Arguments and commands across newlines. A newline inside a quoted
+  # value stays part of the argument, so a flag after it is still seen; a
+  # newline elsewhere separates commands; a backslash-newline joins lines
+  # only when the backslash is not itself escaped.
+  _gp_test_expect DENY $'gh pr create --title "$(cat <<\'EOF\'\nx\nEOF\n)" --body "raw"' \
+    'a flag after a multi-line command substitution argument is seen'
+  _gp_test_expect DENY $'gh pr create --title t \\\n --body "raw"' \
+    'a continuation line carries a flag that is seen'
+  _gp_test_expect DENY $'gh pr create --title "a\nb" --body "raw"' \
+    'a flag after a multi-line double-quoted value is seen'
+  _gp_test_reason_has $'gh pr create --title "a\nb" --body "raw"' 'inline body text' \
+    'an inline body after a multi-line title'
+  _gp_test_expect DENY $'gh pr create --title \'a\nb\' --body "raw"' \
+    'a flag after a multi-line single-quoted value is seen'
+  _gp_test_expect DENY $'gh api repos/o/r/issues --jq \'.a\n.b\' -f title=x' \
+    'a field flag after a multi-line single-quoted value is seen'
+  _gp_test_expect DENY $'gh api repos/o/r/issues --jq ".a\n.b" -X POST' \
+    'a method flag after a multi-line double-quoted value is seen'
+  _gp_test_expect DENY $'gh api repos/o/r/issues --jq \'.a\n.b\' -q .c --input f' \
+    'an input flag after a multi-line value is seen'
+  _gp_test_expect PASS $'gh api repos/o/r/issues --jq \'.a\n.b\'' \
+    'a multi-line quoted value on a read stays a read'
+  _gp_test_expect PASS $'gh pr list --search "a\nb"' 'a multi-line quoted search on a list stays a read'
+  _gp_test_expect PASS $'gh issue edit 5 --title "a\nb" --add-label x' \
+    'a multi-line title does not split the command'
+  _gp_test_expect DENY $'gh issue edit 5 --title "a\nb '"${fixture_token}"$'" --add-label x' \
+    'the second line of a multi-line title is scanned'
+  _gp_test_expect DENY $'echo a\\\\\ngh issue create -t t --body x' \
+    'an escaped backslash before a newline does not join the next command onto the line'
+  _gp_test_expect DENY $'gh issue create -t t \\\n--body x' \
+    'a single backslash before a newline joins the lines'
+  _gp_test_expect DENY $'gh pr list # note\ngh issue create -t t --body x' \
+    'a comment ends at its own line'
+  _gp_test_expect DENY $'echo "$(true\ngh issue create -t t --body x)"' \
+    'a newline inside a command substitution separates commands'
+  _gp_test_expect DENY $'echo `true\ngh issue create -t t --body x`' \
+    'a newline inside backticks separates commands'
+  _gp_test_expect DENY $'gh --repo "o\nr" issue create --title t --body x' \
+    'a global flag value that spans a newline does not hide the verb after it'
+  _gp_test_expect DENY $'echo \'a\n<<X\'\ngh issue create -t t --body raw\nX' \
+    'a << inside a multi-line quoted value does not open a heredoc that hides the next line'
+  _gp_test_expect PASS $'cat <<X\ngh issue create -t t --body raw\nX' \
+    'a real heredoc body that only mentions a publish stays data'
+  _gp_test_expect DENY $'git commit -m "note about <<X\nmore text"\ngh issue create -t t --body raw\nX' \
+    'a << in a multi-line commit message does not hide the publish that follows'
+
+  # --- Declarations inside loops: a command that drives each loop twice
+  # still yields one valid deny object (or nothing at all).
+  _gp_test_expect DENY 'gh pr create -df -dd --title t --body x' 'two short-flag clusters in one command'
+  _gp_test_expect DENY 'gh pr create --title=t --repo=o/r --body=x' 'two --flag=value forms in one command'
+  _gp_test_expect DENY 'gh api repos/o/r/issues -f a=1 -f b=2 -H x:y' 'several api flags in one command'
+  _gp_test_expect DENY $'cat <<A\nx\nA\ncat <<B\ny\nB\ngh issue create -t t --body x' \
+    'two heredocs before a publish'
+  _gp_test_expect PASS $'cat <<A\nx\nA\ncat <<B\ny\nB\ngh pr list' 'two heredocs before a read leave no output'
+  _gp_test_expect PASS 'gh pr list; gh pr view 1; gh issue list; gh issue view 2' \
+    'several read segments leave no output'
 
   /bin/rm -rf "${_gp_dir}"
   trap - EXIT
