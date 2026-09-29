@@ -21,14 +21,17 @@ function run_shellcheck {
 
   local -a shell_files=()
   local file
+  # claude/ is gitignored, so a clean clone has no such directory.
+  local -a claude_dir=()
+  [[ -d ./claude ]] && claude_dir=(./claude)
   while IFS=$'\n' read -r file; do
     # Preserve file(1)'s dialect check: agent-reset is deliberately Python.
     # Only regular files are collected, so hook symlinks are not linted twice.
     if /usr/bin/file "${file}" | /usr/bin/grep --quiet -E "shell|bash|zsh"; then
       shell_files+=("${file}")
     fi
-  done < <(/usr/bin/find . ./.functions ./bin ./lib ./tests ./.githooks ./.config/git/hooks ./claude \
-            -maxdepth 1 -type f \
+  done < <(/usr/bin/find . ./.functions ./bin ./lib ./tests ./.githooks ./.config/git/hooks \
+            "${claude_dir[@]}" -maxdepth 1 -type f \
             -not -iwholename '*venv*'   \
             -not -iwholename '*.tar.xz' \
             | /usr/bin/sort -u)

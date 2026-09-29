@@ -7,8 +7,8 @@
 #              this uses the `macos-latest` label (macOS 26 arm64 since
 #              2026-07; `xcode-27` is a preview label, not a release image).
 #              A clean clone has none of the gitignored config, so the suites
-#              that need it skip; what runs is every tracked script, the git
-#              hooks, the tracked Claude Code guard hooks and the statusline.
+#              that need it skip; what runs is every tracked script and the
+#              git hooks.
 #   secrets  — gitleaks over the whole history, behind the pre-push gate.
 #   lint     — actionlint and zizmor over this directory.
 # The macOS image ships neither shellcheck nor gitleaks. gitleaks comes from
