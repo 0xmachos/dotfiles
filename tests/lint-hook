@@ -1,0 +1,914 @@
+#!/bin/zsh
+# shellcheck disable=SC2016
+# The disable covers this file's many single-quoted `$1`/`$v${i}` fixtures —
+# they are literal file CONTENT written for the linter under test to flag,
+# never meant to expand in this suite's own shell. Same convention as
+# tests/md5-write.
+#
+# dotfiles/tests/lint-hook
+#
+# Behavioural test for claude/lint-hook — the PostToolUse (Edit|Write) hook
+# that runs a file-type-appropriate linter after a write lands and surfaces
+# findings as hookSpecificOutput.additionalContext. This hook never denies,
+# so verdicts are PASS (no output — clean, unrecognised, or skipped) or
+# CONTEXT (a findings report), never DENY. Every case also asserts the hook
+# itself exited 0 with empty stderr — a regression that makes it exit
+# non-zero or print to stderr fires on every Edit/Write shown to the user,
+# and a verdict-only check would not catch it.
+#
+# Dispatch is SHEBANG FIRST, THEN extension, and the shebang line — if
+# present — is parsed by INTERPRETER, not by matching the extension or a
+# handful of literal shebang strings: any absolute path, Homebrew prefix, or
+# `/usr/bin/env [-S] <interp> [flags]` form resolves to the same interpreter
+# basename, whatever the file's own extension. A shebang whose interpreter
+# is zsh is only linted when its own git repo opts in (a `.shellcheckrc` at
+# the repo root, or a workflow file under `.github/workflows/` that mentions
+# "shellcheck") — shellcheck's zsh support is an approximation, and without
+# this gate every zsh script in every repo would be a standing source of
+# noise. bash/sh shebangs are linted unconditionally (shellcheck understands
+# them natively), whatever the file's extension. A shebang naming any other
+# interpreter is skipped outright and must NOT fall into the `.sh`/`.bash`
+# extension arm either — that arm only applies to a file with no shebang at
+# all.
+#
+# A second guard: a linter's own failure (permission denied, a crash, a
+# malformed config in the target's own repo, or exceeding the internal
+# wall-clock deadline) must fail open silently, not be reported to the model
+# as if it were a lint finding.
+#
+# A third guard: the additionalContext cap is a byte-accurate TAIL
+# truncation — the kept lines are always a contiguous prefix of the raw
+# linter output, never a subset with a gap in the middle.
+#
+# Run: ./test lint-hook    (or ./test for the full suite)
+#
+# ShellCheck: lint with `shellcheck --shell=bash tests/lint-hook`.
+# This file is sourced, not executed — chmod 644.
+#
+# shellcheck source=tests/lib
+
+# Resolved once: the two optional linters this hook shells out to. Homebrew
+# only, absolute paths, no PATH lookup — matches the hook itself. Cases that
+# need a real finding from one of these are skipped, not failed, when the
+# tool is absent on this machine; the plist/json cases have no such
+# dependency and always run.
+function _lh_find_tool {
+  local name="$1"
+  if [[ -x "/opt/homebrew/bin/${name}" ]]; then
+    printf '%s' "/opt/homebrew/bin/${name}"
+  elif [[ -x "/usr/local/bin/${name}" ]]; then
+    printf '%s' "/usr/local/bin/${name}"
+  fi
+}
+
+# Runs the hook once against JSON payload $1, with optional NAME=VALUE env
+# overrides ($2...). Populates LH_LAST_STDOUT, LH_LAST_STDERR, LH_LAST_RC as
+# globals. MUST be called as a plain statement (`_lh_exec "$payload"`, never
+# `out="$(_lh_exec "$payload")"`) — wrapping it in `$(...)` forks a subshell
+# to capture stdout, and every one of these global assignments would be
+# lost when that subshell exits. The hook is fed via a temp file, not a
+# pipe, and the exit status is captured through an if/else (not a bare
+# `rc=$?` after the command) — both avoid the ./test-wide `set -euo
+# pipefail`: a bare failing command or pipeline here would abort the
+# ENTIRE suite run, not just fail one case.
+function _lh_exec {
+  local payload="$1" outf errf payloadf
+  shift
+  outf="$(/usr/bin/mktemp "${TMPDIR:-/tmp}/lint-hook-test.XXXXXX")"
+  errf="$(/usr/bin/mktemp "${TMPDIR:-/tmp}/lint-hook-test.XXXXXX")"
+  payloadf="$(/usr/bin/mktemp "${TMPDIR:-/tmp}/lint-hook-test.XXXXXX")"
+  printf '%s' "${payload}" > "${payloadf}"
+
+  if env "$@" /bin/zsh "${SCRIPT_DIR}/claude/lint-hook" < "${payloadf}" > "${outf}" 2> "${errf}"; then
+    LH_LAST_RC=0
+  else
+    LH_LAST_RC=$?
+  fi
+  LH_LAST_STDOUT="$(< "${outf}")"
+  LH_LAST_STDERR="$(< "${errf}")"
+  /bin/rm -f "${outf}" "${errf}" "${payloadf}"
+}
+
+# Same call convention as _lh_exec (plain statement, never `$(...)`-wrapped)
+# — builds the {tool_name, tool_input.file_path} payload for a $2 (default
+# Write) of the file at path $1.
+function _lh_run {
+  local file="$1" tool_name="${2:-Write}" payload
+  payload="$(jq -n --arg f "${file}" --arg t "${tool_name}" \
+    '{tool_name: $t, tool_input: {file_path: $f}}')"
+  _lh_exec "${payload}"
+}
+
+# Same convention, with an arbitrary tool_input field ($1 name, $2 value) —
+# used for the missing-file_path and notebook_path cases.
+function _lh_run_field {
+  local field="$1" value="$2" payload
+  payload="$(jq -n --arg k "${field}" --arg v "${value}" \
+    '{tool_name:"Write", tool_input: {($k): $v}}')"
+  _lh_exec "${payload}"
+}
+
+# This hook only ever emits nothing (PASS) or exactly one additionalContext
+# object (CONTEXT) — it never denies. Stricter than a plain substring match:
+# confirms the object shape (hookEventName, a non-empty string context, no
+# permissionDecision key at all) so a malformed or a DENY-shaped object both
+# read as INVALID rather than silently passing as CONTEXT. Pure function, no
+# side-effect globals — safe to call via `$(...)`, unlike _lh_exec/_lh_run.
+function _lint_hook_verdict {
+  local out="$1"
+  if [[ -z "${out}" ]]; then
+    printf 'PASS'
+  elif jq -es '
+      length == 1
+      and .[0].hookSpecificOutput.hookEventName == "PostToolUse"
+      and (.[0].hookSpecificOutput.additionalContext | type) == "string"
+      and (.[0].hookSpecificOutput.additionalContext | length) > 0
+      and (.[0].hookSpecificOutput | has("permissionDecision") | not)
+    ' >/dev/null 2>&1 <<< "${out}"; then
+    printf 'CONTEXT'
+  else
+    printf 'INVALID'
+  fi
+}
+
+function _lh_expect {
+  # $1 want (PASS|CONTEXT), $2 file path, $3 label, $4 optional tool_name
+  local want="$1" file="$2" label="${3:-$2}" tool_name="${4:-Write}" got
+  _lh_run "${file}" "${tool_name}"
+  got="$(_lint_hook_verdict "${LH_LAST_STDOUT}")"
+  if [[ "${got}" == "${want}" ]]; then
+    _pass "${want}: ${label}"
+  else
+    _fail "${label} — expected ${want}, got ${got}"
+  fi
+  if [[ "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
+    _pass "exit 0, empty stderr: ${label}"
+  else
+    _fail "exit 0, empty stderr: ${label} — rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR}"
+  fi
+}
+
+# Three sandbox git repos plus one non-repo directory, all under $TMPDIR, so
+# the convention gate can be exercised in every state: opted in via
+# .shellcheckrc, opted in via a workflow file, opted out (bare repo), and not
+# a repo at all. No REPO git state is touched.
+function _lh_setup_repos {
+  LH_BARE="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/lint-hook-bare.XXXXXX")"
+  /usr/bin/git -C "${LH_BARE}" init -q
+
+  LH_RCFILE="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/lint-hook-rc.XXXXXX")"
+  /usr/bin/git -C "${LH_RCFILE}" init -q
+  /usr/bin/touch "${LH_RCFILE}/.shellcheckrc"
+
+  LH_WORKFLOW="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/lint-hook-wf.XXXXXX")"
+  /usr/bin/git -C "${LH_WORKFLOW}" init -q
+  /bin/mkdir -p "${LH_WORKFLOW}/.github/workflows"
+  echo "runs shellcheck in CI" > "${LH_WORKFLOW}/.github/workflows/ci.yml"
+
+  LH_NOREPO="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/lint-hook-norepo.XXXXXX")"
+}
+
+function _lh_teardown_repos {
+  /bin/rm -rf "${LH_BARE}" "${LH_RCFILE}" "${LH_WORKFLOW}" "${LH_NOREPO}"
+}
+
+function run_lint_hook {
+  _section "Lint hook (PostToolUse Edit|Write)"
+
+  # The hook file may be absent (a clean clone, or claude/ not yet synced):
+  # that is not a regression. Skip, don't die.
+  if [[ ! -f "${SCRIPT_DIR}/claude/lint-hook" ]]; then
+    _skip "claude/lint-hook absent — claude/ not yet synced to this machine"
+    return 0
+  fi
+
+  if ! [[ -x "$(command -v jq)" ]]; then
+    _skip "jq not installed (brew install jq)"
+    return
+  fi
+
+  # Every sandbox this suite builds lives under a PRIVATE directory made
+  # with mktemp -d, exported as TMPDIR for the hook subprocess too, so a
+  # concurrent lint-hook run (a live session editing a file while ./test
+  # runs) can never change a temp-file count this suite takes. On this Mac
+  # (and every stock macOS box) the shared TMPDIR resolves through /var,
+  # itself a symlink to /private/var, with a trailing slash on top; the
+  # parent is resolved once with :A so every sandbox path is canonical (a
+  # symlinked component or a doubled slash can change a linter's own
+  # behaviour independent of file content). Removed at the end.
+  local lh_priv
+  # shellcheck disable=SC2299  # zsh-only nested parameter expansion + :A (resolve symlinks/absolute) modifier
+  lh_priv="$(/usr/bin/mktemp -d "${${TMPDIR:-/tmp}:A}/lint-hook-suite.XXXXXX")"
+  if [[ -z "${lh_priv}" || ! -d "${lh_priv}" ]]; then
+    _fail "could not create a private TMPDIR for the suite"
+    return 0
+  fi
+  local -x TMPDIR="${lh_priv:A}"
+
+  local sc_bin sl_bin
+  sc_bin="$(_lh_find_tool shellcheck)"
+  sl_bin="$(_lh_find_tool swiftlint)"
+
+  _lh_setup_repos
+
+  # --- shebang-first dispatch, and the convention gate ---------------------
+
+  if [[ -n "${sc_bin}" ]]; then
+    # Clean zsh script, extensionless, in a repo that opts in -> PASS.
+    printf '#!/bin/zsh\necho hi\n' > "${LH_RCFILE}/clean"
+    _lh_expect PASS "${LH_RCFILE}/clean" "clean zsh script, convention repo"
+
+    # zsh script with a real finding, in a repo that opts in via .shellcheckrc
+    # -> CONTEXT, with the real finding and NOT the zsh false-positive.
+    printf '#!/bin/zsh\necho $1\n' > "${LH_RCFILE}/issue"
+    local out
+    _lh_run "${LH_RCFILE}/issue"
+    out="${LH_LAST_STDOUT}"
+    if [[ "$(_lint_hook_verdict "${out}")" == CONTEXT ]]; then
+      _pass "CONTEXT: zsh script with a real finding, .shellcheckrc repo"
+    else
+      _fail "zsh script with a real finding, .shellcheckrc repo — expected CONTEXT"
+    fi
+    if [[ "${out}" == *SC2086* ]]; then
+      _pass "finding names the real issue (SC2086)"
+    else
+      _fail "finding does not name SC2086"
+    fi
+    if [[ "${out}" != *SC1071* ]]; then
+      _pass "no SC1071 — shellcheck ran with --shell=bash, not plain"
+    else
+      _fail "SC1071 present — the zsh-shebang regression is back"
+    fi
+
+    # Same file, but a repo that opts in via a workflow file instead of
+    # .shellcheckrc — the second convention-detection path.
+    printf '#!/bin/zsh\necho $1\n' > "${LH_WORKFLOW}/issue"
+    _lh_expect CONTEXT "${LH_WORKFLOW}/issue" "zsh script with a real finding, workflow-file repo"
+
+    # THE REGRESSION GUARD: a .sh file carrying a zsh shebang and a real
+    # finding, in a repo with NO convention -> PASS, not CONTEXT, and no
+    # SC1071 — the false positive this dispatch order exists to prevent.
+    printf '#!/usr/bin/env zsh\necho $1\n' > "${LH_BARE}/x.sh"
+    _lh_expect PASS "${LH_BARE}/x.sh" ".sh + canonical zsh shebang + real issue, bare repo (regression guard)"
+
+    # Same file, opted-in repo this time -> CONTEXT (proves the .sh
+    # extension never short-circuited the shebang-first dispatch).
+    printf '#!/usr/bin/env zsh\necho $1\n' > "${LH_RCFILE}/x.sh"
+    _lh_expect CONTEXT "${LH_RCFILE}/x.sh" ".sh + canonical zsh shebang + real issue, convention repo"
+
+    # NON-CANONICAL zsh shebangs: "zsh" resolved as the interpreter
+    # (through env, or after a leading space) must route the same as a
+    # plain "#!/bin/zsh", not fall into the .sh extension arm.
+    printf '#! /bin/zsh\necho $1\n' > "${LH_BARE}/space.sh"
+    _lh_expect PASS "${LH_BARE}/space.sh" ".sh + '#! /bin/zsh' (space) + real issue, bare repo"
+
+    printf '#!/usr/bin/env -S zsh -f\necho $1\n' > "${LH_BARE}/envs.sh"
+    _lh_expect PASS "${LH_BARE}/envs.sh" ".sh + '#!/usr/bin/env -S zsh -f' + real issue, bare repo"
+
+    printf '#!/usr/bin/zsh\necho $1\n' > "${LH_RCFILE}/nc.sh"
+    _lh_run "${LH_RCFILE}/nc.sh"
+    out="${LH_LAST_STDOUT}"
+    if [[ "$(_lint_hook_verdict "${out}")" == CONTEXT && "${out}" == *SC2086* && "${out}" != *SC1071* ]]; then
+      _pass "CONTEXT with SC2086, no SC1071: .sh + '#!/usr/bin/zsh' + real issue, convention repo"
+    else
+      _fail ".sh + '#!/usr/bin/zsh', convention repo — expected CONTEXT+SC2086, no SC1071, got: ${out}"
+    fi
+
+    # zsh shebang, real issue, outside any git repository at all -> PASS.
+    printf '#!/bin/zsh\necho $1\n' > "${LH_NOREPO}/issue"
+    _lh_expect PASS "${LH_NOREPO}/issue" "zsh script with a real finding, not a git repo"
+
+    # A shebang naming an interpreter that is neither zsh nor bash/sh must
+    # be skipped outright — not linted (shellcheck cannot parse it), and
+    # not routed into the .sh extension arm either, convention or not.
+    printf '#!/usr/bin/expect -f\nputs $1\n' > "${LH_BARE}/other.sh"
+    _lh_expect PASS "${LH_BARE}/other.sh" ".sh + unrelated interpreter shebang (expect), bare repo"
+    printf '#!/usr/bin/expect -f\nputs $1\n' > "${LH_RCFILE}/other.sh"
+    _lh_expect PASS "${LH_RCFILE}/other.sh" ".sh + unrelated interpreter shebang (expect), convention repo"
+
+    # bash/sh shebangs are linted regardless of repo convention or exact
+    # form — the interpreter is resolved by basename (a plain path, a
+    # non-standard prefix, or `env [-S] <interp> [flags]`), not by matching
+    # one of a handful of literal strings, and applies whatever the file's
+    # extension is.
+    printf '#!/bin/bash\necho $1\n' > "${LH_BARE}/bissue"
+    _lh_expect CONTEXT "${LH_BARE}/bissue" "'#!/bin/bash' shebang with a real finding, bare repo"
+
+    printf '#!/bin/sh\necho $1\n' > "${LH_BARE}/shissue"
+    _lh_expect CONTEXT "${LH_BARE}/shissue" "'#!/bin/sh' shebang with a real finding, bare repo"
+
+    printf '#!/usr/bin/env bash\necho $1\n' > "${LH_BARE}/envbissue"
+    _lh_expect CONTEXT "${LH_BARE}/envbissue" "'#!/usr/bin/env bash' shebang with a real finding, bare repo"
+
+    printf '#!/usr/bin/bash\necho $1\n' > "${LH_BARE}/bin-bash.sh"
+    _lh_expect CONTEXT "${LH_BARE}/bin-bash.sh" "'#!/usr/bin/bash' shebang with a real finding, bare repo"
+
+    printf '#!/usr/local/bin/bash\necho $1\n' > "${LH_BARE}/usrlocal-bash.sh"
+    _lh_expect CONTEXT "${LH_BARE}/usrlocal-bash.sh" "'#!/usr/local/bin/bash' shebang with a real finding, bare repo"
+
+    printf '#!/opt/homebrew/bin/bash\necho $1\n' > "${LH_BARE}/homebrew-bash.sh"
+    _lh_expect CONTEXT "${LH_BARE}/homebrew-bash.sh" "'#!/opt/homebrew/bin/bash' shebang with a real finding, bare repo"
+
+    printf '#!/usr/bin/env -S bash -eu\necho $1\n' > "${LH_BARE}/env-s-bash.sh"
+    _lh_expect CONTEXT "${LH_BARE}/env-s-bash.sh" "'#!/usr/bin/env -S bash -eu' shebang with a real finding, bare repo"
+
+    printf '#! /bin/bash\necho $1\n' > "${LH_BARE}/space-bash.sh"
+    _lh_expect CONTEXT "${LH_BARE}/space-bash.sh" "'#! /bin/bash' (space) shebang with a real finding, bare repo"
+
+    printf '#!/usr/bin/sh\necho $1\n' > "${LH_BARE}/usrbin-sh.sh"
+    _lh_expect CONTEXT "${LH_BARE}/usrbin-sh.sh" "'#!/usr/bin/sh' shebang with a real finding, bare repo"
+
+    printf '#!/usr/bin/env -S sh\necho $1\n' > "${LH_BARE}/env-s-sh.sh"
+    _lh_expect CONTEXT "${LH_BARE}/env-s-sh.sh" "'#!/usr/bin/env -S sh' shebang with a real finding, bare repo"
+
+    # A comment on the shebang line that happens to mention "zsh" must not
+    # change the route — the interpreter word itself (bash) is what is
+    # parsed, not the whole line as text.
+    printf '#!/bin/bash # also runs under zsh\necho $1\n' > "${LH_BARE}/commented.sh"
+    _lh_expect CONTEXT "${LH_BARE}/commented.sh" "'#!/bin/bash # also runs under zsh' takes the bash route"
+
+    # .sh/.bash by EXTENSION (no recognised shebang) is likewise
+    # unconditional. Content carries both a real SC2086 finding and the
+    # SC2148 "no shebang" tip shellcheck adds on its own — assert SC2086
+    # explicitly (not just "some CONTEXT fired") so this case still proves
+    # real content is being linted, not just the standing no-shebang nag.
+    printf 'echo $1\n' > "${LH_BARE}/plain.sh"
+    _lh_run "${LH_BARE}/plain.sh"
+    out="${LH_LAST_STDOUT}"
+    if [[ "$(_lint_hook_verdict "${out}")" == CONTEXT && "${out}" == *SC2086* ]]; then
+      _pass "CONTEXT with SC2086: .sh by extension, no shebang, bare repo"
+    else
+      _fail ".sh by extension, no shebang, bare repo — expected CONTEXT+SC2086, got: ${out}"
+    fi
+
+    # Edit and Write payloads dispatch identically.
+    _lh_expect CONTEXT "${LH_BARE}/plain.sh" ".sh by extension via an Edit payload" Edit
+
+    # A relative file_path starting with "-" must not be mistaken for a
+    # flag by the linter it is handed to — the hook absolutises file_path
+    # before ever calling out, so the argument it passes always starts
+    # with "/".
+    printf 'echo $1\n' > "${LH_BARE}/-x.sh"
+    local saved_pwd_dash
+    saved_pwd_dash="$(pwd)"
+    cd "${LH_BARE}" || return
+    _lh_run -x.sh
+    cd "${saved_pwd_dash}" || return
+    if [[ "$(_lint_hook_verdict "${LH_LAST_STDOUT}")" == CONTEXT && "${LH_LAST_STDOUT}" == *SC2086* && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
+      _pass "CONTEXT with SC2086, exit 0, empty stderr: relative file_path starting with '-'"
+    else
+      _fail "relative file_path starting with '-' was not linted (rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR} out=${LH_LAST_STDOUT})"
+    fi
+
+    # The optional-linter seam: forcing shellcheck to a path that does not
+    # exist must read exactly like shellcheck being absent — PASS even over
+    # a real finding.
+    _lh_exec "$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s"}}' "${LH_BARE}/plain.sh")" LINT_HOOK_SHELLCHECK=/nonexistent
+    if [[ "$(_lint_hook_verdict "${LH_LAST_STDOUT}")" == PASS && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
+      _pass "PASS, exit 0, empty stderr: LINT_HOOK_SHELLCHECK pointed at a nonexistent path reads as absent"
+    else
+      _fail "LINT_HOOK_SHELLCHECK=/nonexistent did not fail open cleanly (rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR})"
+    fi
+
+    # A linter's own failure must fail open, not be reported as a finding.
+    # Reproduced live: chmod 000 makes shellcheck exit 2 ("openBinaryFile:
+    # permission denied").
+    printf '#!/bin/bash\necho hi\n' > "${LH_BARE}/perm.sh"
+    /bin/chmod 000 "${LH_BARE}/perm.sh"
+    _lh_expect PASS "${LH_BARE}/perm.sh" "unreadable file (chmod 000): shellcheck's own error fails open, not reported as a finding"
+    /bin/chmod 644 "${LH_BARE}/perm.sh"
+
+    # WALL-CLOCK DEADLINE: a shellcheck stand-in that hangs indefinitely
+    # must still make the hook return PASS, exit 0, empty stderr, well
+    # under the deadline plus fixed overhead — never wait out a hang. The
+    # stand-in execs into /bin/sleep rather than forking it, so the alarm
+    # (set before the hook's own exec of it) lands on the actual running
+    # process; nothing is left orphaned. LINT_HOOK_DEADLINE is set well
+    # below the default so this case does not itself take 8+ seconds.
+    local lh_slow
+    lh_slow="$(/usr/bin/mktemp "${TMPDIR:-/tmp}/lint-hook-slow.XXXXXX")"
+    {
+      echo '#!/bin/zsh'
+      echo 'exec /bin/sleep 30'
+    } > "${lh_slow}"
+    /bin/chmod +x "${lh_slow}"
+    printf '#!/bin/bash\necho $1\n' > "${LH_BARE}/timeout.sh"
+    local lh_t0 lh_t1 lh_elapsed lh_tmp_before lh_tmp_after
+    lh_tmp_before="$(/usr/bin/find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'lint-hook.*' 2>/dev/null | /usr/bin/wc -l | tr -d ' ')"
+    lh_t0="$(/bin/date +%s)"
+    _lh_exec "$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s"}}' "${LH_BARE}/timeout.sh")" "LINT_HOOK_SHELLCHECK=${lh_slow}" LINT_HOOK_DEADLINE=1
+    lh_t1="$(/bin/date +%s)"
+    lh_elapsed=$(( lh_t1 - lh_t0 ))
+    lh_tmp_after="$(/usr/bin/find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'lint-hook.*' 2>/dev/null | /usr/bin/wc -l | tr -d ' ')"
+    if [[ "$(_lint_hook_verdict "${LH_LAST_STDOUT}")" == PASS && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" && "${lh_elapsed}" -lt 5 ]]; then
+      _pass "PASS, exit 0, empty stderr, ${lh_elapsed}s: a hung linter is killed at the deadline, not waited out"
+    else
+      _fail "hung linter was not bounded by the deadline (rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR} elapsed=${lh_elapsed}s out=${LH_LAST_STDOUT})"
+    fi
+    if [[ "${lh_tmp_after}" -le "${lh_tmp_before}" ]]; then
+      _pass "no leaked lint-hook.* temp file after a killed linter"
+    else
+      _fail "lint-hook.* temp file count grew after a killed linter (before=${lh_tmp_before} after=${lh_tmp_after})"
+    fi
+    /bin/rm -f "${lh_slow}"
+
+    # LINE-CAP branch: a 120-finding fixture. file_path is absolutised
+    # inside the hook before it is ever handed to shellcheck, so the
+    # per-line "$file:" prefix _cap_to_file strips is always exactly what
+    # was passed to the linter — the raw gcc-format line length (short
+    # relative name or long absolute path) has no bearing on which cap
+    # fires first; only the finding COUNT does. cd/restore rather than a
+    # `(cd dir && _lh_run ...)` subshell — the latter would discard
+    # _lh_run's LH_LAST_* globals the same way `$(...)` does.
+    {
+      echo '#!/bin/bash'
+      local i
+      for i in $(seq 1 120); do echo "echo \$v${i}"; done
+    } > "${LH_BARE}/huge.sh"
+    local saved_pwd ctx3 lines3
+    saved_pwd="$(pwd)"
+    cd "${LH_BARE}" || return
+    _lh_run huge.sh
+    cd "${saved_pwd}" || return
+    ctx3="$(printf '%s' "${LH_LAST_STDOUT}" | jq -r '.hookSpecificOutput.additionalContext')"
+    lines3="$(printf '%s\n' "${ctx3}" | /usr/bin/wc -l | tr -d ' ')"
+    # 42 = 1 "found issues in FILE:" prefix line + 40 capped findings + 1
+    # "...N more" marker line.
+    if (( lines3 == 42 )); then
+      _pass "line-cap branch: exactly 42 lines (prefix + 40 findings + 1 marker)"
+    else
+      _fail "line-cap branch: expected exactly 42 lines, got ${lines3}"
+    fi
+    if [[ "${ctx3}" == *' more'* ]]; then
+      _pass "line-cap branch: marker reads '...N more'"
+    else
+      _fail "line-cap branch: no '...N more' marker"
+    fi
+
+    # BYTE-CAP branch: 30 findings, each with a ~300-character variable
+    # name, so a handful of lines alone exceed BYTE_CAP well before
+    # LINE_CAP — the "few lines, each enormous" case the byte cap exists
+    # for.
+    {
+      echo '#!/bin/bash'
+      local j vname
+      # shellcheck disable=SC2034,SC2296  # zsh-only ${(l:width::pad:)str} left-pad; $j IS used inside it, shellcheck's bash parser just can't see through the zsh flag syntax
+      for j in $(seq 1 30); do
+        vname="v${(l:300::0:)j}"
+        echo "${vname}=1"
+      done
+    } > "${LH_BARE}/wide.sh"
+    local ctx4 bodylines4 bytes4
+    _lh_run "${LH_BARE}/wide.sh"
+    ctx4="$(printf '%s' "${LH_LAST_STDOUT}" | jq -r '.hookSpecificOutput.additionalContext')"
+    # Strip the "<tool> found issues in <file>:" header line before
+    # measuring — that line sits outside BYTE_CAP by design (see
+    # claude/lint-hook's own header); only the body+marker that
+    # _cap_to_file itself produced is bounded to BYTE_CAP.
+    bytes4="$(printf '%s\n' "${ctx4}" | /usr/bin/sed '1d' | LC_ALL=C /usr/bin/wc -c | tr -d ' ')"
+    bodylines4="$(printf '%s\n' "${ctx4}" | /usr/bin/grep -c '^[0-9][0-9]*:[0-9][0-9]*:' || true)"
+    if (( bytes4 <= 4096 )); then
+      _pass "byte-cap branch: capped body+marker is ${bytes4} bytes (<= BYTE_CAP 4096)"
+    else
+      _fail "byte-cap branch: capped body+marker is ${bytes4} bytes, expected <= 4096"
+    fi
+    if (( bodylines4 > 0 && bodylines4 < 40 )); then
+      _pass "byte-cap branch: ${bodylines4} findings kept (< 40 — byte cap fired first, not the line cap)"
+    else
+      _fail "byte-cap branch: expected 1-39 findings kept (byte cap firing first), got ${bodylines4}"
+    fi
+    if [[ "${ctx4}" == *' more'* ]]; then
+      _pass "byte-cap branch: marker reads '...N more'"
+    else
+      _fail "byte-cap branch: no '...N more' marker"
+    fi
+    # No half-line: the character immediately before the trailing "...N
+    # more" marker must be the closing "]" of an SCxxxx tag, never a path
+    # or message cut mid-way through.
+    if [[ "${ctx4}" == *']'$'\n''...'[0-9]*' more' ]]; then
+      _pass "byte-cap branch: no half-line — the last kept finding ends cleanly before the marker"
+    else
+      _fail "byte-cap branch: content does not end cleanly before the marker: ${ctx4}"
+    fi
+
+    # CONTIGUITY: mix a run of very long findings (each alone under
+    # BYTE_CAP, but eleven of them together exceed it) with a run of short
+    # ones after. The kept findings must be an unbroken PREFIX of the raw
+    # output — once one finding is dropped for being too large to fit, no
+    # later, shorter finding may be appended after it, or "...N more"
+    # understates what a reader would see as omitted from the middle.
+    {
+      echo '#!/bin/bash'
+      local k vname2
+      # shellcheck disable=SC2034,SC2296  # zsh-only ${(l:width::pad:)str} left-pad; $k IS used inside it, shellcheck's bash parser just can't see through the zsh flag syntax
+      for k in $(seq 1 11); do
+        vname2="w${(l:340::0:)k}"
+        echo "${vname2}=1"
+      done
+      for k in $(seq 1 40); do
+        echo "echo \$w${k}"
+      done
+    } > "${LH_BARE}/mixed.sh"
+    local ctx5 rawfile5 kept5 raw5
+    _lh_run "${LH_BARE}/mixed.sh"
+    ctx5="$(printf '%s' "${LH_LAST_STDOUT}" | jq -r '.hookSpecificOutput.additionalContext')"
+    rawfile5="$(/usr/bin/mktemp "${TMPDIR:-/tmp}/lint-hook-test.XXXXXX")"
+    "${sc_bin}" -f gcc "${LH_BARE}/mixed.sh" > "${rawfile5}" 2>&1 || true
+    # Kept findings: every "N:C: ..." line except the final marker.
+    kept5="$(printf '%s\n' "${ctx5}" | /usr/bin/grep '^[0-9][0-9]*:[0-9][0-9]*:' | /usr/bin/wc -l | tr -d ' ')"
+    raw5="$(/usr/bin/grep -c "${LH_BARE}/mixed.sh:" "${rawfile5}" || true)"
+    if [[ "${ctx5}" == *' more'* && "${kept5}" -gt 0 && "${kept5}" -lt "${raw5}" ]]; then
+      # The FIRST kept5 lines of the raw output, stripped of their
+      # "$file:" prefix, must equal the kept content exactly — proving no
+      # line was skipped in the middle.
+      local stripped_prefix5 body5
+      stripped_prefix5="$(/usr/bin/sed "s|^${LH_BARE}/mixed.sh:||" "${rawfile5}" 2>/dev/null | /usr/bin/head -n "${kept5}")"
+      body5="$(printf '%s\n' "${ctx5}" | /usr/bin/sed '1d' | /usr/bin/sed '$d')"
+      if [[ "${stripped_prefix5}" == "${body5}" ]]; then
+        _pass "contiguity: kept findings are an unbroken prefix of the raw output"
+      else
+        _fail "contiguity: kept findings are not a prefix of the raw output"
+      fi
+    else
+      _fail "contiguity fixture did not produce a truncated report as expected (kept=${kept5} raw=${raw5})"
+    fi
+    /bin/rm -f "${rawfile5}"
+  else
+    _skip "shellcheck not installed — shebang-dispatch, convention-gate, cap and deadline cases"
+  fi
+
+  # --- extension dispatch, independent of shellcheck ------------------------
+
+  # Extensionless, no shebang at all -> PASS (falls through every dispatch
+  # arm silently).
+  printf 'just some text\n' > "${LH_NOREPO}/noshebang"
+  _lh_expect PASS "${LH_NOREPO}/noshebang" "extensionless, no shebang"
+
+  # A non-lintable extension is always PASS, convention or not.
+  printf '# notes\n' > "${LH_NOREPO}/notes.md"
+  _lh_expect PASS "${LH_NOREPO}/notes.md" "markdown file"
+
+  # --- plist / mobileconfig -------------------------------------------------
+
+  cat > "${LH_NOREPO}/good.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>a</key>
+  <string>b</string>
+</dict>
+</plist>
+PLIST
+  _lh_expect PASS "${LH_NOREPO}/good.plist" "valid plist"
+
+  printf 'not a plist\n' > "${LH_NOREPO}/bad.plist"
+  _lh_expect CONTEXT "${LH_NOREPO}/bad.plist" "invalid plist"
+
+  /bin/cp "${LH_NOREPO}/good.plist" "${LH_NOREPO}/good.mobileconfig"
+  _lh_expect PASS "${LH_NOREPO}/good.mobileconfig" "valid mobileconfig"
+
+  printf 'not a mobileconfig\n' > "${LH_NOREPO}/bad.mobileconfig"
+  _lh_expect CONTEXT "${LH_NOREPO}/bad.mobileconfig" "invalid mobileconfig"
+
+  # --- json ------------------------------------------------------------------
+
+  printf '{"a": 1}\n' > "${LH_NOREPO}/good.json"
+  _lh_expect PASS "${LH_NOREPO}/good.json" "valid json"
+
+  printf '{"a": 1,}\n' > "${LH_NOREPO}/bad.json"
+  _lh_expect CONTEXT "${LH_NOREPO}/bad.json" "invalid json"
+
+  # A relative file_path starting with "-" must not be mistaken for a jq
+  # flag (see the equivalent shellcheck case above) — always exercised,
+  # jq has no optional-tool guard.
+  printf '{"a": 1,}\n' > "${LH_NOREPO}/-e.json"
+  local saved_pwd_dashj
+  saved_pwd_dashj="$(pwd)"
+  cd "${LH_NOREPO}" || return
+  _lh_run -e.json
+  cd "${saved_pwd_dashj}" || return
+  if [[ "$(_lint_hook_verdict "${LH_LAST_STDOUT}")" == CONTEXT && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
+    _pass "CONTEXT, exit 0, empty stderr: relative json file_path starting with '-'"
+  else
+    _fail "relative json file_path starting with '-' was not linted (rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR})"
+  fi
+
+  # A linter's own failure must fail open, not be reported as a finding.
+  # Reproduced live: chmod 000 makes jq exit 2 ("Could not open file ...
+  # Permission denied").
+  printf '{"a": 1,}\n' > "${LH_NOREPO}/permbad.json"
+  /bin/chmod 000 "${LH_NOREPO}/permbad.json"
+  _lh_expect PASS "${LH_NOREPO}/permbad.json" "unreadable file (chmod 000): jq's own error fails open, not reported as a finding"
+  /bin/chmod 644 "${LH_NOREPO}/permbad.json"
+
+  # JSONC skip-list: a real tsconfig.json carries comments jq cannot parse,
+  # and must not be a standing false positive.
+  printf '{\n  // a comment\n  "a": 1\n}\n' > "${LH_NOREPO}/tsconfig.json"
+  _lh_expect PASS "${LH_NOREPO}/tsconfig.json" "tsconfig.json with a comment (skip-list)"
+
+  # devcontainer.json (basename) and any file under .zed/ (path) both carry
+  # JSONC comments by convention.
+  /bin/mkdir -p "${LH_NOREPO}/.devcontainer" "${LH_NOREPO}/.zed"
+  printf '{\n  // a comment\n  "a": 1\n}\n' > "${LH_NOREPO}/.devcontainer/devcontainer.json"
+  _lh_expect PASS "${LH_NOREPO}/.devcontainer/devcontainer.json" "devcontainer.json with a comment (skip-list)"
+  printf '{\n  // a comment\n  "a": 1\n}\n' > "${LH_NOREPO}/.zed/settings.json"
+  _lh_expect PASS "${LH_NOREPO}/.zed/settings.json" ".zed/settings.json with a comment (skip-list)"
+
+  # Same .zed/ skip, addressed by a RELATIVE path — file_path is
+  # absolutised before the skip-list check runs, so a relative form must
+  # be skipped exactly like the absolute form above.
+  local saved_pwd_zed
+  saved_pwd_zed="$(pwd)"
+  cd "${LH_NOREPO}" || return
+  _lh_run .zed/settings.json
+  cd "${saved_pwd_zed}" || return
+  if [[ "$(_lint_hook_verdict "${LH_LAST_STDOUT}")" == PASS && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
+    _pass "PASS, exit 0, empty stderr: .zed/settings.json addressed by a RELATIVE path (skip-list)"
+  else
+    _fail "relative .zed/settings.json path was not skipped (rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR})"
+  fi
+
+  # --- swift -------------------------------------------------------------
+
+  if [[ -n "${sl_bin}" ]]; then
+    printf 'let longEnoughName = 1\n' > "${LH_NOREPO}/clean.swift"
+    _lh_expect PASS "${LH_NOREPO}/clean.swift" "clean swift file"
+
+    printf 'let x = 1\n' > "${LH_NOREPO}/bad.swift"
+    _lh_expect CONTEXT "${LH_NOREPO}/bad.swift" "swift file with a style violation"
+
+    # #!/usr/bin/env swift must still reach swiftlint via the extension arm
+    # — a recognised-but-not-zsh/bash/sh shebang skips the *.sh/*.bash
+    # extension arm specifically, not extension dispatch as a whole.
+    printf '#!/usr/bin/env swift\nlet x = 1\n' > "${LH_NOREPO}/envswift.swift"
+    _lh_expect CONTEXT "${LH_NOREPO}/envswift.swift" "'#!/usr/bin/env swift' still reaches swiftlint via the extension arm"
+
+    # The env-shebang path runs a word loop with several locals; a stray
+    # `NAME=value` line on stdout would turn a verdict into INVALID.
+    printf '#!/usr/bin/env -S bash -eu\necho $1\n' > "${LH_BARE}/envloop"
+    _lh_expect CONTEXT "${LH_BARE}/envloop" "env -S bash shebang with a finding: exactly one valid verdict object, no stray stdout"
+
+    # A non-numeric or zero LINT_HOOK_DEADLINE must not disable the
+    # deadline (perl's alarm(0) means "no alarm"): the 5 second default
+    # applies, so a linter sleeping 9 seconds is still cut off well before.
+    local lh_slow9 lh_bad_deadline
+    lh_slow9="$(/usr/bin/mktemp "${TMPDIR:-/tmp}/lint-hook-slow.XXXXXX")"
+    {
+      echo '#!/bin/zsh'
+      echo 'exec /bin/sleep 9'
+    } > "${lh_slow9}"
+    /bin/chmod +x "${lh_slow9}"
+    for lh_bad_deadline in abc 0; do
+      lh_t0="$(/bin/date +%s)"
+      _lh_exec "$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s"}}' "${LH_BARE}/timeout.sh")" "LINT_HOOK_SHELLCHECK=${lh_slow9}" "LINT_HOOK_DEADLINE=${lh_bad_deadline}"
+      lh_t1="$(/bin/date +%s)"
+      lh_elapsed=$(( lh_t1 - lh_t0 ))
+      if [[ "$(_lint_hook_verdict "${LH_LAST_STDOUT}")" == PASS && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" && "${lh_elapsed}" -lt 8 ]]; then
+        _pass "PASS, exit 0, empty stderr, ${lh_elapsed}s: LINT_HOOK_DEADLINE=${lh_bad_deadline} falls back to the 5s default"
+      else
+        _fail "LINT_HOOK_DEADLINE=${lh_bad_deadline} did not fall back to the default deadline (rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR} elapsed=${lh_elapsed}s)"
+      fi
+    done
+    _lh_exec "$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s"}}' "${LH_NOREPO}/bad.swift")" LINT_HOOK_SWIFTLINT=/nonexistent
+    if [[ "$(_lint_hook_verdict "${LH_LAST_STDOUT}")" == PASS && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
+      _pass "PASS, exit 0, empty stderr: LINT_HOOK_SWIFTLINT pointed at a nonexistent path reads as absent"
+    else
+      _fail "LINT_HOOK_SWIFTLINT=/nonexistent did not fail open cleanly (rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR})"
+    fi
+
+    # NESTED CONFIG: a .swiftlint.yml one directory ABOVE the edited file
+    # (not in the file's own directory, and not in a git repo) must still
+    # be discovered and applied, whatever cwd the hook inherited — the
+    # common real layout (a project-root config, source files in
+    # subdirectories).
+    local swnest
+    swnest="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/lint-hook-swnest.XXXXXX")"
+    /bin/mkdir -p "${swnest}/sub"
+    printf 'disabled_rules:\n  - identifier_name\n' > "${swnest}/.swiftlint.yml"
+    printf 'let x = 1\n' > "${swnest}/sub/bad.swift"
+    _lh_expect PASS "${swnest}/sub/bad.swift" "a .swiftlint.yml one directory above the file is honoured (absolute path)"
+
+    # Same layout with the config removed: the real violation surfaces —
+    # proves the PASS above is the config taking effect, not some other
+    # reason the file went unlinted.
+    /bin/rm -f "${swnest}/.swiftlint.yml"
+    _lh_expect CONTEXT "${swnest}/sub/bad.swift" "no .swiftlint.yml anywhere up the tree: the real violation is reported"
+
+    # Same layout, config restored, addressed by a RELATIVE file_path with
+    # cwd set to the file's own directory — a relative swiftlint argument
+    # must resolve against the hook's inherited cwd correctly, the same
+    # way the absolute-path case above does.
+    printf 'disabled_rules:\n  - identifier_name\n' > "${swnest}/.swiftlint.yml"
+    local saved_pwd3
+    saved_pwd3="$(pwd)"
+    cd "${swnest}/sub" || return
+    _lh_run bad.swift
+    cd "${saved_pwd3}" || return
+    if [[ "$(_lint_hook_verdict "${LH_LAST_STDOUT}")" == PASS && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
+      _pass "PASS, exit 0, empty stderr: relative swift file_path, cwd = the file's own directory, config one level up"
+    else
+      _fail "relative swift file_path with a config one level up was not honoured (rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR})"
+    fi
+    /bin/rm -rf "${swnest}"
+
+    # OUTERMOST CONFIG: a project-root .swiftlint.yml opts in a rule
+    # (force_unwrapping) that a sub-directory config does not mention. A
+    # file in the sub directory must still get the root rule, and the sub
+    # config's own override (trailing_whitespace disabled) must still hold.
+    local swout swctx
+    swout="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/lint-hook-swout.XXXXXX")"
+    /bin/mkdir -p "${swout}/sub"
+    printf 'opt_in_rules:\n  - force_unwrapping\n' > "${swout}/.swiftlint.yml"
+    printf 'disabled_rules:\n  - trailing_whitespace\n' > "${swout}/sub/.swiftlint.yml"
+    printf 'let abc: Int? = nil\nlet def = abc!   \n' > "${swout}/sub/f.swift"
+    _lh_expect CONTEXT "${swout}/sub/f.swift" "root config opts in a rule the sub config does not mention: the root rule is reported"
+    swctx="$(printf '%s' "${LH_LAST_STDOUT}" | jq -r '.hookSpecificOutput.additionalContext' 2>/dev/null)"
+    if [[ "${swctx}" == *force_unwrapping* ]]; then
+      _pass "outermost config: force_unwrapping (root opt-in) is in the report"
+    else
+      _fail "outermost config: force_unwrapping missing from the report (${swctx})"
+    fi
+    if [[ "${swctx}" != *trailing_whitespace* ]]; then
+      _pass "outermost config: the sub config's disabled trailing_whitespace stays disabled"
+    else
+      _fail "outermost config: trailing_whitespace reported despite the sub config disabling it (${swctx})"
+    fi
+    /bin/rm -rf "${swout}"
+
+    # $HOME BOUNDARY: for a file under $HOME the walk never selects $HOME or
+    # anything above it. A fake HOME (passed to the hook) with a config in
+    # it, and another above it, both disable identifier_name; the file in a
+    # project below HOME has no config of its own, so identifier_name must
+    # still be reported. The same tree with an unrelated HOME (the file is
+    # then outside $HOME) walks to "/" and does pick the outer config up.
+    local swhome swhpl
+    swhome="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/lint-hook-swhome.XXXXXX")"
+    /bin/mkdir -p "${swhome}/home/proj"
+    printf 'disabled_rules:\n  - identifier_name\n' > "${swhome}/.swiftlint.yml"
+    printf 'disabled_rules:\n  - identifier_name\n' > "${swhome}/home/.swiftlint.yml"
+    printf 'let x = 1\n' > "${swhome}/home/proj/f.swift"
+    swhpl="$(jq -n --arg f "${swhome}/home/proj/f.swift" '{tool_name:"Write", tool_input:{file_path:$f}}')"
+    _lh_exec "${swhpl}" "HOME=${swhome}/home"
+    if [[ "$(_lint_hook_verdict "${LH_LAST_STDOUT}")" == CONTEXT && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
+      _pass "CONTEXT, exit 0, empty stderr: configs at \$HOME and above it are not selected for a file under \$HOME"
+    else
+      _fail "a config at or above \$HOME was selected for a file under \$HOME (out=${LH_LAST_STDOUT} rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR})"
+    fi
+    /bin/rm -f "${swhome}/home/.swiftlint.yml"
+    /bin/mkdir -p "${swhome}/home/proj/deep"
+    printf 'let x = 1\n' > "${swhome}/home/proj/deep/g.swift"
+    printf 'disabled_rules:\n  - identifier_name\n' > "${swhome}/home/proj/.swiftlint.yml"
+    swhpl="$(jq -n --arg f "${swhome}/home/proj/deep/g.swift" '{tool_name:"Write", tool_input:{file_path:$f}}')"
+    _lh_exec "${swhpl}" "HOME=${swhome}/home"
+    if [[ "$(_lint_hook_verdict "${LH_LAST_STDOUT}")" == PASS && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
+      _pass "PASS, exit 0, empty stderr: a config below \$HOME is still found from a deeper directory"
+    else
+      _fail "a config below \$HOME was not found from a deeper directory (out=${LH_LAST_STDOUT} rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR})"
+    fi
+    /bin/rm -f "${swhome}/home/proj/.swiftlint.yml"
+    swhpl="$(jq -n --arg f "${swhome}/home/proj/f.swift" '{tool_name:"Write", tool_input:{file_path:$f}}')"
+    _lh_exec "${swhpl}" "HOME=${swhome}/elsewhere"
+    if [[ "$(_lint_hook_verdict "${LH_LAST_STDOUT}")" == PASS && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
+      _pass "PASS, exit 0, empty stderr: a file outside \$HOME walks up to / and finds the outer config"
+    else
+      _fail "a file outside \$HOME did not find the outer config (out=${LH_LAST_STDOUT} rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR})"
+    fi
+    /bin/rm -rf "${swhome}"
+
+    # A malformed .swiftlint.yml in the target's own directory makes
+    # swiftlint fall back to its default configuration and print a
+    # warning; the real style violation underneath is still a genuine
+    # finding, and is reported, not suppressed. Isolated in its own
+    # throwaway directory so the broken config cannot leak into the
+    # clean/bad.swift cases above.
+    local swcfgbad
+    swcfgbad="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/lint-hook-swcfg.XXXXXX")"
+    printf 'let x = 1\n' > "${swcfgbad}/f.swift"
+    printf ': not: valid: yaml: [\n' > "${swcfgbad}/.swiftlint.yml"
+    _lh_expect CONTEXT "${swcfgbad}/f.swift" "malformed .swiftlint.yml: falls back to default rules, the real violation is still reported"
+    /bin/rm -rf "${swcfgbad}"
+
+    # UTF-8: additionalContext must stay within BYTE_CAP even when the raw
+    # output is heavy with multibyte characters — a character count is not
+    # a byte count.
+    local swutf ctx6 bytes6
+    swutf="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/lint-hook-swutf.XXXXXX")"
+    {
+      local m
+      for m in $(seq 1 30); do
+        printf 'let %s%d = 1\n' "$(printf 'é%.0s' {1..300})" "${m}"
+      done
+    } > "${swutf}/wide.swift"
+    _lh_run "${swutf}/wide.swift"
+    ctx6="$(printf '%s' "${LH_LAST_STDOUT}" | jq -r '.hookSpecificOutput.additionalContext')"
+    # Strip the header line, same as the shellcheck byte-cap case above —
+    # only the capped body+marker is bounded to BYTE_CAP.
+    bytes6="$(printf '%s\n' "${ctx6}" | /usr/bin/sed '1d' | LC_ALL=C /usr/bin/wc -c | tr -d ' ')"
+    if (( bytes6 <= 4096 )); then
+      _pass "byte-cap branch (multibyte content): capped body+marker is ${bytes6} bytes (<= BYTE_CAP 4096)"
+    else
+      _fail "byte-cap branch (multibyte content): capped body+marker is ${bytes6} bytes, expected <= 4096"
+    fi
+    /bin/rm -rf "${swutf}"
+  else
+    _skip "swiftlint not installed — swift cases"
+  fi
+
+  # --- input edge cases --------------------------------------------------
+
+  _lh_run_field notafilepath something-else
+  if [[ "$(_lint_hook_verdict "${LH_LAST_STDOUT}")" == PASS && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
+    _pass "PASS, exit 0, empty stderr: payload with no tool_input.file_path"
+  else
+    _fail "missing file_path did not read as a clean PASS (rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR})"
+  fi
+
+  _lh_expect PASS "${LH_NOREPO}/does-not-exist.json" "nonexistent path"
+
+  # notebook_path: the hook reads .tool_input.file_path //
+  # .tool_input.notebook_path // empty — the second half was never
+  # exercised. A bad-JSON path under that field must still be linted.
+  printf '{"a": 1,}\n' > "${LH_NOREPO}/nb.json"
+  _lh_run_field notebook_path "${LH_NOREPO}/nb.json"
+  if [[ "$(_lint_hook_verdict "${LH_LAST_STDOUT}")" == CONTEXT && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
+    _pass "CONTEXT, exit 0, empty stderr: bad json addressed via tool_input.notebook_path"
+  else
+    _fail "notebook_path field was not honoured (rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR})"
+  fi
+
+  # Directory skip: a bad JSON file under node_modules/, dist/, .git/, or
+  # vendor/ is never linted — as an absolute path, and (file_path is
+  # absolutised before this check runs) as a RELATIVE one too.
+  /bin/mkdir -p "${LH_NOREPO}/node_modules" "${LH_NOREPO}/dist" "${LH_NOREPO}/.git" "${LH_NOREPO}/vendor"
+  printf '{"a": 1,}\n' > "${LH_NOREPO}/node_modules/bad.json"
+  _lh_expect PASS "${LH_NOREPO}/node_modules/bad.json" "bad json under node_modules/ (dir skip, absolute path)"
+
+  printf '{"a": 1,}\n' > "${LH_NOREPO}/.git/bad.json"
+  _lh_expect PASS "${LH_NOREPO}/.git/bad.json" "bad json under .git/ (dir skip, absolute path)"
+
+  printf '{"a": 1,}\n' > "${LH_NOREPO}/dist/bad.json"
+  local saved_pwd2
+  saved_pwd2="$(pwd)"
+  cd "${LH_NOREPO}" || return
+  _lh_exec "$(jq -n '{tool_input:{file_path:"dist/bad.json"}}')"
+  cd "${saved_pwd2}" || return
+  if [[ "$(_lint_hook_verdict "${LH_LAST_STDOUT}")" == PASS && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
+    _pass "PASS, exit 0, empty stderr: bad json under a RELATIVE dist/ path (dir skip)"
+  else
+    _fail "relative dist/ path was not skipped (rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR})"
+  fi
+
+  printf '{"a": 1,}\n' > "${LH_NOREPO}/vendor/bad.json"
+  saved_pwd2="$(pwd)"
+  cd "${LH_NOREPO}" || return
+  _lh_exec "$(jq -n '{tool_input:{file_path:"vendor/bad.json"}}')"
+  cd "${saved_pwd2}" || return
+  if [[ "$(_lint_hook_verdict "${LH_LAST_STDOUT}")" == PASS && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
+    _pass "PASS, exit 0, empty stderr: bad json under a RELATIVE vendor/ path (dir skip)"
+  else
+    _fail "relative vendor/ path was not skipped (rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR})"
+  fi
+
+  # Oversized file skip: well past MAX_BYTES, never linted even though the
+  # content is invalid JSON. Built with a pure zsh padding expansion rather
+  # than shelling out to python3. The padded parameter must be a real (if
+  # empty) variable, not the bare "${(l:...)}"" form — under this suite's
+  # own `set -u` (inherited from ./test) that form is itself an unset
+  # parameter and aborts with "parameter not set".
+  # shellcheck disable=SC2034  # lh_pad IS used below, inside a zsh-only ${(l:...)} left-pad shellcheck's bash parser can't see through
+  local lh_pad=""
+  # shellcheck disable=SC2296  # zsh-only ${(l:width::pad:)var} left-pad
+  printf '{%s}' "${(l:600000::,:)lh_pad}" > "${LH_NOREPO}/oversize.json"
+  _lh_expect PASS "${LH_NOREPO}/oversize.json" "oversized file (size-cap skip)"
+
+  # Symlink size cap: a symlink to that same oversized file must be sized
+  # by its TARGET (`stat -L`), not by the length of the link's own path
+  # string, which would otherwise read as tiny and get linted.
+  /bin/ln -sf "${LH_NOREPO}/oversize.json" "${LH_NOREPO}/oversize-link.json"
+  _lh_expect PASS "${LH_NOREPO}/oversize-link.json" "symlink to an oversized file (size-cap uses the target, not the link)"
+
+  # A path with a space and a dollar sign must not break the hook's own JSON
+  # handling on either side.
+  /bin/mkdir -p "${LH_NOREPO}/a dir"
+  printf '{"a": 1,}\n' > "${LH_NOREPO}/a dir/\$weird.json"
+  _lh_expect CONTEXT "${LH_NOREPO}/a dir/\$weird.json" "path with a space and a dollar sign"
+
+  # Malformed/irrelevant stdin must never produce a verdict, and must still
+  # exit 0 with empty stderr.
+  _lh_exec '{}'
+  if [[ -z "${LH_LAST_STDOUT}" && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
+    _pass "fail-open, exit 0, empty stderr: payload with an empty tool_input"
+  else
+    _fail "payload with an empty tool_input did not fail open cleanly (out=${LH_LAST_STDOUT} rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR})"
+  fi
+  _lh_exec 'not json'
+  if [[ -z "${LH_LAST_STDOUT}" && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
+    _pass "fail-open, exit 0, empty stderr: unparseable payload"
+  else
+    _fail "unparseable payload did not fail open cleanly (out=${LH_LAST_STDOUT} rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR})"
+  fi
+
+  _lh_teardown_repos
+  /bin/rm -rf "${lh_priv}"
+}
