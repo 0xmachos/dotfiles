@@ -27,7 +27,7 @@ function run_shellcheck {
     if /usr/bin/file "${file}" | /usr/bin/grep --quiet -E "shell|bash|zsh"; then
       shell_files+=("${file}")
     fi
-  done < <(/usr/bin/find . ./.functions ./bin ./lib ./tests ./.githooks ./.config/git/hooks \
+  done < <(/usr/bin/find . ./.functions ./bin ./lib ./tests ./.githooks ./.config/git/hooks ./claude \
             -maxdepth 1 -type f \
             -not -iwholename '*venv*'   \
             -not -iwholename '*.tar.xz' \
