@@ -1,3 +1,4 @@
+onboarding = false
 # herdr config — symlinked to ~/.config/herdr/config.toml by `bittersweet
 # dotfiles`. Only this file is linked; herdr keeps its socket, session.json,
 # session-backups/, machine.json, push registries and guest audit log beside
@@ -14,3 +15,13 @@
 # decision (2026-09-29); set to "relay" to opt in.
 [push]
 mode = "off"
+
+[theme]
+name = "terminal"
+auto_switch = false
+
+[update]
+channel = "preview"
+
+[ui]
+status_indicators = "symbols"
