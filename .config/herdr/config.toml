@@ -1,0 +1,16 @@
+# herdr config — symlinked to ~/.config/herdr/config.toml by `bittersweet
+# dotfiles`. Only this file is linked; herdr keeps its socket, session.json,
+# session-backups/, machine.json, push registries and guest audit log beside
+# it, and none of that belongs in the repo.
+#
+# herdr edits this file itself (onboarding, theme, sound, toast, integrations)
+# with std::fs::write and its integration installer resolves symlinks before
+# replacing, so both paths write through the link (read from source 2026-09-29,
+# fork commit 4e6bacf). Expect a tracked-file diff after the first run.
+
+# Remote push goes through a third-party relay by default ("auto" falls back to
+# the relay whenever no APNs key is configured, and there is no key here). The
+# relay sees notification text in transit. Off until that is an explicit
+# decision (2026-09-29); set to "relay" to opt in.
+[push]
+mode = "off"

@@ -589,7 +589,7 @@ function install_dotfiles {
   # the latter. Set here, before the file arrays, so their globs see it too.
   setopt local_options null_glob
 
-  local -ar dot_dirs=(.ssh .extra .codex .codex/rules .config/git .config/uv .claude .claude/skills .claude/rules .claude/agents)
+  local -ar dot_dirs=(.ssh .extra .codex .codex/rules .config/git .config/uv .config/herdr .claude .claude/skills .claude/rules .claude/agents)
   local -ar dot_files=(.zshrc .functions .completions .aliases)
   local -ar ssh_configs=(config .extra_ssh)
   local -ar git_configs=(config ignore allowed_signers)
@@ -671,6 +671,14 @@ function install_dotfiles {
 
   # Symlink uv config into $HOME/.config/uv/
   _symlink "${SCRIPT_DIR}/.config/uv/uv.toml" "${HOME}/.config/uv/uv.toml"
+
+  # Symlink herdr config into $HOME/.config/herdr/ — the file only, never the
+  # directory: herdr keeps its socket, session state, machine identity and push
+  # registries beside config.toml. herdr's own writes go through the link
+  # (std::fs::write; the integration installer resolves symlinks first —
+  # verified from source 2026-09-29). The binary itself is installer-managed at
+  # ~/.local/bin/herdr (the Herdrup fork's installer only writes under $HOME).
+  _symlink "${SCRIPT_DIR}/.config/herdr/config.toml" "${HOME}/.config/herdr/config.toml"
 
   # Symlink npm config into $HOME/.npmrc (npm hardcodes ~/.npmrc)
   _symlink "${SCRIPT_DIR}/.config/npm/.npmrc" "${HOME}/.npmrc"
