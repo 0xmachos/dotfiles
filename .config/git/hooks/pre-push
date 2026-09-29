@@ -54,7 +54,7 @@
 # is ignored, the layer it would have skipped still runs, and the hook
 # prints one loud refusal line naming the exact command to hand the user.
 # A pty allocated around git (`script`, `expect`) would satisfy the test;
-# for Claude Code, claude/hook-bypass-guard denies that shape at the tool call.
+# for Claude Code, claude/git-bypass-hook denies that shape at the tool call.
 #
 # Layers 3 and 4 (added 2026-09-22) apply to PUBLIC repositories only, as
 # decided by the sibling `repo-visibility` script (explicit

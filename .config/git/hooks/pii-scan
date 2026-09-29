@@ -55,7 +55,7 @@
 # the exact command to run in the user's OWN terminal, rather than retry it.
 # No environment seam may re-enable this check (any seam an agent can set is
 # a bypass again). A pty allocated around git (`script`, `expect`) would
-# satisfy the test; for Claude Code, claude/hook-bypass-guard denies that shape. gitleaks, where a caller runs it, is unaffected;
+# satisfy the test; for Claude Code, claude/git-bypass-hook denies that shape. gitleaks, where a caller runs it, is unaffected;
 # --no-verify skips the calling hook wholesale and silently, and — being
 # git's own — cannot be refused from inside a hook at all.
 # Test seams: PII_HOOK_PATTERNS / PII_HOOK_SSH_CONFIG override the pattern
