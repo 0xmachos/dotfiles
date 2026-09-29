@@ -25,3 +25,40 @@ channel = "preview"
 
 [ui]
 status_indicators = "symbols"
+hide_tab_bar_when_single_tab = true
+show_agent_labels_on_pane_borders = true
+prompt_new_tab_name = false
+# Ghostty's tab bar shows this title; the default leads with the hostname.
+window_title = "{workspace} › {tab}"
+
+# Ask Ghostty (OSC 9/777) for a macOS notification when a background agent
+# needs attention or finishes; in-app toasts and system delivery are the
+# other two modes.
+[ui.toast]
+delivery = "terminal"
+
+# Agent rows follow each session's own terminal title, which Claude Code keeps
+# updated, instead of a fixed directory name.
+[ui.sidebar.agents]
+row_gap = 1
+rows = [
+  [{ token = "state_icon" }, { token = "workspace", bold = true }],
+  [{ token = "terminal_title_stripped" }],
+  [{ token = "agent" }],
+]
+
+[ui.sidebar.spaces]
+row_gap = 1
+rows = [
+  [{ token = "state_icon" }, { token = "workspace", bold = true }],
+  [{ token = "branch" }, { token = "git_status" }],
+]
+
+# Direct alt chords (left Option, per Ghostty macos-option-as-alt = left).
+[keys]
+previous_tab = "alt+["
+next_tab = "alt+]"
+switch_tab = "alt+1..9"
+previous_workspace = "alt+shift+["
+next_workspace = "alt+shift+]"
+switch_workspace = "alt+shift+1..9"
