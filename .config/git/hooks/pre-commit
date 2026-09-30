@@ -1,52 +1,43 @@
 #!/usr/bin/env zsh
 # .config/git/hooks/pre-commit
 #
-# Global pre-commit scanner for EVERY repo, activated by the global
-# core.hooksPath declared in .config/git/config — which points directly at
-# this directory in the dotfiles repo, so a sync delivers hooks and config
-# atomically with no install step. The dotfiles repo itself keeps a local
-# core.hooksPath (.githooks/), which shadows the global one; its pre-commit
-# chains to this file explicitly. Sibling hook types are pass-through
-# symlinks to hook-forward (see that file's header).
+# Global pre-commit scanner for EVERY repo, via the global core.hooksPath in
+# .config/git/config, which points at this directory in the dotfiles repo, so
+# a sync delivers hooks and config atomically. The dotfiles repo's own local
+# core.hooksPath (.githooks/) shadows it; its pre-commit chains here. Sibling
+# hook types are pass-through symlinks to hook-forward.
 #
-# Order: the repo's own default-location pre-commit runs FIRST — hooks
-# commonly format/generate and `git add` the result, and anything staged
-# after scanning would enter the commit unscanned (round-2 review finding).
-# Scanning always sees the final index.
+# Order: the repo's own default-location pre-commit runs FIRST (hooks
+# commonly format and `git add`; anything staged after scanning would enter
+# the commit unscanned), so scanning sees the final index.
 #
-#   0. Chain           — run the repo's own .git/hooks/pre-commit (common
-#                        dir, worktree-correct); its failure aborts with its
-#                        exit status
-#   1. gitleaks        — secret scan of the staged diff
-#   2+3. pii-scan      — literal PII denylist + MAC/UUID token detector over
-#                        the materialised staged additions and pathnames.
-#                        The scanning core, its allowlist semantics, seams,
-#                        and PII_HOOK_BYPASS all live in the sibling pii-scan
-#                        script (extracted 2026-08-17 so commit-msg and the
-#                        pre-push message gate share one implementation).
+#   0. Chain      — the repo's .git/hooks/pre-commit (common dir); its failure
+#                   aborts with its exit status
+#   1. gitleaks   — secret scan of the staged diff
+#   2+3. pii-scan — literal PII denylist + MAC/UUID token detector over the
+#                   staged additions and pathnames. The core, allowlist
+#                   semantics, seams and PII_HOOK_BYPASS live in pii-scan
+#                   (extracted 2026-08-17; shared with commit-msg and the
+#                   pre-push message gate).
 #
-# Known gaps: files git classifies as binary produce no diff hunks, so their
-# CONTENT passes layers 1–3 unscanned (only the pathname is checked); the
-# reference-transaction and post-index-change hook types are deliberately
-# not forwarded (hook-forward header has the rationale).
+# Known gaps: binary files produce no diff hunks, so their CONTENT passes
+# layers 1-3 unscanned (pathname only); reference-transaction and
+# post-index-change are deliberately not forwarded (they fire on every
+# ref/index write).
 #
-# Bypass (2026-09-25): PII_HOOK_BYPASS=1 git commit … skips layers 2+3
-# loudly, but ONLY in the user's own terminal (see pii-scan's header for the
-# shared --check-terminal test) — from an agent's tool call it is ignored
-# and the scan runs anyway. gitleaks still runs either way; --no-verify
-# skips the whole hook, silently, and — being git's own — cannot be refused
-# from inside a hook at all.
+# Bypass (2026-09-25): PII_HOOK_BYPASS=1 skips layers 2+3 loudly, ONLY with a
+# controlling terminal (pii-scan --check-terminal); from an agent it is
+# ignored and the scan runs. gitleaks runs either way. --no-verify skips the
+# whole hook silently and, being git's own, cannot be refused from inside it.
 
 set -euo pipefail
 
-# Re-entry guard, shared with hook-forward: if a chained hook dispatches back
-# into the global hooks (e.g. `git hook run pre-commit`), this run already
-# covers it — exit instead of looping. Scoped to hook name AND repo: a
-# repo-A hook that commits in repo B must not skip B's scan (round-2 review
-# finding). Spaces in the git-dir path are folded to `_` so the token stays
-# one word in the space-delimited list (a collision only over-skips within
-# an already-pathological pair of paths; a split token would break the guard
-# and allow a loop).
+# Re-entry guard, shared with hook-forward: a chained hook dispatching back
+# into the global hooks (e.g. `git hook run pre-commit`) exits instead of
+# looping. Scoped to hook name AND repo: a repo-A hook that commits in repo B
+# must not skip B's scan. Spaces in the git-dir path fold to `_` so the token
+# stays one word in the space-delimited list (a split token would break the
+# guard and allow a loop; a collision only over-skips).
 sentinel="pre-commit@$(git rev-parse --absolute-git-dir)"
 sentinel="${sentinel// /_}"
 case " ${GIT_GLOBAL_HOOKS_SEEN:-} " in
@@ -57,10 +48,9 @@ export GIT_GLOBAL_HOOKS_SEEN="${GIT_GLOBAL_HOOKS_SEEN:-} ${sentinel}"
 # --- Layer 0: chain to the repo's own default-location hook -----------------
 
 # Runs BEFORE scanning so anything the repo hook stages is scanned too.
-# Hooks live in the COMMON git dir (linked worktrees share the main repo's
-# .git/hooks), hence --git-common-dir. Deliberately not `git rev-parse
-# --git-path hooks` — that resolves core.hooksPath and would re-enter this
-# script forever; the sentinel above is the belt to this brace.
+# --git-common-dir: linked worktrees share the main repo's .git/hooks. Not
+# `git rev-parse --git-path hooks`: that resolves core.hooksPath and would
+# re-enter this script forever; the sentinel above is the second guard.
 repo_hook="$(git rev-parse --git-common-dir)/hooks/pre-commit"
 if [[ -x "${repo_hook}" && "${repo_hook:A}" != "${0:A}" ]]; then
   # In `cmd || exit $?`, $? on the right of || is cmd's own status.
@@ -76,23 +66,20 @@ fi
 
 gitleaks protect --staged --verbose
 
-# ${TMPDIR:-/tmp}/ not the house ${TMPDIR}… idiom: macOS guarantees the
-# trailing slash, but this hook runs wherever git does, and a slashless
-# TMPDIR would otherwise turn the template into /tmppii-… and block every
-# commit.
+# ${TMPDIR:-/tmp}/ not the house ${TMPDIR}… idiom: this hook runs wherever
+# git does, and a slashless TMPDIR would make the template /tmppii-… and
+# block every commit (macOS guarantees the slash).
 pii_scan="$(mktemp "${TMPDIR:-/tmp}/pii-scan.XXXXXX")"
 trap '/bin/rm -f "${pii_scan}"' EXIT
 
-# Target = added CONTENT (hunk-aware; leading `+` stripped so a line whose
-# content begins with `++` is not mistaken for the `+++` file header) plus
-# the staged PATHNAMES (a private filename added via `git add -f` is caught
-# even when its content is clean). Materialised into a file, not piped into
-# `grep -q`: under pipefail an early match SIGPIPEs `git diff` (141) and a
-# real match would read as no-match — a fail-OPEN leak.
-# The diff output must be config-invariant: repo-local color.ui=always,
-# diff.external, or textconv would silently break the awk anchors and empty
-# the scan target (round-2 review finding) — hence the -c override and
-# --no-* flags.
+# Target = added CONTENT (leading `+` stripped so a line beginning `++` is
+# not mistaken for the `+++` header) plus staged PATHNAMES (a private
+# filename added via `git add -f` is caught even when its content is clean).
+# Materialised into a file, not piped into `grep -q`: under pipefail an early
+# match SIGPIPEs `git diff` (141) and a real match would read as no-match, a
+# fail-OPEN leak. The diff must be config-invariant (repo-local
+# color.ui=always, diff.external or textconv would break the awk anchors and
+# empty the target), hence the -c override and --no-* flags.
 {
   git -c color.ui=false diff --cached --no-color --no-ext-diff --no-textconv \
       --diff-filter=d -U0 | awk '
@@ -103,7 +90,4 @@ trap '/bin/rm -f "${pii_scan}"' EXIT
   git -c color.ui=false diff --cached --no-color --name-only --diff-filter=d
 } > "${pii_scan}"
 
-# Layers 2+3 (denylist + token detector, allowlist semantics, bypass, seams)
-# live in the shared pii-scan core — one implementation for this hook,
-# commit-msg, and the pre-push message gate.
 "${0:A:h}/pii-scan" "${pii_scan}" "Staged changes (content or filename)" || exit $?

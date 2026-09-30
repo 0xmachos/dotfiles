@@ -8,7 +8,7 @@
     <!-- Profile Metadata -->
     <!-- https://developer.apple.com/documentation/devicemanagement/toplevel -->
     <key>PayloadUUID</key>
-      <!-- UUID for the Profile. Content unimportant but needs to be globaly uniqiue-->
+      <!-- UUID for the Profile. Content unimportant but needs to be globally unique-->
       <string>441EF30C-E39A-4E4E-9075-7DFD3AD6C78D</string>
     <key>PayloadType</key>
       <!-- Can only be "Configuration" -->
@@ -42,7 +42,7 @@
     <!-- https://developer.apple.com/documentation/devicemanagement/systempolicycontrol -->
       <dict>
         <key>PayloadUUID</key>
-          <!-- UUID for the Payload. Content unimportant but needs to be globaly uniqiue-->
+          <!-- UUID for the Payload. Content unimportant but needs to be globally unique-->
           <string>6F9FB9DA-E671-450F-957B-C84F94958377</string>
         <key>PayloadType</key>
           <string>com.apple.systempolicy.control</string>

@@ -5,20 +5,13 @@
 set -euo pipefail
 
 # When bittersweet is staged, keep .completions/_bittersweet locked to
-# BITTERSWEET_SUBCOMMANDS and hard-fail the commit on parity drift.
-#
-# Two-step enforcement:
-#  1. Regenerate the completion from the SOT array. Catches the dev who
-#     edited BITTERSWEET_SUBCOMMANDS without rerunning `bittersweet
-#     completions`. The regenerated file is auto-staged so the commit is
-#     internally consistent.
-#  2. Run `./test completions` for the parity check. The regen alone CANNOT
-#     detect a phantom dispatch arm without a matching SOT entry — the
-#     generator only reads the array, so a forgotten array entry produces
-#     a "complete" (with itself) but stale-vs-dispatch completion file.
-#     The parity assertion compares case arms against array keys directly.
-#
-# --no-verify still bypasses both. CI is the only unbypassable layer.
+# BITTERSWEET_SUBCOMMANDS and hard-fail the commit on parity drift:
+#  1. Regenerate the completion from the array and auto-stage it (catches an
+#     array edit without `bittersweet completions`).
+#  2. Run `./test completions`: regen alone cannot see a dispatch arm with no
+#     array entry (the generator reads only the array); the test compares
+#     case arms against array keys.
+# --no-verify bypasses both. CI is the only unbypassable layer.
 completion_test_output=""
 # Materialise before matching: grep -q could exit early and SIGPIPE git,
 # making pipefail silently skip the completion gate on a large staged set.
@@ -38,10 +31,8 @@ if [[ $'\n'"${staged_paths}"$'\n' == *$'\n'bittersweet$'\n'* ]]; then
   fi
 fi
 
-# Scanning layers (gitleaks, PII literal denylist, MAC/UUID token detector)
-# live in the shared global hook — one implementation for every repo. This
-# repo's local core.hooksPath (.githooks/) shadows the global one, so run the
-# global scanner explicitly via the repo-relative path (works on a fresh
-# clone with no configuration). Runs LAST, after the completions regen above,
-# so content this hook auto-stages is scanned too.
+# Scanning layers (gitleaks, PII denylist, MAC/UUID detector) live in the
+# global hook. This repo's core.hooksPath shadows it, so run it by
+# repo-relative path (fresh clone, no configuration). LAST, so content this
+# hook auto-stages is scanned too.
 "$(git rev-parse --show-toplevel)/.config/git/hooks/pre-commit"

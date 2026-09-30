@@ -6,11 +6,10 @@ function layup {
   echo "[🍺] Updating tlmgr and all installed LaTeX packages"
   
   # GPG repo verification disabled: gnupg not installed, SHA-512 checksums
-  # and HTTPS transport still protect package integrity. See TODOs.md.
+  # and HTTPS transport still protect package integrity.
 
   local rc=0
 
-  # Update tlmgr
   if sudo tlmgr --verify-repo=none update --self >/dev/null; then
     echo "[✅] Successfully updated tlmgr"
   else
@@ -18,7 +17,6 @@ function layup {
     rc=1
   fi
 
-  # Update packages installed via tlmgr
   if sudo tlmgr --verify-repo=none update --all >/dev/null; then
     echo "[✅] Successfully updated LaTeX packages via tlmgr"
   else

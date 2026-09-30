@@ -19,7 +19,7 @@ INITIAL_DIR="${HOME}/Documents/Projects"
 
 
 # $PATH & ENV exports MUST be at the top of .zshrc
-# We need all of these to be exported first otherwise some commands will fail or behaviour unexpectedly
+# Later commands fail or misbehave if these are not exported first.
 # See: b79b7968166df0238df8aa61e975b9bcecbabf06
 
 ### $PATH Exports ###
@@ -31,7 +31,6 @@ if [[ -x "/opt/homebrew/bin/brew" && (
   ":${PATH}:" != *":/opt/homebrew/bin:"*
 ) ]]; then
   eval "$(/opt/homebrew/bin/brew shellenv)"
-  # Add Homebrew to PATH
 fi
 
 
@@ -41,7 +40,7 @@ if [[ -x "$HOME/.local/bin/claude" ]]; then
 fi
 
 
-### Enviroment Variable Exports ###
+### Environment Variable Exports ###
 
 if [[ -x "/opt/homebrew/bin/brew" ]]; then
   export HOMEBREW_VERIFY_ATTESTATIONS=true
@@ -57,29 +56,24 @@ if [[ -d "/Applications/Secretive.app" ]]; then
   export SSH_AUTH_SOCK=$HOME/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh
 fi
 
-# Opt out of CLI tool telemetry. DO_NOT_TRACK is the cross-tool convention
-# (consoledonottrack.com) honoured by gh, Homebrew, Next.js, Turbo, Zola, etc.
-# NB: Claude Code treats its mere presence (any value) as a telemetry-disable
-# signal and silently disables Remote Control; claude/settings.json counters
-# it with env.DO_NOT_TRACK: "0" for Claude Code alone (the old `claude` alias
-# that scrubbed it via env -u is gone). GH_TELEMETRY=false opts `gh` out
-# independently.
+# Telemetry opt-out. DO_NOT_TRACK is the cross-tool convention
+# (consoledonottrack.com). Claude Code treats its presence (any value) as a
+# signal that silently disables Remote Control; claude/settings.json counters
+# with env.DO_NOT_TRACK: "0" for Claude Code alone. GH_TELEMETRY opts `gh` out.
 export DO_NOT_TRACK=true
 export GH_TELEMETRY=false
 
-# Claude Code's own temp files (scratchpad, background-task output) go under
-# ~/Library/Caches instead of /tmp, which macOS clears on reboot. Swept of
-# entries idle for 14 days by bin/scratch-sweep. Set here, not in
-# claude/settings.json, because $HOME differs between Macs.
+# Claude Code temp files go under ~/Library/Caches, not /tmp (cleared on
+# reboot); bin/scratch-sweep removes entries idle 14 days. Set here, not in
+# claude/settings.json: that value is a literal path and $HOME varies.
 export CLAUDE_CODE_TMPDIR="${HOME}/Library/Caches/claude-tmp"
 
-# Value must be 1, not YES: ImageIO uses atoi() — atoi("YES") returns 0
-# (disabled), atoi("1") returns 1 (enabled)
+# Undocumented ImageIO out-of-process parsing (ImageIOXPCService sandbox).
+# Value must be 1, not YES: ImageIO uses atoi(), atoi("YES") is 0.
 export IIOEnableOOP=1
-# Enable undocumented ImageIO out-of-process parsing (ImageIOXPCService sandbox)
-# Only affects terminal-launched processes; GUI apps get coverage via
-# LaunchAgents/com.0xmachos.imageio-oop.plist (launchctl setenv at login)
-# For immediate effect in current session: launchctl setenv IIOEnableOOP 1
+# Terminal-launched processes only; GUI apps get it from
+# LaunchAgents/com.0xmachos.imageio-oop.plist (launchctl setenv at login).
+# Current session: launchctl setenv IIOEnableOOP 1
 # https://rtx.meta.security/mitigation/2023/09/11/Sandboxing-ImageIO-in-macOS.html
 
 
@@ -87,25 +81,19 @@ export IIOEnableOOP=1
 ### Prompt ###
 # shellcheck disable=SC2034
 PROMPT=$'%F{blue}% %n%f 🐶 %B%~%b\n%(?.%F{green}√%f.%F{red}%?)%f %(!.#.$) '
-# Example 
+# Example
 # 0xmachos 🐶 /System/Library/CoreServices
-# √ $ 
+# √ $
 
-# Explanation
-# %F{blue}% %n%f
-## Print username (%n) in blue
-# %B%~%b
-## Print pwd relative to $HOME (%~) in bold (%B)
-## If last command exit 0 print √ in green else print exit code in red 
-# %(!.#.$)
-# If root print # else print $
+# Line 2: √ in green if the last command exited 0, else the exit code in red;
+# # for root, $ otherwise.
 
 # Git Integration
 # https://git-scm.com/book/en/v2/Appendix-A:-Git-in-Other-Environments-Git-in-Zsh
 # Moving to Zsh p139
 
 setopt prompt_subst
-# ENABLE: parameter expansion and command substitution in prompts
+# Expansion in prompts (RPROMPT reads vcs_info_msg_0_)
 
 autoload -Uz vcs_info
 precmd_functions+=(vcs_info)
@@ -118,25 +106,24 @@ RPROMPT=\$vcs_info_msg_0_
 ### Command/ Path Correction ###
 
 setopt correct
-# ENABLE: Command correction
+# Command correction
 
 setopt correct_all
-# ENABLE: Argument correction
+# Argument correction
 
 # shellcheck disable=SC2034
 SPROMPT="Correct %F{red}%R%f to %F{green}%r%f [nyae]?"
-# Correction prompt
 
 
 ### Behaviour ###
 setopt autocd 
-# ENABLE: Changes directory to path without needing cd
+# cd without typing cd
 
 setopt glob_complete
-# ENABLE: Hitting tab twice lists possible completions 
+# Tab twice lists completions
 
 unsetopt case_glob
-# DISABLE: Case sensitive globbing
+# Case-insensitive globbing
 
 
 ### Completion ###
@@ -188,8 +175,7 @@ zstyle ':completion:*' expand prefix suffix
 if [[ -d "$HOME/.functions" ]]; then
   # shellcheck disable=SC2086,SC1087
   autoload -Uz "$HOME/.functions/"*(.:t)
-  # Lazy autoload every file in $HOME/.functions/* as a function
-  #   (.:t) glob qualifier: regular files only (.), basename only (:t)
+  # Lazy autoload of every file as a function; (.:t) = regular files, basename
   #   https://unix.stackexchange.com/a/526429
 fi
 
@@ -203,32 +189,26 @@ source "$HOME/.aliases"
 ### History ###
 
 HISTFILE=${ZDOTDIR:-$HOME}/.zsh_history
-# Location of history file
-# Use value of $ZDOTDIR if it has a value
-# otherwise use value of $HOME
+# $ZDOTDIR if set, else $HOME
 
 HISTSIZE=50000
-# Lines remembered per session
+# Lines per session
 
 # shellcheck disable=SC2034
 SAVEHIST=100000
-# Lines stored in history file
+# Lines in the file
 
 setopt EXTENDED_HISTORY
-# Save command start time and duration
+# Start time and duration
 
 setopt SHARE_HISTORY
-# Use single shared history file for all sessions
+# One history file shared by all sessions
 
 ## Reducing Clutter 
 setopt HIST_EXPIRE_DUPS_FIRST
-# Expire duplicates first
 setopt HIST_IGNORE_DUPS
-# Do not store duplications
 setopt HIST_FIND_NO_DUPS
-# Ignore duplicates when searching
 setopt HIST_REDUCE_BLANKS
-# Remove blank lines
 setopt HIST_IGNORE_SPACE
 # Do not store command lines starting with a space
 
@@ -236,8 +216,7 @@ setopt HIST_IGNORE_SPACE
 ### Zoxide ###
 
 if [[ -x "/opt/homebrew/bin/zoxide" ]]; then
-  # Generate zoxide's shell integration once and source it on later starts.
-  # Regenerate automatically when Homebrew upgrades the zoxide executable.
+  # Init script cached; regenerated when the executable is newer.
   typeset -r ZOXIDE_INIT_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/zoxide-init.zsh"
   if [[ ! -r "${ZOXIDE_INIT_CACHE}" || "/opt/homebrew/bin/zoxide" -nt "${ZOXIDE_INIT_CACHE}" ]]; then
     /bin/mkdir -p "${ZOXIDE_INIT_CACHE:h}"
@@ -249,7 +228,7 @@ if [[ -x "/opt/homebrew/bin/zoxide" ]]; then
 fi
 
 
-### Change into Inital Directory ###
+### Change into Initial Directory ###
 
 if [[ -d "${INITIAL_DIR}" ]]; then
   # shellcheck disable=SC2164

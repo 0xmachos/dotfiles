@@ -1,20 +1,17 @@
-# dotfiles CI (rewritten 2026-09-29; replaces Shellcheck.yml).
+# dotfiles CI.
 #
 # Three jobs on push, pull request, manual dispatch and a daily 23:55 UTC
-# end-of-day run:
-#   test     — `./test --time`, the repo's own suite, on the newest GitHub
-#              macOS runner. The house rule is "always the latest image", so
-#              this uses the `macos-latest` label (macOS 26 arm64 since
-#              2026-07; `xcode-27` is a preview label, not a release image).
-#              A clean clone has none of the gitignored config, so the suites
-#              that need it skip; what runs is every tracked script and the
-#              git hooks.
+# end-of-day run (whether or not anything was pushed), all on `macos-latest`
+# (house rule: always the latest image; macOS 26 arm64 since 2026-07;
+# `xcode-27` is a preview label, not a release image):
+#   test     — `./test --time`. A clean clone has no gitignored config, so
+#              suites that need it skip; tracked scripts and git hooks run.
 #   secrets  — gitleaks over the whole history, behind the pre-push gate.
 #   lint     — actionlint and zizmor over this directory.
-# The macOS image ships neither shellcheck nor gitleaks. gitleaks comes from
-# Homebrew; shellcheck is the pinned release tarball, verified by SHA-256
-# before it is unpacked, because the local suite and CI must lint with the
-# same version (0.10.0 failed four files that 0.11.0 passes).
+# The image ships neither shellcheck nor gitleaks: gitleaks from Homebrew;
+# shellcheck is the pinned release tarball, SHA-256 verified before unpacking,
+# so local and CI lint with one version (0.10.0 failed four files that 0.11.0
+# passes).
 # Every action is pinned to a full commit SHA; Dependabot keeps them current.
 name: CI
 
@@ -24,8 +21,7 @@ on:
   pull_request:
     branches: [main]
   schedule:
-    # Daily at 23:55 UTC (GitHub cron is UTC only): an end-of-day attestation
-    # of the tree as it stands, every day, whether or not anything was pushed.
+    # GitHub cron is UTC only.
     - cron: '55 23 * * *'
   workflow_dispatch:
 
@@ -77,8 +73,7 @@ jobs:
 
       - name: Run the suite
         env:
-          # Several suites build sandbox paths as "${TMPDIR}name", so the
-          # value must end in a slash, as macOS's own TMPDIR does.
+          # Suites build "${TMPDIR}name" paths: the value must end in a slash.
           TMPDIR: ${{ runner.temp }}/
         run: |
           set -uo pipefail

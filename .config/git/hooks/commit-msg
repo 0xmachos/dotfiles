@@ -1,58 +1,42 @@
 #!/usr/bin/env zsh
 # .config/git/hooks/commit-msg
 #
-# Global commit-MESSAGE PII gate for EVERY repo, activated by the global
-# core.hooksPath declared in .config/git/config. Added 2026-08-17: nothing
-# else scanned message text — the staged-content pre-commit scanner never
-# sees it, and a hostname in a message becomes permanent SIGNED history that
-# the fail-closed pre-push gate makes painful to rewrite. git-secrets ships
-# the same hook for the same reason.
+# Global commit-MESSAGE PII gate for EVERY repo, via the global core.hooksPath
+# in .config/git/config. Added 2026-08-17: nothing else scanned message text
+# (pre-commit never sees it) and a hostname in a message becomes permanent
+# signed history.
 #
 # `applypatch-msg` is a symlink to this file: `git am` never runs commit-msg
-# (githooks(5) — only the SAMPLE applypatch-msg chains to it), and both hook
-# types share the same contract ($1 = message file). ${0:t} keeps the
-# sentinel and the chain target per-hook-type.
+# (githooks(5)). ${0:t} keeps the sentinel and chain target per hook type.
 #
-# What this hook scans — the NORMALISED candidate message. Verified
-# empirically 2026-08-17 (git 2.54): commit-msg runs BEFORE --cleanup, so on
-# `git commit -v` $1 still holds the status template, the scissors line, and
-# the entire diff; scanning it raw would re-flag staged content the
-# pre-commit scanner already judged (and its allowlisted lines would not
-# match with their diff prefixes). Normalisation mirrors what git will
-# store: truncate at the scissors line (git stripspace does NOT do this),
-# then `git stripspace --strip-comments` (honours core.commentChar and
-# core.commentString; commentChar=auto falls back to `#`, which errs toward
-# scanning more, not less).
+# Scans the NORMALISED message. commit-msg runs BEFORE --cleanup (verified
+# 2026-08-17, git 2.54), so on `git commit -v` $1 still holds the status
+# template, scissors line and whole diff; a raw scan would re-flag staged
+# content, and allowlisted lines would not match with their diff prefixes.
+# Normalise = truncate at the scissors line (stripspace does not), then
+# `git stripspace --strip-comments` (honours core.commentChar/commentString;
+# auto falls back to `#`, which scans more, not less).
 #
-# KNOWN GAP, closed downstream: `git commit -m/-F` messages keep `#` lines
-# (whitespace cleanup), but normalisation strips them here, so a PII line
-# behind a `#` in a -m message passes this hook. The pre-push gate scans the
-# STORED message of every outgoing commit and catches it before publication.
-# Same for every path that skips commit-msg entirely: cherry-pick, revert,
-# plain rebase replay, commit-tree plumbing (all verified not to fire it),
-# and --no-verify. This hook is fast feedback; pre-push is the boundary.
+# Known gap, closed downstream: `git commit -m/-F` keeps `#` lines but they
+# are stripped here, so PII behind a `#` passes. Same for paths that skip this
+# hook: cherry-pick, revert, plain rebase replay, commit-tree plumbing (all
+# verified not to fire it) and --no-verify. Fast feedback only: pre-push scans
+# the stored message of every outgoing commit and is the boundary.
+# Secrets (gitleaks) are not checked here: pre-push runs it over the whole
+# range; per commit would double gitleaks latency machine-wide.
 #
-# Secrets (gitleaks) are deliberately NOT checked here — the pre-push
-# message gate runs gitleaks over the whole outgoing range; doing it per
-# commit would double gitleaks latency machine-wide for no coverage gain.
+# Bypass (2026-09-25): --no-verify (whole hook, silent, git's own, cannot be
+# refused from inside a hook); PII_HOOK_BYPASS=1 (scan layers, loud, handled
+# in pii-scan); MSG_POLICY_SKIP=1 (public-repo policy layer only, loud,
+# handled below). The latter two are honoured ONLY with a controlling
+# terminal (pii-scan --check-terminal); from an agent the layer runs anyway
+# and one refusal line names the command to hand the user.
 #
-# Bypass (2026-09-25): --no-verify (whole hook, silent, git's own — cannot
-# be refused from inside a hook) or PII_HOOK_BYPASS=1 (scan layers, loud —
-# handled inside pii-scan) or MSG_POLICY_SKIP=1 (loud, public-repo policy
-# layer only, handled below). The latter two are honoured ONLY when a real
-# controlling terminal is attached (see pii-scan's header for the shared
-# --check-terminal test) — from an agent's tool call either is ignored, the
-# layer it would have skipped runs anyway, and the hook prints one loud
-# refusal line naming the exact command to hand the user.
-#
-# Public-repo message policy (added 2026-09-22, fast feedback for the
-# pre-push Layer 3 boundary): in a repository the sibling `repo-visibility`
-# script reports as public (or unknown), the candidate message may not carry
-# a `Ledger-Event:` or `Claude-Session:` trailer, its body may not exceed
-# `hooks.maxBodyWords` words (default 120). Empty commits are NOT judged
-# here: commit-msg cannot tell `--allow-empty` from `--amend` of a message
-# (both arrive with nothing staged), so that rule lives in pre-push Layer 3,
-# where the commit object exists. A public repo's log is published content.
+# Public-repo message policy (added 2026-09-22; fast feedback for pre-push
+# Layer 3): when `repo-visibility` says public or unknown, no `Ledger-Event:`
+# or `Claude-Session:` trailer and a body of at most `hooks.maxBodyWords`
+# words (default 120). Empty commits are NOT judged here: `--allow-empty` and
+# `--amend` both arrive with nothing staged; pre-push Layer 3 owns that rule.
 #
 # ShellCheck: lint with `shellcheck --shell=bash .config/git/hooks/commit-msg`.
 
@@ -61,8 +45,8 @@ set -euo pipefail
 msgfile="$1"
 hook_type="${0:t}"
 
-# Re-entry guard, shared semantics with the sibling hooks: scoped to hook
-# name AND repo (a repo-A hook committing in repo B must not skip B's scan).
+# Re-entry guard, same as the sibling hooks: scoped to hook name AND repo (a
+# repo-A hook committing in repo B must not skip B's scan).
 sentinel="${hook_type}@$(git rev-parse --absolute-git-dir)"
 sentinel="${sentinel// /_}"
 case " ${GIT_GLOBAL_HOOKS_SEEN:-} " in
@@ -72,10 +56,9 @@ export GIT_GLOBAL_HOOKS_SEEN="${GIT_GLOBAL_HOOKS_SEEN:-} ${sentinel}"
 
 # --- Layer 0: chain to the repo's own default-location hook -----------------
 
-# Runs BEFORE scanning: a repo hook may rewrite the message (commitlint
-# --fix style), and the final text is what must be scanned. Common git dir
-# for linked-worktree correctness; not --git-path (core.hooksPath re-entry —
-# see pre-commit).
+# Runs BEFORE scanning: a repo hook may rewrite the message, and the final
+# text is what must be scanned. Common git dir for linked worktrees; not
+# --git-path, which resolves core.hooksPath and re-enters this hook.
 repo_hook="$(git rev-parse --git-common-dir)/hooks/${hook_type}"
 if [[ -x "${repo_hook}" && "${repo_hook:A}" != "${0:A}" ]]; then
   "${repo_hook}" "$@" || exit $?
@@ -92,8 +75,8 @@ cchar="$(git config --get core.commentString 2>/dev/null \
            || echo '#')"
 [[ "${cchar}" == "auto" ]] && cchar='#'
 
-# Scissors truncation by hand (no pipeline; read loop keeps a final
-# unterminated line via `|| [[ -n ]]`, same as the pattern-list reader).
+# Scissors truncation by hand: no pipeline; the read loop keeps a final
+# unterminated line via `|| [[ -n ]]`.
 scissors="${cchar} ------------------------ >8 ------------------------"
 while IFS= read -r line || [[ -n "${line}" ]]; do
   [[ "${line}" == "${scissors}" ]] && break

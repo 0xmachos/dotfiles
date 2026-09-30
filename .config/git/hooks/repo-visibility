@@ -1,30 +1,27 @@
 #!/usr/bin/env zsh
 # .config/git/hooks/repo-visibility
 #
-# Prints the visibility of the current repository's `origin` as one word on
-# stdout — public, private, or unknown — for the sibling hooks that apply a
-# stricter policy to public repositories (commit-msg and pre-push message
-# policy, pre-push tracked-tree scan). Always exits 0; the CALLER decides
-# what unknown means, and every caller here treats it as public, because a
-# gate that opens on a lookup failure is not a gate.
+# Prints the visibility of the current repo's `origin` as one word on stdout:
+# public, private or unknown. For commit-msg and pre-push (message policy,
+# tracked-tree scan). Always exits 0; the CALLER decides what unknown means,
+# and every caller here treats it as public (a gate that opens on a lookup
+# failure is not a gate).
 #
 # Resolution order:
-#   1. `git config hooks.repoVisibility` (public|private) — the explicit,
-#      per-repo override. Set it for a non-GitHub remote, an offline machine,
-#      or a repository whose visibility gh cannot see.
-#   2. A github.com `origin` URL (https or ssh) → `gh api repos/<o>/<r>`,
-#      read through gh's own response cache (--cache 168h) so one lookup a
-#      week serves every hook run and an offline week still answers.
+#   1. `git config hooks.repoVisibility` (public|private): explicit per-repo
+#      override, for a non-GitHub remote, an offline machine, or a repo whose
+#      visibility gh cannot see.
+#   2. A github.com `origin` URL (https or ssh) → `gh api repos/<o>/<r>`
+#      through gh's response cache (--cache 168h): one lookup a week serves
+#      every hook run and an offline week still answers.
 #   3. Anything else → unknown.
 #
-# Why a separate script and not a function inside each hook: three hooks
-# need the same answer, the seams below must be shared for the tests, and a
-# script can be exercised on its own (`repo-visibility` in any repo).
+# A script, not a function per hook: the hooks need the same answer, the
+# seams must be shared for the tests, and it runs standalone.
 #
 # Test seams: REPO_VISIBILITY_GH overrides the gh binary (a fixture that
 # prints a JSON body or fails); REPO_VISIBILITY_FORCE=public|private|unknown
-# short-circuits everything (used by suites that only care about the
-# downstream policy).
+# short-circuits everything.
 #
 # ShellCheck: lint with `shellcheck --shell=bash .config/git/hooks/repo-visibility`.
 

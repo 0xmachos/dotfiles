@@ -1,75 +1,48 @@
 #!/usr/bin/env zsh
 # .config/git/hooks/pre-push
 #
-# Global pre-push signature gate AND outgoing-message PII gate for EVERY
-# repo, activated by the global core.hooksPath declared in .config/git/config.
-# Blocks a push that would publish (a) a commit with no `gpgsig` header, in
-# any repo where commit.gpgsign is on, or (b) — since 2026-08-17, in every
-# repo — an outgoing commit or annotated-tag MESSAGE containing a PII
-# pattern, a real-looking MAC/UUID token, or a gitleaks secret. This is the
-# LAST gate before a message becomes permanent: commit-msg is only fast
-# feedback — it
-# never fires for cherry-pick, revert, plain rebase replay, plumbing, or
-# --no-verify commits, and it cannot see `#`-prefixed lines that `-m`
-# messages keep (all verified 2026-08-17). Scanning the STORED message of
-# every outgoing commit closes every one of those paths at once. For PII
-# there is no post-leak rotation — prevention here is the entire control.
+# Global pre-push gate for EVERY repo (core.hooksPath in .config/git/config):
+# signature check plus outgoing-message scan. Blocks a push carrying (a) a
+# commit with no `gpgsig` header, where commit.gpgsign is on, or (b) since
+# 2026-08-17, in every repo, a commit or annotated-tag MESSAGE with a PII
+# pattern, a real-looking MAC/UUID token or a gitleaks secret.
+# This is the LAST gate: commit-msg is fast feedback only (never fires for
+# cherry-pick, revert, plain rebase replay, plumbing or --no-verify; cannot
+# see the `#` lines `-m` keeps; verified 2026-08-17). Scanning the STORED
+# message of every outgoing commit closes all of those. PII has no rotation.
 #
-# WHY THIS EXISTS RATHER THAN THE CLAUDE HOOK ALONE (2026-08-08). The
-# PreToolUse `claude/git-sign-hook` used to be the only barrier. A Codex
-# adversarial review showed a command-string parser cannot hold that line, and
-# every case reproduced:
-#   * `'git' push`, `git 'push'`, `g\it push`, `{ git push; }`, `! git push`
-#     and `if true; then git push; fi` all sailed past the matcher, while a
-#     heredoc body containing the words `git push` was falsely denied.
-#   * `git -C <other-repo> push` was judged against the WRONG repository.
-#   * A signing failure on `git commit -m x && git push` produced a retry that
-#     recreated the whole compound command with signing disabled: the gate saw
-#     a still-clean range, then the same shell made the unsigned commit and
-#     pushed it before any hook ran again.
-# git hands this hook the exact <local-ref> <local-sha> <remote-ref>
-# <remote-sha> quads on stdin, after all argument parsing, refspec expansion
-# and `-C` resolution. There is no spelling to get wrong and no state to race:
-# what is on stdin is what is about to be transferred. The Claude hook stays
-# as early guidance; THIS is the invariant.
+# Why not the Claude hook alone (2026-08-08): claude/git-sign-hook parses the
+# command string, so quoted or wrapped `git push` spellings pass it, a heredoc
+# mentioning `git push` is denied, `git -C <other-repo> push` is judged against
+# the wrong repo, and a signing-failure retry can recreate `commit && push`
+# with signing disabled. Git hands this hook the exact <local-ref> <local-sha>
+# <remote-ref> <remote-sha> quads on stdin: nothing is left to parse.
 #
-# Order mirrors the pre-commit scanner: chain to the repo's own
-# default-location pre-push FIRST (it may run tests or amend refs), then scan.
-# stdin is consumable once, so it is materialised and replayed to both.
+# Order: chain to the repo's own default-location pre-push FIRST (it may run
+# tests or amend refs), then scan; stdin is materialised and replayed to both.
+# Fail-CLOSED on an unreadable commit or failed revision walk (last barrier
+# before a permanent public SHA); the rest of the hook stack fails open. The
+# walk runs in every repo, so a diverged remote tip not held locally blocks
+# every push: `git fetch` first.
 #
-# Fail-CLOSED on an unreadable commit, unlike the rest of the hook stack: this
-# is the last barrier before a permanent, public SHA. Everything else here
-# fails open.
+# Bypass (2026-09-25): `git push --no-verify` (silent, git's own, cannot be
+# refused from a hook) skips everything. Loud: GIT_SIGN_SKIP=1 skips the
+# signature layer ONLY; PII_HOOK_BYPASS=1 (pii-scan's) skips the PII layers
+# while gitleaks still runs; MSG_POLICY_SKIP=1 skips Layers 3 and 4 only. All
+# three are honoured ONLY with a controlling terminal, tested by a pii-scan
+# --check-terminal subprocess (as commit-msg does). From an agent's tool call
+# the variable is ignored, the layer still runs, and one refusal line names
+# the command to hand the user. A pty around git (`script`, `expect`) would
+# pass the test; for Claude Code, claude/git-bypass-hook denies that shape.
 #
-# Bypass (2026-09-25): `git push --no-verify` (silent, git-level) skips
-# everything and — being git's own — cannot be refused from inside a hook;
-# GIT_SIGN_SKIP=1 (loud) skips the signature layer ONLY; PII_HOOK_BYPASS=1
-# (loud, inside pii-scan) skips the PII layers of the message scan while
-# gitleaks still runs — mirroring pre-commit; MSG_POLICY_SKIP=1 (loud) skips
-# Layers 3 and 4 only. GIT_SIGN_SKIP and MSG_POLICY_SKIP (this hook's own
-# variables) and PII_HOOK_BYPASS (pii-scan's) are honoured ONLY when a real
-# controlling terminal is attached — pii-scan's --check-terminal is the
-# shared implementation of that test, called here as a subprocess for the
-# same reason commit-msg calls it. From an agent's tool call each variable
-# is ignored, the layer it would have skipped still runs, and the hook
-# prints one loud refusal line naming the exact command to hand the user.
-# A pty allocated around git (`script`, `expect`) would satisfy the test;
-# for Claude Code, claude/git-bypass-hook denies that shape at the tool call.
-#
-# Layers 3 and 4 (added 2026-09-22) apply to PUBLIC repositories only, as
-# decided by the sibling `repo-visibility` script (explicit
-# `hooks.repoVisibility`, else a gh lookup of the github.com origin; unknown
-# counts as public, because a gate that opens on a lookup failure is not a
-# gate). Layer 3 is the message POLICY: no `Ledger-Event:` or
-# `Claude-Session:` trailer, no empty commit (a single parent with the same
-# tree), no body over `hooks.maxBodyWords` words (default 120). Layer 4
-# materialises the tracked tree of every pushed tip and runs pii-scan over
-# it, so a value that entered a file before its denylist pattern existed is
-# caught at the boundary and not only by ./test pii-tree.
-#
-# The outgoing walk now runs in every repo (it used to be skipped when
-# signing was off), so a diverged remote whose tip is not held locally
-# fail-closes every push, not just signing ones — `git fetch` first.
+# Layers 3 and 4 (added 2026-09-22) apply to PUBLIC repos only, per the
+# sibling `repo-visibility` (`hooks.repoVisibility`, else a gh lookup of the
+# github.com origin; unknown counts as public: a gate must not open on a
+# lookup failure). Layer 3, message POLICY: no `Ledger-Event:` or
+# `Claude-Session:` trailer, no empty commit (one parent, same tree), no body
+# over `hooks.maxBodyWords` words (default 120). Layer 4: pii-scan over the
+# tracked tree of every pushed tip, catching a value that predates its
+# denylist pattern (./test pii-tree covers the same at test time).
 #
 # ShellCheck: lint with `shellcheck --shell=bash .config/git/hooks/pre-push`.
 
@@ -77,15 +50,10 @@ set -euo pipefail
 IFS=$'\n\t'
 
 # Sentinel scoped to hook name AND repo (see hook-forward): a hook in repo A
-# running git operations in repo B must not skip B's hooks.
-#
-# On re-entry the sentinel suppresses the CHAINING ONLY — never the scan
-# (Codex finding, 2026-08-08). It used to `exit 0` here, which meant a repo
-# pre-push hook that itself pushed the same repo inherited the exported
-# sentinel and published unsigned commits unexamined; reproduced by invoking
-# the hook with the sentinel pre-set (exit 0 against an unsigned tip that
-# otherwise exits 1). The scan is read-only and runs no hooks, so repeating it
-# cannot recurse.
+# running git in repo B must not skip B's hooks. Re-entry suppresses the
+# CHAINING ONLY, never the scan (2026-08-08): an `exit 0` here let a repo hook
+# that pushed the same repo publish unsigned commits unexamined. The scan is
+# read-only and runs no hooks, so repeating it cannot recurse.
 sentinel="pre-push@$(git rev-parse --absolute-git-dir)"
 sentinel="${sentinel// /_}"
 typeset -i reentered=0
@@ -94,7 +62,6 @@ case " ${GIT_GLOBAL_HOOKS_SEEN:-} " in
 esac
 export GIT_GLOBAL_HOOKS_SEEN="${GIT_GLOBAL_HOOKS_SEEN:-} ${sentinel}"
 
-# stdin is a stream, and both the chained hook and the scan below need it.
 UPDATES="$(cat)"
 
 # --- Layer 0: chain to the repo's own default-location hook -----------------
@@ -103,20 +70,15 @@ repo_hook="$(git rev-parse --git-common-dir)/hooks/pre-push"
 if (( ! reentered )) && [[ -x "${repo_hook}" && "${repo_hook:A}" != "${0:A}" ]]; then
   # Here-string, never a pipeline: under `pipefail` a chained hook that exits
   # without draining a large ref stream SIGPIPEs the producer, the pipeline
-  # reports 141, and a push the repo hook ALLOWED is blocked. Reproduced
-  # 2026-08-08 with 4000 refs (462 KB) and a repo hook of `exit 0` — global
-  # hook 141 with it enabled, 0 with it disabled. A here-string is a file, so
-  # an unread stream is free. `$?` is then the hook's own status, no `||`
-  # needed to unwrap it.
+  # reports 141, and a push the hook ALLOWED is blocked (reproduced 2026-08-08,
+  # 4000 refs, 462 KB). A here-string is a file; `$?` is the hook's own status.
   "${repo_hook}" "$@" <<< "${UPDATES}" || exit $?
 fi
 
 # --- Layer 1: signature gate ------------------------------------------------
 
-# Only signature-gate repos that sign. `--bool` normalises yes/on/1/true; a
-# literal string compare read `yes` as "not signing" and let the push through
-# (Codex finding, 2026-08-08). The message gate below runs regardless — no
-# early exit for non-signing repos any more.
+# Only signature-gate repos that sign. `--bool` normalises yes/on/1/true (a
+# string compare read `yes` as not signing). The message gate runs regardless.
 typeset -i sign_commits=0 sign_tags=0
 [[ "$(git config --bool --get commit.gpgsign 2>/dev/null || true)" == "true" ]] && sign_commits=1
 [[ "$(git config --bool --get tag.gpgsign 2>/dev/null || true)" == "true" ]] && sign_tags=1
@@ -131,15 +93,13 @@ if [[ -n "${GIT_SIGN_SKIP:-}" ]]; then
   fi
 fi
 
-# Commit signature presence is checked by the shared commit-signatures helper
-# after collecting every range, so overlapping refs read each object once.
-# It preserves the header-only check and fail-closed object parsing.
+# Commit signatures are checked by the commit-signatures helper after every
+# range is collected (each object read once; header-only, fail-closed parsing).
 
-# Annotated tags carry their signature in the tag OBJECT, appended after the
-# message rather than as a header, so the commit walk below can never see it:
-# an unsigned tag over a signed commit passed the gate while `git tag -v` said
-# "error: no signature found" (verified 2026-08-08). Exit 0 signed, 1 unsigned,
-# 2 unreadable.
+# An annotated tag's signature sits in the tag OBJECT after the message, not in
+# a header, so the commit walk never sees it: an unsigned tag over a signed
+# commit passed while `git tag -v` said "error: no signature found" (verified
+# 2026-08-08). Exit 0 signed, 1 unsigned, 2 unreadable.
 function _tag_is_signed {
   local out
   out="$(git cat-file tag "$1" 2>/dev/null)" || return 2
@@ -150,9 +110,8 @@ typeset -a unsigned=() unsigned_tags=()
 typeset -Ua outgoing=() tag_objs=() tips=()
 typeset -i unreadable=0
 
-# Gate the tag OBJECT when the ref being pushed is an annotated tag. Peeling to
-# commits (below) cannot see a tag's own signature — nor its own MESSAGE, so
-# annotated tags are collected for the message scan here too.
+# Peeling to commits cannot see a tag's signature or MESSAGE, so annotated tags
+# are gated here and collected for the message scan.
 function _check_tag {
   local ref="$1" obj="$2" objtype rc=0
   objtype="$(git cat-file -t "${obj}" 2>/dev/null || true)"
@@ -170,11 +129,9 @@ function _check_tag {
   return 0
 }
 
-# Annotated-tag message: `git cat-file tag` prints headers, a blank line,
-# then the message with any signature block appended after it. Drop the
-# header block and the signature (base64 armour would only feed the token
-# detector noise); a malformed object falls through unmodified, which errs
-# toward scanning MORE, not less.
+# Drop the tag's header block and signature (base64 armour is token-detector
+# noise); a malformed object falls through unmodified, erring toward scanning
+# MORE.
 function _tag_message {
   local out
   out="$(git cat-file tag "$1" 2>/dev/null)" || return 0
@@ -183,16 +140,11 @@ function _tag_message {
   print -r -- "${out}"
 }
 
-# Walk each range fail-closed; signature and message scans consume the
-# deduplicated outgoing list after all refs have been collected.
-#
-# The walk's exit status is captured, NOT discarded. `for sha in $(git rev-list
-# …)` swallowed it: an empty expansion ran the loop zero times and the hook
-# exited 0, so any failed walk was a silent PASS in the one hook documented as
-# fail-closed. git computes remote_sha from the remote's LIVE advertised refs,
-# not the remote-tracking cache, so a push whose remote tip is not held locally
-# yields `fatal: bad object` — reproduced 2026-08-08: exit 0 for an unsigned
-# tip that exits 1 in both controls (force-push over a diverged remote is the
+# The walk's exit status is captured, NOT discarded: `for sha in $(git rev-list
+# …)` swallows it, an empty expansion runs zero times, and a failed walk
+# becomes a silent PASS. git takes remote_sha from the remote's LIVE advertised
+# refs, not the tracking cache, so a remote tip not held locally yields `fatal:
+# bad object` (reproduced 2026-08-08; force-push over a diverged remote is the
 # live case; --force-with-lease is safe because the lease requires the object).
 function _scan_range {
   local revs sha rl_rc=0
@@ -211,15 +163,12 @@ function _scan_range {
 # shellcheck disable=SC2034  # remote_ref is a positional placeholder in git's quad
 while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
   [[ -n "${local_sha:-}" ]] || continue
-  # All-zero local sha = branch deletion; nothing is being published.
+  # All-zero local sha = branch deletion; nothing is published.
   [[ "${local_sha}" == *[^0]* ]] || continue
 
-  # Scoped to refs/tags/*: the object-type probe is a fork per ref, and git
-  # only ever puts a tag object under refs/tags. Measured 2026-08-08 at ~55 ms
-  # per ref end to end, so an unconditional probe doubled the cost of a
-  # many-ref push (`--mirror`, `--all`) for refs that can never be tags.
-  # No longer gated on sign_tags: the message scan needs annotated tags in
-  # every repo.
+  # Scoped to refs/tags/*: the type probe forks per ref (~55 ms measured
+  # 2026-08-08, doubling a `--mirror`/`--all` push) and tag objects live only
+  # there. Not gated on sign_tags: the message scan needs tags in every repo.
   if [[ "${local_ref}" == refs/tags/* ]]; then
     _check_tag "${local_ref}" "${local_sha}"
   fi
@@ -228,8 +177,8 @@ while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
   if [[ "${remote_sha}" == *[^0]* ]]; then
     range=("${remote_sha}..${local_sha}")
   else
-    # New ref on the remote: exclude everything already known on any remote,
-    # so a fresh branch off pushed history does not rescan all of it.
+    # New ref: exclude everything any remote already has, so a fresh branch
+    # off pushed history does not rescan it.
     range=("${local_sha}" --not --remotes)
   fi
 
@@ -283,9 +232,8 @@ if (( ${#outgoing} || ${#tag_objs} )); then
   msgs="$(mktemp "${TMPDIR:-/tmp}/pii-push-msgs.XXXXXX")"
   trap '/bin/rm -f "${msgs}"' EXIT
 
-  # Stored messages, batched: one `git log --stdin` call however many commits
-  # are outgoing (a 1000-commit first push must not fork per sha), fed by
-  # here-string — a file, so an unread stream cannot SIGPIPE (see Layer 0).
+  # One `git log --stdin` however many commits are outgoing (a 1000-commit
+  # first push must not fork per sha), fed by here-string (see Layer 0).
   # `commit <sha>` marker lines attribute hits; their hex cannot match either
   # token shape or a hostname pattern.
   {
@@ -301,11 +249,10 @@ if (( ${#outgoing} || ${#tag_objs} )); then
     done
   } > "${msgs}"
 
-  # gitleaks over the messages — the pattern blessed in gitleaks issue #800
-  # (`git log --format=%B | gitleaks stdin`); gitleaks itself never scans
-  # message text in any git mode. Output captured, shown only on failure.
-  # Any nonzero rc blocks: 1 = leak found, >=2 = broken config — this gate
-  # fails closed either way.
+  # gitleaks over the messages, the pattern from gitleaks issue #800
+  # (`git log --format=%B | gitleaks stdin`); it never scans message text in
+  # any git mode. Output shown only on failure. Any nonzero rc blocks: 1 = leak,
+  # >=2 = broken config.
   if ! command -v gitleaks &>/dev/null; then
     print -u2 "[❌] pre-push: gitleaks not found (brew install gitleaks); refusing to push unscanned messages."
     exit 1
@@ -319,8 +266,7 @@ if (( ${#outgoing} || ${#tag_objs} )); then
   fi
 
   # PII layers (denylist + MAC/UUID tokens), shared with pre-commit and
-  # commit-msg. Failure means rewriting the unpushed range — that is the
-  # point: nothing here has been published yet.
+  # commit-msg. Failure means rewriting the unpushed range.
   if ! "${0:A:h}/pii-scan" "${msgs}" "Outgoing commit/tag messages"; then
     print -u2 "     Rewrite the unpushed message(s) (git commit --amend / rebase -i reword),"
     print -u2 "     re-sign if needed, then push again. Nothing has been published."
@@ -382,9 +328,8 @@ fi
 
 # --- Layer 4: public-repository tracked-tree scan ---------------------------
 
-# Per-repo deferral for a public repo whose tracked files predate the
-# denylist and have not been cleaned yet: `git config hooks.treeScan false`.
-# Loud, so a deferred repo is never mistaken for a clean one.
+# Per-repo deferral for a public repo whose tracked files predate the denylist:
+# `git config hooks.treeScan false`. Loud, so it is never mistaken for clean.
 typeset -i tree_scan_on=1
 if [[ "$(git config --bool --get hooks.treeScan 2>/dev/null || true)" == "false" ]]; then
   print -u2 "[⚠️ ] hooks.treeScan=false — public-repo tracked-tree scan deferred for this repository"
@@ -399,7 +344,7 @@ if (( public_repo && tree_scan_on && ${#tips} )); then
   for tip in "${tips[@]}"; do
     /usr/bin/find "${tree_tmp:?}" -mindepth 1 -delete
     tar_file="${tree_tmp}/tree.tar"
-    # Two steps, never a pipeline (hook rule: a SIGPIPE'd producer fails open).
+    # Two steps, never a pipeline (a SIGPIPE'd producer fails open).
     if ! git archive --format=tar -o "${tar_file}" "${tip}" 2>/dev/null; then
       print -u2 "[❌] pre-push: could not materialise the tree of ${tip} for the PII scan; refusing to push."
       exit 1

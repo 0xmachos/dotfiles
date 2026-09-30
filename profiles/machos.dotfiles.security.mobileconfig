@@ -7,9 +7,9 @@
 
     <!-- Profile Metadata -->
     <!-- https://developer.apple.com/documentation/devicemanagement/toplevel -->
-    <!-- DO NOT TRUST the Configuration Profile Reference PDF, it is wildy out of date!-->
+    <!-- DO NOT TRUST the Configuration Profile Reference PDF, it is wildly out of date! -->
     <key>PayloadUUID</key>
-      <!-- UUID for the Profile. Content unimportant but needs to be globaly uniqiue-->
+      <!-- Content unimportant (here and in every payload) but globally unique -->
       <string>C5C2BC3F-B8BD-49A2-AF7F-FEECBFFC6411</string>
     <key>PayloadType</key>
       <!-- Can only be "Configuration" -->
@@ -44,7 +44,6 @@
       <!-- https://developer.apple.com/documentation/devicemanagement/softwareupdate -->
       <dict>
         <key>PayloadUUID</key>
-          <!-- UUID for the Payload. Content unimportant but needs to be globaly uniqiue-->
           <string>20AC0536-250F-460B-9264-108CDAE2D296</string>
         <key>PayloadType</key>
           <string>com.apple.SoftwareUpdate</string>
@@ -53,7 +52,7 @@
         <key>PayloadIdentifier</key>
           <string>com.machos.dotfiles.SoftwareUpdate</string>
         <key>PayloadDisplayName</key>
-          <!-- This is what actually populates the Description field -->
+          <!-- Populates the Description field (all payloads) -->
           <string>Enable all automatic update options, disable installing pre release macOS versions</string>
         
         <key>PayloadVersion</key>
@@ -90,10 +89,9 @@
 
       <!-- Firewall Configuration -->
       <!-- https://developer.apple.com/documentation/devicemanagement/firewall -->
-      <!-- The "Automatically allow signed downloaded software" and "Automatically allow built-in software" options aren't supported, but both are forced ON when this payload is present. -->
+      <!-- "Automatically allow signed downloaded software" and "Automatically allow built-in software" are unsupported but forced ON by this payload. -->
       <dict>
         <key>PayloadUUID</key>
-          <!-- UUID for the Payload. Content unimportant but needs to be globaly uniqiue-->
           <string>A5A7D166-FBD4-4D6F-88A9-6538F9BE79E3</string>
         <key>PayloadType</key>
           <string>com.apple.security.firewall</string>
@@ -102,7 +100,6 @@
         <key>PayloadIdentifier</key>
           <string>com.machos.dotfiles.security.firewall</string>
         <key>PayloadDisplayName</key>
-          <!-- This is what actually populates the Description field -->
           <string>Enable Application Firewall</string>
         
         <key>PayloadVersion</key>
@@ -127,7 +124,6 @@
       <!-- https://developer.apple.com/documentation/devicemanagement/screensaver -->
       <dict>
         <key>PayloadUUID</key>
-          <!-- UUID for the Payload. Content unimportant but needs to be globaly uniqiue-->
           <string>00DC23C4-27C1-47B2-A334-6BCD6C5E3748</string>
         <key>PayloadType</key>
           <string>com.apple.screensaver</string>
@@ -136,7 +132,6 @@
         <key>PayloadIdentifier</key>
           <string>com.machos.dotfiles.screensaver</string>
         <key>PayloadDisplayName</key>
-          <!-- This is what actually populates the Description field -->
           <string>Enable ask for password after 5 seconds</string>
         
         <key>PayloadVersion</key>
@@ -159,7 +154,6 @@
     <!-- https://developer.apple.com/documentation/devicemanagement/systempolicycontrol -->
       <dict>
         <key>PayloadUUID</key>
-          <!-- UUID for the Payload. Content unimportant but needs to be globaly uniqiue-->
           <string>6F9FB9DA-E671-450F-957B-C84F94958377</string>
         <key>PayloadType</key>
           <string>com.apple.systempolicy.control</string>
@@ -168,7 +162,6 @@
         <key>PayloadIdentifier</key>
           <string>com.machos.dotfiles.systempolicy.control</string>
         <key>PayloadDisplayName</key>
-          <!-- This is what actually populates the Description field -->
           <string>Enable Gatekeeper and allow apps from identified developers</string>
         
         <key>PayloadVersion</key>
@@ -191,7 +184,6 @@
       <dict>
         <key>PayloadUUID</key>
           <string>6B4D24E0-6446-47B4-A4CC-C682DCAB6735</string>
-          <!-- UUID for the Payload. Content unimportant but needs to be globaly uniqiue-->
         <key>PayloadType</key>
           <string>com.apple.terminal</string>        
         <key>PayloadOrganization</key>
@@ -199,7 +191,6 @@
         <key>PayloadIdentifier</key>
           <string>com.machos.dotfiles.terminal</string>
         <key>PayloadDisplayName</key>
-          <!-- This is what actually populates the Description field -->
           <string>Enable Terminal Secure Keyboard Entry</string>
         <key>PayloadVersion</key>
           <integer>1</integer>
@@ -212,7 +203,6 @@
       <!-- Safari -->
       <dict>
         <key>PayloadUUID</key>
-          <!-- UUID for the Payload. Content unimportant but needs to be globaly uniqiue-->
           <string>AB2760F1-7B50-4AF4-A8F3-D0F943488D8E</string>
         <key>PayloadType</key>
           <string>com.apple.Safari</string>
@@ -221,7 +211,6 @@
         <key>PayloadIdentifier</key>
           <string>com.machos.dotfiles.Safari</string>
         <key>PayloadDisplayName</key>
-          <!-- This is what actually populates the Description field -->
           <string>Disable Safari Auto Open "Safe" Downloads</string>
         
         <key>PayloadVersion</key>

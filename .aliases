@@ -6,56 +6,40 @@
 #   1. REMAP DEFAULT COMMANDS
 #   -----------------------------
 
-# Go up 1-4 directory levels
 alias ..='cd ..' 
 alias ...='cd ../..' 
 alias ....='cd ../../..'
 alias .....='cd ../../../..'
 
-# Clear terminal window
 alias c='clear'
 
-# Preferred ls behaviour — the `ll` command itself is a function in
-# .functions/ll, not an alias here, so it can pipe long output to a pager.
-# -a show files and dirs starting with .
-# -F write `/' after directories, '*' after executables and '@' after symlinks
-# -G enable colorised output
-# -h show sizes in human readable form
-# -l display in long format
-# -t sort by descending time modified
-
-# Better ls, don't always want long format
+# `ll` is a function (.functions/ll), not an alias, so it can pipe to a pager.
 alias ls='ls -FG'
-# -F write `/' after directories, '*' after executables and '@' after symlinks
-# -G enable colorised output
 
-# Preferred grep behaviour
 alias grep='grep --color=auto '
-# Highlight match with colour
 
-# ripgrep: search everything (hidden files + VCS-ignored files), skip .git/
+# ripgrep: everything (hidden + VCS-ignored files), skip .git/
 alias rga='rg --hidden --no-ignore --glob "!.git/"'
 
-# fd: search everything (hidden files + VCS-ignored files), skip .git/
+# fd: everything (hidden + VCS-ignored files), skip .git/
 alias fda='fd --hidden --no-ignore --exclude .git'
 
 # Enable all clang warnings
 alias cc='cc -Wall'
 
-# Use macos-trash instead of rm (moves to Finder Bin, strips rm flags)
+# macos-trash instead of rm (moves to Finder Bin, strips rm flags)
 alias rm='/opt/homebrew/opt/macos-trash/bin/trash'
 
-# unlink(1) removes a single file — same effect as rm, bypasses the rm alias
+# unlink(1) bypasses the rm alias, so it gets its own
 alias unlink='/opt/homebrew/opt/macos-trash/bin/trash'
 
 # shred/gshred: multi-pass overwrite is meaningless on APFS (CoW) + SSD (TRIM)
 alias shred='/opt/homebrew/opt/macos-trash/bin/trash'
 alias gshred='/opt/homebrew/opt/macos-trash/bin/trash'
 
-# brew: resolve real gh ahead of the Claude Code gh-cli plugin shim.
-# HOMEBREW_VERIFY_ATTESTATIONS spawns `gh attestation verify`; brew resolves
-# gh from the launch PATH (shim first in Claude sessions) but execs it under
-# superenv's stripped PATH, so the shim's fallback walk fails with exit 127.
+# brew: real gh ahead of the Claude Code gh-cli plugin shim. Brew runs
+# `gh attestation verify` (HOMEBREW_VERIFY_ATTESTATIONS) under superenv's
+# stripped PATH, where the shim's fallback walk fails with exit 127.
 # Remove once trailofbits/skills#145 lands a shim fallback.
 alias brew='PATH="/opt/homebrew/bin:${PATH}" brew'
 
@@ -65,17 +49,11 @@ alias brew='PATH="/opt/homebrew/bin:${PATH}" brew'
 #   -----------------------------
 
 ## Navigation
-# cd into HOME/Downloads directory
 alias dl='cd ~/Downloads'
-# cd into HOME/Desktop directory
 alias dk='cd ~/Desktop'
-# cd into HOME/Documents/Projects directory
 alias pj='cd ~/Documents/Projects'
-# cd into HOME/Documents/Projects/dotfiles directory
 alias dot='cd ~/Documents/Projects/dotfiles'
-# cd in /Applications
 alias ap='cd /Applications/'
-# cd into HOME/Documents/Projects directory
 alias xdd='cd ~/Library/Developer/Xcode/DerivedData'
 # EndpointSecurity SDK headers path (AUTO_CD will cd into it)
 alias esh='"$(sdkpath)/usr/include/EndpointSecurity"'
@@ -86,7 +64,7 @@ alias restart='sudo launchctl reboot userspace'
 # https://applehelpwriter.com/2018/05/25/fastest-way-to-reboot-your-mac/
 # TODO: Investigate "reboot apps"
 
-# Kill the Dock, launchd will restart it automatically
+# Kill the Dock; launchd restarts it
 alias killdock='killall Dock'
 
 ## Code Signing
@@ -94,26 +72,21 @@ alias killdock='killall Dock'
 alias cs='codesign --verify --deep --strict --verbose=4 '
 # Check notarisation status of a file
 alias gkchk='spctl --assess --type execute'
-# Check code signature of a packged
+# Check code signature of a package
 alias pcs='pkgutil --check-signature '
 
 ## Python
-# Activate python virtual environment
 alias v!='. venv/bin/activate'
-# Install Python packages from requirements.txt
 alias r!='pip install -r requirements.txt'
 
 ## Plist
-# Print bianry plist via PlistBuddy
-# See also /usr/bin/plutil -p
+# Print binary plist via PlistBuddy; see also /usr/bin/plutil -p
 alias ppl='/usr/libexec/PlistBuddy -c print '
-# Lint given plst file for syntax errors
 alias plint='plutil -lint '
 
 ## Private aliases
-# Host-specific aliases that name private machines live in ~/.extra_aliases,
-# which is never tracked (the .extra* pattern is gitignored and this repo is
-# public). Absent file: nothing to load.
+# Host-specific aliases live in ~/.extra_aliases, untracked (.extra* is
+# gitignored; this repo is public). Absent file: nothing to load.
 if [[ -r "${HOME}/.extra_aliases" ]]; then
   # shellcheck source=/dev/null
   source "${HOME}/.extra_aliases"
@@ -121,11 +94,10 @@ fi
 
 ## Miscellaneous
 
-# Create new local TM snapshots of all APFS volumes included in the TM backup
+# New local TM snapshots of all APFS volumes in the TM backup
 alias snap='tmutil localsnapshot'
 
-# Completely unarchive a package
-# Undocumented command
+# Completely unarchive a package (undocumented command)
 alias unpack='pkgutil --expand-full'
 
 # Required to use the CLI since Tailscale is installed via App Store

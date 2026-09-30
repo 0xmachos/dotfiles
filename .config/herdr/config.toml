@@ -2,17 +2,16 @@ onboarding = false
 # herdr config — symlinked to ~/.config/herdr/config.toml by `bittersweet
 # dotfiles`. Only this file is linked; herdr keeps its socket, session.json,
 # session-backups/, machine.json, push registries and guest audit log beside
-# it, and none of that belongs in the repo.
+# it, none of it for the repo.
 #
 # herdr edits this file itself (onboarding, theme, sound, toast, integrations)
-# with std::fs::write and its integration installer resolves symlinks before
-# replacing, so both paths write through the link (read from source 2026-09-29,
-# fork commit 4e6bacf). Expect a tracked-file diff after the first run.
+# with std::fs::write, and its integration installer resolves symlinks before
+# replacing, so both write through the link (source read 2026-09-29, fork
+# commit 4e6bacf). Expect a tracked-file diff after the first run.
 
-# Remote push goes through a third-party relay by default ("auto" falls back to
-# the relay whenever no APNs key is configured, and there is no key here). The
-# relay sees notification text in transit. Off until that is an explicit
-# decision (2026-09-29); set to "relay" to opt in.
+# Remote push defaults to a third-party relay ("auto" falls back to it when no
+# APNs key is configured; none is here) that sees notification text in
+# transit. Off until that is an explicit decision (2026-09-29); "relay" opts in.
 [push]
 mode = "off"
 
@@ -33,9 +32,9 @@ prompt_new_tab_name = false
 # Ghostty's tab bar shows this title; the default leads with the hostname.
 window_title = "{workspace} › {tab}"
 
-# Right end of the tab bar: zoom marker, branch with a changed-file count of
-# the focused pane's repo (the sidebar's git status only shows ahead/behind),
-# and the time. The command runs on the herdr server every few seconds.
+# Right end of the tab bar: zoom marker, branch with changed-file count of the
+# focused pane's repo (sidebar git status shows only ahead/behind), the time.
+# The command runs on the herdr server every few seconds.
 tab_bar_right = [
   { type = "zoom" },
   { type = "command", command = 'd="${HERDR_ACTIVE_PANE_CWD:-.}"; b=$(git --no-optional-locks -C "$d" branch --show-current 2>/dev/null); [ -n "$b" ] && echo "$b ~$(git --no-optional-locks -C "$d" status --porcelain 2>/dev/null | wc -l | tr -d " ")"', interval_seconds = 5, timeout_seconds = 2 },
@@ -44,14 +43,12 @@ tab_bar_right = [
 tab_bar_right_separator = " · "
 
 # Ask Ghostty (OSC 9/777) for a macOS notification when a background agent
-# needs attention or finishes; in-app toasts and system delivery are the
-# other two modes.
+# needs attention or finishes; the other modes are in-app toasts and system.
 [ui.toast]
 delivery = "terminal"
 
-# Agent rows follow each session's own terminal title, which Claude Code keeps
-# updated, instead of a fixed directory name. The spaces panel already names the
-# workspace, so it is not repeated here.
+# Agent rows follow each session's terminal title (Claude Code keeps it
+# updated), not a fixed directory name; the spaces panel names the workspace.
 [ui.sidebar.agents]
 row_gap = 1
 rows = [

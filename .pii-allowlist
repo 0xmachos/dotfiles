@@ -2,15 +2,15 @@
 #
 # Per-repo exemptions for the global pre-commit PII scanner
 # (.config/git/hooks/pre-commit). One case-insensitive grep -E pattern per
-# line; any denylist hit line or MAC/UUID-shaped token matching a pattern is
-# exempt. This file is TRACKED — only list values that are already public.
-# Name-shaped deanonymisers never belong here (the allowlist would itself
-# be the leak); use a placeholder or PII_HOOK_BYPASS=1 instead.
+# line; a denylist hit line or MAC/UUID-shaped token matching one is exempt.
+# This file is TRACKED — only list values already public. Never a
+# name-shaped deanonymiser (the allowlist would itself be the leak); use a
+# placeholder or PII_HOOK_BYPASS=1.
 #
 # mobileconfig PayloadUUID / profile UUIDs (profiles/*.mobileconfig,
-# profiles/mobileconfig-UUIDs.txt) — self-generated identifiers, already
-# published in this repo's history. Re-staging a profile edit would
-# otherwise trip the UUID token detector.
+# profiles/mobileconfig-UUIDs.txt) — self-generated, already published in
+# this repo's history; re-staging a profile edit would otherwise trip the
+# UUID token detector.
 00dc23c4-27c1-47b2-a334-6bcd6c5e3748
 20ac0536-250f-460b-9264-108cdae2d296
 441ef30c-e39a-4e4e-9075-7dfd3ad6c78d

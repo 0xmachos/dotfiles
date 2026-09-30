@@ -1,24 +1,20 @@
 [user]
 	name = 0xmachos
-	# Full name recorded in newly created commits
 	email = 0xmachos@gmail.com
-	# Email address recorded in newly created commits
 	signingkey = ~/.ssh/id_ecdsa-sha2-nistp256_quantum.pub
 	# Secure Enclave key via Secretive
-	# TODO: Switch to ssh-mldsa-87 when:
-	#   1. IETF drafts (draft-sfluhrer-ssh-mldsa, draft-rpe-ssh-mldsa) become RFCs
-	#   2. OpenSSH adds ML-DSA signature support (currently only ML-KEM for key exchange)
-	#   3. GitHub accepts ML-DSA SSH keys for commit signature verification
+	# TODO: switch to ssh-mldsa-87 when draft-sfluhrer-ssh-mldsa and
+	# draft-rpe-ssh-mldsa are RFCs, OpenSSH signs with ML-DSA (only ML-KEM for
+	# key exchange today), and GitHub verifies ML-DSA SSH commit signatures.
 
 [core]
 	hooksPath = ~/Documents/Projects/dotfiles/.config/git/hooks
 	# Global hooks for every repo: pre-commit scanner (gitleaks + PII denylist
-	# + MAC/UUID token detector) plus forwarder stubs for the other hook types,
-	# each of which execs the repo's own .git/hooks/<name> — so no repo hook is
-	# shadowed. Deliberately the repo path, not a ~/.config symlink: a sync
-	# delivers hooks and this config together, with no install step or window
-	# where hooksPath points at nothing. A repo-local core.hooksPath (e.g.
-	# dotfiles' .githooks/) still wins over this.
+	# + MAC/UUID token detector) plus forwarder stubs for the other hook types
+	# that exec the repo's own .git/hooks/<name>, so no repo hook is shadowed.
+	# Repo path, not a ~/.config symlink: a sync delivers hooks and config
+	# together, with no window where hooksPath points at nothing.
+	# A repo-local core.hooksPath (e.g. dotfiles' .githooks/) still wins.
 
 [commit]
 	gpgsign = true
@@ -35,12 +31,12 @@
 [credential "https://github.com"]
 	helper =
 	helper = !/opt/homebrew/bin/gh auth git-credential
-	# gh is the only git credential helper for GitHub over HTTPS
-	# (2026-09-21). The blank first line clears the chain, because Xcode's
-	# git ships a system-level credential.helper = osxkeychain. One token
-	# then serves git and gh: `gh auth refresh` narrows both, `gh auth
+	# gh is the only git credential helper for GitHub over HTTPS (2026-09-21);
+	# tests/gh-auth asserts this. The blank first line clears the chain:
+	# Xcode's git ships a system-level credential.helper = osxkeychain.
+	# One token serves git and gh: `gh auth refresh` narrows both, `gh auth
 	# logout` ends both. Absolute path: launchd never sees /opt/homebrew/bin
-	# on PATH, and a wrong path fails loud. tests/gh-auth asserts this.
+	# on PATH, and a wrong path fails loud.
 
 [credential "https://gist.github.com"]
 	helper =

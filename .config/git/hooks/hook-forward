@@ -2,42 +2,36 @@
 # .config/git/hooks/hook-forward
 #
 # Generic forwarder for the global core.hooksPath. A global hooksPath makes
-# git look ONLY in this directory for EVERY hook type, silently shadowing any
-# hook a repo installed into .git/hooks (Git LFS's post-checkout being the
-# classic casualty). Every supported hook name in this directory is a symlink
-# to this script; it forwards to the repo's own default-location hook — args,
-# stdin, and exit status intact — or exits 0 if the repo has none.
+# git look ONLY in this directory for EVERY hook type, shadowing any hook a
+# repo installed into .git/hooks (Git LFS's post-checkout the classic
+# casualty). Every supported hook name here is a symlink to this script; it
+# forwards to the repo's own default-location hook (args, stdin, exit status
+# intact) or exits 0 if the repo has none.
 #
-# Three names are NOT symlinks to here, because they are real global hooks
-# that chain onward themselves: pre-commit (the secret/PII scanner), pre-push
-# (the commit-signature gate + outgoing-message PII gate, 2026-08-08/17), and
-# commit-msg (the message PII gate, 2026-08-17). A fourth, applypatch-msg,
-# symlinks to commit-msg instead of here (`git am` coverage — commit-msg's
-# header has the rationale).
+# Not symlinks to here (real global hooks that chain onward themselves):
+# pre-commit (secret/PII scanner), pre-push (signature gate + outgoing-message
+# PII gate, 2026-08-08/17), commit-msg (message PII gate, 2026-08-17).
+# applypatch-msg symlinks to commit-msg instead (`git am` coverage).
+# Not forwarded (no symlink): reference-transaction and post-index-change;
+# they fire on every ref/index write, and a fork per firing would tax every
+# git command for hook types nothing here uses.
 #
-# ${0:t} is the INVOKED name (the symlink), which is the hook type git ran.
-# Hooks live in the COMMON git dir (linked worktrees share the main repo's
-# .git/hooks), hence --git-common-dir rather than --git-dir. Deliberately not
-# `git rev-parse --git-path hooks` — that resolves core.hooksPath and would
+# ${0:t} is the INVOKED name (the symlink) = the hook type. Common git dir
+# (linked worktrees share .git/hooks), hence --git-common-dir. Not `git
+# rev-parse --git-path hooks`: that resolves core.hooksPath and would
 # re-enter this script forever.
 #
-# Recursion guard: if a forwarded hook dispatches back into the global hooks
-# (e.g. `git hook run <name>`), GIT_GLOBAL_HOOKS_SEEN already carries this
-# hook name and the re-entry exits 0 instead of looping. Trade-off: a
-# forwarded hook that runs the same git operation in ANOTHER repo skips the
-# global layer there for that nested operation.
-#
-# Not forwarded (no symlink installed): reference-transaction and
-# post-index-change — they fire on every ref/index write, and a fork per
-# firing would tax every git command on the machine for hook types nothing
-# here uses.
+# Recursion guard: a forwarded hook that dispatches back into the global
+# hooks (e.g. `git hook run <name>`) finds its name in GIT_GLOBAL_HOOKS_SEEN
+# and exits 0. Trade-off: a forwarded hook that runs the same git operation
+# in ANOTHER repo skips the global layer there for that nested operation.
 
 set -euo pipefail
 
 hook_name="${0:t}"
 
-# Sentinel scoped to hook name AND repo (see the scanner's comment): a hook
-# in repo A running git operations in repo B must not skip B's hooks.
+# Sentinel scoped to hook name AND repo: a hook in repo A running git in
+# repo B must not skip B's hooks.
 sentinel="${hook_name}@$(git rev-parse --absolute-git-dir)"
 sentinel="${sentinel// /_}"
 case " ${GIT_GLOBAL_HOOKS_SEEN:-} " in

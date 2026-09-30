@@ -37,9 +37,9 @@ macos-shortcuts = deny
 # Claude Code
 # Shift+Enter sends ESC+CR — Claude Code's newline binding
 keybind = shift+enter=text:\x1b\r
+# Left Option sends Alt/Meta for Claude Code keybindings (e.g. alt+t); Right
+# Option keeps macOS special characters (default null = system handles Option)
 macos-option-as-alt = left
-# Left Option sends Alt/Meta for Claude Code keybindings (e.g. alt+t)
-# Right Option retains macOS special character input (default null = system handles Option)
 
 # Cmd+K sends Ctrl+L to the pane. The default clear_screen only clears
 # Ghostty's own screen, and herdr redraws its panes over it.

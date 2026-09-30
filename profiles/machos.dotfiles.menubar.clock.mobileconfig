@@ -7,9 +7,9 @@
 
     <!-- Profile Metadata -->
     <!-- https://developer.apple.com/documentation/devicemanagement/toplevel -->
-    <!-- DO NOT TRUST the Configuration Profile Reference PDF, it is wildy out of date!-->
+    <!-- DO NOT TRUST the Configuration Profile Reference PDF, it is wildly out of date!-->
     <key>PayloadUUID</key>
-      <!-- UUID for the Profile. Content unimportant but needs to be globaly uniqiue-->
+      <!-- UUID for the Profile. Content unimportant but needs to be globally unique-->
       <string>F7383ADF-7B34-408F-BB0F-056A64AB7EC1</string>
     <key>PayloadType</key>
       <!-- Can only be "Configuration" -->
