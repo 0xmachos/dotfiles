@@ -32,7 +32,6 @@ _ar_mkfix() {
   echo '{"role":"user"}' > "${fix}/.claude/projects/-fix-proj/session.jsonl"
   echo '# fixture memory' > "${fix}/.claude/projects/-fix-proj/memory/MEMORY.md"
   echo 'blob' > "${fix}/.claude/file-history/blob"
-  echo 'keep me' > "${fix}/.claude/papercuts.md"
   echo 'SECRET=1' > "${fix}/.claude/fake-server.env"
   echo '#!/bin/zsh' > "${fix}/.claude/statusline-command.sh"
   echo '{}' > "${fix}/.claude/history.jsonl"
@@ -347,7 +346,7 @@ run_agent_reset() {
   fi
 
   # keep-list survivors
-  if [[ -f "${fix}/.claude/papercuts.md" && -f "${fix}/.claude/fake-server.env" \
+  if [[ -f "${fix}/.claude/fake-server.env" \
      && -f "${fix}/.claude/statusline-command.sh" ]]; then
     _pass "keep-listed ~/.claude files survive"
   else
@@ -513,7 +512,7 @@ EOF
     _fail "--repos-only scope banner wrong"
   fi
   if [[ "$(cat "${fix}/.claude.json")" == "${claude_json_before}" \
-     && -f "${fix}/.claude/papercuts.md" ]]; then
+     && -f "${fix}/.claude/fake-server.env" ]]; then
     _pass "--repos-only leaves ~/.claude.json and global state alone"
   else
     _fail "--repos-only touched out-of-leg state"

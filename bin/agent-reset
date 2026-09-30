@@ -65,7 +65,7 @@ CLAUDE_WIPE = {
 }
 # *.env are credentials; the rest are the owner's notes or cosmetic files with
 # zero model-context cost.
-CLAUDE_KEEP_PATTERNS = ("*.env", "papercuts.md", "statusline-command*", "ide")
+CLAUDE_KEEP_PATTERNS = ("*.env", "statusline-command*", "ide")
 
 # ~/.codex is a keep-list (the dir grew entries between censuses; fails safe):
 # everything NOT listed is wiped.
@@ -1352,7 +1352,6 @@ def cmd_self_test(_args):
           not is_agent_process("tail", "tail -f /var/log/claude-thing.log"))
 
     check("keep: env files", claude_entry_action("some-server.env") == "keep")
-    check("keep: papercuts", claude_entry_action("papercuts.md") == "keep")
     check("keep: statusline",
           claude_entry_action("statusline-command.sh") == "keep")
     check("wipe: projects", claude_entry_action("projects") == "wipe")
