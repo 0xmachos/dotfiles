@@ -1,34 +1,25 @@
 #!/usr/bin/env python3
 # bin/agent-reset
 #
-# Backup -> verify -> wipe of coding-agent state (Claude Code + Codex), as a
-# repeatable ritual: archive everything with a per-file sha256 manifest,
-# re-read and verify the archives byte-for-byte, and only then allow a gated
-# wipe in which every deleted file must re-hash to a value present in the
-# verified manifest. Design notes and scope rationale live in
-# internals/agent-reset.md.
+# Backup -> verify -> wipe of Claude Code + Codex state: everything archived
+# with a per-file sha256 manifest, archives re-read and verified, and a wipe
+# gated so every deleted file must re-hash to a value in the verified manifest.
+# Python 3 stdlib only (macOS CLT python3, >=3.9), no network outside
+# `offsite`: a wipe ritual must not depend on a toolchain download.
 #
-# Python 3 stdlib only (macOS CLT python3, >=3.9). Deliberately no third-party
-# deps and no network use outside the explicit `offsite` subcommand: a wipe
-# ritual must not depend on a toolchain download to run.
-#
-# Machine-local configuration (never committed; no hostnames in this file):
-#   ~/.config/agent-reset/exclude        one absolute repo path per line —
-#                                        repos whose in-repo artifacts are
+# Subcommands: plan backup verify wipe restore offsite self-test
+# Machine-local config (never committed):
+#   ~/.config/agent-reset/exclude        absolute repo paths, one per line;
 #                                        skipped (already reset by hand)
 #   ~/.config/agent-reset/offsite-remote first line: rsync/ssh destination
 #   $AGENT_RESET_REMOTE                  overrides offsite-remote
 #   $AGENT_RESET_HOME                    overrides $HOME (test seam)
 #
-# Subcommands: plan backup verify wipe restore offsite self-test
-#
-# Wipe exit codes: 0 = every in-scope repo handled; 2 = the wipe itself
-# succeeded but coverage was bounded — one or more repos were SKIPPED and still
-# hold agent artifacts (reconcile with `wipe <backup> --repos-only`), or the
-# artifacts were removed and their reset commit failed (2026-09-06: not
-# reconcilable that way, the artifacts are already gone); 1 = error. The 2026-08-15 run
-# exited 0 having silently skipped 25 of 33 repos — "completed" must never
-# again read as "everything was reset".
+# Wipe exit codes: 0 = every in-scope repo handled; 1 = error; 2 = wipe
+# succeeded but coverage was bounded: repos SKIPPED still hold artifacts
+# (reconcile with `wipe <backup> --repos-only`), or artifacts were removed and
+# their reset commit failed (2026-09-06; not reconcilable, artifacts are gone).
+# "Completed" must never read as "everything was reset".
 
 import argparse
 import fnmatch
@@ -46,7 +37,6 @@ from pathlib import Path
 
 VERSION = "1.1.0"
 
-# Exit code for "wipe ran, but repos were skipped and still hold artifacts".
 EXIT_REPOS_SKIPPED = 2
 
 HOME = Path(os.environ.get("AGENT_RESET_HOME") or Path.home()).resolve()
@@ -62,9 +52,8 @@ VSCODE_DIR = (HOME / "Library" / "Application Support" / "Code" / "User"
 DOWNLOADS_DIR = HOME / "Downloads"
 PROJECTS_DIR = HOME / "Documents" / "Projects"
 
-# ~/.claude entries to wipe. Anything not in WIPE and not matching KEEP is
-# UNKNOWN: protected and reported, never deleted (fail-closed for new state
-# the CLI grows between ritual runs).
+# Not in WIPE and not matching KEEP = UNKNOWN: protected, reported, never
+# deleted (fail-closed for state the CLI grows between runs).
 CLAUDE_WIPE = {
     "projects", "file-history", "plugins", "session-env", "history.jsonl",
     "agent-mining", "usage-data", "backups", "tasks", "cache", "paste-cache",
@@ -74,16 +63,16 @@ CLAUDE_WIPE = {
     "daemon-auth-cooldown", "daemon-auth-status.json", "settings.json",
     ".last-cleanup", ".last-update-result.json", ".DS_Store",
 }
-# Keep patterns: *.env are credentials; the rest are the owner's own notes or
-# cosmetic files with zero model-context cost.
+# *.env are credentials; the rest are the owner's notes or cosmetic files with
+# zero model-context cost.
 CLAUDE_KEEP_PATTERNS = ("*.env", "papercuts.md", "statusline-command*", "ide")
 
-# ~/.codex uses a keep-list (the dir has grown entries between censuses; a
-# keep-list fails safe). Everything NOT listed here is wiped.
+# ~/.codex is a keep-list (the dir grew entries between censuses; fails safe):
+# everything NOT listed is wiped.
 CODEX_KEEP = {"auth.json", "config.toml", "mcp-oauth-locks", "installation_id",
               "version.json"}
 
-# Per-project keys preserved by the ~/.claude.json surgical rewrite.
+# Per-project keys the ~/.claude.json rewrite preserves.
 PROJECT_KEEP_KEYS = ("mcpServers", "enabledMcpjsonServers",
                      "disabledMcpjsonServers", "disabledMcpServers")
 
@@ -94,8 +83,8 @@ REPO_BACKUP_ONLY = (".mcp.json",)
 
 GIT_COMMIT_MESSAGE = "Reset agent instruction state (2026-08 ablation)"
 
-# Census at spec time (2026-08-15). `plan` diffs live discovery against this;
-# differences are findings, not errors — runtime discovery is authoritative.
+# Census at spec time (2026-08-15). `plan` diffs discovery against it;
+# differences are findings, not errors: runtime discovery is authoritative.
 CENSUS = {"memory_dirs": 13, "downloads_zips": 6}
 
 SCOPES = ("global-claude", "claude-json", "codex", "agents-home", "vscode",
@@ -131,15 +120,14 @@ def sha256_bytes(data):
 
 
 def sha256_link(path):
-    # Symlinks are hashed on the readlink target STRING, never the target's
-    # content — several in-scope links dangle or point into live repos.
+    # Hashes the readlink STRING, never the target: in-scope links dangle or
+    # point into live repos.
     return sha256_bytes(os.readlink(str(path)).encode("utf-8", "surrogateescape"))
 
 
 class _HashingReader(object):
-    # Wraps a file object so tarfile's single read of the content also feeds
-    # the hash — "hash of the bytes as archived", one read, no TOCTOU gap
-    # between what was hashed and what was stored.
+    # tarfile's single read also feeds the hash: the hash of the bytes as
+    # archived, no TOCTOU gap.
     def __init__(self, fileobj, hasher):
         self._f = fileobj
         self._h = hasher
@@ -152,9 +140,8 @@ class _HashingReader(object):
 
 
 def is_agent_process(comm, args):
-    # basename(argv[0]) match ONLY — never substring-of-argv. A long-running
-    # local agent legitimately carries ".../claude/..." inside an argument
-    # path; it must neither block the wipe nor ever be killed.
+    # basename(argv[0]) only, never substring-of-argv: a local agent with
+    # ".../claude/..." in an argument path must not block the wipe.
     base = os.path.basename(comm)
     if base in ("claude", "codex"):
         return True
@@ -166,9 +153,8 @@ def is_agent_process(comm, args):
 
 
 def scan_agent_processes():
-    # AGENT_RESET_PS_FILE substitutes a canned ps listing (test seam: lets the
-    # suite exercise the gate even though the suite itself runs under a live
-    # claude process). Real runs never set it.
+    # AGENT_RESET_PS_FILE substitutes a canned ps listing (test seam: the
+    # suite itself runs under a live claude). Real runs never set it.
     override = os.environ.get("AGENT_RESET_PS_FILE")
     if override is not None:
         out = Path(override).read_text() if override else ""
@@ -188,9 +174,8 @@ def scan_agent_processes():
 
 
 def _assert_scope_roots_not_symlinks():
-    # A symlinked scope root would make backup (archives the link string) and
-    # wipe (iterates THROUGH the link) disagree about what is in scope.
-    # Refuse outright — resolve the setup by hand first.
+    # Backup archives the link string, wipe iterates THROUGH it: they would
+    # disagree on scope. Refuse; resolve by hand.
     for root in (CLAUDE_DIR, CODEX_DIR, AGENTS_DIR, VSCODE_DIR):
         if root.is_symlink():
             fail("scope root is a symlink: %s — backup and wipe would "
@@ -198,8 +183,8 @@ def _assert_scope_roots_not_symlinks():
 
 
 def check_config_dir_env():
-    # CLAUDE_CONFIG_DIR relocates ~/.claude wholesale; this ritual's scope
-    # would silently miss the real state. Asserted at backup AND wipe time.
+    # CLAUDE_CONFIG_DIR relocates ~/.claude, so scope would silently miss the
+    # real state. Asserted at backup AND wipe.
     val = os.environ.get("CLAUDE_CONFIG_DIR")
     if val and Path(val).expanduser().resolve() != CLAUDE_DIR.resolve():
         fail("CLAUDE_CONFIG_DIR is set to %s (not %s) — scope would be wrong; "
@@ -247,8 +232,7 @@ def discover_repos():
     proj_root = CLAUDE_DIR / "projects"
     if proj_root.is_dir():
         for slug_dir in proj_root.iterdir():
-            # Slug decode is lossy ("-" is ambiguous); try the naive decode
-            # and keep it only if the directory exists.
+            # Slug decode is lossy ("-" is ambiguous): keep only if it exists.
             decoded = slug_dir.name.replace("-", "/")
             if decoded.startswith("/") and Path(decoded).is_dir():
                 candidates.add(decoded)
@@ -266,19 +250,16 @@ def discover_repos():
                    for p in (HOME, CLAUDE_DIR, CODEX_DIR, AGENTS_DIR,
                              VSCODE_DIR, BACKUP_ROOT)}
     repos, skipped = {}, []
-    # Canonicalize: ~/.claude.json keys may be non-canonical (/var vs
-    # /private/var, symlinked prefixes) — HOME-relative arcnames need real
-    # paths, and dedup must not double-count aliases of one repo.
+    # Canonicalize (/var vs /private/var, symlinked prefixes): HOME-relative
+    # arcnames need real paths and aliases of one repo must dedup.
     for cand in sorted({os.path.realpath(c) for c in candidates}):
         root = Path(cand)
         if not root.is_dir():
             continue
         root_str = str(root).rstrip("/")
-        # HOME itself (or any scope root) must never be treated as a repo:
-        # its "artifacts" would be ~/.claude, ~/.codex, ~/.agents wholesale,
-        # bypassing every keep-list. Running `claude` once from ~ creates
-        # exactly such a projects key. (Adversarial-review finding, verified
-        # live on this machine 2026-08-15.)
+        # HOME or a scope root as a repo would make ~/.claude, ~/.codex,
+        # ~/.agents its "artifacts", bypassing every keep-list; running
+        # `claude` once from ~ creates such a projects key.
         if root_str in scope_roots:
             continue
         artifacts, backup_only = [], []
@@ -295,16 +276,14 @@ def discover_repos():
         if any(root_str == e or root_str.startswith(e + "/")
                for e in excluded):
             continue
-        # Only repos under ~/Documents/Projects are handled; anything else
-        # (a clone in ~/Desktop, an old /opt path in ~/.claude.json) is
-        # skip-and-report — never a mid-ritual abort.
+        # Only repos under ~/Documents/Projects are handled; others (a clone
+        # in ~/Desktop, an old /opt path) are skip-and-report, never an abort.
         if not (root_str == projects_real
                 or root_str.startswith(projects_real + "/")):
             skipped.append((root_str, "outside " + str(PROJECTS_DIR)))
             continue
-        # Monorepo member (a subdir of a git repo with its own artifacts but
-        # no own .git): attach its artifacts to the enclosing repo so the
-        # dirty gate and git handling apply, instead of raw-deleting.
+        # Monorepo member (own artifacts, no own .git): attach to the
+        # enclosing repo so the dirty gate and git handling apply.
         owner = root_str
         if not (root / ".git").exists():
             r = subprocess.run(["git", "-C", root_str, "rev-parse",
@@ -419,17 +398,16 @@ def _add_tree(tar, manifest_entries, top):
             entry["size"] = 0
             tar.addfile(ti)
         elif ti.islnk():
-            # Second occurrence of a hardlinked inode: tar stores it as an
-            # in-archive link with no payload. Hash the on-disk content
-            # (separate read) so gate 4 compares like-for-like.
+            # Later occurrence of a hardlinked inode: tar stores a link with
+            # no payload. Hash the on-disk content so gate 4 compares like
+            # for like.
             entry["type"] = "hardlink"
             entry["size"] = 0
             entry["sha256"] = sha256_file(path)
             tar.addfile(ti)
         elif not ti.isfile():
-            # FIFOs / device nodes: archive the metadata only — opening a
-            # live daemon FIFO for content would block the whole backup.
-            # (Sockets never even reach here: gettarinfo returns None.)
+            # FIFOs/devices: metadata only, since opening a live daemon FIFO
+            # would block the backup. Sockets never reach here (None above).
             entry["type"] = "special"
             entry["size"] = 0
             tar.addfile(ti)
@@ -449,7 +427,7 @@ def _add_tree(tar, manifest_entries, top):
     add_one(top)
     for dirpath, dirnames, filenames in os.walk(str(top), topdown=True,
                                                 followlinks=False):
-        # Symlinked dirs must be archived as links, not descended into.
+        # Symlinked dirs are archived as links, not descended into.
         for d in sorted(dirnames):
             p = Path(dirpath) / d
             if p.is_symlink():
@@ -467,9 +445,9 @@ def cmd_backup(args):
     _assert_scope_roots_not_symlinks()
     stamp = utc_stamp()
     bdir = BACKUP_ROOT / stamp
-    # Tighten modes only on directories this script creates — a pre-existing
-    # ~/Library/Backups may serve other tools with deliberate broader modes.
-    # parents=True covers a test HOME with no Library/ at all.
+    # Tighten modes only on dirs created here: a pre-existing ~/Library/Backups
+    # may serve other tools with broader modes. parents=True covers a test HOME
+    # with no Library/ at all.
     if not BACKUP_ROOT.parent.exists():
         BACKUP_ROOT.parent.mkdir(mode=0o700, parents=True)
     if not BACKUP_ROOT.exists():
@@ -499,8 +477,7 @@ def cmd_backup(args):
         }
         log("archived %-13s %6d entries" % (scope, len(entries)))
 
-    # Manual Downloads artifacts: copy (never move) — they are part of the
-    # record and must sit under the manifest, not outside it.
+    # Downloads artifacts are copied, never moved, and sit under the manifest.
     zips, loose = discover_downloads()
     if zips or loose:
         dl_dir = bdir / "downloads-manual"
@@ -549,8 +526,8 @@ def _write_json_atomic(path, obj):
             os.fsync(f.fileno())
         os.chmod(tmp, 0o600)
         os.replace(tmp, str(path))
-        # Durability matters most for the topup-updated manifest written
-        # moments before deletion — fsync the directory entry too.
+        # fsync the directory entry too: the topup-updated manifest is
+        # written moments before deletion.
         dfd = os.open(str(path.parent), os.O_RDONLY)
         try:
             os.fsync(dfd)
@@ -708,9 +685,7 @@ def cmd_plan(_args):
             print("      wipe: %s" % arts)
         if keep:
             print("      backup-only: %s" % keep)
-        # Dry-run the wipe-time repo decision. `plan` used to report only what
-        # WOULD be wiped, never what would be refused — so the 2026-08-15 plan
-        # read clean while the wipe went on to skip 25 of 33 repos.
+        # Dry-run of the wipe-time repo decision: reports refusals too.
         if info["git"] and info["artifacts"]:
             action = _repo_plan_action(repo, info)
             print("      action: %s" % action)
@@ -752,12 +727,10 @@ def cmd_plan(_args):
 def _under_allowed_roots(path):
     roots = [CLAUDE_DIR, CODEX_DIR, AGENTS_DIR, VSCODE_DIR, PROJECTS_DIR]
     p = Path(path)
-    # Lexical containment of the unresolved path (we never follow the final
-    # symlink), plus the resolved PARENT must stay under HOME so a symlinked
-    # ancestor cannot teleport a delete outside the allowlist. A path that IS
-    # a root is rejected: whole scope roots are never deletion targets
-    # (AGENTS_DIR, wiped in full, is passed as its children's parent case
-    # below and carved out explicitly here).
+    # Lexical containment of the unresolved path (the final symlink is never
+    # followed), plus the resolved PARENT must stay under HOME so a symlinked
+    # ancestor cannot teleport a delete. A path that IS a root is rejected,
+    # except AGENTS_DIR, which is wiped whole.
     for root in roots:
         try:
             rel = p.relative_to(root)
@@ -859,8 +832,7 @@ def _rewrite_claude_json():
     new_projects = {}
     for path, entry in data.get("projects", {}).items():
         if not isinstance(entry, dict):
-            # Unknown shape: preserve verbatim (fail-closed for state this
-            # script does not understand) rather than crash or drop.
+            # Unknown shape: preserve verbatim (fail-closed).
             new_projects[path] = entry
             continue
         kept = {k: entry[k] for k in PROJECT_KEEP_KEYS
@@ -962,8 +934,7 @@ def _repo_git_wipe(repo, artifacts, report):
     untracked = [p for p in artifacts if p not in tracked]
     if tracked:
         # Only the commit path can touch work the ritual does not own, and
-        # only TRACKED artifacts reach it: with none, a repo full of unrelated
-        # dirt is still perfectly safe to reset (no commit is ever made).
+        # only TRACKED artifacts reach it: with none, unrelated dirt is safe.
         r = subprocess.run(["git", "-C", repo, "status", "--porcelain"],
                            capture_output=True, text=True)
         blockers = _repo_commit_blockers(repo, art_rel, r.stdout.splitlines())
@@ -974,8 +945,8 @@ def _repo_git_wipe(repo, artifacts, report):
             return
         try:
             for p in tracked:
-                # -f: an artifact's own uncommitted edits must not block its
-                # deletion — gate 4 already archived the current bytes.
+                # -f: uncommitted edits must not block deletion (gate 4
+                # already archived the current bytes).
                 subprocess.run(["git", "-C", repo, "rm", "-r", "-f", "-q",
                                 "--", str(p)], check=True,
                                capture_output=True, text=True)
@@ -984,11 +955,9 @@ def _repo_git_wipe(repo, artifacts, report):
                                              % (exc.stderr or "").strip()[:200])
             log("SKIP %s: git rm failed — resolve manually" % repo)
             return
-        # Pathspec-limited: `git commit -- <artifacts>` records ONLY those
-        # paths and leaves the rest of the index staged and uncommitted, so a
-        # neutral reset commit can never absorb someone's in-flight work.
-        # A bare `git commit` here would commit the whole index — that hazard
-        # is what the old repo-wide dirty gate was compensating for.
+        # Pathspec-limited: records ONLY the artifacts and leaves the rest of
+        # the index staged, so the commit never absorbs in-flight work. A
+        # bare `git commit` would commit the whole index.
         r = subprocess.run(["git", "-C", repo, "commit", "-q", "-m",
                             GIT_COMMIT_MESSAGE, "--"]
                            + [str(p) for p in tracked],
@@ -999,9 +968,8 @@ def _repo_git_wipe(repo, artifacts, report):
                 "commit manually" % (repo, r.stderr.strip()[:120]))
         else:
             report["committed_repos"].append(repo)
-        # git rm removes tracked members only: gitignored/untracked files
-        # inside a tracked artifact DIR (settings.local.json is the canonical
-        # case) survive on disk — sweep the remainder; gate 4 archived it.
+        # git rm removes tracked members only: untracked files inside a
+        # tracked artifact DIR (settings.local.json) survive; sweep them.
         for p in tracked:
             if p.exists() or p.is_symlink():
                 _delete_path(p)
@@ -1055,7 +1023,6 @@ def _write_topup(bdir, manifest, changed):
     with tarfile.open(str(topup), "w:gz") as tar:
         for f in changed:
             _add_tree(tar, entries, f)
-    # verify the topup immediately, then fold into the manifest
     with tarfile.open(str(topup), "r:gz") as tar:
         for member in tar:
             if member.isfile():
@@ -1089,8 +1056,8 @@ def cmd_wipe(args):
     stamp = json.loads(stamp_path.read_text())
     if not stamp.get("ok") or stamp.get("stamp") != manifest["stamp"]:
         fail("verify-stamp.json does not attest this manifest")
-    # Archives can rot between verify and wipe (a gap of days): re-hash them
-    # now, before deleting the only other copy of the data.
+    # Archives can rot between verify and wipe (days): re-hash before
+    # deleting the only other copy.
     for scope, sinfo in manifest["scopes"].items():
         archive = bdir / sinfo["archive"]
         if not archive.is_file() \
@@ -1122,9 +1089,8 @@ def cmd_wipe(args):
         if resp.strip() != "WIPE":
             fail("aborted")
 
-    # The prompt above can sit for an unbounded time — everything time-
-    # sensitive (process gate, gate-4 hashing, topup) runs AFTER the last
-    # human pause so the check-to-delete window is as small as possible.
+    # The prompt can sit unbounded: everything time-sensitive (process gate,
+    # gate-4 hashing, topup) runs AFTER it, shrinking the check-to-delete gap.
     _process_gate(args)
     changed = _changed_since_backup(manifest, targets)       # gate 4
     if changed:
@@ -1138,9 +1104,8 @@ def cmd_wipe(args):
             fail("files changed again DURING the topup — the system is not "
                  "quiescent; close whatever is writing and re-run")
 
-    # Not under --repos-only: ~/.claude.json is neither read nor rewritten
-    # there, and re-copying would clobber the ORIGINAL pre-wipe snapshot that
-    # the first run left in this backup dir.
+    # Not under --repos-only: re-copying would clobber the ORIGINAL pre-wipe
+    # snapshot the first run left (~/.claude.json is untouched there).
     if CLAUDE_JSON.is_file() and not args.repos_only:
         shutil.copy2(str(CLAUDE_JSON), str(bdir / "claude.json.pre-wipe"))
 
@@ -1176,9 +1141,8 @@ def cmd_wipe(args):
         report["repos_only"] = bool(args.repos_only)
         report["completed"] = not report["errors"]
     finally:
-        # Never clobber an earlier run's report: it is the only record of what
-        # that run wiped and skipped (the 2026-08-15 skip list is how the
-        # 25-repo gap was found at all).
+        # Never clobber an earlier run's report: the only record of what it
+        # wiped and skipped.
         report_path = bdir / "wipe-report.json"
         if report_path.exists():
             report_path = bdir / ("wipe-report-%s.json" % utc_stamp())
@@ -1192,12 +1156,10 @@ def cmd_wipe(args):
              % (len(report["errors"]), report_path))
     log("wipe complete — report: %s" % report_path)
 
-    # A skipped repo STILL HOLDS agent artifacts — the ritual is not done.
-    # This block and the non-zero exit exist because the 2026-08-15 run
-    # printed the checklist below and exited 0 with 25 repos left unreset.
-    # In-scope repos only. skipped_outside is out of scope BY DESIGN (a clone
-    # in ~/Desktop, a stale ~/.claude.json key): --repos-only can never
-    # reconcile it, so it stays report-only and must not raise the exit code.
+    # A skipped repo STILL HOLDS agent artifacts: the ritual is not done.
+    # skipped_outside is out of scope BY DESIGN (a clone in ~/Desktop, a stale
+    # key): --repos-only can never reconcile it, so it must not raise the
+    # exit code.
     unresolved = dict(report["skipped_repos"])
     if unresolved:
         print("\n" + "!" * 72)
@@ -1229,11 +1191,9 @@ Post-wipe checklist:
   6. If any repo was reported SKIPPED above, the ritual is INCOMPLETE until
      each is resolved and `wipe --repos-only` reconciles them.
 """)
-    # Added 2026-09-06: a commit failure left the artifacts deleted, no commit
-    # made, and the run exiting 0 — "completed" reading as "everything was
-    # reset" for the second time. The ATTENTION block above stays keyed on
-    # `unresolved` alone: a commit failure cannot be reconciled by
-    # `--repos-only`, because the artifacts are already gone.
+    # 2026-09-06: a commit failure (artifacts deleted, no commit) also exits
+    # non-zero. ATTENTION stays keyed on `unresolved` alone: --repos-only
+    # cannot reconcile a commit failure, the artifacts are gone.
     if unresolved or report["commit_failures"]:
         sys.exit(EXIT_REPOS_SKIPPED)
 
@@ -1267,8 +1227,8 @@ def cmd_restore(args):
                     continue
                 dest = HOME / member.name
                 entry = sinfo["entries"].get(member.name, {})
-                # Newer-on-disk guard via lstat: never follow a symlink at
-                # dest, and a missing manifest mtime means "restore anyway".
+                # Newer-on-disk guard via lstat (never follows a symlink at
+                # dest); a missing manifest mtime means restore anyway.
                 if not args.force and not member.isdir():
                     try:
                         st = os.lstat(str(dest))
@@ -1292,8 +1252,8 @@ def cmd_restore(args):
                     os.symlink(member.linkname, str(dest))
                 elif member.isfile() or member.islnk():
                     dest.parent.mkdir(parents=True, exist_ok=True)
-                    # Unlink first: writing through an on-disk symlink at
-                    # dest would truncate the symlink's TARGET.
+                    # Unlink first: writing through a symlink at dest would
+                    # truncate its TARGET.
                     if os.path.lexists(str(dest)):
                         os.unlink(str(dest))
                     src = tar.extractfile(member)
@@ -1336,12 +1296,12 @@ def cmd_offsite(args):
         fail("not a backup dir: %s" % bdir)
     remote = offsite_remote()
     dest = "%s:Library/Backups/claude-resets/" % remote
-    # macOS ships an rsync without --mkpath: pre-create the remote dir.
+    # macOS rsync has no --mkpath: pre-create the remote dir.
     subprocess.run(["ssh", remote, "mkdir", "-p", "Library/Backups/claude-resets"],
                    check=False)
     log("rsync %s -> %s" % (bdir, dest))
     # Stock macOS rsync (2.6.9/openrsync) has no --info=progress2; --partial
-    # alone keeps resume-on-interrupt, which is what actually matters here.
+    # alone keeps resume-on-interrupt.
     r = subprocess.run(["rsync", "-a", "--partial", str(bdir), dest])
     if r.returncode != 0:
         fail("rsync exited %d (re-run: --partial resumes)" % r.returncode)
@@ -1377,9 +1337,8 @@ def cmd_self_test(_args):
             failures.append(name)
             print("  FAIL %s" % name)
 
-    # Process matcher: basename-only, never substring-of-argv. The local
-    # key-agent case is the named regression: "claude" appears inside an
-    # ARGUMENT path but the basename is not an agent CLI.
+    # Process matcher, basename-only. The key-agent case is the named
+    # regression: "claude" inside an ARGUMENT path, basename not an agent CLI.
     check("matcher: claude comm",
           is_agent_process("claude", "claude --resume"))
     check("matcher: codex comm", is_agent_process("codex", "codex"))
@@ -1435,21 +1394,19 @@ def cmd_self_test(_args):
     check("porcelain: rename between artifacts is related",
           _porcelain_unrelated(["R  CLAUDE.md -> .claude/old.md"], art) == [])
 
-    # The 2026-08-17 gate narrowing: unrelated dirt (staged or not) must NOT
-    # block a repo any more — only a rename that splits the artifact set.
+    # Since 2026-08-17 unrelated dirt must NOT block a repo; only a rename
+    # touching the artifact set does.
     check("rename guard: rename OUT of an artifact splits it",
           _rename_splits_artifacts(["R  CLAUDE.md -> docs.md"], art))
     check("rename guard: rename INTO an artifact splits it",
           _rename_splits_artifacts(["R  docs.md -> CLAUDE.md"], art))
-    # Flipped 2026-09-06: a rename BETWEEN artifacts blocks too. `git rm`
-    # unstages the destination, so the pathspec commit finds no such path in
-    # HEAD and fails after the artifacts are already deleted.
+    # Flipped 2026-09-06: a rename BETWEEN artifacts blocks too (`git rm`
+    # unstages the destination; the pathspec commit then fails post-delete).
     check("rename guard: rename BETWEEN artifacts also blocks",
           _rename_splits_artifacts(
               ["R  CLAUDE.md -> .claude/old.md"], art))
-    # The measured 2026-09-06 shape: BOTH names are in REPO_ARTIFACTS, and the
-    # recreated symlink puts both on disk, so both sides are artifacts. Use a
-    # local set carrying both — `art` above deliberately holds only one.
+    # The 2026-09-06 shape: both names are in REPO_ARTIFACTS and the recreated
+    # symlink puts both on disk. Local set: `art` deliberately holds only one.
     check("rename guard: CLAUDE.md -> AGENTS.md (single-source adoption) blocks",
           _rename_splits_artifacts(["R  CLAUDE.md -> AGENTS.md"],
                                    {"CLAUDE.md", "AGENTS.md", ".claude"}))
