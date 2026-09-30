@@ -1,11 +1,9 @@
 #!/usr/bin/env zsh
 # dotfiles/bin/jump-user
 #
-# jump-user
-#   User-level update script for Homebrew, Claude Code and Muse Code
-#   (and per-host extras from .extra/jump-user, if present)
-#   Designed to be run by LaunchAgent com.0xmachos.jump-user
-#   Can also be run manually
+# User-level updater for Homebrew, Claude Code and Muse Code, plus per-host
+# extras from .extra/jump-user if present. Run by LaunchAgent
+# com.0xmachos.jump-user; also fine by hand.
 #
 #   Usage: jump-user [--delay N]
 
@@ -23,11 +21,9 @@ function run_and_log {
   else
     rc=$?
     logger -t "com.0xmachos.jump" "[FAIL] ${description}"
-    # A failed redirect is silent here: there is no errexit, and the redirect's
-    # status does not reach rc. An unwritable LOG_FILE would discard every
-    # failure detail while syslog still showed [FAIL], so report the write
-    # failure itself to the sink that cannot fail. Hit live 2026-07-28: root
-    # created the shared log, so this script's appends were dropped silently.
+    # No errexit and the redirect's status never reaches rc, so an unwritable
+    # LOG_FILE would drop all detail while syslog still shows [FAIL]: report
+    # the write failure to syslog, the sink that cannot fail.
     if ! {
       echo "[$(date '+%Y-%m-%d %H:%M:%S')] [FAIL] ${description}"
       echo "${output}"
@@ -39,10 +35,9 @@ function run_and_log {
   return "${rc}"
 }
 
-# Native brew vulns (Homebrew >= 6.0) exits 1 for both findings and scan
-# errors, so the two are split on the "Found N vulnerabilities" summary line
-# brew prints only when a scan completes with findings. Findings are logged
-# as [VULN] so they aren't mistaken for a broken scan.
+# brew vulns (Homebrew >= 6.0) exits 1 for findings and scan errors alike, so
+# split on the "Found N vulnerabilities" line, printed only when a scan
+# completes with findings. Findings log as [VULN], not a broken scan.
 function run_vulns_scan {
   local brew_binary="$1"
   local output scan_status tag rc
@@ -58,7 +53,7 @@ function run_vulns_scan {
     tag="FAIL"; rc=1   # scan itself broke — a real failure
   fi
   logger -t "com.0xmachos.jump" "[${tag}] brew vulns"
-  # Same silent-redirect hazard as run_and_log — see the comment there.
+  # Same silent-redirect hazard as run_and_log (see there).
   if ! {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [${tag}] brew vulns --severity high"
     echo "${output}"
@@ -73,8 +68,8 @@ function check_internet_connection {
   local -a domains=("captive.apple.com" "google.com" "flightywifi.com")
   local domain reachability
 
-  # Tests may supply a fixture command when sourcing this function. main calls
-  # it without arguments, so launchd always uses the fixed system binary.
+  # $1 is a test fixture command; main passes none, so launchd always uses
+  # /usr/sbin/scutil.
   for domain in "${domains[@]}"; do
     if reachability=$("${1:-/usr/sbin/scutil}" -r "${domain}") \
         && [[ $'\n'"${reachability}" == *$'\n'Reachable* ]]; then
@@ -87,7 +82,6 @@ function check_internet_connection {
 }
 
 function main {
-  # Parse --delay flag
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --delay)
@@ -104,7 +98,7 @@ function main {
     return 1
   fi
 
-  # Set up Homebrew environment (launchd does not source .zshrc)
+  # launchd does not source .zshrc
   eval "$(/opt/homebrew/bin/brew shellenv)"
 
   local -r BREW_BINARY="/opt/homebrew/bin/brew"
@@ -119,57 +113,50 @@ function main {
   run_and_log "brew upgrade"    "${BREW_BINARY}" upgrade    || rc=1
   run_and_log "brew cleanup"    "${BREW_BINARY}" cleanup    || rc=1
   run_and_log "brew autoremove" "${BREW_BINARY}" autoremove || rc=1
-  # brew doctor is advisory — it exits non-zero on benign warnings, so its
-  # status is logged but deliberately not folded into the run's exit code.
+  # brew doctor exits non-zero on benign warnings: logged, not folded into rc.
   run_and_log "brew doctor"     "${BREW_BINARY}" doctor
 
-  # OSV.dev vulnerability scan (native brew vulns, Homebrew >= 6.0). Only
-  # GitHub/GitLab/Codeberg-sourced formulae are checked. Deliberately not
-  # gated on command existence — if brew vulns ever disappears, the run
-  # logs [FAIL] rather than silently skipping the scan.
+  # OSV.dev scan; only GitHub/GitLab/Codeberg-sourced formulae are checked.
+  # Not gated on command existence: if brew vulns disappears, the run logs
+  # [FAIL] rather than silently skipping.
   run_vulns_scan "${BREW_BINARY}" || rc=1
 
   ## Claude Code ##
-  # Native installer (not Homebrew): symlink at ~/.local/bin/claude into
-  # ~/.local/share/claude/versions/. User-writable, so this must run as
-  # the user — never from jump-system (root-owned files would break
-  # later updates).
+  # Native installer: ~/.local/bin/claude symlinks into
+  # ~/.local/share/claude/versions/. Runs as the user, never from jump-system
+  # (root-owned files would break later updates).
   local -r CLAUDE_BINARY="${HOME}/.local/bin/claude"
   if [[ -x "${CLAUDE_BINARY}" ]]; then
     run_and_log "claude update" "${CLAUDE_BINARY}" update || rc=1
   fi
 
   ## Muse Code ##
-  # Meta's own installer, not Homebrew: ~/.local/bin/muse is a bash launcher
-  # that downloads and SHA-256-verifies muse-bin-<version> beside itself.
-  # User-writable, so this must run as the user, never from jump-system.
+  # Meta's installer: ~/.local/bin/muse is a bash launcher that downloads and
+  # SHA-256-verifies muse-bin-<version> beside itself. Runs as the user, never
+  # from jump-system.
   #
-  # There is no `muse update` subcommand. MUSE_LAUNCHER_INSTALL=1 is the
-  # launcher's own install-and-exit path: it updates the binary, reports any
-  # pending update notice, and exits 0 without starting the TUI. Verified
-  # against launcher_version="2" (Muse Code 1.0.2-R2040.1), 2026-09-04.
+  # No `muse update` subcommand: MUSE_LAUNCHER_INSTALL=1 is the launcher's
+  # install-and-exit path (updates the binary, reports any update notice,
+  # exits 0 without the TUI). Verified against launcher_version="2"
+  # (Muse Code 1.0.2-R2040.1), 2026-09-04.
+  # Binary only: the launcher script refreshes itself from api.meta.ai on an
+  # interactive launch, at most hourly. MUSE_SYNC_UPDATE=1 is not used to
+  # cover that: it execs the app binary afterwards.
   #
-  # It updates the BINARY only — the launcher script itself refreshes from
-  # api.meta.ai on a normal interactive launch, at most hourly, in the
-  # background. Do not use MUSE_SYNC_UPDATE=1 to cover that here: it execs
-  # the app binary afterwards.
+  # MUSE_LOGIN=0 blocks device sign-in. The launcher reads a bearer token only
+  # from ~/.config/muse/auth.json, which holds metadata alone (storage:
+  # keychain, no access_token key; checked 2026-09-04), so downloads are
+  # unauthenticated. Without a TTY it declines device_login anyway; the flag
+  # states the intent and makes a gated download fail as a plain HTTP error.
+  # Sign-in stays `muse`'s own job.
   #
-  # MUSE_LOGIN=0 blocks the device sign-in flow. The launcher reads a bearer
-  # token only from ~/.config/muse/auth.json, and this Mac's file carries
-  # metadata alone (storage: keychain, no access_token key — checked
-  # 2026-09-04), so downloads go out unauthenticated. If Meta ever gates the
-  # download host, the launcher's fallback is device_login. Without a TTY it
-  # declines that anyway; the flag states the intent, and makes the failure a
-  # plain HTTP error. Sign-in stays `muse`'s own job.
+  # An upgrade writes .muse-update-notice; report_update_notice keeps it unless
+  # stderr is a TTY, so a launchd run leaves the "Muse Code updated X -> Y"
+  # line for the next interactive launch. run_and_log records only [OK].
   #
-  # An upgrade writes .muse-update-notice, and report_update_notice keeps it
-  # unless stderr is a TTY. A launchd run therefore leaves the "Muse Code
-  # updated X -> Y" line for the next interactive launch. run_and_log records
-  # only [OK] muse update.
-  #
-  # The launcher takes an install-directory lock and returns 0 if it cannot
-  # get it, so a concurrent background update from an open Muse session makes
-  # this step a silent no-op, not a failure.
+  # The launcher returns 0 if it cannot get its install-directory lock, so a
+  # concurrent update from an open Muse session is a silent no-op, not a
+  # failure.
   local -r MUSE_BINARY="${HOME}/.local/bin/muse"
   if [[ -x "${MUSE_BINARY}" ]]; then
     run_and_log "muse update" \
@@ -177,10 +164,8 @@ function main {
   fi
 
   ## Local extras (gitignored, sourced if present) ##
-  # Per-host updaters that aren't part of the canonical user-level set
-  # live in dotfiles/.extra/jump-user. Matched by .gitignore's .extra*
-  # rule, so anything inside it stays local. Runs as the user inside
-  # main()'s scope; the sidecar may use run_and_log.
+  # Per-host updaters live in dotfiles/.extra/jump-user (.gitignore's .extra*
+  # rule keeps it local). Runs as the user in main's scope; may use run_and_log.
   local -r EXTRA_JUMP_USER="${HOME}/Documents/Projects/dotfiles/.extra/jump-user"
   if [[ -r "${EXTRA_JUMP_USER}" ]]; then
     # shellcheck disable=SC1090

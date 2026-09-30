@@ -1,10 +1,10 @@
 #!/usr/bin/env zsh
 # dotfiles/bin/npm-audit-check
 #
-# npm-audit-check
-#   Audit npm projects for vulnerabilities and verify package signatures.
-#   Scans projects with package-lock.json under ~/Documents/Projects/.
-#   Designed to be called from jump-user via run_and_log or interactively.
+# Audits npm projects for vulnerabilities and verifies package signatures, for
+# every project with a package-lock.json under ~/Documents/Projects/. Called
+# from jump-user via run_and_log or interactively. Production vulnerabilities
+# and signature failures are errors; dev-only vulnerabilities warn.
 #
 # Usage: npm-audit-check
 #
@@ -23,7 +23,6 @@ function audit_project {
 
   echo "── ${project_name} ──"
 
-  # Production vulnerability audit (failure = error)
   local prod_rc=0
   "${NPM_BINARY}" audit --omit=dev --package-lock-only \
     --prefix="${project_dir}" 2>&1 || prod_rc=$?
@@ -33,7 +32,6 @@ function audit_project {
     (( failures += 1 ))
   fi
 
-  # Dev-only vulnerability check (only when prod is clean)
   if (( prod_rc == 0 )); then
     local all_rc=0
     "${NPM_BINARY}" audit --package-lock-only \
@@ -44,11 +42,10 @@ function audit_project {
     fi
   fi
 
-  # Signature/provenance verification (failure = error)
-  # --userconfig=/dev/null drops the global ~/.npmrc install-time hardening
-  # (min-release-age, prefer-offline) for the audit only. Those filters make npm
-  # re-resolve the installed tree and abort with ETARGET on any freshly-updated
-  # package, which would otherwise be reported here as a false signature failure.
+  # --userconfig=/dev/null drops the ~/.npmrc install-time hardening
+  # (min-release-age, prefer-offline) for this audit only: those make npm
+  # re-resolve the tree and abort with ETARGET on a freshly-updated package,
+  # a false signature failure.
   if [[ -d "${project_dir}/node_modules" ]]; then
     local sig_rc=0
     "${NPM_BINARY}" audit signatures \
@@ -72,15 +69,14 @@ function main {
     return 1
   fi
 
-  # A missing/unreadable projects dir is "couldn't scan" (error), NOT "no
-  # projects" (clean pass) — without this guard find returns nothing and the
-  # empty-lockfiles branch below reports a false success.
+  # A missing/unreadable projects dir is an error, NOT "no projects" (clean
+  # pass): find would return nothing and the empty-lockfiles branch below would
+  # report a false success.
   if [[ ! -d "${PROJECTS_DIR}" || ! -r "${PROJECTS_DIR}" ]]; then
     echo "[FAIL] Projects directory missing or unreadable: ${PROJECTS_DIR}"
     return 1
   fi
 
-  # Discover projects with lockfiles (exclude vendored node_modules)
   local lockfiles=()
   local lockfile
   while IFS= read -r lockfile; do

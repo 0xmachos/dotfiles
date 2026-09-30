@@ -1,26 +1,17 @@
 #!/usr/bin/env zsh
 # dotfiles/bittersweet
 
-# bittersweet
-#   Configures macOS just the way I like it
+# Configures macOS just the way I like it
 
 set -euo pipefail
 umask 077
-# -e exit if any command returns non-zero status code
-# -u prevent using undefined variables
-# -o pipefail force pipelines to fail on first non-zero status code
 
 IFS=$'\n\t'
-# Set Internal Field Separator to newlines and tabs
-# This makes bash consider newlines and tabs as separating words
+# Only newlines and tabs separate words
 # See: http://redsymbol.net/articles/unofficial-bash-strict-mode/
 
 readonly SCRIPT_DIR="${0:A:h}"
-# Absolute path to the directory containing this script
-# $0  - path used to invoke the script (e.g. /usr/local/bin/bittersweet)
-# :A  - resolve symlinks to the real absolute path
-# :h  - take the head (parent directory), stripping the filename
-# This ensures paths resolve correctly regardless of $PWD
+# Absolute script directory, independent of $PWD (:A resolves symlinks)
 
 if [[ ! -f "${SCRIPT_DIR}/bittersweet" ]]; then
   echo "[❌] SCRIPT_DIR failed to resolve (got: ${SCRIPT_DIR})"
@@ -31,9 +22,8 @@ fi
 
 ### Define Colours ###
 
-# tput needs a terminal type; without one (a CI runner, a non-tty ssh command)
-# it exits 2 and, under -e, took the whole script with it (2026-09-29). Fall
-# back to no colour rather than no run.
+# tput without a terminal type (CI runner, non-tty ssh) exits 2 and, under -e,
+# killed the script (2026-09-29): fall back to no colour.
 if [[ -n "${TERM:-}" ]] && /usr/bin/tput sgr0 2>/dev/null; then
   RESET=$(/usr/bin/tput sgr0)
   BOLD=$(/usr/bin/tput bold)
@@ -49,18 +39,14 @@ readonly RESET BOLD RED
 
 
 ### Subcommand Source of Truth ###
-# Ordered list of (subcommand:description) pairs in `_describe` format.
-# Single source of truth, consumed by:
-#   - usage()                          (help text)
-#   - _generate_bittersweet_completion (writes .completions/_bittersweet)
-#   - tests/completions                (parity check vs dispatch case arms)
-# Order is preserved in usage() output and zsh completion suggestions.
-# When adding a new subcommand: add an entry here AND a matching dispatch
-# arm at the bottom of main(). tests/completions enforces both sides match.
+# Ordered `subcommand:description` pairs in `_describe` format; the order is
+# kept in usage() and in completions. Feeds usage(),
+# _generate_bittersweet_completion (.completions/_bittersweet) and the
+# tests/completions parity check. A new subcommand needs an entry here AND a
+# dispatch arm at the bottom of main(); tests/completions enforces both.
 #
 # shellcheck disable=SC2016
-# Description text contains literal `$HOME` — documentation, not a variable
-# reference. Disabling SC2016 array-wide; descriptions are user-facing strings.
+# Descriptions contain a literal `$HOME` (documentation, not a reference).
 typeset -ra BITTERSWEET_SUBCOMMANDS=(
   'defaults:Write new system and application default settings'
   'dotfiles:Symlink various config files into $HOME'
@@ -90,7 +76,8 @@ typeset -ra BITTERSWEET_SUBCOMMANDS=(
 )
 ### END Subcommand SOT ###
 
-# One list drives both copying and loading. Tests exercise both consumers.
+# One list drives both install_launchagents (copy) and load_launchagents;
+# tests exercise both consumers.
 typeset -ra LAUNCHAGENT_PLISTS=(
   com.0xmachos.jump-user
   com.0xmachos.imageio-oop
@@ -124,19 +111,10 @@ function usage {
 
 
 ### Utility Functions ###
-# check_os_compatibility
-# check_developer_tools
-# download_application
-# verify_signature
-# install_application
-# get_sudo
-# ctrl_c
 
 
 function check_os_compatibility {
-  # check_os_compatibility
-  #   Check if the host is darwin (i.e macOS)
-  #   Check if the host is ruuning macOS $supported_macos_version
+  # Exits unless Darwin; only warns on a different major macOS version.
 
   local os
   local current_macos_version
@@ -159,9 +137,6 @@ function check_os_compatibility {
 
 
 function check_developer_tools {
-  # check_developer_tools
-  #   Checks if xcode command line tools are installed
-
   if ! xcode-select -p >/dev/null 2>&1; then 
     echo "[❌] Command line developer tools required"
     echo "[🍺] Install via: xcode-select --install"
@@ -171,10 +146,7 @@ function check_developer_tools {
 
 
 function download_application {
-  # download_application
-  #   download_application "download_path" "url"
-  #   Download file using curl
-  #   curl will follow redirects (--location)
+  # download_application DOWNLOAD_PATH URL (curl, follows redirects)
 
   local download_path=${1:?download_path not passed to download_application}
   local url=${2:?url not passed to download_application}
@@ -184,7 +156,6 @@ function download_application {
   echo "[🍺] Downloading ${file_name}"
   
   if curl --location --silent "${url}" --output "${download_path}"; then 
-  # Download 
     echo "[✅] Successfully downloaded ${file_name}"
   else
     echo "[❌] Failed to download ${file_name}"
@@ -194,16 +165,9 @@ function download_application {
 
 
 function verify_signature {
-  # verify_signature
-  #   Check that .app and .pkg files are signed, if not hard exit 
+  # verify_signature FILE_PATH APPLICATION_NAME (a .app or .pkg; e.g. Maccy)
+  #   Check that .app and .pkg files are signed, if not hard exit
   #   Check that .app and .pkg files are notarised, if not print warning
-  # Paramters: 
-  #   $file_path REQUIRED
-  #     Path to .app or .pkg file
-  #     e.g. $HOME/Downloads/Maccy.app
-  #   $application_name REQUIRED
-  #     Name of Application being installed
-  #     e.g Maccy
 
   local file_path=${1:?file_path not passed to verify_signature}
   local application_name=${2:?application_name not passed to verify_signature}
@@ -237,7 +201,6 @@ function verify_signature {
     echo "[🍺] Attempting to validated the signature on ${application_name}.app"
 
     if /usr/bin/codesign --verify --deep --strict "${file_path}"; then
-      # Check the .app is correctly signed
       echo "[✅] Successfully validated the signaturee on ${application_name}.app"
     else
       echo "[❌] Failed to validate the signature on ${application_name}.app"
@@ -260,11 +223,8 @@ function verify_signature {
 
 
 function install_application {
-  # install_application
-  #   Install Applications packaged as .dmg or .zip
-  #   Does not work for application which require an installer (.pkg)
-  #   Checks if .dmg or .zip then act accordingly
-  #   Checks signature on .app before installing
+  # Installs apps packaged as .dmg or .zip, not .pkg installers; verifies the
+  # .app signature before installing.
 
   local application_name=${1:?application_name not passed}
   local downloaded_file_path=${2:?downloaded_file_path not passed}
@@ -274,11 +234,9 @@ function install_application {
 
 
   if file "${downloaded_file_path}" | grep --quiet 'Zip'; then
-    # IF file is a Zip 
 
     echo "[🍺] Attempting to unzip ${downloaded_file_name}"
     if ditto -x -k "${downloaded_file_path}" "${HOME}/Downloads"; then
-      # Attempt to unzip
       echo "[✅] Successfully unzipped ${downloaded_file_name}"
     else
       echo "[❌] Failed to unzip ${downloaded_file_name}"
@@ -289,29 +247,23 @@ function install_application {
 
     echo "[🍺] Attempting to copy ${application_name}.app into /Applications"
     if cp -Ri "${HOME}/Downloads/${application_name}.app" "/Applications"; then
-      # Attempt to copy .app into /Applications 
       echo "[✅] Successfully installed ${application_name}"
     else
       echo "[❌] Failed to install ${application_name}"
       exit 1
     fi
 
-    ## Cleanup
     echo "[🍺] Deleting ${downloaded_file_path}"
-    # Delete the ZIP
     rm "${downloaded_file_path:?}"
 
     echo "[🍺] Deleting ${HOME}/Downloads/${application_name}.app"
-    # Delete the .app
     rm -r "${HOME:?}/Downloads/${application_name:?}.app"
 
 
   elif file "${downloaded_file_path}" | grep --quiet 'dmg'; then
-    # IF file is a dmg
     
     echo "[🍺] Attempting to mount ${downloaded_file_path}"
     dmg_mount_path="$(hdiutil attach -nobrowse "${downloaded_file_path}" | grep -o '/Volumes/.*')"
-    # Parse the actual mount point from hdiutil output
 
     if [[ -z "${dmg_mount_path}" ]]; then
       echo "[❌] Failed to mount ${downloaded_file_path}"
@@ -324,20 +276,16 @@ function install_application {
 
     echo "[🍺] Attempting to copy ${application_name}.app into /Applications"
     if cp -Ri "${dmg_mount_path}/${application_name}.app" "/Applications"; then
-      # Attempt to copy .app into /Applications 
       echo "[✅] Successfully installed ${application_name}"
     else
       echo "[❌] Failed to install ${application_name}"
       exit 1
     fi
 
-    ## Cleanup 
     echo "[🍺] Unmounting ${dmg_mount_path}"
-    # Unmount the DMG
     hdiutil detach -quiet "${dmg_mount_path}"
     
     echo "[🍺] Deleting ${downloaded_file_path}"
-    # Delete the DMG
     rm "${downloaded_file_path:?}"
 
   fi  
@@ -346,17 +294,12 @@ function install_application {
 
 function get_sudo {
 
-  # Ask user to input password to get sudo privilege
-  # Update user's cached credentials, adds five (5)
-  #   minutes to sudo timeout (-v)
-  # Paramter: 
-  #  $purpose_string REQUIRED
-  #   Describe why sudo is needed 
+  # get_sudo PURPOSE: PURPOSE says why sudo is needed, in the prompt. -v
+  # refreshes cached credentials, adding five minutes to the sudo timeout.
 
   local purpose_string=${1:?purpose_string not passed to get_sudo}
   
   if sudo --prompt="[⚠️ ] Password required ${purpose_string}: " -v; then
-    # !! SUDO !!
     return 0
   else 
     return 1
@@ -365,8 +308,6 @@ function get_sudo {
 
 
 function ctrl_c {
-  # ctrl_c
-  #   If user hits CTRL + C exit 
   echo -e "\\n[❌] ${USER} has chosen to quit!"
   exit 1
 }
@@ -459,8 +400,8 @@ function write_defaults {
 
 
 ### Dotfile Helpers ###
-# Internal helpers for install_dotfiles. Print only on failure.
-# Counters (_dir_count, _link_count, etc.) are declared in install_dotfiles.
+# Helpers for install_dotfiles; print only on failure. The counters
+# (_dir_count, _link_count, ...) are declared there (zsh dynamic scope).
 
 function _ensure_dir {
   local dir=${1:?dir not passed to _ensure_dir}
@@ -485,8 +426,7 @@ function _symlink {
     return 0
   fi
 
-  # ln -sfn silently does the wrong thing when dest is a real directory:
-  # it creates the symlink *inside* dest instead of replacing it (exit 0).
+  # ln -sfn onto a real directory links *inside* it and exits 0.
   if [[ -d "${dest}" && ! -L "${dest}" ]]; then
     echo "[❌] Cannot symlink ${dest##*/}: real directory exists (remove it first)"
     (( _error_count += 1 ))
@@ -522,16 +462,14 @@ function _harden {
 }
 
 function _install_git_exclude {
-  # Merge the gitignored .extra_gitexclude list into the repo's git exclude
-  # file (info/exclude), so private filenames are ignored per-clone WITHOUT
-  # entering the tracked, public .gitignore. Idempotent: a marker-delimited
-  # block is rewritten each run. Entries outside the markers (e.g. Claude
-  # Code's own) are preserved.
+  # Merge the gitignored .extra_gitexclude into info/exclude so private
+  # filenames are ignored per-clone without entering the tracked, public
+  # .gitignore. Idempotent: a marker-delimited block is rewritten each run;
+  # entries outside the markers (e.g. Claude Code's own) are preserved.
   local extra="${SCRIPT_DIR}/.extra_gitexclude"
   [[ -f "${extra}" ]] || return 0
 
-  # Resolve info/exclude via git so it is correct for worktrees and
-  # --separate-git-dir clones (where .git is a file, not a directory).
+  # Via git, so worktrees and --separate-git-dir clones (.git is a file) work.
   local exclude
   if ! exclude="$(git -C "${SCRIPT_DIR}" rev-parse --git-path info/exclude 2>/dev/null)"; then
     echo "[❌] Not a git repo: cannot resolve info/exclude"
@@ -545,10 +483,9 @@ function _install_git_exclude {
   local begin="# >>> bittersweet private excludes (from .extra_gitexclude) — do not edit >>>"
   local end="# <<< bittersweet private excludes <<<"
   local tmp
-  # Temp file inside info/ keeps the final mv on one filesystem (atomic replace).
+  # Temp file inside info/ keeps the final mv on one filesystem (atomic).
   tmp="$(mktemp "${info_dir}/.exclude.XXXXXX")" || { (( _error_count += 1 )); return 0; }
 
-  # Keep everything except any previous managed block.
   if [[ -f "${exclude}" ]]; then
     awk -v b="${begin}" -v e="${end}" '
       $0 == b { skip=1; next }
@@ -557,8 +494,7 @@ function _install_git_exclude {
     ' "${exclude}" > "${tmp}"
   fi
 
-  # Append a fresh block (comments and blanks stripped; `|| true` so an empty
-  # or all-comment list does not trip set -e).
+  # Comments and blanks stripped; `|| true` so an empty list does not trip -e.
   {
     printf '%s\n' "${begin}"
     grep -vE '^[[:space:]]*(#|$)' "${extra}" || true
@@ -578,21 +514,19 @@ function _install_git_exclude {
 
 
 function install_dotfiles {
-  # install_dotfiles
-  #   Create directories in $HOME
-  #   Symlink config files from repo into $HOME
-  #   Config files for: zsh, git, ssh, Claude Code, Codex, VirusTotal, uv, npm,
-  #   1Password, Ghostty, Xcode
+  # Creates directories in $HOME and symlinks the repo's configs into them:
+  # zsh, git, ssh, Claude Code, Codex, VirusTotal, uv, npm, 1Password, Ghostty,
+  # Xcode.
 
   local _dir_count=0
   local _link_count=0
   local _harden_count=0
   local _error_count=0
   # null_glob (function-scoped): claude/ is gitignored and synced out of band,
-  # so a fresh clone can legitimately have empty hosts/, skills/ and rules/ —
-  # without it an unmatched glob aborts the whole deploy under set -e. setopt
-  # rather than (N) qualifiers because shellcheck --shell=bash cannot parse
-  # the latter. Set here, before the file arrays, so their globs see it too.
+  # so hosts/, skills/, rules/ and agents/ can be empty on a fresh clone, and
+  # an unmatched glob would abort the deploy under set -e. setopt, not (N)
+  # qualifiers: shellcheck --shell=bash cannot parse them. Set before the
+  # arrays so their globs see it.
   setopt local_options null_glob
 
   local -ar dot_dirs=(.ssh .extra .codex .codex/rules .config/git .config/uv .config/herdr .claude .claude/skills .claude/rules .claude/agents)
@@ -637,96 +571,80 @@ function install_dotfiles {
     "${SCRIPT_DIR}/.codex/config.toml"
     "${SCRIPT_DIR}/.codex/rules/default.rules"
     "${SCRIPT_DIR}/.codex/hooks.json"
-    # Per-host rules files are named after private machines, so the list is a
-    # glob, never literal names; null_glob (set at the top of this function)
-    # makes it empty rather than fatal when claude/ is not synced.
+    # Per-host rules files are named after private machines: a glob, never
+    # literal names.
     "${SCRIPT_DIR}"/claude/hosts/*.md
   )
 
   local dot_dir dot_file ssh_config git_config claude_file sensitive_file
   local src dest
 
-  # Create required directories
   for dot_dir in "${dot_dirs[@]}"; do
     _ensure_dir "${HOME}/${dot_dir}"
   done
 
   _ensure_dir "${HOME}/.ssh/sockets" 700
 
-  # Symlink general dotfiles into $HOME
   for dot_file in "${dot_files[@]}"; do
     _symlink "${SCRIPT_DIR}/${dot_file}" "${HOME}/${dot_file}"
   done
 
-  # Symlink SSH configs into $HOME/.ssh/
   for ssh_config in "${ssh_configs[@]}"; do
     _symlink "${SCRIPT_DIR}/.ssh/${ssh_config}" "${HOME}/.ssh/${ssh_config}"
   done
 
-  # Symlink git configs into $HOME/.config/git/
   for git_config in "${git_configs[@]}"; do
     _symlink "${SCRIPT_DIR}/.config/git/${git_config}" "${HOME}/.config/git/${git_config}"
   done
 
   # The global pre-commit scanner needs no install step: core.hooksPath in
-  # .config/git/config points straight at the repo's .config/git/hooks/, so
-  # the config symlink above activates it and a sync delivers hook + config
-  # atomically. Warn if the per-clone PII pattern list is absent — the
-  # denylist layer silently loses coverage without it.
+  # .config/git/config points at the repo's .config/git/hooks/, so the config
+  # symlink activates it and a sync delivers hook + config atomically. Warn if
+  # the per-clone PII pattern list is absent: the denylist silently loses
+  # coverage.
   if [[ ! -s "${SCRIPT_DIR}/.githooks/pii-patterns" ]]; then
     echo "[⚠️ ] .githooks/pii-patterns missing or empty — PII denylist has no patterns (sync it from another clone)"
   fi
 
-  # Symlink uv config into $HOME/.config/uv/
   _symlink "${SCRIPT_DIR}/.config/uv/uv.toml" "${HOME}/.config/uv/uv.toml"
 
-  # Symlink herdr config into $HOME/.config/herdr/ — the file only, never the
-  # directory: herdr keeps its socket, session state, machine identity and push
-  # registries beside config.toml. herdr's own writes go through the link
-  # (std::fs::write; the integration installer resolves symlinks first —
-  # verified from source 2026-09-29). The binary itself is installer-managed at
-  # ~/.local/bin/herdr (the Herdrup fork's installer only writes under $HOME).
+  # herdr: link config.toml only, never the directory (herdr keeps its socket,
+  # session state, machine identity and push registries beside it). herdr's own
+  # writes go through the link (std::fs::write; the integration installer
+  # resolves symlinks first — verified from source 2026-09-29). The binary is
+  # installer-managed at ~/.local/bin/herdr (the fork's installer only writes
+  # under $HOME).
   _symlink "${SCRIPT_DIR}/.config/herdr/config.toml" "${HOME}/.config/herdr/config.toml"
 
-  # Symlink npm config into $HOME/.npmrc (npm hardcodes ~/.npmrc)
+  # npm hardcodes ~/.npmrc
   _symlink "${SCRIPT_DIR}/.config/npm/.npmrc" "${HOME}/.npmrc"
 
-  # Symlink codex config into $HOME/.codex/
   _symlink "${SCRIPT_DIR}/.codex/config.toml" "${HOME}/.codex/config.toml"
 
-  # Codex exec-policy rules. Separate from config.toml because Codex reads
-  # ~/.codex/rules/*.rules as its own layer; the `forbidden` prefix_rules there
-  # are the only SSH guard that survives --dangerously-bypass-approvals-and-sandbox.
+  # Codex reads ~/.codex/rules/*.rules as its own layer, apart from config.toml;
+  # its `forbidden` prefix_rules are the only SSH guard that survives
+  # --dangerously-bypass-approvals-and-sandbox.
   _symlink "${SCRIPT_DIR}/.codex/rules/default.rules" "${HOME}/.codex/rules/default.rules"
 
-  # Global agent instructions. ONE source file, two symlinks: Claude Code reads
-  # ~/.claude/CLAUDE.md (claude_files below), Codex reads ~/.codex/AGENTS.md, and
-  # Muse Code takes the first of ~/.claude/CLAUDE.md -> $CODEX_HOME/AGENTS.md, so
-  # it lands on the Claude path (verified 2026-09-06, Muse 1.0.3-R2198.1 — it
-  # never loads the Codex one while the Claude one exists). Merged 2026-09-06
-  # from two files that were never at parity: the Codex copy was created
-  # 2026-09-04 for the MD5 rule alone, three sections against six, so Codex was
-  # never told about bao-admin, the repo-first rule, or the machine notes. It
-  # also carried the .codex/-is-deliberately-sparse carve-out, which the merge
-  # dropped and a same-day audit restored. Gitignored,
-  # so unlike a repo AGENTS.md it may name hosts and aliases. Keep it under
-  # 32768 B — Codex truncates a project doc there silently, mid-file.
+  # Global agent instructions: ONE source file, two symlinks. Claude Code reads
+  # ~/.claude/CLAUDE.md (claude_files below), Codex ~/.codex/AGENTS.md; Muse
+  # Code takes the first of ~/.claude/CLAUDE.md, then $CODEX_HOME/AGENTS.md, so
+  # it never loads the Codex one while the Claude one exists (verified
+  # 2026-09-06, Muse 1.0.3-R2198.1). Gitignored, so it may name hosts and
+  # aliases. Keep under 32768 B: Codex truncates a project doc silently there.
   _symlink "${SCRIPT_DIR}/claude/global-claude.md" "${HOME}/.codex/AGENTS.md"
 
-  # Copy 1Password SSH agent config (1Password doesn't follow symlinks)
+  # Copied, not linked: 1Password doesn't follow symlinks.
   _ensure_dir "${HOME}/.config/1Password/ssh"
   cp "${SCRIPT_DIR}/.config/1Password/ssh/agent.toml" "${HOME}/.config/1Password/ssh/agent.toml"
   chmod 600 "${HOME}/.config/1Password/ssh/agent.toml"
 
-  # Symlink Claude Code configs into $HOME/.claude/
   for claude_file in "${claude_files[@]}"; do
     src="${claude_file%%:*}"
     dest="${claude_file##*:}"
     _symlink "${SCRIPT_DIR}/${src}" "${HOME}/.claude/${dest}"
   done
 
-  # Symlink custom skills into $HOME/.claude/skills/ (null_glob is set at the
-  # top of this function: an empty skills/ or rules/ must not abort the deploy)
   local skill_dir skill_name
   for skill_dir in "${SCRIPT_DIR}"/claude/skills/*/; do
     skill_name="${skill_dir%/}"
@@ -734,7 +652,6 @@ function install_dotfiles {
     _symlink "${skill_dir%/}" "${HOME}/.claude/skills/${skill_name}"
   done
 
-  # Symlink Claude Code rules into $HOME/.claude/rules/
   local rule_file rule_name
   for rule_file in "${SCRIPT_DIR}"/claude/rules/*.md; do
     [[ -f "${rule_file}" ]] || continue
@@ -742,10 +659,7 @@ function install_dotfiles {
     _symlink "${rule_file}" "${HOME}/.claude/rules/${rule_name}"
   done
 
-  # Symlink Claude Code subagents into $HOME/.claude/agents/
-  # Per-file rather than a claude_files entry so individual agents sync
-  # independently; inside the null_glob scope opened above so an absent or
-  # empty claude/agents/ on a partially-synced clone cannot abort the deploy
+  # Per-file rather than a claude_files entry so agents sync independently.
   local agent_file agent_name
   for agent_file in "${SCRIPT_DIR}"/claude/agents/*.md; do
     [[ -f "${agent_file}" ]] || continue
@@ -753,14 +667,12 @@ function install_dotfiles {
     _symlink "${agent_file}" "${HOME}/.claude/agents/${agent_name}"
   done
 
-  # Symlink API wrapper scripts into ~/.local/bin/ (ahead of /opt/homebrew/bin
-  # on PATH, so wrappers shadow Homebrew binaries and inject 1Password keys).
-  # bao-mcp-env does NOT shadow a same-named Homebrew binary and every
-  # consumer either hardcodes its absolute path or resolves it by bare name
-  # for cross-machine portability (not PATH-shadowing) — moved to
-  # /usr/local/bin via install_scripts's bin_files (Linux-path audit,
-  # internals/linux-path-audit.md, 2026-09-18). vt/urlscan/op-homelab stay
-  # here: their shadowing of Homebrew is load-bearing.
+  # API wrappers go in ~/.local/bin/, ahead of /opt/homebrew/bin on PATH, so
+  # they shadow Homebrew binaries and inject 1Password keys; that shadowing is
+  # load-bearing for vt/urlscan/op-homelab. bao-mcp-env shadows nothing (every
+  # consumer hardcodes its absolute path or resolves the bare name for
+  # cross-machine portability), so install_scripts's bin_files owns it, in
+  # /usr/local/bin (2026-09-18).
   _ensure_dir "${HOME}/.local/bin"
   local -ar op_wrapper_scripts=(vt urlscan op-homelab)
   local wrapper
@@ -768,14 +680,12 @@ function install_dotfiles {
     _symlink "${SCRIPT_DIR}/bin/${wrapper}" "${HOME}/.local/bin/${wrapper}"
   done
 
-  # The old bao-mcp-env link is retired by install_scripts only after its
-  # replacement is installed. Running dotfiles alone must preserve it.
+  # install_scripts retires the old bao-mcp-env link only after its
+  # replacement is installed; running dotfiles alone must preserve it.
 
-  # Symlink Ghostty config into macOS Application Support location
   _ensure_dir "${HOME}/Library/Application Support/com.mitchellh.ghostty"
   _symlink "${SCRIPT_DIR}/config" "${HOME}/Library/Application Support/com.mitchellh.ghostty/config"
 
-  # Symlink Xcode file header template into per-user global location
   _ensure_dir "${HOME}/Library/Developer/Xcode/UserData"
   _symlink "${SCRIPT_DIR}/IDETemplateMacros.plist" "${HOME}/Library/Developer/Xcode/UserData/IDETemplateMacros.plist"
 
@@ -787,13 +697,10 @@ function install_dotfiles {
     (( _error_count += 1 ))
   fi
 
-  # Merge private per-clone git excludes (keeps these filenames out of the
-  # tracked, public .gitignore — they live only in .git/info/exclude)
   _install_git_exclude
 
-  # Harden file permissions
-  # git clone sets 644 by default; enforce 600 on sensitive files
-  # chmod follows symlinks so this works on both the source and linked paths
+  # git clone sets 644; enforce 600 on sensitive files (chmod follows
+  # symlinks, so source and linked paths are both covered)
   for sensitive_file in "${sensitive_files[@]}"; do
     _harden "${sensitive_file}"
   done
@@ -806,17 +713,13 @@ function install_dotfiles {
 
 
 function install_scripts {
-  # install_scripts
-  #   Symlink dotfiles/bin/ scripts into /usr/local/bin
-  #   Create /usr/local/bin
-  #   Symlink files in /usr/local/bin
-  #   launchd-invoked scripts (jump-system, jump-user, scratch-sweep) are COPIED, not
-  #   symlinked — see the comments at each for why
-  
+  # Symlinks bin/ scripts into /usr/local/bin (creating it). launchd-invoked
+  # scripts (jump-system, jump-user, scratch-sweep) are COPIED, not symlinked:
+  # see the comment at each.
+
   local -ar bin_files=(dns mdview npm-audit-check claude-session-audit papercut git-sign-unpushed bao-mcp-env)
   local -ar macos_script_bin_files=(c0design)
   
-  # Create /usr/local/bin
   if ! [[ -d "/usr/local/bin/" ]]; then 
     get_sudo "to create /usr/local/bin/"
     if sudo mkdir -m 755 -p "/usr/local/bin/"; then
@@ -828,10 +731,8 @@ function install_scripts {
 
   get_sudo "to symlink scripts into /usr/local/bin/"
   
-  # Symlink files
-  # chmod -h fixes symlink mode after ln: umask 077 produces lrwx------ which
-  # blocks readlink(2) for non-root (XNU checks KAUTH_VNODE_READ_DATA on
-  # symlinks despite symlink(7) saying permissions are ignored)
+  # chmod -h after ln: umask 077 makes lrwx------, which blocks readlink(2) for
+  # non-root (XNU checks KAUTH_VNODE_READ_DATA on symlinks despite symlink(7)).
   for bin_file in "${bin_files[@]}"; do
     if sudo ln -sfn "${SCRIPT_DIR}/bin/${bin_file}" "/usr/local/bin/${bin_file}"; then
       sudo chmod -h 755 "/usr/local/bin/${bin_file}"
@@ -844,12 +745,10 @@ function install_scripts {
     fi
   done
 
-  # Optional, per-clone tools: one name per line in .extra_bin_files
-  # (gitignored by the .extra* pattern, like .extra_test_suites for ./test).
-  # A private tool that must not be named in the tracked bin_files array is
-  # symlinked exactly like the tracked ones. Malformed names abort; a listed
-  # file that is absent on this clone is reported, not fatal (pending sync).
-  # Added 2026-09-17 for bin/steam.
+  # Optional per-clone tools, one name per line in .extra_bin_files (gitignored
+  # by .extra*, like .extra_test_suites for ./test): for a private tool that
+  # must not be named in the tracked bin_files. Malformed names abort; a listed
+  # file absent on this clone is reported, not fatal (pending sync).
   local extra_bin_registry="${SCRIPT_DIR}/.extra_bin_files" extra_bin
   if [[ -f "${extra_bin_registry}" ]]; then
     while IFS= read -r extra_bin || [[ -n "${extra_bin}" ]]; do
@@ -871,8 +770,8 @@ function install_scripts {
     done < "${extra_bin_registry}"
   fi
 
-  # Copy jump-system as root-owned (executed by LaunchDaemon, must not be
-  # user-writable — symlink would be a local privilege escalation)
+  # Copy jump-system as root-owned: the LaunchDaemon executes it, so it must not
+  # be user-writable (a symlink would be a local privilege escalation).
   sudo rm -f "/usr/local/bin/jump-system"
   if sudo cp "${SCRIPT_DIR}/bin/jump-system" "/usr/local/bin/jump-system"; then
     sudo chown root:wheel "/usr/local/bin/jump-system"
@@ -895,8 +794,8 @@ function install_scripts {
     echo "[❌] Failed to install jump-user to /usr/local/bin/jump-user"
   fi
 
-  # Copy scratch-sweep rather than symlink, for the same reason as jump-user:
-  # its LaunchAgent cannot exec a program that resolves under ~/Documents/.
+  # Copy scratch-sweep rather than symlink, as for jump-user: its LaunchAgent
+  # cannot exec a program that resolves under ~/Documents/.
   sudo rm -f "/usr/local/bin/scratch-sweep"
   if sudo cp "${SCRIPT_DIR}/bin/scratch-sweep" "/usr/local/bin/scratch-sweep"; then
     sudo chown root:wheel "/usr/local/bin/scratch-sweep"
@@ -906,7 +805,6 @@ function install_scripts {
     echo "[❌] Failed to install scratch-sweep to /usr/local/bin/scratch-sweep"
   fi
 
-  # Symlink bittersweet into /usr/local/bin
   if sudo ln -sfn "${SCRIPT_DIR}/bittersweet" "/usr/local/bin"; then
     sudo chmod -h 755 "/usr/local/bin/bittersweet"
     echo "[✅] Successfully linked bittersweet to /usr/local/bin/bittersweet"
@@ -914,7 +812,6 @@ function install_scripts {
     echo "[❌] Failed to link bittersweet to /usr/local/bin/bittersweet"
   fi
 
-  # Symlink some files in macos-scripts repo into /usr/local/bin
   for macos_script in "${macos_script_bin_files[@]}"; do
     if sudo ln -sfn "$HOME/Documents/Projects/macos-scripts/${macos_script}" "/usr/local/bin/${macos_script}"; then
       sudo chmod -h 755 "/usr/local/bin/${macos_script}"
@@ -927,13 +824,11 @@ function install_scripts {
 
 
 function enable_touchid_sudo {
-  # enable_touchid_sudo
-  #   As of macOS Sonoma (14.0) this setting can persist OS updates when set in  
-  #     /etc/pam.d/sudo_local. See: https://support.apple.com/en-us/HT213893
-  #   Check if already enabled in /etc/pam.d/sudo and warn user
-  #   Check if /etc/pam.d/sudo_local exists, if not create it
-  #   Use vim to insert required text to enable TouchID for sudo into sudo_local
-  
+  # Since macOS Sonoma (14.0) the setting persists OS updates in
+  # /etc/pam.d/sudo_local. See: https://support.apple.com/en-us/HT213893
+  # Warns if pam_tid is in /etc/pam.d/sudo (lost on update); creates
+  # sudo_local if absent, then inserts the pam_tid line with ex.
+
   if grep -q 'pam_tid.so' "/etc/pam.d/sudo"; then
     logger -p user.warning -s "Enabling TouchID for sudo in /etc/pam.d/sudo does not persist across updates.\
                               See https://support.apple.com/en-us/HT213893"
@@ -950,9 +845,7 @@ function enable_touchid_sudo {
     get_sudo "to create /etc/pam.d/sudo_local"
     
     if sudo install -m "444" -g "wheel" -o "root" "/dev/null" "/etc/pam.d/sudo_local"; then
-      # Use install to create the file /etc/pam.d/sudo_local
-      # Copies from /dev/null which creates an empty file
-      # Set permissions to read only, group to wheel and owner to root 
+      # install from /dev/null: an empty, read-only, root:wheel file
       logger -p user.info -s "Created /etc/pam.d/sudo_local"
     else
       logger -p user.error -s "Failed to create /etc/pam.d/sudo_local"
@@ -960,9 +853,7 @@ function enable_touchid_sudo {
     fi
 
     if sudo ex -s -c '1i|auth       sufficient     pam_tid.so' -c x! -c x! "/etc/pam.d/sudo_local"; then
-      # Invoke Vim in ex mode
-      # Select line 1, enter insert mode, insert that text write changes and exit
-      # Need to exit twice to get passed the read only file warning
+      # `x!` runs twice to get past the read-only file warning
 
       logger -p user.info -s "TouchID sudo Enabled"
       return 0
@@ -975,9 +866,6 @@ fi
 
 
 function install_secretive {
-  # install_secretive
-  #   Installs Secretive via Homebrew cask
-
   if [[ -d "/Applications/Secretive.app" ]]; then
     echo "[🍺] Secretive already installed"
     return 0
@@ -996,11 +884,8 @@ function install_secretive {
 
 function _generate_bittersweet_completion {
   # _generate_bittersweet_completion OUTPUT_FILE
-  #   Writes a #compdef file for bittersweet sourced from
-  #   BITTERSWEET_SUBCOMMANDS. Idempotent — safe to overwrite the existing
-  #   .completions/_bittersweet on every call. Uses heredocs (quoted EOF) so
-  #   every literal in the output passes through verbatim — no expansion, no
-  #   linter noise about single-quoted backticks or trailing backslashes.
+  #   Writes a #compdef file from BITTERSWEET_SUBCOMMANDS. Idempotent. Heredocs
+  #   are quoted so every literal passes through verbatim.
   local output_file="${1}"
   local entry
 
@@ -1036,9 +921,8 @@ EOF
 
 
 function _okf_concept_row {
-  # _okf_concept_row FILE
-  #   Echo "type<TAB>title<TAB>filename<TAB>description" for one OKF concept,
-  #   parsed from its YAML frontmatter. Title falls back to the filename stem.
+  # _okf_concept_row FILE: echoes "type<TAB>title<TAB>filename<TAB>description"
+  # from the YAML frontmatter; title falls back to the filename stem.
   local file="${1}"
   local name="${file##*/}"
   local type="" title="" desc="" line key val
@@ -1066,10 +950,9 @@ function _okf_concept_row {
 
 function _generate_okf_index {
   # _generate_okf_index OUTPUT_FILE
-  #   Regenerate the internals/ OKF bundle index from concept frontmatter.
-  #   Groups concepts by `type` (alphabetical), orders each group by title
-  #   (case-insensitive), and writes a progressive-disclosure index.md.
-  #   Source of truth is the frontmatter; `./test okf` enforces freshness.
+  #   Regenerates the internals/ OKF bundle index.md: concepts grouped by
+  #   `type` (alphabetical), each group by title (case-insensitive). The
+  #   frontmatter is the source of truth; `./test okf` enforces freshness.
   local output_file="${1}"
   local bundle="${SCRIPT_DIR}/internals"
   local file name t rtitle rname rdesc
@@ -1112,8 +995,7 @@ EOF
 
 
 function install_sublime_text {
-  # install_sublime_text
-  #   Installs Sublime Text via Homebrew cask + symlinks settings files
+  # Homebrew cask, then symlinks the settings files.
 
   if [[ -d "/Applications/Sublime Text.app" ]]; then
     echo "[🍺] Sublime Text already installed"
@@ -1127,7 +1009,7 @@ function install_sublime_text {
     fi
   fi
 
-  # Detect live config directory (ST4 upgrades reuse ST3 dir name)
+  # ST4 upgrades reuse the ST3 config dir name
   local live_st_dir=""
   local candidate
   for candidate in "Sublime Text 3" "Sublime Text"; do
@@ -1136,7 +1018,7 @@ function install_sublime_text {
       break
     fi
   done
-  # Fresh install: ST4 creates "Sublime Text/" on first launch
+  # Fresh install: ST4 creates "Sublime Text/" on first launch.
   [[ -z "${live_st_dir}" ]] && live_st_dir="${HOME}/Library/Application Support/Sublime Text"
 
   local _dir_count=0
@@ -1153,7 +1035,7 @@ function install_sublime_text {
     _symlink "${settings_file}" "${live_st_dir}/Packages/User/${filename}"
   done
 
-  # Generate sidebar icon syntax from repo contents (not symlinked)
+  # Sidebar icon syntax is generated from repo contents, not symlinked.
   local zsh_syntax="${live_st_dir}/Packages/User/Zsh (Dotfiles).sublime-syntax"
   /bin/rm -f "${zsh_syntax}"
   _generate_zsh_sidebar_syntax "${SCRIPT_DIR}" "${zsh_syntax}"
@@ -1167,9 +1049,6 @@ function install_sublime_text {
 
 
 function install_tower {
-  # install_tower
-  #   Installs Tower via Homebrew cask
-
   if [[ -d "/Applications/Tower.app" ]]; then
     echo "[🍺] Tower already installed"
     return 0
@@ -1187,16 +1066,12 @@ function install_tower {
 
 
 function  install_deckset {
-  # install_deckset
-  #   Install deckset presentation software
-  #   $url prebuilt, getting $version and $build from the http location header. 
-  #   Grabbing $url directly from curl output does not work.
-  #     curl -sLI https://www.decksetapp.com/download | grep 'location: ' | awk 'END{print}'
-  #     Produces: 'location: https://dl.decksetapp.com/Deckset+2.0.16+(2578).dmg\C-M'
-  #     The "\C-M" string at the end is erroneous. It does not appear when run from
-  #     the command line, only when run in the script with set -x. 
-  #     It's apprently an ascci carriage return. 
-  #     Failed to remove with: tr -d '\C-M', tr -d '\n', tr -d '\r' 
+  # $url is rebuilt from $version and $build in the http location header;
+  # taking it directly from curl output does not work:
+  #   curl -sLI https://www.decksetapp.com/download | grep 'location: ' | awk 'END{print}'
+  #   Produces: 'location: https://dl.decksetapp.com/Deckset+2.0.16+(2578).dmg\C-M'
+  # The "\C-M" is an ASCII carriage return, visible only in the script under
+  # set -x, not at the command line.
 
   if [[ -d "/Applications/Deckset.app" ]]; then
     echo "[🍺] Deckset already installed"
@@ -1226,9 +1101,6 @@ function  install_deckset {
 
 
 function install_maccy {
-  # install_maccy
-  #   Installs Maccy via Homebrew cask
-
   if [[ -d "/Applications/Maccy.app" ]]; then
     echo "[🍺] Maccy already installed"
     return 0
@@ -1246,8 +1118,6 @@ function install_maccy {
 
 
 function install_texpad {
-  # install_texpad
-  #   Installs Texpad via usual helpers
 
 if [[ -d "/Applications/Texifier.app" ]]; then
   echo "[🍺] Texifier already installed"
@@ -1270,16 +1140,14 @@ install_application "Texifier" "${dmg_download_path}"
 }
 
 function install_basictex {
-  # install_basictex
-  #   Installs the MacTeX BasicTeX distribution via Homebrew cask and pins
-  #   the tlmgr package repository to a specific mirror
+  # BasicTeX via Homebrew cask, then pin the tlmgr repository mirror.
 
-  # Pin a named mirror, not the CTAN redirector (mirror.ctan.org). The
-  # redirector GeoIP-routes UK clients to Cambridge (mirror.apps.cam.ac.uk),
-  # unreachable since 2026-03. A fresh BasicTeX / annual TeX Live install
-  # resets this option to the http:// redirector default, so re-pin on every
-  # install. https:// also preserves transport integrity, the only remaining
-  # authenticity check once GPG verification is disabled (--verify-repo=none).
+  # A named mirror, not the CTAN redirector (mirror.ctan.org): it GeoIP-routes
+  # UK clients to Cambridge (mirror.apps.cam.ac.uk), unreachable since 2026-03.
+  # A fresh BasicTeX / annual TeX Live install resets the option to the http://
+  # redirector default, so re-pin on every install. https:// preserves
+  # transport integrity, the only authenticity check left with
+  # --verify-repo=none.
   local -r TLMGR_REPOSITORY="https://mirror.ox.ac.uk/sites/ctan.org/systems/texlive/tlnet"
 
   if [[ -x "$(command -v tlmgr)" ]]; then
@@ -1305,26 +1173,22 @@ function install_basictex {
 
 
 function install_latex_packages {
-  # install_latex_packages
-  #   Installs some LaTeX packages via tlmrg
-  #   Updates tlmgr and all currently installed packages first
+  # Updates tlmgr and all installed packages first, then installs the extras.
 
   echo "[🍺] Updating tlmgr, all installed packages and installing packages..."
   sleep 2
 
   get_sudo "to update tlmgr, update installed packages and install packages"
 
-  # GPG repo verification disabled: gnupg not installed, SHA-512 checksums
-  # and HTTPS transport still protect package integrity. See TODOs.md.
+  # GPG repo verification is off (gnupg not installed); SHA-512 checksums and
+  # HTTPS still protect package integrity.
 
-  # Update tlmgr
   if sudo tlmgr --verify-repo=none update --self >/dev/null; then
     echo "[✅] Successfully updated tlmgr"
   else
     echo "[❌] Failed to update tlmgr"
   fi
 
-  # Update packages installed via tlmgr
   if sudo tlmgr --verify-repo=none update --all >/dev/null; then
     echo "[✅] Successfully updated LaTeX packages via tlmgr"
   else
@@ -1332,8 +1196,8 @@ function install_latex_packages {
   fi
 
   local -ar PACKAGES=(sectsty helvetic)
-  # sectsty: Required for the Custom sectioning
-  # helvetic: Installs the helvetica font (phv) for the custom sectioning
+  # sectsty: required for the custom sectioning
+  # helvetic: the helvetica font (phv) for the custom sectioning
 
   for PACKAGE in "${PACKAGES[@]}"; do
     if sudo tlmgr --verify-repo=none install "${PACKAGE}"; then
@@ -1346,9 +1210,6 @@ function install_latex_packages {
 
 
 function install_blockblock {
-  # install_blockblock
-  #   Installs BlockBlock via Homebrew cask
-
   if [[ -d "/Applications/BlockBlock Helper.app" ]]; then
     echo "[🍺] BlockBlock already installed"
     return 0
@@ -1365,15 +1226,11 @@ function install_blockblock {
 
   echo "[⚠️] Remember to enable Full Disk Access for BlockBlock"
 
-  # Enable headless mode
   defaults write com.objectiveSee.BlockBlock headlessMode -bool true
 }
 
 
 function install_oversight {
-  # install_oversight
-  #   Installs OverSight via Homebrew cask
-
   if [[ -d "/Applications/OverSight.app" ]]; then
     echo "[🍺] OverSight already installed"
     return 0
@@ -1388,7 +1245,6 @@ function install_oversight {
     return 1
   fi
 
-  # Enable headless mode, auto updates & start on login
   defaults write com.objective-see.OverSight runHeadless   -bool true
   defaults write com.objective-see.OverSight check4Updates -bool true
   defaults write com.objective-see.OverSight startAtLogin  -bool true
@@ -1396,8 +1252,8 @@ function install_oversight {
 
 
 function _retire_bao_mcp_link {
-  # Keep regular files and links owned by another installation untouched.
-  # Accept the destination explicitly so migration cases run in fixtures.
+  # Leaves regular files and links owned by another installation untouched.
+  # The destination is passed in so migration cases run in fixtures.
   local replacement="$1" legacy="${HOME}/.local/bin/bao-mcp-env"
   if [[ -x "${replacement}" && -L "${legacy}" &&
         "$(readlink "${legacy}")" == "${SCRIPT_DIR}/bin/bao-mcp-env" ]]; then
@@ -1407,24 +1263,17 @@ function _retire_bao_mcp_link {
 }
 
 function install_herald {
-  # install_herald
-  #   Clones / updates / builds / installs the herald Bonjour/mDNS browser CLI
-  #   macOS companion to the Herald iOS app (jessedc/herald-ios-bonjour-browser)
-  #   Used by Claude for Matter/Thread debugging in home-repo
-  #   Source: ~/Documents/Projects/herald-cli/HeraldCLI (subdir Package.swift)
-  #   Destination: /usr/local/bin/herald — a root-owned COPY, not a symlink
-  #   (Linux-path audit, internals/linux-path-audit.md, 2026-09-18). A
-  #   symlink here would point at a user-writable Swift build directory,
-  #   the same privilege-escalation shape jump-system/jump-user avoid by
-  #   being copied rather than linked (see install_scripts). rm -f + cp
-  #   gives each deploy a fresh inode, which also sidesteps the kernel's
-  #   per-inode signature-cache staleness the re-sign step below exists for.
-  #
-  #   Actively maintained upstream. Full update cycle: clone (if missing),
-  #   fetch, fast-forward pull (refused if local diverged), build, deploy,
-  #   re-sign. Upstream commit range is logged before each pull — check the
-  #   output for what actually landed. No Sigstore/Homebrew attestation
-  #   available.
+  # Builds and installs the herald Bonjour/mDNS browser CLI, macOS companion to
+  # the Herald iOS app (jessedc/herald-ios-bonjour-browser).
+  #   Source: ~/Documents/Projects/herald-cli/HeraldCLI (Package.swift subdir)
+  #   Destination: /usr/local/bin/herald, a root-owned COPY (2026-09-18): a
+  #   symlink would point at a user-writable Swift build directory, the
+  #   privilege-escalation shape jump-system/jump-user avoid (see
+  #   install_scripts). rm -f + cp gives a fresh inode, which also sidesteps
+  #   the per-inode signature-cache staleness the re-sign step exists for.
+  # Cycle: clone if missing, fetch, fast-forward pull (refused if local
+  # diverged), build, deploy, re-sign. The upstream commit range is logged
+  # before each pull. No Sigstore/Homebrew attestation is available.
 
   local -r repo_url="https://github.com/jessedc/herald-ios-bonjour-browser.git"
   local -r src_dir="${HOME}/Documents/Projects/herald-cli"
@@ -1432,7 +1281,6 @@ function install_herald {
   local -r binary="/usr/local/bin/herald"
   local -r build_output="${pkg_dir}/.build/release/herald"
 
-  # Clone if missing, otherwise fetch + fast-forward pull
   if ! [[ -d "${src_dir}" ]]; then
     echo "[🍺] Cloning herald to ${src_dir}"
     if ! git clone --quiet "${repo_url}" "${src_dir}"; then
@@ -1476,8 +1324,8 @@ function install_herald {
 
   echo "[✅] Successfully built herald"
 
-  # Remove the stale pre-move symlink so PATH order can't keep resolving
-  # a copy that no longer tracks the source build.
+  # Old ~/.local/bin symlink: PATH order could keep resolving a copy that no
+  # longer tracks the source build.
   if [[ -L "${HOME}/.local/bin/herald" ]]; then
     rm -f "${HOME}/.local/bin/herald"
     echo "[✅] Removed stale ~/.local/bin/herald (now at /usr/local/bin, root-owned copy)"
@@ -1495,11 +1343,10 @@ function install_herald {
     return 1
   fi
 
-  # Ad-hoc re-sign after each rebuild. The stale hash is cached by the *kernel*,
-  # not Gatekeeper — macOS caches signature info per inode and does not flush it
-  # when the file's contents change, so an overwritten binary can crash on next
-  # launch. Gatekeeper/syspolicyd is a separate policy layer and is not what
-  # bites here. Signs the deployed copy directly, not the build output.
+  # Ad-hoc re-sign after each rebuild: the *kernel*, not Gatekeeper, caches
+  # signature info per inode and does not flush it when the contents change, so
+  # an overwritten binary can crash on next launch. Signs the deployed copy,
+  # not the build output.
   if sudo codesign --sign - --force "${binary}" 2>/dev/null; then
     echo "[✅] Ad-hoc signed herald"
   else
@@ -1509,10 +1356,8 @@ function install_herald {
 
 
 function install_claude {
-  # install_claude
-  #   Installs Claude Code via the official native installer
-  #   https://claude.ai/install.sh
-  #   Downloads the installer to ~/Downloads, executes it, then cleans up
+  # Official native installer, https://claude.ai/install.sh: downloaded to
+  # ~/Downloads, executed, then removed.
 
   local -r claude_binary="${HOME}/.local/bin/claude"
 
@@ -1543,7 +1388,6 @@ function install_claude {
 
 function install_brew {
 
-  # Install Homebrew
 
   if ! [[ -x "$(command -v brew)" ]]; then
 
@@ -1572,8 +1416,8 @@ function install_brew {
 
 function install_brewfile {
 
-  # Install Homebrew packages from dotfiles/.extra/Brewfile
-  # Will install programs from the Mac AppStore if user is logged in
+  # Packages from dotfiles/.extra/Brewfile; Mac App Store programs install if
+  # the user is logged in.
 
  if ! [[ -x "$(command -v mas)" ]]; then
 
@@ -1605,12 +1449,10 @@ function install_brewfile {
 
 
 function zsh_compinit_fix {
-  # zsh_compinit_fix
-  #   Secure permissions on zsh completion files at /opt/homebrew/share
+  # Secures zsh completion files at /opt/homebrew/share: removes group/other
+  # write/execute, chowns to $USER:staff.
   #   https://stackoverflow.com/a/43544733
   #   https://docs.brew.sh/Shell-Completion#configuring-completions-in-zsh
-  #   Remove group/other write/execite permissions
-  #   Change ownership to $USER:staff
 
   local -r completions_dir="$(brew --prefix)/share"
   
@@ -1631,10 +1473,8 @@ function zsh_compinit_fix {
 
 
 function open_system_preferences_mdm_profile {
-  # open_system_preferences_mdm_profile
-  # As of macOS Big Sur (11) /usr/bin/profiles can no longer install .mobileconfig profiles
-  # MDM Profiles must be installed via the GUI via System Preferences > Profiles
-  # However we can semi automate this process
+  # Since macOS Big Sur (11) /usr/bin/profiles cannot install .mobileconfig
+  # profiles; they go in via System Preferences > Profiles, semi-automated here.
   #   See: https://www.alansiu.net/2021/01/06/semi-automating-profile-installation-in-big-sur/
 
   for profile in "${SCRIPT_DIR}"/profiles/*.mobileconfig; do
@@ -1651,34 +1491,27 @@ function open_system_preferences_mdm_profile {
 
 
 function install_launchagents {
-  # install_launchagents
-  #   Copy LaunchAgent plists to ~/Library/LaunchAgents/
-  #   Copy LaunchDaemon plist to /Library/LaunchDaemons/ (must be owned by root:wheel 644)
+  # Copies agent plists to ~/Library/LaunchAgents/ and the daemon plist to
+  # /Library/LaunchDaemons/ (root:wheel 644).
   #
-  #   Plists are copied, not symlinked. Since macOS Sonoma 14.0, launchd's
-  #   automatic login scan of ~/Library/LaunchAgents/ does not follow symlinks.
-  #   Symlinked plists are silently skipped — RunAtLoad never fires.
-  #   Explicit `launchctl bootstrap` still follows symlinks, but doesn't
-  #   survive reboot. Copying is the only reliable approach.
+  # Copied, not symlinked: since macOS Sonoma 14.0 launchd's login scan of
+  # ~/Library/LaunchAgents/ does not follow symlinks, so a symlinked plist is
+  # silently skipped (RunAtLoad never fires). Explicit `launchctl bootstrap`
+  # follows symlinks but doesn't survive reboot.
   #
-  #   macOS 27 "Golden Gate" (GA 2026-09-14) confirmed a second plist hazard:
-  #   launchd no longer loads a plist carrying the com.apple.quarantine xattr
-  #   (Apple release notes, bug 166415497; cf. the objective-see/BlockBlock#106
-  #   quarantined-plist report — see internals/feedbacks.md for the filing).
-  #   `cp` preserves xattrs, so a plist quarantined upstream of this repo (a
-  #   zip download, an AirDrop) would carry the flag into the deployed copy.
-  #   Strip it after every copy — a no-op when the flag is already absent.
+  # macOS 27 (GA 2026-09-14): launchd no longer loads a plist carrying the
+  # com.apple.quarantine xattr (Apple release notes, bug 166415497). `cp`
+  # preserves xattrs, so a plist quarantined upstream (zip download, AirDrop)
+  # would carry the flag; strip it after every copy (a no-op when absent).
 
-  # LaunchAgents: copy into ~/Library/LaunchAgents/
   if mkdir -p "${HOME}/Library/LaunchAgents"; then
     for plist in "${LAUNCHAGENT_PLISTS[@]}"; do
-      # __HOME__ is expanded to the invoking user's home at copy time. launchd
-      # does NOT expand ~ or $HOME inside path values, and a literal /Users/<name>
-      # cannot live in the repo: the two Macs use different usernames, so it would
-      # be wrong on one of them, and the PII gate denies the B8 spelling outright.
-      # Plists with no token are copied byte-for-byte. Written via a temp file and
-      # validated before it replaces the live plist, so a failed sed can never
-      # leave a truncated plist that launchd silently refuses to load.
+      # __HOME__ expands to the invoking user's home at copy time: launchd does
+      # NOT expand ~ or $HOME in path values, and a literal /Users/<name> cannot
+      # live in the repo (the username differs between machines). Token-free
+      # plists are copied byte-for-byte. Written via a temp file and validated
+      # before replacing the live plist, so a failed sed can't leave a truncated
+      # plist that launchd silently refuses to load.
       agent_tmp="${HOME}/Library/LaunchAgents/.${plist}.plist.tmp"
       if sed "s|__HOME__|${HOME}|g" "${SCRIPT_DIR}/LaunchAgents/${plist}.plist" > "${agent_tmp}" \
          && plutil -lint "${agent_tmp}" >/dev/null 2>&1 \
@@ -1695,7 +1528,6 @@ function install_launchagents {
     echo "[❌] Failed to create ~/Library/LaunchAgents/"
   fi
 
-  # LaunchDaemon: copy to /Library/LaunchDaemons/ with root:wheel 644
   get_sudo "to install LaunchDaemon"
 
   if sudo cp "${SCRIPT_DIR}/LaunchDaemons/com.0xmachos.jump-system.plist" "/Library/LaunchDaemons/com.0xmachos.jump-system.plist"; then
@@ -1710,8 +1542,7 @@ function install_launchagents {
 
 
 function load_launchagents {
-  # load_launchagents
-  #   Load LaunchAgents and LaunchDaemon via launchctl bootstrap/bootout
+  # bootout then bootstrap, for agents and the daemon
 
   local -r uid=$(id -u)
 
@@ -1724,12 +1555,11 @@ function load_launchagents {
     fi
   done
 
-  # Verify imageio-oop env var took effect
+  # imageio-oop must have set IIOEnableOOP in launchd
   if [[ "$(launchctl getenv IIOEnableOOP)" != "1" ]]; then
     echo "[❌] com.0xmachos.imageio-oop loaded but IIOEnableOOP not set in launchd"
   fi
 
-  # LaunchDaemon
   get_sudo "to load LaunchDaemon"
 
   sudo launchctl bootout "system/com.0xmachos.jump-system" 2>/dev/null || true
@@ -1749,7 +1579,6 @@ function main {
   local cmd=${1:-"usage"}
 
   trap ctrl_c SIGINT
-  # Detect and react to the user hitting CTRL + C
 
   case "${cmd}" in
 
@@ -1822,15 +1651,15 @@ function main {
       load_launchagents
       ;;
     completions)
-      # Optional second arg: alternate output path (used by tests/completions
-      # to generate into $TMPDIR without mutating the tracked file).
+      # Optional second arg: alternate output path (tests/completions writes
+      # into $TMPDIR, leaving the tracked file alone).
       local out_path="${2:-${SCRIPT_DIR}/.completions/_bittersweet}"
       _generate_bittersweet_completion "${out_path}"
       echo "[✅] Regenerated ${out_path}"
       ;;
     okf-index)
-      # Optional second arg: alternate output path (used by tests/okf to
-      # generate into $TMPDIR without mutating the working-copy index.md).
+      # Optional second arg: alternate output path (tests/okf writes into
+      # $TMPDIR, leaving the working-copy index.md alone).
       local okf_out="${2:-${SCRIPT_DIR}/internals/index.md}"
       _generate_okf_index "${okf_out}"
       echo "[✅] Regenerated ${okf_out}"
@@ -1840,12 +1669,9 @@ function main {
       "${SCRIPT_DIR}/test" "$@"
       ;;
     hailmary)
-      # Execute all the functions
-      # Order matters!
-      # - System config (no dependencies)
-      # - Security tools (curl + plutil, no brew needed)
-      # - Homebrew + Brewfile (installs shellcheck, etc.)
-      # - Everything else...
+      # Order matters: system config (no dependencies), security tools (curl +
+      # plutil, no brew needed), Homebrew + Brewfile (installs shellcheck, etc.),
+      # then everything else.
       echo -e "[🍺] ${RED}Hailmary${RESET} engaged"
       sleep 3
 

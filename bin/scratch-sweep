@@ -6,80 +6,51 @@
 #
 #   scratch-sweep [--dry-run]
 #
-# Unit of deletion: each top-level entry under the root. An entry is idle when
-# nothing inside it (the entry itself included) was modified in the last 14
-# days. One recent file deep in a tree keeps the whole tree. Only writes count:
-# a tree that is read every day but never modified is still swept. An idle
-# entry is removed with `/bin/rm -rf --`: real deletion on purpose, since the
-# shell's rm alias moves files to the Trash and would not free the space. A
-# top-level symlink is removed with `/bin/rm -f --` once its own mtime is idle;
-# it is never followed, and neither is a symlink inside an entry, so nothing
-# outside the root is ever touched. Entries whose names start with a dot are
-# handled like any other, except the sweep's own lock.
+# Unit: each top-level entry of the root, dotfiles included. Idle = nothing in
+# it (itself included) modified in 14 days; one recent file deep keeps the
+# tree, and reads do not count. Idle entries go via `/bin/rm -rf --` (real
+# deletion: the shell's rm alias trashes, which frees no space); a top-level
+# symlink via `/bin/rm -f --`. Symlinks are never followed.
+# Age is in seconds (`find -mtime -1209600s`): no day rounding, 13 days 23 hours
+# is kept. Bare `-mtime -14` agreed on this macOS (2026-09-29) but leaves the
+# rounding to find.
+# Never swept: claude-<digits> (the per-uid directory of the tool owning the
+# root; it refuses a symlink or another owner) and .sweep.lock.
 #
-# Age is measured in seconds (`find -mtime -1209600s`), so there is no whole-day
-# rounding: an entry idle for 13 days 23 hours is kept, one idle for 14 days is
-# swept. The bare-day form `-mtime -14` was measured to agree on this macOS
-# (2026-09-29), but the seconds form does not depend on how find rounds days.
+# Safety (unattended recursive delete):
+#   - Root hardcoded to ${HOME}/Library/Caches/claude-tmp; only HOME moves it,
+#     and an unset, empty or relative HOME is refused.
+#   - _sweep_root_dir (the tests drive it with a fixture root) refuses a root
+#     that is not absolute, does not end in Caches/claude-tmp, has a . or ..
+#     component, is a symlink or not a directory, or is not owned by $UID (a
+#     sudo run has a different HOME and must not pass a root-owned tree).
+#   - `cd -P` into the root, then $PWD must equal the validated physical path
+#     (parents resolved, own name not); on mismatch (root swapped for a symlink
+#     after the check) abort, never fall through to the caller's directory.
+#     Entries are then named `./<name>`, listed with glob `*(DN)` (odd names
+#     inert), never given a trailing slash (`rm -rf link/` follows), and every
+#     command takes `--`.
+#   - A scan error (unreadable subdirectory) means "not idle".
+#   - The entry is scanned again just before deletion and kept if it became
+#     active. This narrows the race, it cannot close it: a write between that
+#     scan and the rm still loses.
+#   - Lock: `.sweep.lock` directory holding the owner's pid, stale when the pid
+#     is gone or the lock is over 60 minutes old (a live run touches it after
+#     every entry). A stale lock is replaced; two runs racing for it is
+#     harmless. A lock that cannot be taken (no write permission) or replaced
+#     (cannot be emptied) is "cannot take the lock", exit 1, not "held".
+#   - A missing root is normal (exit 0); nothing is created except the lock.
 #
-# Exempt entries, never swept whatever their age:
-#   - claude-<digits>: the per-uid directory the tool that owns this root
-#     creates for itself. That tool validates and manages the directory and
-#     refuses one that is a symlink or has another owner, so the sweep must
-#     neither delete nor replace it.
-#   - .sweep.lock: the sweep's own lock.
-#
-# Safety, because this runs unattended and deletes recursively:
-#   - The root is hardcoded to ${HOME}/Library/Caches/claude-tmp. No argument or
-#     environment variable other than HOME changes it, so nothing an agent can
-#     type turns this into a recursive delete of an arbitrary directory. An
-#     unset, empty or relative HOME is refused.
-#   - _sweep_root_dir, which the tests drive with a fixture root, refuses any
-#     root that is not an absolute path ending in Caches/claude-tmp, that
-#     contains a . or .. component, that is a symlink, that is not a directory,
-#     or that is not owned by the invoking uid ($UID, not "some user": a sudo
-#     run has a different HOME and must not pass a root-owned tree).
-#   - The root is entered with `cd -P` and the resulting $PWD must equal the
-#     physical path that was validated (its parents resolved, its own name
-#     not); on any mismatch (the root was swapped for a symlink between the
-#     check and the cd) the sweep aborts and never falls through to the
-#     caller's directory. From then on the sweep names
-#     entries only as `./<name>`, so every delete acts through the directory it
-#     entered, not through a path that could be re-pointed. Entries are listed
-#     with the zsh glob `*(DN)`, so a leading dash, spaces, glob characters or a
-#     newline in a name are inert. Names are never given a trailing slash
-#     (`rm -rf link/` would follow the link), and every command takes `--`.
-#   - A scan that reports any error (an unreadable subdirectory) is treated as
-#     "not idle": an entry is deleted only after a clean scan found nothing new.
-#   - Immediately before deleting, the entry is scanned again; one that became
-#     active since the first scan is kept. This narrows the race, it cannot
-#     close it: a write landing between that scan and the rm still loses.
-#   - One instance at a time: a `.sweep.lock` directory holding the owner's pid.
-#     A lock is stale when its pid no longer exists, or when it is older than 60
-#     minutes (the running sweep touches it after every entry, so a live run
-#     never ages out). A stale lock is replaced; two runs that both find the
-#     same stale lock may race for it, which is harmless because each sweep is
-#     safe on its own. A lock that cannot be taken at all (a root without write
-#     permission) or that is stale but cannot be replaced (it cannot be
-#     emptied) is reported as "cannot take the lock" with exit 1, never as a
-#     lock held by another sweep.
-#     `kill -0` also fails with EPERM, so a dead owner's pid reused by another
-#     user's process reads as gone and the lock is replaced early; the outcome is
-#     the same harmless second sweep.
-#   - A missing root is a normal state (nothing to do, exit 0); nothing is created
-#     except the lock.
-#
-# Exit status: 0 on success, on a missing root and when another sweep holds the
-# lock; 1 when any entry could not be scanned or removed (the other entries are
-# still processed), the lock path is not a directory or the lock cannot be
-# taken; 2 on a refused root, a bad argument or an unusable HOME.
-# Stdout carries one line per deletion and a closing summary (launchd routes it
-# to ~/Library/Logs/scratch-sweep.log); refusals go to stderr.
-#
-# launchd has no PATH: every binary is called by absolute path. It is a
-# launchd-driven script, so it accumulates an exit status across entries rather
-# than using `set -e`. Deployed as a root-owned copy in /usr/local/bin by
-# `./bittersweet scripts`: launchd cannot execute a program under ~/Documents.
+# Exit: 0 on success, missing root, or lock held by another sweep; 1 when any
+# entry could not be scanned or removed (the rest are still processed), the lock
+# path is not a directory, or the lock cannot be taken; 2 on a refused root, a
+# bad argument or an unusable HOME.
+# Stdout: one line per deletion plus a summary (launchd routes it to
+# ~/Library/Logs/scratch-sweep.log); refusals go to stderr.
+# launchd has no PATH, so binaries are called by absolute path, and the exit
+# status accumulates across entries instead of `set -e`. Deployed as a
+# root-owned copy in /usr/local/bin by `./bittersweet scripts`: launchd cannot
+# execute a program under ~/Documents.
 #
 # ShellCheck: lint with `shellcheck --shell=bash bin/scratch-sweep`.
 # Test: ./test scratch-sweep
@@ -102,26 +73,25 @@ function _sweep_log {
 }
 
 function _sweep_q {
-  # Shell-quote $1 so a name with a newline or control character stays on one
-  # log line.
+  # Quote $1 so a newline or control character in a name stays on one log line.
   # shellcheck disable=SC2296
   print -rn -- "${(q+)1}"
 }
 
 function _sweep_uid_of {
-  # Owner uid of $1. A function so the tests can substitute another owner.
+  # Owner uid of $1; a seam so the tests can substitute another owner.
   /usr/bin/stat -f %u "$1" 2>/dev/null
 }
 
 function _sweep_pre_delete {
-  # Called once per entry, between the first scan and the last-moment re-scan.
-  # Does nothing; the tests redefine it to make an entry busy at that instant.
+  # Seam, once per entry between the first scan and the re-scan; the tests
+  # redefine it to make an entry busy at that instant.
   return 0
 }
 
 function _sweep_check_root {
-  # Validate $1. Returns 0 when the root is usable and exists (SWEEP_PHYS is set
-  # to its physical path), 3 when it is valid but absent, 2 when refused.
+  # Validate $1: 0 usable (SWEEP_PHYS set to its physical path), 3 valid but
+  # absent, 2 refused.
   local root="$1" reason='' owner=''
   SWEEP_PHYS=''
   while [[ "${root}" == */ && "${root}" != / ]]; do
@@ -149,20 +119,21 @@ function _sweep_check_root {
     print -u2 -r -- "scratch-sweep: refusing root $(_sweep_q "${root}"): ${reason}"
     return 2
   fi
-  # Resolve the parent only: a final component that turns into a symlink after
-  # the checks above must make the cd -P below land elsewhere and abort, not be
-  # quietly followed here.
+  # Resolve the parent only: a final component turned symlink after the checks
+  # must make the later cd -P land elsewhere and abort, not be followed here.
   SWEEP_PHYS="${root:h:A}/${root:t}"
   return 0
 }
 
 function _sweep_lock_stale {
-  # Is the lock at $1 stale? True when its pid is gone or when it is older than
-  # the stale limit.
+  # True when the pid is gone or the lock is older than the stale limit.
   local lock="$1" holder='' fresh=''
   if [[ -r "${lock}/pid" ]]; then
     { holder="$(<"${lock}/pid")"; } 2>/dev/null
   fi
+  # kill -0 also fails with EPERM: a dead owner's pid reused by another user's
+  # process reads as gone, so the lock is replaced early (a harmless second
+  # sweep).
   if [[ "${holder}" =~ ^[0-9]+$ ]] && ! kill -0 "${holder}" 2>/dev/null; then
     return 0
   fi
@@ -171,10 +142,8 @@ function _sweep_lock_stale {
 }
 
 function _sweep_lock {
-  # Take ./.sweep.lock (the working directory is the root). Returns 0 when the
-  # lock is taken, 1 when another live sweep holds it (or the lock path is not
-  # a directory), 2 when it can be neither taken nor replaced. A lock whose pid
-  # is gone or that is older than the stale limit is replaced.
+  # Take ./.sweep.lock (cwd is the root): 0 taken, 1 a live sweep holds it (or
+  # the path is not a directory), 2 neither takeable nor replaceable.
   local lock="./${SWEEP_LOCK_NAME}"
   if /bin/mkdir -- "${lock}" 2>/dev/null; then
     print -r -- "$$" > "${lock}/pid"
@@ -194,8 +163,8 @@ function _sweep_lock {
       print -r -- "$$" > "${lock}/pid"
       return 0
     fi
-    # The replacement failed. Another sweep that got there first holds a live
-    # lock now (held); one that is still stale could not be removed (stuck).
+    # Replacement failed: a live lock now is another sweep's (held); one still
+    # stale could not be removed (stuck).
     if [[ -d "${lock}" && ! -L "${lock}" ]] && _sweep_lock_stale "${lock}"; then
       return 2
     fi
@@ -210,9 +179,9 @@ function _sweep_unlock {
 }
 
 function _sweep_list_names {
-  # Fill SWEEP_NAMES with the top-level names of the working directory (the
-  # root), dotfiles included, symlinks unresolved. The lock and the owning
-  # tool's claude-<digits> directory are not entries: the second is counted.
+  # Fill SWEEP_NAMES with the root's top-level names, dotfiles included,
+  # symlinks unresolved. The lock and claude-<digits> are not entries; the
+  # latter is counted.
   local name=''
   local -a found
   SWEEP_NAMES=()
@@ -231,9 +200,9 @@ function _sweep_list_names {
 }
 
 function _sweep_recent {
-  # Is anything in ./$1 (itself included, symlinks not followed) newer than the
-  # idle limit? Returns 0 when something is, 1 when nothing is, 2 when the scan
-  # failed and found nothing.
+  # 0 when anything in ./$1 (itself included, symlinks not followed) is newer
+  # than the idle limit, 1 when nothing is, 2 when the scan failed and found
+  # nothing.
   local recent=''
   local -i scan_rc=0
   recent="$(/usr/bin/find -P "./$1" -mtime "-${SWEEP_IDLE_SECONDS}s" -print -quit 2>/dev/null)"
@@ -248,7 +217,7 @@ function _sweep_recent {
 }
 
 function _sweep_entry {
-  # Consider ./$1 of the working directory. $2 is 1 for a dry run.
+  # Consider ./$1; $2 is 1 for a dry run.
   local name="$1" dry="$2"
   local -i scan_rc=0
   if [[ -z "${name}" || "${name}" == . || "${name}" == .. || "${name}" == */* ]]; then
@@ -308,8 +277,7 @@ function _sweep_entry {
 }
 
 function _sweep_process {
-  # Sweep every entry of the working directory ($1 is 1 for a dry run). Returns
-  # 1 when any entry failed.
+  # Sweep every entry ($1 is 1 for a dry run); 1 when any entry failed.
   local name=''
   local -i rc=0
   _sweep_list_names
@@ -326,15 +294,15 @@ function _sweep_process {
 }
 
 function _sweep_leave {
-  # Return to directory $1 (the caller's), best effort: if it is gone there is
-  # nothing to restore and the sweep is already finished.
+  # Return to the caller's directory $1, best effort: if it is gone there is
+  # nothing to restore.
   builtin cd -- "$1" 2>/dev/null || return 0
 }
 
 function _sweep_enter {
-  # cd into physical root $1 and prove it is the directory that was validated.
-  # Returns 0 in the root; on any failure returns 1 with the working directory
-  # restored, so the caller can never run a relative delete elsewhere.
+  # cd into physical root $1 and prove it is the validated directory. On any
+  # failure return 1 with the cwd restored, so no relative delete runs
+  # elsewhere.
   local phys="$1" here="${PWD}"
   if ! builtin cd -P -- "${phys}" 2>/dev/null; then
     print -u2 -r -- "scratch-sweep: refusing root $(_sweep_q "${phys}"): cannot enter it"
@@ -349,8 +317,8 @@ function _sweep_enter {
 }
 
 function _sweep_root_dir {
-  # Sweep root $1; $2 is --dry-run or empty. The tests call this directly with
-  # a fixture root; main calls it with the hardcoded one.
+  # Sweep root $1; $2 is --dry-run or empty. The tests call it with a fixture
+  # root, main with the hardcoded one.
   local root="$1" mode="${2:-}" here="${PWD}"
   local -i dry=0 rc=0 check_rc=0 lock_rc=0
   if [[ "${mode}" == --dry-run ]]; then dry=1; fi

@@ -1,27 +1,20 @@
 #!/bin/zsh
 # dotfiles/bin/op-homelab
-# Run op authenticated as a scoped 1Password Service Account instead of the
-# desktop-app integration. For unattended use (Remote Control sessions,
-# LaunchAgents) where nobody can approve a Touch ID prompt.
+# Runs op as a scoped 1Password Service Account instead of the desktop-app
+# integration, for unattended use (Remote Control sessions, LaunchAgents) where
+# nobody can approve a Touch ID prompt.
 #
-# The Keychain item that holds the token is named in an untracked file,
+# Keychain item names are private wiring, kept out of this tracked file, in
 # ~/Library/Application Support/op-homelab/keychain-item, two lines:
 #   service=<keychain service name>
 #   account=<keychain account name>
-# The names are private wiring, so they never sit in this tracked file.
-# Token: login Keychain item under those names. Copy the ops_ token to the
-# clipboard, then store/rotate with the command this script prints as its
-# store hint (security add-generic-password -U -s <service> -a <account>
-# -w "$(pbpaste)" ~/Library/Keychains/login.keychain-db).
-# NB: add-generic-password's -w TAKES a value (unlike find-generic-password's
-# boolean -w), so the keychain path must stay positional — a bare "-w <path>"
-# silently stores the path as the token. Only $(pbpaste) reaches shell history.
+# The ops_ token is the login Keychain item under those names; copy it to the
+# clipboard, then store/rotate with the store hint this script prints.
 #
-# Never export OP_SERVICE_ACCOUNT_TOKEN ambiently — it overrides the
-# desktop-app biometric auth path for every op call in that environment.
-# Prefer `op-homelab run`/`inject` over `read`: run/inject deliver secrets
-# to the child process environment; read prints them to stdout (and into
-# Claude Code transcripts).
+# Never export OP_SERVICE_ACCOUNT_TOKEN ambiently: it overrides the desktop-app
+# biometric path for every op call. Prefer `op-homelab run`/`inject` over
+# `read`: run/inject put secrets in the child's environment, read prints them
+# to stdout (and into agent transcripts).
 
 set -euo pipefail
 IFS=$'\n\t'
@@ -40,13 +33,15 @@ if [[ -z "${KEYCHAIN_SERVICE}" || -z "${KEYCHAIN_ACCOUNT}" ]]; then
 fi
 readonly KEYCHAIN_SERVICE KEYCHAIN_ACCOUNT
 readonly LOGIN_KEYCHAIN="${HOME}/Library/Keychains/login.keychain-db"
+# add-generic-password's -w TAKES a value (find-generic-password's is boolean),
+# so the keychain path stays positional: a bare "-w <path>" stores the path as
+# the token. Only $(pbpaste) reaches shell history.
 readonly STORE_HINT="security add-generic-password -U -s ${KEYCHAIN_SERVICE} -a ${KEYCHAIN_ACCOUNT} -w \"\$(pbpaste)\" ${LOGIN_KEYCHAIN}"
 
 token=""
 if ! token="$(/usr/bin/security find-generic-password -s "${KEYCHAIN_SERVICE}" \
     -a "${KEYCHAIN_ACCOUNT}" -w "${LOGIN_KEYCHAIN}" 2>/dev/null)"; then
-  # Rerun for diagnostics only — distinguish "item not found" from
-  # keychain access/tool failures (locked keychain, wrong path, etc.)
+  # Rerun for diagnostics only: "item not found" vs a keychain/tool failure.
   keychain_err="$(/usr/bin/security find-generic-password -s "${KEYCHAIN_SERVICE}" \
     -a "${KEYCHAIN_ACCOUNT}" -w "${LOGIN_KEYCHAIN}" 2>&1 1>/dev/null || true)"
   if [[ "${keychain_err}" == *"could not be found"* ]]; then
@@ -66,10 +61,9 @@ if [[ -z "${token}" ]]; then
   exit 1
 fi
 
-# op run hands the child op's whole environment plus the resolved op://
-# values — including OP_SERVICE_ACCOUNT_TOKEN itself (confirmed empirically
-# 2026-07-11). Interpose env -u after `--` so children get the resolved
-# secrets but not the vault-unlocking token.
+# op run hands the child its whole environment plus the resolved op:// values,
+# OP_SERVICE_ACCOUNT_TOKEN included (confirmed 2026-07-11), so interpose
+# env -u after `--`: children get the secrets but not the token.
 args=("$@")
 if [[ "${1:-}" == "run" ]]; then
   sep="${args[(i)--]}"
@@ -83,8 +77,8 @@ op_status=0
 OP_SERVICE_ACCOUNT_TOKEN="${token}" /opt/homebrew/bin/op "${args[@]}" || op_status=$?
 
 # op exits 1 for auth and non-auth failures alike, and buffering stderr to
-# classify would break live log streaming for long-running MCP children —
-# so the hint stays conditional rather than classified.
+# classify would break live log streaming for long-running MCP children, so
+# the hint stays conditional.
 if (( op_status != 0 )); then
   echo "[⚠️] op exited ${op_status}. If this was an auth error the token is expired or revoked." >&2
   echo "     Rotate: 1password.com → Developer → Service accounts → ${KEYCHAIN_ACCOUNT} → Rotate Token," >&2

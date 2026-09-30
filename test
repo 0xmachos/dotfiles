@@ -1,49 +1,37 @@
 #!/usr/bin/env zsh
 # dotfiles/test
 #
-# Dispatcher for dotfiles test suites. Each suite lives in tests/<name>
-# (extensionless, sourced — not executed) so pass/fail/skip counters
-# aggregate into a single final summary.
+# Dispatcher for tests/<name> suites (extensionless, sourced — not executed),
+# so pass/fail/skip counters aggregate into one summary.
 #
 # Usage:
-#   ./test                       # runs all suites, in parallel
-#   ./test -j 1                  # runs all suites serially, in one shell
-#   ./test --time                # ...and prints a per-suite wall-time table
-#   ./test <suite>               # runs one suite
+#   ./test                       # all suites, in parallel
+#   ./test -j N                  # N workers; -j 1 = serial, one shell
+#   ./test --time                # ...and a per-suite wall-time table
+#   ./test <suite>               # one suite
 #   ./test --help                # lists suites
 #
-# The full run is parallel by default (2026-09-29): every suite already
-# sandboxes its writes under $TMPDIR (mktemp), reads real $HOME read-only and
-# passed standalone, so suites are order-independent and the only cost of the
-# serial run was wall time — 164 s measured, of which git-sign alone was 39 s.
-# Each worker is `./test <suite>` in child mode (DOTFILES_TEST_CHILD set): it
-# sources tests/lib and the one suite exactly as before, then writes its
-# counters to a file instead of printing a summary. The parent prints each
-# child's captured output in SUITES order as it lands, sums the counters into
-# the one final summary, and turns a child that died without reporting (a
-# stray `exit`, a `set -e` abort) into a FAIL naming the suite and exit code —
-# the serial run used to truncate silently in that case. `-j 1` keeps the
-# original in-process path: one shell, suites sourced in sequence.
+# Parallel by default since 2026-09-29: suites write only under $TMPDIR and
+# read real $HOME read-only, so they are order-independent.
+# Each worker is `./test <suite>` with DOTFILES_TEST_CHILD set: it sources
+# tests/lib and its one suite and writes counters to a file, no summary. The
+# parent replays child output in SUITES order, sums the counters into the one
+# summary, and turns a child that died without reporting (a stray `exit`, a
+# `set -e` abort) into a FAIL naming the suite and exit code.
 
 set -euo pipefail
-# -e exit if any command returns non-zero status code
-# -u prevent using undefined variables
-# -o pipefail force pipelines to fail on first non-zero status code
 
-# $EPOCHREALTIME is 0 until this module is loaded (a 2026-09-25 timing loop
-# printed 0.0 s for every suite for exactly that reason).
+# $EPOCHREALTIME is 0 until this module is loaded.
 zmodload zsh/datetime
 
-# Reset terminal attributes only when there is a terminal to reset: over a
-# non-tty SSH session TERM is unset, tput exits 2, and -e would abort the
-# whole run before the first suite.
+# Only with a tty: over non-tty SSH TERM is unset, tput exits 2, and -e would
+# abort before the first suite.
 if [[ -t 1 && -n "${TERM:-}" ]]; then
   /usr/bin/tput sgr0
 fi
 
 # A non-login shell (ssh host 'cmd', launchd) has no Homebrew on PATH, so
-# `command -v gh`/jq/shellcheck would report "not installed" and every suite
-# that needs them would skip. Add it once, in front, if it is missing.
+# gh/jq/shellcheck read as "not installed" and their suites skip.
 if [[ -d /opt/homebrew/bin && ":${PATH}:" != *:/opt/homebrew/bin:* ]]; then
   export PATH="/opt/homebrew/bin:${PATH}"
 fi
@@ -51,22 +39,18 @@ fi
 readonly SCRIPT_DIR="${0:A:h}"
 cd "${SCRIPT_DIR}"
 
-# SC1091: source path contains a variable; shellcheck follows it only with
-# `-x`. The `source=` directive documents the target for `shellcheck -x` runs.
+# SC1091: the source path holds a variable; `source=` names the target for -x.
 # shellcheck source=tests/lib disable=SC1091
 source "${SCRIPT_DIR}/tests/lib"
 
 readonly -a SUITES=(shellcheck test-helpers sha sidebar extensions plutil linkage completions okf agents-md jump rm-redirect ssh-redirect git-sign gh-auth container-tmp md5-guard md5-write gh-publish hook-links pii-hook agent-reset bao-mcp-env pii-tree message-policy statusline fetch-route muse-exec session-host-context lint-hook git-bypass tmp-guard scratch-sweep)
 
-# Optional, per-clone suites: one name per line in .extra_test_suites
-# (gitignored by the .extra* pattern, like .extra_gitexclude). They cover
-# private tools that must not be named in the tracked SUITES array. A listed
-# suite whose file is absent is SKIPPED under `./test` (the clone may not
-# carry the private tool) but an explicit `./test <name>` for it still
-# fails — an explicit request never skips. The mandatory array above stays
-# fail-closed: a missing mandatory suite still aborts the run. Malformed
-# lines (anything but [a-z0-9-]) abort the run even under `./test`, so a
-# typo cannot silently drop a suite. Added 2026-09-17 for tests/steam.
+# Per-clone suites: one name per line in .extra_test_suites (gitignored via
+# .extra*), for private tools that must not be named in the tracked SUITES.
+# A listed suite whose file is absent is SKIPPED under `./test`, but an
+# explicit `./test <name>` still fails. SUITES stays fail-closed: a missing
+# mandatory suite aborts the run. Malformed lines (not [a-z0-9-]) abort even
+# under `./test`, so a typo cannot silently drop a suite.
 typeset -a EXTRA_SUITES=()
 function _load_extra_suites {
   local registry="${SCRIPT_DIR}/.extra_test_suites" line
@@ -82,8 +66,7 @@ function _load_extra_suites {
 }
 _load_extra_suites
 
-# Per-suite wall time in seconds, filled by both the serial and the parallel
-# full run, printed by --time.
+# Per-suite wall seconds, filled by both full runs, printed by --time.
 typeset -A SUITE_SECONDS=()
 typeset -a SUITE_ORDER=()
 
@@ -103,16 +86,15 @@ function _run_suite {
   "run_${suite//-/_}" "$@"
 }
 
-# Four workers, not hw.ncpu. The suites are bound by process-spawn latency,
-# not CPU (2026-09-29: 200 spawns of /usr/bin/true took 1.2 s serially and
-# eight such loops in parallel gained only 1.8x throughput), so more workers
-# mostly queue behind the same serialised exec path. Measured on the same afternoon: serial 163 s, -j 2 120 s,
+# Four workers, not hw.ncpu: the suites are bound by process-spawn latency,
+# not CPU (2026-09-29: 200 spawns of /usr/bin/true took 1.2 s serially; eight
+# such loops in parallel gained only 1.8x). Same day: serial 163 s, -j 2 120 s,
 # -j 4 71 s, -j 10 129 s. Override with -j N or TEST_JOBS.
 function _default_jobs {
   echo 4
 }
 
-# Serial full run: the original path — every suite sourced into this shell.
+# Serial full run (-j 1): every suite sourced into this shell.
 function _run_all_serial {
   local s t0
   for s in "${SUITES[@]}"; do
@@ -134,18 +116,15 @@ function _run_all_serial {
   done
 }
 
-# Parallel full run: one `./test <suite>` child per suite, N at a time via
-# xargs -P. Child output goes to <work>/<suite>.out, its exit code to
-# <suite>.rc, and its counters (see _child_main) to <suite>.counts. The parent
-# replays the outputs in SUITES order — an absent extra suite is skipped
-# inline at its position, exactly where the serial run reports it.
+# Parallel full run: one child per suite via xargs -P. Output goes to
+# <work>/<suite>.out, exit code to .rc, counters to .counts. An absent extra
+# suite is skipped inline at its position, where the serial run reports it.
 function _run_all_parallel {
   local jobs="$1" work s rc p f k secs
   local -a runnable=()
   work="$(mktemp -d "${TMPDIR:-/tmp}/dotfiles-test.XXXXXX")"
-  # EXIT covers the normal return (a trap set in a function fires when the
-  # function returns); INT/TERM cover a Ctrl-C in the poll loop, which
-  # otherwise leaves the work directory behind in $TMPDIR.
+  # EXIT covers normal return (a trap set in a function fires when it returns);
+  # INT/TERM cover Ctrl-C in the poll loop, else the work dir stays in $TMPDIR.
   # shellcheck disable=SC2064  # expand now: the path never changes
   trap "/bin/rm -rf '${work}'" EXIT
   # shellcheck disable=SC2064  # expand now: the path never changes
@@ -155,9 +134,8 @@ function _run_all_parallel {
     [[ -f "${SCRIPT_DIR}/tests/${s}" ]] && runnable+=("${s}")
   done
 
-  # -I{} runs one child per line; the argv-passed work dir and script path
-  # keep the child command free of quoting. Stdout and stderr both land in
-  # .out so a child's diagnostics stay next to its PASS/FAIL lines.
+  # -I{} runs one child per line; passing work dir and script path as argv
+  # keeps the child command free of quoting. stderr joins .out too.
   # shellcheck disable=SC2016  # the child shell expands $1..$3, not this one
   printf '%s\n' "${runnable[@]}" \
     | /usr/bin/xargs -P "${jobs}" -I{} /bin/zsh -c \
@@ -201,8 +179,7 @@ function _print_times {
   done | /usr/bin/sort -rn
 }
 
-# Child mode: run the one suite this worker owns, then hand the counters back
-# to the parent through a file. No summary — the parent prints the only one.
+# Child mode: run the one suite, hand the counters back through a file.
 function _child_main {
   local suite="$1" t0="${EPOCHREALTIME}"
   _run_suite "${suite}"
@@ -242,9 +219,8 @@ function main {
 
   case "${filter}" in
     all)
-      # Print something before any suite runs: the parallel parent stays
-      # silent until the first suite in SUITES order finishes, which reads
-      # as a hung run. Never reached by a child (children get a suite name).
+      # Print first: the parallel parent is silent until the first suite in
+      # SUITES order finishes, which reads as a hang. Children never get here.
       mode="${jobs} workers"; (( jobs == 1 )) && mode="serial"
       echo "./test started $(strftime '%Y-%m-%d %H:%M:%S' "${EPOCHSECONDS}") (${mode})"
       if (( jobs == 1 )); then
@@ -254,7 +230,7 @@ function main {
       fi
       ;;
     *)
-      # zsh: (Ie) returns the 1-based index of an exact match, 0 if missing.
+      # (Ie): 1-based index of an exact match, 0 if missing.
       if (( ${SUITES[(Ie)${filter}]} == 0 && ${EXTRA_SUITES[(Ie)${filter}]} == 0 )); then
         echo "[FAIL] Unknown suite: ${filter}"
         _usage

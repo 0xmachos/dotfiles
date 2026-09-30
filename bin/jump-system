@@ -1,28 +1,20 @@
 #!/usr/bin/env zsh
 # dotfiles/bin/jump-system
 #
-# jump-system
-#   System-level update script (runs as root via LaunchDaemon)
-#   Updates: macOS, LaTeX (tlmgr), XProtect
-#   Designed to be run by LaunchDaemon com.0xmachos.jump-system
-#   Can also be run manually with sudo
+# System-level updater for macOS, LaTeX (tlmgr) and XProtect. Runs as root from
+# LaunchDaemon com.0xmachos.jump-system; can also be run manually with sudo.
 
 set -uo pipefail
 
-# Root logs only to /var/log, a root-owned directory.
-#
-# Earlier revisions pointed this at the console user's ~/Library/Logs/jump.log
-# so both drivers shared one file. That directory is user-writable, so the
-# final path component is attacker-controlled, and touch/chown/append all
-# follow symlinks: a symlink planted there redirected root's chown onto any
-# file on disk — a user-to-root escalation. No check-then-write guard fixes
-# that safely (it races), so root simply never touches a user-writable path.
-#
-# jump-user keeps its own ~/Library/Logs/jump.log. The two are correlated
-# through syslog, which both drivers already write via the com.0xmachos.jump
-# tag: log show --predicate 'eventMessage CONTAINS "com.0xmachos.jump"'
-# Not readonly: tests source this script and redirect LOG_FILE to a temp file,
-# and bin/jump-user declares its own the same way.
+# Root logs only to /var/log, a root-owned directory. In a user-writable one
+# (~/Library/Logs) the final path component is attacker-controlled and
+# touch/chown/append follow symlinks, so a planted symlink would turn root's
+# chown into a user-to-root escalation; a check-then-write guard races.
+# jump-user keeps its own ~/Library/Logs/jump.log; both write syslog under tag
+# com.0xmachos.jump, which correlates them:
+#   log show --predicate 'eventMessage CONTAINS "com.0xmachos.jump"'
+# Not readonly: tests source this script and point LOG_FILE at a temp file, as
+# bin/jump-user does.
 LOG_FILE="/var/log/jump.log"
 
 function run_and_log {
@@ -35,10 +27,9 @@ function run_and_log {
   else
     rc=$?
     logger -t "com.0xmachos.jump" "[FAIL] ${description}"
-    # A failed redirect is silent here: there is no errexit, and the redirect's
-    # status does not reach rc. An unwritable LOG_FILE would discard every
-    # failure detail while syslog still showed [FAIL], so report the write
-    # failure itself to the sink that cannot fail.
+    # No errexit, so a failed redirect is silent and its status never reaches
+    # rc. Report an unwritable LOG_FILE to syslog, the sink that cannot fail,
+    # or every failure detail is lost while syslog still shows [FAIL].
     if ! {
       echo "[$(date '+%Y-%m-%d %H:%M:%S')] [FAIL] ${description}"
       echo "${output}"
@@ -54,8 +45,8 @@ function check_internet_connection {
   local -a domains=("captive.apple.com" "google.com" "flightywifi.com")
   local domain reachability
 
-  # Tests may supply a fixture command when sourcing this function. main calls
-  # it without arguments, so launchd always uses the fixed system binary.
+  # Optional $1 is a test fixture command; main passes none, so launchd always
+  # runs /usr/sbin/scutil.
   for domain in "${domains[@]}"; do
     if reachability=$("${1:-/usr/sbin/scutil}" -r "${domain}") \
         && [[ $'\n'"${reachability}" == *$'\n'Reachable* ]]; then
@@ -77,8 +68,8 @@ function main {
   local -r XPROTECT_BINARY="/usr/bin/xprotect"
   local -r XPROTECT_APP="/Library/Apple/System/Library/CoreServices/XProtect.app/Contents/MacOS/XProtect"
 
-  # Accumulate step failures — main runs steps sequentially, so without this it
-  # would exit with only the LAST step's status and mask an earlier failure.
+  # Accumulate step failures: otherwise main exits with only the LAST step's
+  # status and masks an earlier failure.
   local rc=0
 
   ## macOS ##
@@ -87,8 +78,8 @@ function main {
   fi
 
   ## LaTeX ##
-  # GPG repo verification disabled: gnupg not installed, SHA-512 checksums
-  # and HTTPS transport still protect package integrity. See TODOs.md.
+  # GPG repo verification off: gnupg not installed; SHA-512 checksums and HTTPS
+  # still protect package integrity.
   if [[ -x "${TLMGR_BINARY}" ]]; then
     run_and_log "tlmgr update --self" "${TLMGR_BINARY}" --verify-repo=none update --self || rc=1
     run_and_log "tlmgr update --all"  "${TLMGR_BINARY}" --verify-repo=none update --all || rc=1

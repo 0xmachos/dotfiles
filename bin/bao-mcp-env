@@ -6,30 +6,21 @@
 #   kv-subpath  path under the kv/ mount, e.g. mcp/example-service
 #   command     binary to exec with the secret's fields in its environment
 #
-# Laptop port of the server-side loader (private repo) — identical except
-# the connection config: the server address is read from the untracked
-# credential directory (addr, one line), and the listener cert chains to
-# the step-ca root that `step ca bootstrap` wrote locally. Authenticates
-# with this laptop's AppRole (creds under
-# ~/Library/Application Support/openbao/claude/, 0600 — moved 2026-09-18
-# from ~/.config/openbao/claude/, dotfiles internals/linux-path-audit.md;
-# Secrets-Architecture §6.6).
-# Reads the whole secret and exports every field verbatim as an
-# environment variable — kv/mcp/* entries store literal env-var names as
-# field keys (§7), so this loader has no per-server logic. Mirrors
-# `op run --env-file` semantics: per-process env only, nothing on disk,
-# never launchctl setenv.
-#
-# Re-authenticates every call with the §6.3 reusable-SecretID pattern.
-# The short-TTL token is revoked BEFORE exec — an EXIT trap would die
-# with the process image — and BAO_TOKEN is unset so the target command
-# never inherits it.
+# Laptop port of the server-side loader; only the connection config differs:
+# address from the untracked credential dir (addr, one line), listener cert
+# chained to the step-ca root that `step ca bootstrap` wrote locally, AppRole
+# creds in ~/Library/Application Support/openbao/claude/ (0600).
+# Exports every field of the secret verbatim (kv/mcp/* keys are literal env-var
+# names, so no per-server logic). Like `op run --env-file`: per-process env
+# only, nothing on disk, never launchctl setenv.
+# Re-authenticates every call (reusable SecretID). The token is revoked BEFORE
+# exec (an EXIT trap would die with the process image) and BAO_TOKEN unset, so
+# the command never inherits it.
 
 set -eu
 
-# Seams (tests/bao-mcp-env): BAO_MCP_ENV_BAO BAO_MCP_ENV_JQ. CRED_DIR below
-# isn't independently overridable — tests point HOME at a fixture instead,
-# so this file's own path construction runs unmodified.
+# Seams (tests/bao-mcp-env): BAO_MCP_ENV_BAO, BAO_MCP_ENV_JQ. CRED_DIR has
+# none: tests point HOME at a fixture so the path construction runs unmodified.
 BAO="${BAO_MCP_ENV_BAO:-/opt/homebrew/bin/bao}"
 JQ="${BAO_MCP_ENV_JQ:-$(command -v jq || echo /opt/homebrew/bin/jq)}"
 export BAO_CACERT="${HOME}/.step/certs/root_ca.crt"
@@ -49,8 +40,7 @@ if [ ! -r "$CRED_DIR/role_id" ] || [ ! -r "$CRED_DIR/secret_id" ]; then
     exit 1
 fi
 
-# The server address is private wiring (an overlay-network address), so it
-# lives beside the credentials, never in this tracked file. One line, https URL.
+# The address is private wiring: beside the credentials, never in this file.
 if [ ! -r "$CRED_DIR/addr" ]; then
     echo "bao-mcp-env: server address file missing or unreadable: $CRED_DIR/addr" >&2
     exit 1
@@ -62,9 +52,8 @@ case "$BAO_ADDR" in
 esac
 export BAO_ADDR
 
-# Pass the credentials by @file, not by value: an argv-borne secret is readable
-# by any local user via ps(1) for the lifetime of the call. bao's own arg parser
-# loads a value from a file when it begins with "@".
+# Credentials go by @file, not value: argv is readable via ps(1) for the call's
+# lifetime. bao loads a value from a file when it begins with "@".
 if ! BAO_TOKEN="$("$BAO" write -field=token auth/approle/login \
     role_id="@$CRED_DIR/role_id" secret_id="@$CRED_DIR/secret_id" 2>/dev/null)"; then
     echo "bao-mcp-env: AppRole login failed (server sealed/down, or overlay path broken?)" >&2
@@ -81,9 +70,8 @@ fi
 "$BAO" token revoke -self >/dev/null 2>&1 || true
 unset BAO_TOKEN
 
-# Field keys become env var names verbatim; @sh single-quotes each value.
-# Keys are validated so a malformed kv entry fails loudly instead of
-# reaching eval.
+# @sh single-quotes each value; keys are validated so a malformed kv entry
+# fails loudly instead of reaching eval.
 exports="$(printf '%s' "$secret_json" | "$JQ" -r '
     .data.data | to_entries[]
     | if (.key | test("^[A-Za-z_][A-Za-z0-9_]*$")) then .

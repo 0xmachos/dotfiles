@@ -1,16 +1,13 @@
 #!/usr/bin/env zsh
 # dotfiles/bin/dns
 
-# dns.sh
-  # Get the IP address of a domain using DNS over HTTPS
-  # https://developers.cloudflare.com/1.1.1.1/dns-over-https/json-format/
-  # Symlink to /usr/local/bin/dns
-  # alias dns='dns'
+# dns.sh — get the IP address of a domain using DNS over HTTPS
+# https://developers.cloudflare.com/1.1.1.1/dns-over-https/json-format/
+# Symlink to /usr/local/bin/dns
 
 
 ### Define Colours ###
 tput sgr0; 
-# reset colors
 
 RESET=$(tput sgr0)
 readonly RESET

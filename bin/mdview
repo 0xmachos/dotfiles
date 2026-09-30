@@ -4,14 +4,12 @@ IFS=$'\n\t'
 
 # mdview — render a markdown file as GitHub-styled HTML and open in browser
 #
-# Uses pandoc for GFM conversion and the GitHub Primer CSS extracted from
-# Sublime Text's MarkdownPreview plugin for identical styling.
-#
 # Usage: mdview [-o output.html] <file.md>
 #
-# The CSS is cached at ~/.config/mdview/github-primer.css. On first run
-# (or if the cache is missing), it's extracted from a Sublime MarkdownPreview
-# HTML file in TMPDIR, or downloaded from cdnjs as a fallback.
+# pandoc does the GFM conversion. The GitHub Primer CSS is cached at
+# ~/.config/mdview/github-primer.css; on first run (or a missing cache) it is
+# extracted from a Sublime MarkdownPreview HTML file in TMPDIR, else downloaded
+# from cdnjs.
 #
 # ShellCheck: shellcheck --shell=bash (zsh script, ~95% overlap)
 
@@ -37,8 +35,6 @@ ensure_css() {
 
   mkdir -p "${CSS_DIR}"
 
-  # Extract CSS from Sublime Text's MarkdownPreview output if available.
-  # Look for any .html in TMPDIR that contains github-primer CSS.
   local sublime_html
   sublime_html="$(find "${TMPDIR}" -maxdepth 1 -name '*.html' -print0 2>/dev/null \
     | xargs -0 grep -l 'markdown-body' 2>/dev/null \
@@ -51,7 +47,6 @@ ensure_css() {
     return
   fi
 
-  # Fallback: download GitHub's markdown CSS (latest version via cdnjs API)
   printf 'No Sublime MarkdownPreview output found in TMPDIR.\n' >&2
   printf 'Open any .md in Sublime, run "Markdown Preview: Preview in Browser" once,\n' >&2
   printf 'then re-run mdview to cache the CSS.\n' >&2
@@ -76,7 +71,6 @@ render() {
   local basename
   basename="${input_file:t:r}"
 
-  # If no output path specified, create a temp directory
   if [[ -z "${output_file}" ]]; then
     local tmpdir
     tmpdir="$(mktemp -d "${TMPDIR}mdview-XXXXXX")"
