@@ -1,8 +1,8 @@
 #!/bin/zsh
 # dotfiles/tests/jump
 #
-# Tests for jump-user and jump-system scripts. Verifies internet
-# connectivity checks, binary detection, and logging behaviour.
+# Pins jump-user and jump-system: connectivity checks, binary detection,
+# logging, and the launchd-path rules below.
 #
 # ShellCheck: lint with `shellcheck --shell=bash tests/jump`.
 # This file is sourced, not executed — chmod 644.
@@ -33,9 +33,8 @@ function _jump_test_scripts_exist {
   fi
 }
 
-# Exercise the real connectivity gate with deterministic scutil output. No
-# network or updater runs; the optional command argument leaves main's fixed
-# /usr/sbin/scutil path intact.
+# Real connectivity gate against scutil fixtures: no network or updater runs.
+# The optional command argument keeps main's fixed /usr/sbin/scutil intact.
 function _jump_test_reachability {
   _section "reachability (real functions, offline fixtures)"
 
@@ -61,8 +60,8 @@ MOCK
   local reachable_domain probe_status
   for script in bin/jump-user bin/jump-system; do
     name="${script##*/}"
-    # First-host success formats, rejection formats, fallback success, and a
-    # failed scutil that misleadingly printed Reachable before exiting.
+    # First-host success, rejection, fallback success, and a failed scutil
+    # that printed Reachable before exiting.
     for output in "${formats[@]}" fallback command-error; do
       reachable_domain=captive.apple.com
       probe_status=0
@@ -112,14 +111,12 @@ MOCK
   /bin/rm -rf "${fixture}"
 }
 
-# Verifies every *_BINARY/*_APP path declared in the jump-suite scripts
-# exists on this system. The list is derived from the scripts themselves
-# rather than hand-maintained here — a parallel list drifts silently when
-# a script gains a new updater.
+# Every *_BINARY/*_APP path the scripts declare exists. Derived from the
+# scripts, not listed here: a parallel list drifts silently.
 function _jump_test_binary_paths {
   _section "binary paths (derived from scripts)"
 
-  # brew is the one hard requirement — jump-user aborts without it
+  # brew is the one hard requirement: jump-user aborts without it
   if [[ -x "/opt/homebrew/bin/brew" ]]; then
     _pass "brew exists at /opt/homebrew/bin/brew"
   else
@@ -152,8 +149,7 @@ function _jump_test_binary_paths {
   fi
 }
 
-# Verifies the scripts parse under real zsh — the shellcheck suite lints in
-# bash mode, which cannot catch zsh-only syntax errors.
+# zsh -n: the shellcheck suite lints in bash mode and misses zsh-only errors.
 function _jump_test_zsh_syntax {
   _section "zsh syntax"
 
@@ -185,9 +181,8 @@ function _jump_test_log_file {
     return
   fi
 
-  # This is jump-user's log; jump-system writes separately to /var/log.
-  # A root-owned file left by the retired shared-log setup can still prevent
-  # jump-user from recording failures.
+  # jump-user's log; jump-system writes to /var/log. A root-owned file left
+  # by the retired shared-log setup can still block jump-user's appends.
   if [[ -w "${log_file}" ]]; then
     _pass "jump.log is writable by the console user"
   else
@@ -195,10 +190,8 @@ function _jump_test_log_file {
   fi
 }
 
-# Exercises the REAL run_and_log from each driver and asserts its RETURN CODE,
-# not just the log side-effect. The previous version reimplemented the function
-# body inline and only checked the log file, so it could not have caught a
-# run_and_log that swallowed a non-zero exit — the exact B1/B2 exit-swallow bug.
+# The real run_and_log from each driver; asserts the RETURN CODE, not just the
+# log side effect, so a swallowed non-zero exit is caught.
 function _jump_test_run_and_log {
   _section "run_and_log (real functions)"
 
@@ -208,14 +201,11 @@ function _jump_test_run_and_log {
     test_log="${TMPDIR}test-jump-$$-${name}.log"
     /bin/rm -f "${test_log}"
 
-    # Source the real function without triggering `main "$@"`, in a subshell so
-    # its definitions don't leak into the test shell, and capture the code it
-    # returns. `set +e` because the runner (test) uses `set -e` and the failure
-    # case below runs a command that returns non-zero on purpose — without it
-    # the subshell would abort before `echo "$?"`. LOG_FILE is redirected to a
-    # temp file the failure branch appends.
-    # SC2034: LOG_FILE is read by the sourced run_and_log; SC1090/SC1091: the
-    # source target is a dynamic process substitution.
+    # Sourced without `main "$@"`, in a subshell so definitions don't leak.
+    # `set +e`: the runner uses `set -e` and the failure case returns non-zero
+    # on purpose, which would abort the subshell before `echo "$?"`.
+    # SC2034: LOG_FILE is read by the sourced run_and_log; SC1090/SC1091:
+    # dynamic process-substitution source.
     # shellcheck disable=SC1090,SC1091,SC2034
     rc_true=$(set +e; source <(/usr/bin/grep -v '^main "\$@"' "${script}"); LOG_FILE="${test_log}"; run_and_log "ok step" /usr/bin/true >/dev/null 2>&1; echo "$?")
     if [[ "${rc_true}" == "0" ]]; then
@@ -246,24 +236,19 @@ function _jump_test_run_and_log {
   done
 }
 
-# The two launchd-path tests below guard a class, not an instance: a program
-# invoked by launchd that resolves under ~/Documents/ cannot be exec'd once the
-# TCC grant resets. launchd reports a bare 127 — indistinguishable from
-# "command not found" — and the program dies before it can log anything, so the
-# failure is near-silent. Hit live by jump-user 2026-07-28 (5 runs, 5 failures,
-# 0 log lines) via /usr/local/bin/jump-user symlinked into the repo.
-# These generalise past jump; promote to their own suite when `test` is free to
-# edit (its SUITES array is hardcoded).
+# The launchd-path tests guard a class: a launchd program resolving under
+# ~/Documents/ cannot be exec'd once the TCC grant resets. launchd reports a
+# bare 127 (same as "command not found") and the program dies before logging.
+# Hit by jump-user 2026-07-28 (5 runs, 5 failures, 0 log lines) via
+# /usr/local/bin/jump-user symlinked into the repo.
 
-# Static half: catches reintroduction at edit time, needs nothing installed, so
-# it works on a fresh clone or an unprovisioned machine.
+# Static half: edit-time, needs nothing installed (fresh clone is fine).
 function _jump_test_launchd_not_in_symlink_array {
   _section "launchd programs vs install_scripts symlink array"
 
   local raw
-  # `|| true` is load-bearing: the dispatcher runs under `set -e`, so a
-  # non-matching grep would abort the entire run — every later suite silently
-  # skipped — and the _fail below could never report the drift it exists for.
+  # `|| true` is load-bearing: under the dispatcher's `set -e` a non-matching
+  # grep would abort the whole run, later suites silently skipped.
   raw=$(/usr/bin/grep -oE 'local -ar bin_files=\([^)]*\)' bittersweet 2>/dev/null || true)
   if [[ -z "${raw}" ]]; then
     _fail "could not extract bin_files from bittersweet — pattern changed"
@@ -288,8 +273,8 @@ function _jump_test_launchd_not_in_symlink_array {
   done
 }
 
-# Live half: catches installed-state drift the static check cannot see, e.g. a
-# stale symlink left by a bittersweet run that predates the copy change.
+# Live half: installed-state drift, e.g. a stale symlink from a bittersweet
+# run that predates the copy change.
 function _jump_test_launchd_program_outside_documents {
   _section "launchd programs resolve outside ~/Documents"
 
@@ -318,13 +303,12 @@ function _jump_test_launchd_program_outside_documents {
   fi
 }
 
-# argv[0] is the exec target and must never sit under ~/Documents — that is the
-# hard failure above. Later arguments are payloads handed to an interpreter,
-# e.g. retrieval-metrics runs /bin/zsh -c '... retrieval-metrics.py'. Those
-# are a READ under ~/Documents rather than an exec, so they do not 127; they
-# depend on the interpreter holding the Documents grant, and when that grant
-# resets they fail by hanging on an invisible consent dialog instead. Reported,
-# not failed, because the /bin/zsh wrapper is a deliberate design choice here.
+# argv[0] is the exec target and must never sit under ~/Documents (the hard
+# failure above). Later arguments are payloads for an interpreter, e.g.
+# /bin/zsh -c '... retrieval-metrics.py': a READ, not an exec, so no 127. They
+# rely on the interpreter's Documents grant and hang on an invisible consent
+# dialog when it resets. Reported, not failed: the /bin/zsh wrapper is
+# deliberate.
 function _jump_test_launchd_payloads_under_documents {
   _section "launchd payload paths under ~/Documents (informational)"
 
@@ -348,10 +332,9 @@ function _jump_test_launchd_payloads_under_documents {
   fi
 }
 
-# Copying rather than symlinking trades live-edit for silent staleness: a repo
-# edit does not reach /usr/local/bin until the next `bittersweet scripts`.
-# Caught live 2026-07-29 — the deployed jump-user was missing a guard that had
-# been committed minutes earlier.
+# Copies go stale silently: a repo edit does not reach /usr/local/bin until
+# the next `bittersweet scripts` (2026-07-29: deployed jump-user missed a guard
+# committed minutes earlier).
 function _jump_test_copied_programs_current {
   _section "copied launchd programs match their repo source"
 
@@ -367,8 +350,7 @@ function _jump_test_copied_programs_current {
     elif [[ -L "${installed}" ]]; then
       _fail "${name}: ${installed} is a symlink — must be a copy, launchd cannot exec under ~/Documents"
     elif [[ ! -r "${installed}" ]]; then
-      # jump-system is deliberately root:wheel 700, so an unprivileged run
-      # cannot read it to compare. Not a failure.
+      # jump-system is deliberately root:wheel 700; not a failure.
       _skip "${name}: ${installed} not readable by this user"
     elif cmp -s "${src}" "${installed}"; then
       _pass "${name}: deployed copy matches ${src}"
@@ -378,10 +360,8 @@ function _jump_test_copied_programs_current {
   done
 }
 
-# Exercises the branch added 2026-07-28. `logger` is shadowed by a shell
-# function so the syslog call is captured rather than emitted. On the
-# pre-hardening code the failed redirect was completely silent, so the
-# "cannot write" assertion below fails there — which is the point.
+# Unwritable-log branch (2026-07-28). `logger` is shadowed by a function so
+# the syslog call is captured.
 function _jump_test_run_and_log_unwritable {
   _section "run_and_log reports an unwritable log"
 
@@ -394,10 +374,9 @@ function _jump_test_run_and_log_unwritable {
     : > "${locked}"
     chmod 444 "${locked}"
 
-    # SC1090/SC1091: dynamic source target. SC2034: LOG_FILE is read by the
-    # sourced function. SC2329: the logger shim IS invoked, but only from the
-    # sourced run_and_log, which shellcheck cannot follow — that indirection is
-    # the whole mechanism of this test.
+    # SC1090/SC1091: dynamic source. SC2034: LOG_FILE is read by the sourced
+    # function. SC2329: the logger shim is invoked only from the sourced
+    # run_and_log, which shellcheck cannot follow.
     # shellcheck disable=SC1090,SC1091,SC2034,SC2329
     rc=$(set +e; source <(/usr/bin/grep -v '^main "\$@"' "${script}"); LOG_FILE="${locked}"; logger() { echo "$@" >> "${capture}"; }; run_and_log "bad step" /usr/bin/false >/dev/null 2>&1; echo "$?")
 

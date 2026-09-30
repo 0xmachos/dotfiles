@@ -1,43 +1,30 @@
 #!/bin/zsh
 # dotfiles/tests/gh-auth
 #
-# Live assertions for the GitHub auth configuration on THIS machine: the
-# real global git config, the real ~/.ssh/config, the gh CLI state and the
-# login keychain (the tests/okf pattern, not a hermetic sandbox).
-#
-# Three groups, reported apart so a failure names its group:
-#
+# Live assertions on THIS machine's GitHub auth: the real global git config,
+# ~/.ssh/config, gh state and login keychain (the tests/okf pattern, not a
+# hermetic sandbox). Three groups, reported apart:
 #   signing — gpg.format=ssh, commit/tag gpgsign on, user.signingkey set,
-#     and ~/.ssh/config routing IdentityAgent to Secretive's socket, so every
-#     signature is a Secure Enclave operation.
-#
-#   push credential — the gh token's scopes are within
-#     GH_AUTH_ALLOWED_SCOPES (repo, read:org and gist are gh's own minimum;
-#     workflow is needed to push a change under .github/workflows/); the
-#     credential.helper chain for https://github.com and
-#     https://gist.github.com is [blank, gh] as set in .config/git/config;
-#     no internet password for either host sits in the login keychain
-#     (queried by metadata only, the secret is never read); hosts.yml holds
-#     no token line; no ~/.git-credentials or ~/.netrc.
-#
-#   server — this repo has an active required_signatures ruleset on its
-#     default branch with no bypass actors, read through gh.
-#
-# Skips, not fails: gh not installed, gh logged out, no network for the
-# `gh auth status` / `gh api` calls. A skip is "could not check", never
-# "checked and fine".
-#
-# Added 2026-09-21.
+#     ~/.ssh/config routes IdentityAgent to Secretive's socket (every
+#     signature is a Secure Enclave operation).
+#   push credential — gh token scopes within GH_AUTH_ALLOWED_SCOPES (repo,
+#     read:org, gist are gh's minimum; workflow pushes under
+#     .github/workflows/); credential.helper for github.com and
+#     gist.github.com is [blank, gh] per .config/git/config; no keychain
+#     internet password for either host (metadata only, secret never read);
+#     no token line in hosts.yml; no ~/.git-credentials or ~/.netrc.
+#   server — an active required_signatures ruleset on the default branch,
+#     no bypass actors, read through gh.
+# Skips, not fails: gh missing or logged out, no network. A skip is "could
+# not check", never "checked and fine".
 #
 # Run: ./test gh-auth    (or ./test for the full suite)
-#
 # ShellCheck: lint with `shellcheck --shell=bash tests/gh-auth`.
 # This file is sourced, not executed — chmod 644.
 #
 # shellcheck source=tests/lib
 
-# The full scope set a gh login here may carry. Anything else fails, with
-# the removal command in the message.
+# Any other scope fails, with the removal command in the message.
 readonly -a GH_AUTH_ALLOWED_SCOPES=(repo read:org gist workflow)
 
 function _gha_signing {
@@ -73,8 +60,8 @@ function _gha_signing {
     _fail "user.signingkey is unset"
   fi
 
-  # The effective value, not a grep: the IdentityAgent line sits inside a
-  # `Match exec "test -S …"` block, so only `ssh -G` shows whether it fires.
+  # `ssh -G`, not a grep: IdentityAgent sits in a `Match exec "test -S …"`
+  # block, so only the effective value shows whether it fires.
   local sock="${HOME}/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh"
   local agent
   if [[ ! -f ${HOME}/.ssh/config ]]; then
@@ -92,9 +79,8 @@ function _gha_signing {
 }
 
 function _gha_token_scopes {
-  # `gh auth status` validates the token over the network and prints the
-  # scope line as: `- Token scopes: 'repo', 'read:org', ...`. Its output is
-  # captured and never echoed — it also carries the masked token.
+  # `gh auth status` validates over the network and prints `- Token scopes:
+  # 'repo', 'read:org', ...`. Output is never echoed (carries the masked token).
   local out line scope bad="" extra=""
   local -a scopes
 
@@ -122,9 +108,8 @@ function _gha_token_scopes {
   # shellcheck disable=SC2206  # zsh ${=} word split is the intent
   scopes=(${=line})
 
-  # A fine-grained PAT has repository permissions, not OAuth scopes; gh
-  # reports none. Those permissions are visible only on the web
-  # (settings/personal-access-tokens), so the check stops here.
+  # A fine-grained PAT has no OAuth scopes; its permissions are visible only
+  # on the web (settings/personal-access-tokens), so the check stops here.
   if (( ${#scopes[@]} == 0 )) || [[ "${scopes[1]}" == "none" ]]; then
     _pass "gh token has no OAuth scopes (fine-grained PAT) — review its permissions at github.com/settings/personal-access-tokens"
     return
@@ -146,10 +131,8 @@ function _gha_token_scopes {
 }
 
 function _gha_credential_helper {
-  # `git config --get-all` prints the chain in order. The tracked config
-  # sets a blank first entry (clears osxkeychain from Xcode's system config)
-  # and then gh's helper. Anything else means git can push with a
-  # credential gh does not manage.
+  # The blank first entry clears osxkeychain from Xcode's system config;
+  # anything else means git can push with a credential gh does not manage.
   local host chain
   local -a entries
 
@@ -166,8 +149,8 @@ function _gha_credential_helper {
 }
 
 function _gha_no_stray_credentials {
-  # Only metadata is queried; `security find-internet-password` without -w
-  # never prints the secret. Exit 44 = not found, which is the pass.
+  # Without -w, find-internet-password never prints the secret. Exit 44
+  # (not found) is the pass.
   local host
 
   for host in github.com gist.github.com; do
@@ -197,9 +180,7 @@ function _gha_no_stray_credentials {
 }
 
 function _gha_server_ruleset {
-  # The server-side half of the signing gate: an active required_signatures
-  # ruleset on the default branch with no bypass actors. Read through gh so
-  # the check uses the same token the push does.
+  # Read through gh so the check uses the same token the push does.
   local nwo result
 
   nwo="$(cd "${SCRIPT_DIR}" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || true)"
@@ -240,10 +221,9 @@ function _gha_server_ruleset {
 }
 
 function run_gh_auth {
-  # The signing and credential-helper checks read the global git config
-  # that `bittersweet dotfiles` symlinks from this repo. On a machine where
-  # that link is absent (a CI runner, a scratch clone) they would report the
-  # runner's empty config as a posture failure, so they skip instead.
+  # Signing and helper checks read the global git config that `bittersweet
+  # dotfiles` symlinks from this repo. Where that link is absent (CI runner,
+  # scratch clone) an empty config would read as a posture failure: skip.
   local live_cfg="${HOME}/.config/git/config"
   if [[ "${live_cfg:A}" != "${SCRIPT_DIR:A}/.config/git/config" ]]; then
     _section "gh-auth — signing is Secretive-gated"

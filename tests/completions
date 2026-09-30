@@ -1,27 +1,21 @@
 #!/bin/zsh
 # dotfiles/tests/completions
 #
-# Asserts the bittersweet completion is in sync with its source of truth.
+# Pins the bittersweet completion to BITTERSWEET_SUBCOMMANDS:
+#   1. Parity: array keys and dispatch case arms match, both directions.
+#   2. Freshness: regenerating into $TMPDIR is byte-identical to
+#      .completions/_bittersweet.
+#   3. The .githooks/pre-commit regeneration survives a staged set larger
+#      than the pipe buffer.
 #
-# Two checks:
-#   1. Parity: every entry in BITTERSWEET_SUBCOMMANDS has a matching dispatch
-#      case arm in `bittersweet`, and vice versa. Catches the developer who
-#      adds an arm without an array entry (or vice versa).
-#   2. Freshness: regenerating the completion into $TMPDIR yields a file
-#      byte-identical to .completions/_bittersweet. Catches edits to the
-#      array (or generator) that haven't been re-materialised.
-#
-# Run: ./test completions    (or ./test for the full suite)
-#
+# Run: ./test completions
 # ShellCheck: lint with `shellcheck --shell=bash tests/completions`.
 # This file is sourced, not executed — chmod 644.
 #
 # shellcheck source=tests/lib
 
 function _completions_array_keys {
-  # Print BITTERSWEET_SUBCOMMANDS keys (the part before the first colon),
-  # one per line, in declaration order. Parses the static array literal
-  # rather than sourcing bittersweet (which would invoke main()).
+  # Parses the static array literal; sourcing bittersweet would invoke main().
   /usr/bin/awk '
     /^typeset -ra BITTERSWEET_SUBCOMMANDS=\(/ { in_arr = 1; next }
     in_arr && /^\)/                           { in_arr = 0; next }
@@ -34,8 +28,7 @@ function _completions_array_keys {
 }
 
 function _completions_dispatch_arms {
-  # Print case-arm names from main()'s dispatch, excluding the `*)` default.
-  # Pattern: 4-space indent, lowercase name, optional hyphen/digit, `)`.
+  # Arm names from main()'s dispatch, excluding the `*)` default.
   /usr/bin/awk '
     /case "\$\{cmd\}" in/ { in_case = 1; next }
     in_case && /^  esac/  { in_case = 0; next }
@@ -99,8 +92,8 @@ function run_completions {
   _completions_check_large_commit
 }
 
-# Exercise the real hook against a staged set larger than the pipe buffer.
-# All executables it dispatches are fixtures; the real repo is never staged.
+# Runs the real hook; every executable it dispatches is a fixture and the
+# real repo is never staged.
 function _completions_check_large_commit {
   local fixture rc=0
   fixture="$(mktemp -d "${TMPDIR}completion-hook.XXXXXX")"
@@ -125,7 +118,7 @@ print scanned >> calls
 EOF
     chmod 755 bittersweet test .config/git/hooks/pre-commit
     print old > .completions/_bittersweet
-    # Reuse one empty blob in the index: no need to create thousands of files.
+    # One shared empty blob in the index, not thousands of files.
     local empty i
     empty="$(git hash-object -w --stdin </dev/null)"
     for (( i=1; i<=2000; i++ )); do

@@ -1,49 +1,40 @@
 #!/bin/zsh
 # dotfiles/tests/pii-hook
 #
-# Exercises the global pre-commit scanner (.config/git/hooks/pre-commit), the
-# commit-msg message gate (both backed by the shared pii-scan core since
-# 2026-08-17), and the hook-forward stub in a sandbox repo: literal denylist
-# (content + filename + message title/body), MAC/UUID token detector (colon +
-# dash forms, placeholder and staged-.pii-allowlist exemptions, adjacency +
-# cross-layer-bleed regressions), SSH-alias derivation, PII_HOOK_BYPASS,
-# invalid-regex hard-blocks, TMPDIR normalisation, message normalisation
-# (comment stripping + scissors truncation), the applypatch-msg symlink, the
-# --no-verify hole the pre-push message gate exists to close, and the
-# .git/hooks chain (direct, linked-worktree, message-rewrite, and forwarder).
+# Pins the global pre-commit scanner (.config/git/hooks/pre-commit), the
+# commit-msg gate (both on the shared pii-scan core since 2026-08-17) and the
+# hook-forward stub, in a sandbox repo: denylist (content, filename, message
+# title/body), MAC/UUID detector (colon and dash forms, placeholder and staged
+# .pii-allowlist exemptions, adjacency and cross-layer-bleed regressions),
+# SSH-alias derivation, PII_HOOK_BYPASS, invalid-regex hard-blocks, TMPDIR
+# normalisation, message normalisation (comment stripping, scissors
+# truncation), the applypatch-msg symlink, the --no-verify hole the pre-push
+# message gate closes, and the .git/hooks chain (direct, linked worktree,
+# message rewrite, forwarder).
 #
-# Real-looking fixture tokens are ASSEMBLED AT RUN TIME (string concatenation)
-# so this file never contains a regex-shaped token — otherwise committing the
-# test itself would trip the detector it tests.
-#
+# Fixture tokens are assembled at run time (string concatenation): a literal
+# regex-shaped token would trip the detector when this file is committed.
 # The PII_HOOK_PATTERNS / PII_HOOK_SSH_CONFIG seams isolate every case from
-# the machine's real pattern list and ssh config, keeping results
-# deterministic on any host.
+# the machine's real pattern list and ssh config.
 #
-# PII_HOOK_BYPASS is honoured only with a real controlling terminal attached
-# (2026-09-25; pii-scan's --check-terminal). Cases that expect the bypass to
-# WORK run under /usr/bin/script -q /dev/null (_pii_hook_run_tty /
-# _pii_msg_run_tty below), which allocates a real pty regardless of how this
-# suite itself was invoked. Cases proving the bypass is REFUSED run under
-# tests/lib's _run_no_tty (_pii_hook_run_notty / _pii_msg_run_notty below),
-# which detaches the hook from any controlling terminal via POSIX setsid —
-# needed because the suite's OWN invocation is not reliably terminal-less: an
-# agent's tool call never has one, but a human's interactive `./test` does,
-# and that is this gate's primary real-world path. Neither helper depends on
-# the caller's own tty state, so both sides are deterministic under `./test`
-# and under `script -q /dev/null zsh test pii-hook` alike (the latter
-# reproduces the human-terminal case from a no-tty seat).
+# PII_HOOK_BYPASS is honoured only with a controlling terminal (2026-09-25;
+# pii-scan's --check-terminal). Cases expecting it to WORK run under
+# /usr/bin/script -q /dev/null (_pii_hook_run_tty / _pii_msg_run_tty), a real
+# pty however the suite was invoked. Cases expecting REFUSAL run under
+# tests/lib's _run_no_tty (_pii_hook_run_notty / _pii_msg_run_notty), which
+# detaches via POSIX setsid: an agent's tool call has no terminal but an
+# interactive `./test` does. Neither depends on the caller's tty, so both
+# hold under `./test` and `script -q /dev/null zsh test pii-hook`.
 #
+# Run: ./test pii-hook
 # ShellCheck: lint with `shellcheck --shell=bash tests/pii-hook`.
 # This file is sourced, not executed — chmod 644.
 #
 # shellcheck source=tests/lib
 
 function _pii_hook_run {
-  # Stage the sandbox working tree, then run the global hook from inside it.
-  # Extra KEY=VALUE args are appended to the env AFTER the default seams, so
-  # a caller-supplied seam overrides the default (env: last value wins).
-  # Results in hook_rc / hook_out globals.
+  # Stage the sandbox, run the global hook in it. Extra KEY=VALUE args follow
+  # the default seams, so they override (env: last wins). Sets hook_rc/hook_out.
   git -C "${pii_sandbox}" add -A
   hook_rc=0
   hook_out="$(cd "${pii_sandbox}" && \
@@ -52,9 +43,7 @@ function _pii_hook_run {
 }
 
 function _pii_hook_run_tty {
-  # Like _pii_hook_run, but wrapped in /usr/bin/script -q /dev/null so the
-  # hook runs with a real controlling terminal no matter how this suite
-  # itself was invoked — for cases that need PII_HOOK_BYPASS to be honoured.
+  # _pii_hook_run under script (real tty): PII_HOOK_BYPASS honoured.
   git -C "${pii_sandbox}" add -A
   hook_rc=0
   hook_out="$(cd "${pii_sandbox}" && \
@@ -63,9 +52,7 @@ function _pii_hook_run_tty {
 }
 
 function _pii_hook_run_notty {
-  # Like _pii_hook_run, but wrapped in tests/lib's _run_no_tty so the hook
-  # runs with NO controlling terminal no matter how this suite itself was
-  # invoked — for cases that need PII_HOOK_BYPASS to be refused.
+  # _pii_hook_run under _run_no_tty (no tty): PII_HOOK_BYPASS refused.
   git -C "${pii_sandbox}" add -A
   hook_rc=0
   hook_out="$(cd "${pii_sandbox}" && \
@@ -74,7 +61,7 @@ function _pii_hook_run_notty {
 }
 
 function _pii_reset {
-  # Unstage everything and empty the sandbox working tree (keep .git).
+  # Unstage and empty the sandbox working tree (keep .git).
   git -C "${pii_sandbox}" reset -q
   /usr/bin/find "${pii_sandbox}" -mindepth 1 -maxdepth 1 -not -name '.git' \
     -exec /bin/rm -rf {} +
@@ -103,9 +90,8 @@ function _pii_expect_pass {
 }
 
 function _pii_msg_run {
-  # Run a message hook ($1: hook path) against ${pii_msgfile} from inside the
-  # sandbox. Extra KEY=VALUE args append after the default seams (env: last
-  # value wins). Results in hook_rc / hook_out globals.
+  # Run message hook $1 on ${pii_msgfile} in the sandbox. Extra KEY=VALUE args
+  # override the default seams (env: last wins). Sets hook_rc/hook_out.
   local hook="$1"; shift
   hook_rc=0
   hook_out="$(cd "${pii_sandbox}" && \
@@ -114,8 +100,7 @@ function _pii_msg_run {
 }
 
 function _pii_msg_run_tty {
-  # Like _pii_msg_run, but wrapped in /usr/bin/script -q /dev/null (see
-  # _pii_hook_run_tty) for cases that need PII_HOOK_BYPASS to be honoured.
+  # _pii_msg_run under script (real tty): PII_HOOK_BYPASS honoured.
   local hook="$1"; shift
   hook_rc=0
   hook_out="$(cd "${pii_sandbox}" && \
@@ -124,8 +109,7 @@ function _pii_msg_run_tty {
 }
 
 function _pii_msg_run_notty {
-  # Like _pii_msg_run, but wrapped in tests/lib's _run_no_tty (see
-  # _pii_hook_run_notty) for cases that need PII_HOOK_BYPASS to be refused.
+  # _pii_msg_run under _run_no_tty (no tty): PII_HOOK_BYPASS refused.
   local hook="$1"; shift
   hook_rc=0
   hook_out="$(cd "${pii_sandbox}" && \
@@ -216,9 +200,7 @@ function run_pii_hook {
   _pii_expect_pass "placeholder UUID passes"
   _pii_reset
 
-  # 8b. Adjacency regression: a real token ONE separator char after a
-  #     placeholder must still block (the old guard-class extraction
-  #     consumed the boundary and skipped it)
+  # 8b. Adjacency: a real token one separator char after a placeholder blocks
   echo "ids: 01234567-89ab-cdef-0123-456789abcdef,${uuid}" > "${pii_sandbox}/notes.md"
   _pii_hook_run
   _pii_expect_block "real token adjacent to placeholder blocks" "MAC/UUID"
@@ -238,8 +220,7 @@ function run_pii_hook {
   _pii_expect_pass "dash-separated placeholder MAC passes"
   _pii_reset
 
-  # 8d2. Mixed-separator MAC blocks (evaded the two single-separator
-  #      regexes — round-2 review finding)
+  # 8d2. Mixed-separator MAC blocks (evades the two single-separator regexes)
   local mmac="0f:1e-2d:3c"
   mmac="${mmac}-4b:5a"
   echo "device at ${mmac}" > "${pii_sandbox}/notes.md"
@@ -253,8 +234,7 @@ function run_pii_hook {
   _pii_expect_pass "TMPDIR without trailing slash works"
   _pii_reset
 
-  # 8f. Labeled identifiers block — maximal-run tokenisation rejected
-  #     mac:<mac> / id:<uuid> forms (round-2 review finding)
+  # 8f. Labeled identifiers block: mac:<mac> / id:<uuid> forms
   {
     echo "id:${uuid}"
     echo "mac:${mac}"
@@ -263,8 +243,7 @@ function run_pii_hook {
   _pii_expect_block "labeled MAC/UUID identifiers block" "MAC/UUID"
   _pii_reset
 
-  # 8g. Repo-local color.ui=always must not empty the scan target
-  #     (round-2 review finding: coloured diff broke the awk anchors)
+  # 8g. color.ui=always must not empty the scan target (breaks awk anchors)
   git -C "${pii_sandbox}" config color.ui always
   echo "device at ${mac}" > "${pii_sandbox}/notes.md"
   _pii_hook_run
@@ -272,8 +251,7 @@ function run_pii_hook {
   git -C "${pii_sandbox}" config --unset color.ui
   _pii_reset
 
-  # 8h. A pattern file whose final line has no trailing newline keeps that
-  #     last pattern active (round-2 review finding: read dropped it)
+  # 8h. An unterminated final pattern line stays active (a bare `read` drops it)
   local nl_patterns
   nl_patterns="$(mktemp "${TMPDIR:-/tmp}/pii-hook-nonl.XXXXXX")"
   printf 'unusedfirst\nzorblefrobnicate' > "${nl_patterns}"
@@ -283,24 +261,22 @@ function run_pii_hook {
   /bin/rm -f "${nl_patterns}"
   _pii_reset
 
-  # 9. .pii-allowlist exempts a token (the allowlist itself is staged too and
-  #    must exempt its own content)
+  # 9. .pii-allowlist exempts a token (it is staged too, so exempts itself)
   echo "mgmt iface at ${mac}" > "${pii_sandbox}/notes.md"
   echo "${mac}" > "${pii_sandbox}/.pii-allowlist"
   _pii_hook_run
   _pii_expect_pass ".pii-allowlist exempts a token"
   _pii_reset
 
-  # 10. .pii-allowlist exempts a denylist hit — only via an explicit
-  #     full-line pattern (bare substrings no longer match, see 10b)
+  # 10. A denylist hit is exempt only via a full-line pattern (see 10b)
   echo "deployed at zorblefrobnicate today" > "${pii_sandbox}/notes.md"
   echo ".*zorble.*" > "${pii_sandbox}/.pii-allowlist"
   _pii_hook_run
   _pii_expect_pass ".pii-allowlist full-line pattern exempts a denylist hit"
   _pii_reset
 
-  # 10b. Cross-layer bleed regression: a bare allowlisted token must NOT
-  #      launder a denylist hit sharing its line
+  # 10b. Cross-layer bleed: a bare allowlisted token must NOT launder a
+  #      denylist hit on its line
   local pubuuid="c5c2bc3f-b8bd-49a2"
   pubuuid="${pubuuid}-af7f-feecbffc6411"
   echo "zorblefrobnicate was at ${pubuuid}" > "${pii_sandbox}/notes.md"
@@ -309,8 +285,7 @@ function run_pii_hook {
   _pii_expect_block "allowlisted token does not launder a denylist hit" "PII pattern"
   _pii_reset
 
-  # 10c. Unstaged .pii-allowlist is ignored (read from the index, not the
-  #      working tree)
+  # 10c. Unstaged .pii-allowlist is ignored (read from the index)
   echo "mgmt iface at ${mac}" > "${pii_sandbox}/notes.md"
   git -C "${pii_sandbox}" add notes.md
   echo ".*" > "${pii_sandbox}/.pii-allowlist"
@@ -328,8 +303,7 @@ function run_pii_hook {
   _pii_expect_block "invalid .pii-allowlist regex hard-blocks" ".pii-allowlist (staged) has an invalid"
   _pii_reset
 
-  # 11b. Sentinel is repo-scoped: a sentinel inherited from ANOTHER repo's
-  #      hook run must not skip this repo's scan (round-2 review finding)…
+  # 11b. Sentinel is repo-scoped: another repo's must not skip this scan…
   echo "mgmt iface at ${mac}" > "${pii_sandbox}/notes.md"
   _pii_hook_run GIT_GLOBAL_HOOKS_SEEN=" pre-commit@/somewhere/else/.git "
   _pii_expect_block "foreign-repo sentinel does not skip the scan" "MAC/UUID"
@@ -343,8 +317,7 @@ function run_pii_hook {
   _pii_expect_pass "same-repo sentinel short-circuits re-entry"
   _pii_reset
 
-  # 12. PII_HOOK_BYPASS=1 skips PII layers, loudly — only with a real
-  #     controlling terminal attached (2026-09-25); forced via script here.
+  # 12. PII_HOOK_BYPASS=1 skips PII layers, loudly; needs a tty (via script)
   echo "zorblefrobnicate and ${mac}" > "${pii_sandbox}/notes.md"
   _pii_hook_run_tty PII_HOOK_BYPASS=1
   _pii_expect_pass "PII_HOOK_BYPASS=1 passes (with a terminal)"
@@ -355,10 +328,8 @@ function run_pii_hook {
   fi
   _pii_reset
 
-  # 12b. Without a controlling terminal (forced via _run_no_tty regardless of
-  #      this suite's own invocation — see tests/lib), the variable is
-  #      IGNORED: the scan still runs and blocks, with a refusal line naming
-  #      the user's own terminal.
+  # 12b. With no tty the variable is IGNORED: the scan still blocks, with a
+  #      refusal line naming the user's own terminal.
   echo "zorblefrobnicate and ${mac}" > "${pii_sandbox}/notes.md"
   _pii_hook_run_notty PII_HOOK_BYPASS=1
   _pii_expect_block "PII_HOOK_BYPASS=1 is refused without a controlling terminal" "PII pattern"
@@ -379,8 +350,8 @@ function run_pii_hook {
   /bin/rm -f "${ssh_seam}"
   _pii_reset
 
-  # 14. Chain: the repo's own .git/hooks/pre-commit runs, and its exit status
-  #     propagates (exec — the global hook BECOMES the chained hook)
+  # 14. Chain: the repo's .git/hooks/pre-commit runs and its exit status
+  #     propagates (exec: the global hook becomes the chained hook)
   mkdir -p "${pii_sandbox}/.git/hooks"
   printf '#!/bin/zsh\ntouch chained-marker\n' > "${pii_sandbox}/.git/hooks/pre-commit"
   chmod 755 "${pii_sandbox}/.git/hooks/pre-commit"
@@ -398,10 +369,9 @@ function run_pii_hook {
   else
     _fail "chained hook exit status propagates — expected 7, got ${hook_rc}"
   fi
-  # 14b. Content the chained hook stages is scanned (chain runs FIRST;
-  #      round-2 review finding: post-scan staging entered commits unscanned)
-  # SC2016: single quotes deliberate — expansion happens when the generated
-  # hook runs.
+  # 14b. Content the chained hook stages is scanned (chain runs FIRST, else
+  #      post-scan staging enters commits unscanned)
+  # SC2016: single quotes deliberate; expands when the generated hook runs.
   # shellcheck disable=SC2016
   printf '#!/bin/zsh\nm="0f:1e:2d:3c:4b"\necho "late leak ${m}:5a" > late.txt\ngit add late.txt\n' \
     > "${pii_sandbox}/.git/hooks/pre-commit"
@@ -413,9 +383,8 @@ function run_pii_hook {
   _pii_reset
 
   # 15. Chain works from a linked worktree (--git-common-dir; --git-dir
-  #     would point at .git/worktrees/<name>, whose hooks/ doesn't exist)
-  # SC2016: single quotes deliberate — $(git …) must expand when the
-  # generated hook RUNS, not when this test writes it.
+  #     points at .git/worktrees/<name>, which has no hooks/)
+  # SC2016: single quotes deliberate; expands when the generated hook runs.
   # shellcheck disable=SC2016
   printf '#!/bin/zsh\ntouch "$(git rev-parse --show-toplevel)/wt-marker"\n' \
     > "${pii_sandbox}/.git/hooks/pre-commit"
@@ -433,8 +402,8 @@ function run_pii_hook {
     _fail "chain reaches the common-dir hook from a linked worktree — marker missing (rc=${hook_rc})"
   fi
 
-  # 16. hook-forward forwards args and exit status for non-pre-commit hooks,
-  #     and exits 0 when the repo has no such hook
+  # 16. hook-forward passes args and exit status for non-pre-commit hooks;
+  #     exits 0 when the repo has no such hook
   local fwd_dir
   fwd_dir="$(mktemp -d "${TMPDIR:-/tmp}/pii-fwd.XXXXXX")"
   ln -s "${SCRIPT_DIR}/.config/git/hooks/hook-forward" "${fwd_dir}/commit-msg"
@@ -466,8 +435,7 @@ function run_pii_hook {
   _pii_msg_run "${msg_hook}"
   _pii_expect_pass "clean commit message passes"
 
-  # 18. Denylist hit in the TITLE line blocks (the title is just line one of
-  #     the message — no separate field to miss)
+  # 18. Denylist hit in the title blocks (line one; no separate field)
   printf 'deployed to zorblefrobnicate\n' > "${pii_msgfile}"
   _pii_msg_run "${msg_hook}"
   _pii_expect_block "denylist hit in message title blocks" "PII pattern"
@@ -477,23 +445,21 @@ function run_pii_hook {
   _pii_msg_run "${msg_hook}"
   _pii_expect_block "MAC token in message body blocks" "MAC/UUID"
 
-  # 20. Comment lines are stripped before scanning (the hook sees the
-  #     PRE-cleanup file — verified 2026-08-17 — so the status template and
-  #     `commit -v` diffs arrive as `#` lines and must not false-positive).
-  #     The `-m`-keeps-`#`-lines gap this opens is closed by the pre-push
-  #     stored-message scan (tests/git-sign).
+  # 20. Comment lines are stripped before scanning: the hook sees the
+  #     PRE-cleanup file (2026-08-17), so the status template and `commit -v`
+  #     diffs arrive as `#` lines. The `-m`-keeps-`#`-lines gap this opens is
+  #     closed by the pre-push stored-message scan (tests/git-sign).
   printf 'clean subject\n# on branch zorblefrobnicate\n' > "${pii_msgfile}"
   _pii_msg_run "${msg_hook}"
   _pii_expect_pass "comment lines are not scanned"
 
-  # 21. Content below the scissors line is ignored (git stripspace does NOT
-  #     truncate there — the hook does it itself)
+  # 21. Content below the scissors line is ignored (the hook truncates it;
+  #     git stripspace does not)
   printf 'clean subject\n# ------------------------ >8 ------------------------\ndiff mentioning zorblefrobnicate\n' > "${pii_msgfile}"
   _pii_msg_run "${msg_hook}"
   _pii_expect_pass "content below the scissors line is not scanned"
 
-  # 22. PII_HOOK_BYPASS=1 skips the message scan, loudly — only with a real
-  #     controlling terminal attached; forced via script here.
+  # 22. PII_HOOK_BYPASS=1 skips the message scan, loudly; needs a tty (script)
   printf 'deployed to zorblefrobnicate\n' > "${pii_msgfile}"
   _pii_msg_run_tty "${msg_hook}" PII_HOOK_BYPASS=1
   _pii_expect_pass "PII_HOOK_BYPASS=1 passes the message gate (with a terminal)"
@@ -503,9 +469,8 @@ function run_pii_hook {
     _fail "message-gate bypass warns loudly — no SKIPPED warning in output"
   fi
 
-  # 22b. Without a controlling terminal (forced via _run_no_tty), the
-  #      message gate ignores the variable, still blocks, and names the
-  #      user's own terminal.
+  # 22b. With no tty the message gate ignores the variable, still blocks and
+  #      names the user's own terminal.
   printf 'deployed to zorblefrobnicate\n' > "${pii_msgfile}"
   _pii_msg_run_notty "${msg_hook}" PII_HOOK_BYPASS=1
   _pii_expect_block "PII_HOOK_BYPASS=1 is refused without a terminal on the message gate" "PII pattern"
@@ -515,14 +480,14 @@ function run_pii_hook {
     _fail "message-gate refusal line missing or malformed: ${hook_out}"
   fi
 
-  # 23. applypatch-msg is a working symlink to commit-msg (`git am` coverage;
-  #     git never runs a custom commit-msg for am — githooks(5))
+  # 23. applypatch-msg symlinks to commit-msg (git never runs a custom
+  #     commit-msg for `git am` — githooks(5))
   printf 'am-applied zorblefrobnicate patch\n' > "${pii_msgfile}"
   _pii_msg_run "${SCRIPT_DIR}/.config/git/hooks/applypatch-msg"
   _pii_expect_block "applypatch-msg symlink scans too" "PII pattern"
 
-  # 24. Chain: the repo's own .git/hooks/commit-msg runs FIRST, its exit
-  #     propagates, and a message it REWRITES is scanned in rewritten form
+  # 24. Chain: the repo's commit-msg runs FIRST, its exit propagates, and a
+  #     message it REWRITES is scanned in rewritten form
   printf '#!/bin/zsh\nexit 7\n' > "${pii_sandbox}/.git/hooks/commit-msg"
   chmod 755 "${pii_sandbox}/.git/hooks/commit-msg"
   printf 'clean subject\n' > "${pii_msgfile}"
@@ -532,8 +497,7 @@ function run_pii_hook {
   else
     _fail "chained commit-msg exit status propagates — expected 7, got ${hook_rc}"
   fi
-  # SC2016: single quotes deliberate — "$1" must expand when the generated
-  # hook RUNS, not when this test writes it.
+  # SC2016: single quotes deliberate; expands when the generated hook runs.
   # shellcheck disable=SC2016
   printf '#!/bin/zsh\necho "ps: ran on zorblefrobnicate" >> "$1"\n' \
     > "${pii_sandbox}/.git/hooks/commit-msg"
@@ -543,8 +507,8 @@ function run_pii_hook {
   _pii_expect_block "message rewritten by the chained hook is scanned" "PII pattern"
   /bin/rm -f "${pii_sandbox}/.git/hooks/commit-msg"
 
-  # 25. End to end through real git: commit-msg fires on --allow-empty (the
-  #     ledger-event form), and --no-verify is the documented hole
+  # 25. End to end through real git: commit-msg fires on --allow-empty;
+  #     --no-verify is the documented hole
   local ge=(env PII_HOOK_PATTERNS="${pii_seam_patterns}" PII_HOOK_SSH_CONFIG=/dev/null
             git -C "${pii_sandbox}" -c core.hooksPath="${SCRIPT_DIR}/.config/git/hooks")
   if "${ge[@]}" commit -q --allow-empty -m "ledger event, clean" 2>/dev/null; then

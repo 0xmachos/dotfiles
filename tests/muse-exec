@@ -1,25 +1,20 @@
 #!/bin/zsh
 # dotfiles/tests/muse-exec
 #
-# Behavioural test for claude/muse-exec-hook — the PreToolUse hook that
-# guards headless `muse exec` invocations. Feeds commands to the hook as
-# stdin JSON and asserts the verdict: DENY for each of the five rules (short
-# timeout, open stdin, forbidden flags, a non-bare muse word missing the
-# verify-reminder env var — with the --provider echo exemption on rules 2
-# and 5), PASS for the compliant canonical shapes, PASS for commands that
-# only mention "muse"/"exec" as data (grep/cat arguments, `--help`, other
-# subcommands), and PASS for the MUSE_EXEC_GUARD_SKIP=1 bypass.
+# Behavioural test for claude/muse-exec-hook (PreToolUse guard on headless
+# `muse exec`). Feeds commands as stdin JSON and asserts the verdict:
+#   - DENY: short timeout, open stdin, forbidden flags, a non-bare muse word
+#     without the verify-reminder env var (--provider echo exempts rules 2, 5)
+#   - PASS: compliant canonical shapes; commands mentioning muse/exec only as
+#     data (grep/cat args, --help, other subcommands); MUSE_EXEC_GUARD_SKIP=1
 #
-# Run: ./test muse-exec    (or ./test for the full suite)
-#
+# Run: ./test muse-exec
 # ShellCheck: lint with `shellcheck --shell=bash tests/muse-exec`.
 # This file is sourced, not executed — chmod 644.
 #
-# File-level disable: SC2016 (every fixture below is a literal string handed
-# to jq via --arg — $PWD, $HOME and the env-var assignments inside it must
-# stay unexpanded here, since that raw text is what a Bash tool call would
-# actually carry) and SC2088 (the ~/.local/bin/muse fixture is the same kind
-# of literal text, not a path this shell should expand).
+# File-level disables: SC2016 (fixtures are literal strings passed to jq
+# --arg; $PWD, $HOME and env assignments must stay unexpanded, as a Bash tool
+# call carries them raw) and SC2088 (the ~/.local/bin/muse fixture is literal).
 # shellcheck disable=SC2016,SC2088
 #
 # shellcheck source=tests/lib
@@ -44,8 +39,7 @@ function _muse_exec_expect {
 function run_muse_exec {
   _section "muse exec guard hook"
 
-  # claude/ is gitignored and synced out of band — absent hook means the
-  # sync hasn't reached this machine, not a regression. Skip, don't die.
+  # claude/ is gitignored: an absent hook is a skip, not a failure.
   if [[ ! -f "${SCRIPT_DIR}/claude/muse-exec-hook" ]]; then
     _skip "claude/muse-exec-hook absent — claude/ not yet synced to this machine"
     return 0
@@ -56,8 +50,7 @@ function run_muse_exec {
     return
   fi
 
-  # A session-wide export of the bypass would silently turn every DENY case
-  # into PASS and the suite would still report green. Clear it for this run.
+  # An exported bypass would turn every DENY into PASS with the suite green.
   unset MUSE_EXEC_GUARD_SKIP
 
   # --- Non-firing cases: never a muse-exec command position at all --------
@@ -117,16 +110,10 @@ function run_muse_exec {
     '--prompt-file pointed at a real file is fine'
 
   # --- Backslash-newline continuations fold before line-splitting ---------
-  #
-  # Lines are split before the tokeniser and quote state resets at every
-  # newline, so a long muse exec invocation written the normal way — across
-  # `\`-continued lines — would otherwise land its < /dev/null and its flags
-  # on a DIFFERENT segment than its command word, and get denied for missing
-  # them. That includes the exact canonical form the deny reason itself
-  # recommends, so this is proven discriminating, not just plausible: the
-  # first case below denied before the continuation fold was added.
-  # $'...' does no parameter expansion, so "$PWD" inside it stays literal —
-  # same reason the file-level SC2016 disable above is needed.
+  # Lines split before the tokeniser and quote state resets per newline, so
+  # unfolded, a `\`-continued muse exec puts its < /dev/null and flags on a
+  # different segment than its command word and is wrongly denied. The first
+  # case is the canonical form the deny reason recommends.
   _muse_exec_expect PASS $'timeout 1800 muse exec \\\n  --prompt-file prompt.md \\\n  --workspace "$PWD" \\\n  < /dev/null > out.txt 2> err.txt &' \
     'canonical form written across backslash-continued lines'
   _muse_exec_expect PASS 'timeout 1800 muse exec --prompt-file prompt.md --workspace "$PWD" --reasoning-effort high < /dev/null > out.txt 2> err.txt &' \
@@ -150,7 +137,7 @@ function run_muse_exec {
     'muse-bin-* alias with the env var exported first'
   _muse_exec_expect DENY 'timeout 1800 ~/.local/bin/muse exec --workspace "$PWD" < /dev/null' \
     '~/.local/bin/muse absolute path without the env var'
-  # A neutral username — never the real one, tests/ is public (AGENTS.md).
+  # A neutral username — never the real one, tests/ is public.
   _muse_exec_expect DENY 'timeout 1800 /Users/someone/.local/bin/muse exec --workspace "$PWD" < /dev/null' \
     '/Users/<anything>/.local/bin/muse without the env var'
   _muse_exec_expect PASS \
@@ -170,10 +157,8 @@ function run_muse_exec {
     'a root option before the exec subcommand is skipped, not mistaken for it'
 
   # --- Heredoc bodies: data unless the consumer actually executes them ----
-  # (2026-09-25 fix.) This hook used to scan heredoc BODY lines as if they
-  # were commands — the exact repro that motivated the fix: a python
-  # heredoc writing a docstring that itself quotes a `muse exec` call as
-  # example text was denied even though nothing ran.
+  # (2026-09-25) A python heredoc whose docstring quotes `muse exec` must not
+  # be denied.
 
   _muse_exec_expect PASS \
     $'python3 - <<\'EOF\'\ndoc = """run `timeout 1800 muse exec --prompt-file f --workspace\n"$PWD" < /dev/null`"""\nEOF' \
@@ -187,8 +172,7 @@ function run_muse_exec {
     $'cat <<-EOF\n\ttimeout 90 muse exec --workspace "$PWD"\n\tEOF' \
     'heredoc body (cat consumer, <<-, tab-indented terminator) is data'
 
-  # A heredoc fed to an actual shell genuinely executes its body — still
-  # scanned, and still denied.
+  # A heredoc fed to an actual shell executes its body: scanned, denied.
   _muse_exec_expect DENY \
     $'sh <<EOF\ntimeout 90 muse exec --workspace "$PWD"\nEOF' \
     'heredoc body (sh consumer, unquoted delimiter) still scanned as commands'
@@ -197,28 +181,20 @@ function run_muse_exec {
     $'bash <<\'EOF\'\ntimeout 90 muse exec --workspace "$PWD"\nEOF' \
     'heredoc body (bash consumer, single-quoted delimiter) still scanned as commands'
 
-  # The line introducing the heredoc is still scanned in full — a real
-  # muse exec after a pipe there is a real command position regardless of
-  # what the heredoc body turns out to be.
+  # The line introducing the heredoc is scanned in full.
   _muse_exec_expect DENY 'cat <<EOF | timeout 30 muse exec --workspace "$PWD" < /dev/null' \
     'muse exec after a pipe on the heredoc-introducing line is still a command position'
 
-  # <<< is a here-string, not a heredoc: it takes its operand from the same
-  # line and never opens a body, so a real violation on the NEXT line is
-  # still reached (a false heredoc-open here would wrongly swallow it).
   _muse_exec_expect DENY \
     $'cat <<< data\ntimeout 90 muse exec --workspace "$PWD" < /dev/null' \
     'here-string does not open a heredoc body — the next line is still scanned'
 
-  # A line after the heredoc terminator is not part of the body and is
-  # scanned normally.
   _muse_exec_expect DENY \
     $'cat <<EOF\nhello\nEOF\ntimeout 90 muse exec --workspace "$PWD" < /dev/null' \
     'a line after the heredoc terminator is still scanned normally'
 
-  # Unterminated heredoc: the rest of the command is data for a non-shell
-  # consumer, but a shell consumer's body keeps being scanned even with no
-  # terminator seen — real bash executes an unterminated heredoc too.
+  # Unterminated heredoc: data for a non-shell consumer; a shell consumer's
+  # body is still scanned (bash executes an unterminated heredoc too).
   _muse_exec_expect DENY \
     $'bash <<EOF\ntimeout 90 muse exec --workspace "$PWD"' \
     'unterminated heredoc, shell consumer, body still scanned'
@@ -227,16 +203,13 @@ function run_muse_exec {
     $'cat <<EOF\ntimeout 90 muse exec --workspace "$PWD"' \
     'unterminated heredoc, non-shell consumer, body treated as data'
 
-  # --- Newly covered heredoc consumers (2026-09-25, second pass) ----------
-  # Same expansion as claude/md5-guard-hook's _md5_guard_scan_heredocs
-  # (credited there, ported here): ssh (any invocation), su (every form),
-  # sudo -s/-i/--shell/--login, doas -s/-i, absolute/relative shell paths,
-  # and any consumer word this hook cannot resolve at all (anything
-  # starting with $) are now treated as shell consumers. Each DENY is
-  # paired with a same-shape PASS to prove the match is on the exact
-  # resolved word, not a prefix or a coincidence. The DENY body line is
-  # `timeout 60 muse exec hi` per the task spec — it denies for its own
-  # reasons (a sub-120s timeout, open stdin) once it is actually scanned.
+  # --- Heredoc shell consumers (2026-09-25) ---------------------------------
+  # Shell consumers, as in claude/md5-guard-hook's _md5_guard_scan_heredocs:
+  # ssh (any invocation), su (every form), sudo -s/-i/--shell/--login,
+  # doas -s/-i, absolute/relative shell paths, and any word starting with $
+  # (unresolvable). Each DENY has a same-shape PASS proving an exact-word
+  # match, not a prefix. The body line `timeout 60 muse exec hi` denies once
+  # scanned (sub-120s timeout, open stdin).
 
   _muse_exec_expect DENY \
     $'ssh host <<EOF\ntimeout 60 muse exec hi\nEOF' \
@@ -334,8 +307,7 @@ function run_muse_exec {
     $'env python3 - <<EOF\ntimeout 60 muse exec hi\nEOF' \
     'env python3 - <<EOF'
 
-  # Dynamic/unresolvable consumer words fail toward scanning: anything at a
-  # heredoc-owning command position that begins with $ is treated as shell.
+  # Unresolvable consumer words fail toward scanning (a leading $ = shell).
   _muse_exec_expect DENY \
     $'$SHELL <<EOF\ntimeout 60 muse exec hi\nEOF' \
     '$SHELL <<EOF — unresolvable consumer word fails toward scanning'
@@ -356,38 +328,24 @@ function run_muse_exec {
     $'cat "$f" <<EOF\ntimeout 60 muse exec hi\nEOF' \
     'dollar in argument position does not trigger the dynamic-consumer rule'
 
-  # Two heredocs on one line, neither consumer dynamic: isolates a separate,
-  # pre-existing bug from the ${...}/pdepth one below (same as
-  # claude/md5-guard-hook's _md5_guard_scan_heredocs, ported here). zsh's
-  # `local`/`typeset` on a bare name (no `=value`) that is ALREADY set at
-  # the current scope prints it as `name=value` to stdout unless
-  # TYPESET_SILENT is set. `local hdelim='' hdstack=P hdch` and
-  # `local hconsumer hshell=0` are both bare and run once per heredoc found
-  # on a line — a line's SECOND heredoc redeclares the same already-set
-  # locals and echoes the first heredoc's stale value, corrupting the
-  # hook's JSON stdout. Predates this task; fixed by giving both an
-  # explicit initial value.
+  # zsh `local`/`typeset` on an already-set bare name prints name=value to
+  # stdout unless TYPESET_SILENT; the hook's per-heredoc locals need an
+  # initial value or a line's second heredoc corrupts the JSON stdout.
   _muse_exec_expect PASS \
     $'cat <<A; cat <<B\nharmless\nA\ntimeout 60 muse exec hi\nB' \
     'two heredocs, one line, neither consumer dynamic — bare-local echo must not corrupt stdout'
 
-  # Two heredocs on one line: the first consumer is a ${...} expansion
-  # (parsed via a brace-depth counter, pdepth, so `{`/`}` inside it don't
-  # look like command separators). pdepth must return to exactly 0 once
-  # that expansion closes, even from inside a double-quoted "${...}" —
-  # otherwise it stays stuck "open" for the rest of the line, swallows the
-  # `;` reset, and the second `<<` is never recognised as a heredoc at all
-  # (advisor review finding, 2026-09-25). PASS only holds if the
-  # second heredoc (cat, non-shell) is correctly recognised as its own,
-  # separate, data-only body.
+  # The brace-depth counter pdepth must return to 0 once a ${...} closes,
+  # even inside a double-quoted "${...}"; otherwise it swallows the `;` reset
+  # and the second `<<` is never recognised (2026-09-25). PASS only holds if
+  # the second heredoc (cat, non-shell) is its own data-only body.
   _muse_exec_expect PASS \
     $'"${I:-bash}" <<A; cat <<B\nharmless\nA\ntimeout 60 muse exec hi\nB' \
     'two heredocs on one line — pdepth from the first ${...} consumer must not corrupt the second heredoc-open'
 
-  # docker exec / container exec: not trivially reachable through the
-  # existing wrapper unwrap (their own "exec" is a subcommand name, not the
-  # shell exec builtin this hook already sees through), so left as an
-  # accepted gap rather than forced in — see _muse_exec_guard_scan_heredocs.
+  # docker exec / container exec: accepted gap, their `exec` is a subcommand,
+  # not the builtin the wrapper unwrap sees through
+  # (see _muse_exec_guard_scan_heredocs).
   _muse_exec_expect PASS \
     $'docker exec -i c sh <<EOF\ntimeout 60 muse exec hi\nEOF' \
     'docker exec ... sh <<EOF — accepted gap, not a pass-through wrapper unwrap'
@@ -397,11 +355,9 @@ function run_muse_exec {
     'container exec ... sh <<EOF — accepted gap, not a pass-through wrapper unwrap'
 
   # --- C3: N>&M / >&N / <&N / &>/&>> are redirections, not separators ----
-  # A bare & is a command boundary, but the & in 2>&1, >&2, <&1, &>out and
-  # &>>out is part of a redirection operator — treating it as a boundary
-  # split `bash 2>&1 <<EOF` at the &, throwing away `bash` and losing the
-  # consumer entirely. |& (merge stderr into the pipe) still resets like a
-  # plain pipe: its & is preceded by | rather than >/<.
+  # A bare & is a boundary, but the & in 2>&1, >&2, <&1, &>out and &>>out is
+  # part of the redirection: splitting there would drop `bash` from
+  # `bash 2>&1 <<EOF`. |& still resets like a plain pipe.
 
   _muse_exec_expect DENY \
     $'bash 2>&1 <<EOF\ntimeout 60 muse exec hi\nEOF' \
@@ -424,10 +380,7 @@ function run_muse_exec {
     'cmd |& bash <<EOF — |& still resets, so bash is a fresh consumer'
 
   # --- C4: every heredoc on one line must resolve to the same consumer ---
-  # `bash <<A <<B` feeds BOTH heredocs to bash — seg was being reset right
-  # after the first heredoc's delimiter was parsed, so the second lost its
-  # consumer and fell back to data. Neither heredoc may lose a shell
-  # consumer this way, whichever one carries the dangerous line.
+  # `bash <<A <<B` feeds both heredocs to bash; danger in either must deny.
 
   _muse_exec_expect DENY \
     $'bash <<A <<B\necho hi\nA\ntimeout 60 muse exec hi\nB' \
@@ -442,12 +395,9 @@ function run_muse_exec {
     'bash <<A | cat <<B — a real pipe resets the consumer, so B belongs to cat, not bash'
 
   # --- C2: an unquoted heredoc delimiter still expands $(...)/backticks --
-  # The OUTER shell performs command/parameter/arithmetic expansion on an
-  # UNQUOTED heredoc's body before handing the result to the consumer, even
-  # when the consumer itself never interprets the body as a script —
-  # `cat <<EOF` / `$(timeout 60 muse exec hi)` / `EOF` really runs it. A
-  # quoted delimiter (<<'EOF' or <<"EOF") suppresses all of that
-  # expansion, so the body stays fully inert there.
+  # The outer shell expands an unquoted heredoc's body before the consumer
+  # sees it, so `cat <<EOF` / `$(timeout 60 muse exec hi)` really runs it.
+  # A quoted delimiter (<<'EOF' or <<"EOF") keeps the body inert.
 
   _muse_exec_expect DENY \
     $'cat <<EOF\n$(timeout 60 muse exec hi)\nEOF' \

@@ -1,29 +1,24 @@
 #!/bin/zsh
 # dotfiles/tests/fixtures/bao-mcp-env/fake-bao
 #
-# Stand-in for the `bao` binary used by tests/bao-mcp-env through the
-# BAO_MCP_ENV_BAO seam. It never touches the network or a real OpenBao
-# instance. Every call is recorded so the suite can prove:
-#   1. role_id/secret_id travel to `auth/approle/login` as "@<path>" file
-#      references, never as literal values in argv or in this script's own
-#      environment;
-#   2. `token revoke -self` is called exactly once per bao-mcp-env
-#      invocation, on both the success and the kv-read-failure path;
-#   3. no fake secret value this fixture serves ever needs to appear in a
-#      call's argv (bao-mcp-env only ever passes the kv-subpath, never a
-#      secret, on its `kv get` argv).
+# Stand-in for `bao`, used by tests/bao-mcp-env via the BAO_MCP_ENV_BAO seam.
+# No network, no real OpenBao. Every call is recorded (calls, argv.N, env.N)
+# so the suite can prove:
+#   1. role_id/secret_id reach `auth/approle/login` as "@<path>" file
+#      references, never literal in argv or this script's environment;
+#   2. `token revoke -self` runs exactly once per bao-mcp-env invocation, on
+#      the success and the kv-read-failure path;
+#   3. no served secret value appears in argv (`kv get` gets only the subpath).
 #
-# Contract (all via environment, set by the suite):
-#   FAKE_BAO_DIR         record directory; files calls, argv.N, env.N
-#   FAKE_BAO_TOKEN        token string to emit on a successful login
-#                         (default: a fixed synthetic value)
-#   FAKE_BAO_LOGIN_FAIL   if set (any value), `auth/approle/login` fails
-#   FAKE_BAO_KV_FAIL      if set (any value), `kv get` fails
-#   FAKE_BAO_KV_JSON       path to a JSON file to print verbatim for
-#                         `kv get -format=json` (default: a 2-field fixture)
-#
-# Supported subcommands: `write -field=token auth/approle/login role_id=@F
-# secret_id=@F`, `kv get -format=json -mount=kv PATH`, `token revoke -self`.
+# Environment (set by the suite):
+#   FAKE_BAO_DIR         record directory
+#   FAKE_BAO_TOKEN       token emitted on login (default: fixed synthetic)
+#   FAKE_BAO_LOGIN_FAIL  any value: `auth/approle/login` fails
+#   FAKE_BAO_KV_FAIL     any value: `kv get` fails
+#   FAKE_BAO_KV_JSON     JSON file printed verbatim for `kv get -format=json`
+#                        (default: a 2-field fixture)
+# Subcommands: `write -field=token auth/approle/login role_id=@F secret_id=@F`,
+# `kv get -format=json -mount=kv PATH`, `token revoke -self`.
 #
 # ShellCheck: lint with `shellcheck --shell=bash tests/fixtures/bao-mcp-env/fake-bao`.
 
@@ -44,7 +39,6 @@ printf '%s\n' "$@" > "${FAKE_BAO_DIR}/argv.${n}"
 # --- dispatch ------------------------------------------------------------
 case "${1:-}" in
   write)
-    # write -field=token auth/approle/login role_id=@FILE secret_id=@FILE
     if [[ -n "${FAKE_BAO_LOGIN_FAIL:-}" ]]; then
       echo "fake-bao: login denied (scripted failure)" >&2
       exit 1
@@ -70,7 +64,6 @@ case "${1:-}" in
     ;;
 
   kv)
-    # kv get -format=json -mount=kv PATH
     if [[ -n "${FAKE_BAO_KV_FAIL:-}" ]]; then
       echo "fake-bao: kv read denied (scripted failure)" >&2
       exit 1
@@ -83,7 +76,6 @@ case "${1:-}" in
     ;;
 
   token)
-    # token revoke -self
     :
     ;;
 

@@ -1,16 +1,14 @@
 #!/bin/zsh
 # dotfiles/tests/scratch-sweep
 #
-# Behavioural test for bin/scratch-sweep - the unattended job that deletes
-# idle scratch under ~/Library/Caches/claude-tmp. It deletes recursively, so the
-# suite is mostly about what must SURVIVE: recent entries, entries with one
-# recent file deep inside, the targets of symlinks, and everything under a root
-# the script refuses.
+# Behavioural test for bin/scratch-sweep, the unattended job that deletes idle
+# scratch under ~/Library/Caches/claude-tmp. It deletes recursively, so the
+# suite pins what must SURVIVE: recent entries, an old entry holding one recent
+# file, symlink targets, and everything under a refused root.
 #
-# Hermetic: every case builds a fixture root at <tmp>/Caches/claude-tmp, sources
-# the script in a child zsh (its `main` does not run when sourced) and calls
-# _sweep_root_dir on that root. The real main is run only with HOME pointed at a
-# fixture. Nothing outside the fixture is touched.
+# Hermetic: each case builds <tmp>/Caches/claude-tmp, sources the script in a
+# child zsh (`main` does not run when sourced) and calls _sweep_root_dir on it.
+# The real main runs only with HOME pointed at a fixture.
 #
 # Run: ./test scratch-sweep    (or ./test for the full suite)
 #
@@ -23,10 +21,9 @@ typeset -g SWEEP_T_OUT=''
 typeset -gi SWEEP_T_RC=0
 
 function _sweep_t_run {
-  # Run _sweep_root_dir with the given arguments in a child zsh. Output (both
-  # streams) lands in SWEEP_T_OUT, the status in SWEEP_T_RC. SWEEP_T_OWNER, when
-  # set, replaces the owner lookup; SWEEP_T_SETUP, when set, is zsh code run
-  # after the script is sourced (to redefine a seam) and before the sweep.
+  # Run _sweep_root_dir "$@" in a child zsh: both streams to SWEEP_T_OUT, status
+  # to SWEEP_T_RC. SWEEP_T_OWNER replaces the owner lookup; SWEEP_T_SETUP is zsh
+  # code run after sourcing (to redefine a seam) and before the sweep.
   # The if/else keeps a non-zero child status from tripping errexit.
   if SWEEP_T_OUT="$(/bin/zsh -c '
     source "$1"; shift
@@ -90,7 +87,6 @@ function run_scratch_sweep {
   : > "${root}/recent-file"
   _sweep_t_age "${root}/idle-dir"
   _sweep_t_age "${root}/idle-file"
-  # An old tree with ONE recent file deep inside must survive whole.
   /bin/mkdir -p "${root}/deep/a/b/c"
   : > "${root}/deep/a/b/c/fresh"
   : > "${root}/deep/a/old-file"
@@ -130,14 +126,11 @@ function run_scratch_sweep {
   /bin/mkdir -p "${outside}/keep"
   : > "${outside}/keep/precious"
   : > "${outside}/precious-file"
-  # Old top-level symlinks (to a directory, to a file, dangling): removed, targets untouched.
   /bin/ln -s "${outside}" "${root}/old-link-dir"
   /bin/ln -s "${outside}/precious-file" "${root}/old-link-file"
   /bin/ln -s "${fx}/nowhere" "${root}/old-link-dangling"
   /usr/bin/touch -h -t 202001010000 "${root}/old-link-dir" "${root}/old-link-file" "${root}/old-link-dangling"
-  # A recent top-level symlink is kept.
   /bin/ln -s "${outside}" "${root}/recent-link"
-  # An old entry holding a symlink out of the root: the entry goes, the target stays.
   /bin/mkdir -p "${root}/entry-with-link"
   /bin/ln -s "${outside}" "${root}/entry-with-link/out"
   /bin/ln -s "${outside}/keep" "${root}/entry-with-link/out2"
@@ -418,7 +411,6 @@ function run_scratch_sweep {
   /bin/rm -rf "${fx}"
 
   # --- Lock owner and age ----------------------------------------------------
-  # A lock whose pid is gone is stale at once, however fresh.
   fx="$(_sweep_t_fixture)"; root="${fx}/Caches/claude-tmp"
   /bin/mkdir -p "${root}/idle" "${root}/.sweep.lock"
   _sweep_t_age "${root}/idle"
@@ -428,7 +420,6 @@ function run_scratch_sweep {
   _sweep_t_expect_gone "${root}/idle" "a fresh lock whose pid is dead is replaced"
   _sweep_t_expect_gone "${root}/.sweep.lock" "the replaced lock, pid file included, is released"
   /bin/rm -rf "${fx}"
-  # A fresh lock whose pid is alive (this shell) is respected.
   fx="$(_sweep_t_fixture)"; root="${fx}/Caches/claude-tmp"
   /bin/mkdir -p "${root}/idle" "${root}/.sweep.lock"
   _sweep_t_age "${root}/idle"
@@ -439,12 +430,10 @@ function run_scratch_sweep {
   else
     _fail "live lock: rc=${SWEEP_T_RC} out=${SWEEP_T_OUT}"
   fi
-  # The same lock past the age limit is stale even though its pid is alive.
   /usr/bin/touch -t 202001010000 "${root}/.sweep.lock"
   _sweep_t_run "${root}"
   _sweep_t_expect_gone "${root}/idle" "a lock past the age limit is replaced even with a live pid"
   /bin/rm -rf "${fx}"
-  # A pid file with junk in it does not count as a dead owner.
   fx="$(_sweep_t_fixture)"; root="${fx}/Caches/claude-tmp"
   /bin/mkdir -p "${root}/idle" "${root}/.sweep.lock"
   _sweep_t_age "${root}/idle"
@@ -573,8 +562,8 @@ function run_scratch_sweep {
   fi
   /bin/rm -rf "${fx}"
 
-  # Shell options from the user's startup files do not change what is swept:
-  # zsh reads $ZDOTDIR/.zshenv for every invocation, scripts included.
+  # Startup-file options must not change what is swept: zsh reads
+  # $ZDOTDIR/.zshenv for every invocation, scripts included.
   fx="$(_sweep_t_fixture)"
   root="${fx}/Library/Caches/claude-tmp"
   /bin/mkdir -p "${root}/idle" "${root}/recent" "${fx}/zdotdir"

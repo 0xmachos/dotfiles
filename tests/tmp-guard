@@ -1,20 +1,16 @@
 #!/bin/zsh
 # dotfiles/tests/tmp-guard
 #
-# Behavioural test for claude/tmp-guard-hook - the PreToolUse hook that denies
-# writes into the system scratch roots (/tmp, /private/tmp, /var/tmp,
-# /private/var/tmp, /var/folders, /private/var/folders) and points at
-# ~/Library/Caches/claude-tmp/<name>/ instead. Feeds tool calls to the hook as
-# stdin JSON and asserts the verdict: DENY for Write/Edit/NotebookEdit targets
-# and Bash write positions under a root, PASS for reads, devices, lookalike
-# paths, variable-based paths, text mentions, heredoc data and the body of a
-# multi-line commit or PR message (quotes, substitutions and heredocs carry
-# across newlines).
-#
-# Guards both directions: a tweak that started denying `cat /tmp/x` or
-# `git commit -m "..."`, or stopped catching `cp a /tmp/b`, fails here. Every
-# loop in the hook is driven more than once, and the hook source is checked for
-# a `local` declaration below function level (a repeated untyped `local NAME`
+# Behavioural test for claude/tmp-guard-hook, the PreToolUse hook that denies
+# writes into /tmp, /private/tmp, /var/tmp, /private/var/tmp, /var/folders and
+# /private/var/folders and points at ~/Library/Caches/claude-tmp/<name>/.
+# Feeds tool calls as stdin JSON and asserts the verdict:
+#   DENY: Write/Edit/NotebookEdit targets and Bash write positions under a root
+#   PASS: reads, devices, lookalike and variable-based paths, text mentions,
+#         heredoc data, multi-line commit/PR message bodies
+# Both directions are pinned (`cat /tmp/x` must pass, `cp a /tmp/b` must deny).
+# Every loop in the hook is driven more than once, and the hook source is
+# checked for a `local` below function level (a repeated untyped `local NAME`
 # in one zsh scope prints NAME=value to stdout and corrupts the deny JSON).
 #
 # Run: ./test tmp-guard    (or ./test for the full suite)
@@ -79,8 +75,7 @@ function _tmp_guard_expect_file {
 function run_tmp_guard {
   _section "tmp scratch write guard hook"
 
-  # claude/ is gitignored and synced out of band - an absent hook means the
-  # sync has not reached this machine, not a regression.
+  # claude/ is gitignored, so the hook is absent on a clean clone and in CI.
   if [[ ! -f "${SCRIPT_DIR}/claude/tmp-guard-hook" ]]; then
     _skip "claude/tmp-guard-hook absent - claude/ not yet synced to this machine"
     return 0
@@ -725,8 +720,7 @@ function run_tmp_guard {
   _tmp_guard_expect DENY 'FOO=1 BAR=2 BAZ=3 cp a /tmp/b' 'several assignments'
   _tmp_guard_expect DENY 'sudo -u root nice -n 5 timeout 9 cp a /tmp/b' 'several wrappers'
 
-  # A `local` declared below function level is a source-level regression
-  # even when no fixture happens to trigger the repeat.
+  # A `local` below function level is a regression even if no fixture hits it.
   if /usr/bin/grep -nE '^ {3,}local ' "${SCRIPT_DIR}/claude/tmp-guard-hook" >/dev/null; then
     _fail "hook source declares a local below function level"
   else

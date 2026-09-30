@@ -1,29 +1,24 @@
 #!/bin/zsh
 # dotfiles/tests/message-policy
 #
-# Hermetic suite for the public-repository message policy added 2026-09-22:
-# pre-push Layer 3 (trailers, empty commits, long bodies), pre-push Layer 4
-# (tracked-tree PII scan of every pushed tip), the commit-msg fast-feedback
-# layer, and the repo-visibility resolver they share. Every case runs in a
-# throwaway repo whose core.hooksPath holds copies of the global hooks, so
-# git's real hook path is exercised without the pre-commit scanner or the
-# real denylist: PII_HOOK_PATTERNS points at a fixture list, and
-# REPO_VISIBILITY_FORCE fixes the visibility per call (public cases must
-# block, private cases must allow — every block is paired with its
-# allow-side control, as tests/git-sign does).
+# Hermetic suite for the public-repo message policy (added 2026-09-22):
+# pre-push Layer 3 (trailers, empty commits, long bodies), Layer 4 (tracked-
+# tree PII scan of every pushed tip), commit-msg fast feedback, and the shared
+# repo-visibility resolver. Each case runs in a throwaway repo whose
+# core.hooksPath holds copies of the global hooks: no pre-commit scanner, no
+# real denylist. PII_HOOK_PATTERNS points at a fixture list and
+# REPO_VISIBILITY_FORCE fixes visibility per call; public cases must block,
+# private must allow, every block paired with its allow-side control (as
+# tests/git-sign).
 #
-# MSG_POLICY_SKIP=1 is honoured only with a real controlling terminal
-# attached (2026-09-25; pii-scan's --check-terminal). Cases expecting the
-# bypass to WORK use the _tty helper variants (/usr/bin/script -q /dev/null,
-# a real pty regardless of how this suite was invoked); cases proving refusal
-# use the _notty variants (tests/lib's _run_no_tty, POSIX setsid) and assert
-# the refusal LINE, not just the verdict — needed because an agent's tool
-# call has no controlling terminal already, but a human's interactive
-# `./test` does, and that is this gate's primary real-world path (see
-# tests/pii-hook's header for the mechanism in more detail).
+# MSG_POLICY_SKIP=1 is honoured only with a controlling terminal (2026-09-25;
+# pii-scan --check-terminal). _tty variants run under /usr/bin/script -q
+# /dev/null (a real pty) and expect the bypass to work; _notty variants use
+# tests/lib's _run_no_tty (POSIX setsid) and assert the refusal LINE, not just
+# the verdict: a non-interactive caller has no controlling terminal, an
+# interactive `./test` does.
 #
-# Run: ./test message-policy    (or ./test for the full suite)
-#
+# Run: ./test message-policy
 # ShellCheck: lint with `shellcheck --shell=bash tests/message-policy`.
 # This file is sourced, not executed — chmod 644.
 #
@@ -35,8 +30,7 @@ typeset -ga MP_ENV=(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
 
 function _mp_repo {
   # Sandbox with a pushed base commit and the global hooks copied into a
-  # private hooksPath. $1 = sandbox dir, $2 = fixture pattern file. Echoes
-  # the repo path.
+  # private hooksPath. $1 = sandbox dir, $2 = fixture pattern file.
   local sb="$1" patterns="$2"
   (
     export "${MP_ENV[@]}" PII_HOOK_PATTERNS="${patterns}" REPO_VISIBILITY_FORCE=private
@@ -68,9 +62,9 @@ function _mp_repo {
 }
 
 function _mp_commit {
-  # $1 repo, $2 message (may be multi-line), rest = files to touch (or none
-  # for --allow-empty). Commits WITHOUT the commit-msg hook so pre-push cases
-  # test pre-push alone.
+  # $1 repo, $2 message (may be multi-line), rest = files to touch (none =
+  # --allow-empty). Skips the commit-msg hook so pre-push cases test pre-push
+  # alone.
   local dir="$1" msg="$2"
   shift 2
   (
@@ -105,12 +99,9 @@ function _mp_push_expect {
 }
 
 function _mp_push_expect_tty {
-  # Like _mp_push_expect, but the whole `git push` (and the pre-push hook it
-  # spawns) runs under /usr/bin/script -q /dev/null, which allocates a real
-  # pty — the hook inherits it as its controlling terminal regardless of how
-  # this suite itself was invoked. Needed for MSG_POLICY_SKIP=1 cases that
-  # expect the bypass to be HONOURED (2026-09-25: honoured only with a real
-  # controlling terminal attached).
+  # Like _mp_push_expect, but git push runs under /usr/bin/script -q /dev/null
+  # so the pre-push hook has a controlling terminal. For MSG_POLICY_SKIP=1
+  # cases where the bypass is HONOURED.
   local want="$1" label="$2" dir="$3" vis="$4"
   shift 4
   local got out
@@ -128,12 +119,10 @@ function _mp_push_expect_tty {
 }
 
 function _mp_push_expect_notty {
-  # Like _mp_push_expect, but the whole `git push` runs under tests/lib's
-  # _run_no_tty, detaching from any controlling terminal regardless of how
-  # this suite itself was invoked — needed for MSG_POLICY_SKIP=1 cases that
-  # expect the bypass to be REFUSED (2026-09-25). $5 = a needle that MUST
-  # appear in the hook's output — asserting BLOCKED alone would also pass if
-  # the shim died for an unrelated reason, so the refusal LINE is the proof.
+  # Like _mp_push_expect, but git push runs under _run_no_tty (no controlling
+  # terminal). For MSG_POLICY_SKIP=1 cases where the bypass is REFUSED. $5 =
+  # needle that MUST appear in the hook output: BLOCKED alone would also pass
+  # if the shim died for an unrelated reason.
   local want="$1" label="$2" dir="$3" vis="$4" needle="$5"
   shift 5
   local got out
@@ -169,9 +158,8 @@ function _mp_commitmsg_expect {
   (
     cd "${dir}" || exit 1
     export "${MP_ENV[@]}" PII_HOOK_PATTERNS="${MP_PATTERNS}" REPO_VISIBILITY_FORCE="${vis}"
-    # SC2163: zsh export accepts a scalar holding a literal NAME=value and
-    # performs the assignment — verified 2026-09-25; shellcheck's bash model
-    # does not know the idiom.
+    # SC2163: zsh export takes a scalar holding a literal NAME=value (verified
+    # 2026-09-25); shellcheck's bash model does not know the idiom.
     # shellcheck disable=SC2163
     [[ -n "${extra}" ]] && export "${extra}"
     git reset -q
@@ -189,8 +177,7 @@ function _mp_commitmsg_expect {
 
 function _mp_commitmsg_expect_tty {
   # Like _mp_commitmsg_expect, but the hook runs under /usr/bin/script -q
-  # /dev/null for a real controlling terminal — needed when MSG_POLICY_SKIP=1
-  # is expected to be HONOURED (2026-09-25: honoured only with one attached).
+  # /dev/null (controlling terminal): MSG_POLICY_SKIP=1 is HONOURED.
   local want="$1" label="$2" dir="$3" vis="$4" text="$5" staged="${6:-}" extra="${7:-}"
   local rc=0 got msgfile
   msgfile="$(mktemp "${TMPDIR:-/tmp}/mp-msg.XXXXXX")"
@@ -198,9 +185,8 @@ function _mp_commitmsg_expect_tty {
   (
     cd "${dir}" || exit 1
     export "${MP_ENV[@]}" PII_HOOK_PATTERNS="${MP_PATTERNS}" REPO_VISIBILITY_FORCE="${vis}"
-    # SC2163: zsh export accepts a scalar holding a literal NAME=value and
-    # performs the assignment — verified 2026-09-25; shellcheck's bash model
-    # does not know the idiom.
+    # SC2163: zsh export takes a scalar holding a literal NAME=value (verified
+    # 2026-09-25); shellcheck's bash model does not know the idiom.
     # shellcheck disable=SC2163
     [[ -n "${extra}" ]] && export "${extra}"
     git reset -q
@@ -217,12 +203,9 @@ function _mp_commitmsg_expect_tty {
 }
 
 function _mp_commitmsg_expect_notty {
-  # Like _mp_commitmsg_expect, but the hook runs under tests/lib's
-  # _run_no_tty, detaching from any controlling terminal regardless of how
-  # this suite itself was invoked — needed when MSG_POLICY_SKIP=1 is expected
-  # to be REFUSED (2026-09-25). $8 = a needle that MUST appear in the hook's
-  # output — a DENY verdict alone would also pass if the shim died for an
-  # unrelated reason, so the refusal LINE is the proof.
+  # Like _mp_commitmsg_expect, but the hook runs under _run_no_tty:
+  # MSG_POLICY_SKIP=1 is REFUSED. $8 = needle that MUST appear in the hook
+  # output: DENY alone would also pass if the shim died for an unrelated reason.
   local want="$1" label="$2" dir="$3" vis="$4" text="$5" staged="${6:-}" extra="${7:-}" needle="${8:-}"
   local rc=0 got msgfile out
   msgfile="$(mktemp "${TMPDIR:-/tmp}/mp-msg.XXXXXX")"
@@ -269,8 +252,8 @@ function run_message_policy {
   local sb repo long_body i
   sb="$(mktemp -d "${TMPDIR:-/tmp}/message-policy.XXXXXX")"
   typeset -g MP_PATTERNS="${sb}/patterns"
-  # Fixture denylist: one made-up token, assembled at runtime so this file
-  # never carries a literal that looks like a real entry.
+  # Fixture denylist: one made-up token, assembled at runtime so no literal
+  # here looks like a real entry.
   print -r -- "fixture$(print -n 'host')token" > "${MP_PATTERNS}"
   repo="$(_mp_repo "${sb}" "${MP_PATTERNS}")"
 
@@ -281,7 +264,7 @@ function run_message_policy {
       GIT_CONFIG_PARAMETERS="'hooks.repoVisibility=public'"
   _mp_visibility_expect unknown 'local path origin resolves to unknown' "${repo}"
   _mp_visibility_expect public 'force seam' "${repo}" REPO_VISIBILITY_FORCE=public
-  # A github.com origin through a gh fixture that answers private / public.
+  # github.com origin via gh fixtures answering private / public / failure.
   print -r -- '#!/bin/sh
 printf "true\n"' > "${sb}/gh-private"
   print -r -- '#!/bin/sh
@@ -308,9 +291,8 @@ exit 1' > "${sb}/gh-broken"
   _mp_reset_to_remote "${repo}"
 
   # --- pre-push Layer 3: empty commit ---
-  # Each case gets its own fresh empty commit and its own reset: a push with
-  # nothing new to send succeeds trivially (git never runs pre-push at all)
-  # and would prove nothing.
+  # Each case needs a fresh empty commit and a reset: a push with nothing new
+  # succeeds trivially (git never runs pre-push) and proves nothing.
   _mp_commit "${repo}" 'Record an event with no diff'
   _mp_push_expect BLOCKED 'empty commit' "${repo}" public
   _mp_reset_to_remote "${repo}"
@@ -319,11 +301,6 @@ exit 1' > "${sb}/gh-broken"
   _mp_push_expect ALLOWED 'empty commit in a private repo' "${repo}" private
   _mp_reset_to_remote "${repo}"
 
-  # MSG_POLICY_SKIP=1 is honoured only with a real controlling terminal
-  # (2026-09-25): the _tty case forces one via script; the _notty case
-  # detaches any controlling terminal via setsid (tests/lib's _run_no_tty)
-  # and proves a fresh empty commit stays BLOCKED, with the refusal line,
-  # regardless of how this suite itself was invoked.
   _mp_commit "${repo}" 'Record an event with no diff'
   _mp_push_expect_tty ALLOWED 'empty commit with MSG_POLICY_SKIP=1 (with a terminal)' "${repo}" public MSG_POLICY_SKIP=1
   _mp_reset_to_remote "${repo}"
@@ -352,9 +329,9 @@ exit 1' > "${sb}/gh-broken"
   _mp_push_expect ALLOWED 'clean tracked tree' "${repo}" public
   _mp_reset_to_remote "${repo}"
 
-  # The home-repo control below PUBLISHES the fixture value to the sandbox
-  # remote, so it must be the last push of the suite: every later tree would
-  # carry the value and block for the wrong reason.
+  # The control below PUBLISHES the fixture value to the sandbox remote, so it
+  # must be the suite's last push: later trees would carry it and block for
+  # the wrong reason.
   _mp_commit "${repo}" 'Add a config line' b.txt
   ( cd "${repo}" && print -r -- "value=fixture$(print -n 'host')token" >> b.txt && git add b.txt \
       && env "${MP_ENV[@]}" git -c core.hooksPath=/dev/null commit -q --amend --no-edit )
@@ -369,14 +346,10 @@ exit 1' > "${sb}/gh-broken"
   _mp_commitmsg_expect PASS 'Ledger-Event trailer, private repo' "${repo}" private $'Add x\n\nLedger-Event: true' staged
   _mp_commitmsg_expect DENY '130-word body' "${repo}" public $'Add x\n\n'"${long_body}" staged
   _mp_commitmsg_expect PASS 'short message' "${repo}" public $'Add x\n\nOne line.' staged
-  # Nothing staged is NOT judged by commit-msg (it cannot tell --allow-empty
-  # from a message amend); pre-push Layer 3 owns the empty-commit rule.
+  # commit-msg cannot tell --allow-empty from a message amend, so nothing
+  # staged passes here; pre-push Layer 3 owns the empty-commit rule.
   _mp_commitmsg_expect PASS 'nothing staged passes here (amend shape; pre-push owns empties)' "${repo}" public 'Reword a subject'
 
-  # MSG_POLICY_SKIP=1 on commit-msg itself: honoured only with a real
-  # controlling terminal (2026-09-25). The _notty case detaches any
-  # controlling terminal via setsid regardless of how this suite itself was
-  # invoked, and asserts the refusal line, not just the DENY verdict.
   _mp_commitmsg_expect_tty PASS 'Ledger-Event trailer with MSG_POLICY_SKIP=1 (with a terminal)' \
       "${repo}" public $'Add x\n\nLedger-Event: true' staged MSG_POLICY_SKIP=1
   _mp_commitmsg_expect_notty DENY 'Ledger-Event trailer with MSG_POLICY_SKIP=1 is refused without a terminal' \

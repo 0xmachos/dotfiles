@@ -1,40 +1,34 @@
 #!/bin/zsh
 # dotfiles/tests/fetch-route
 #
-# Behavioural test for claude/fetch-route-hook — the PreToolUse hook that
-# DENIES a fetch of a URL with a better, specific tool: a GitHub code host
-# (for every matched tool, pointing at the right `gh` command for that URL's
-# shape) or an X status post fetched through WebFetch/Exa (pointing at
-# X's oEmbed endpoint, but allowed through mcp__parallel__web_fetch, which
-# does handle X). Also denies every WebSearch and mcp__parallel__web_search
-# call outright, pointing at Exa.
-# Feeds tool payloads as stdin JSON, the same shape as tests/md5-write,
-# and asserts the verdict and (for GitHub) the specific gh command named.
+# Test for claude/fetch-route-hook (PreToolUse). The hook denies:
+#   - a GitHub host fetch on every matched tool, naming the gh command for
+#     that URL's shape
+#   - an X status post via WebFetch/Exa, naming X's oEmbed endpoint (allowed
+#     via mcp__parallel__web_fetch)
+#   - every WebSearch and mcp__parallel__web_search call, naming Exa
+# Payloads are stdin JSON (same shape as tests/md5-write); asserts the verdict
+# and, for GitHub, the gh command named. Fixture URLs are invented
+# (example-org/example-repo), never a real repo or X post.
 #
-# Every fixture URL below is invented for this suite (example-org/
-# example-repo, made-up owners and IDs) — never a real repository or a real
-# X post.
-#
-# Run: ./test fetch-route    (or ./test for the full suite)
+# Run: ./test fetch-route
 #
 # ShellCheck: lint with `shellcheck --shell=bash tests/fetch-route`.
 # This file is sourced, not executed — chmod 644.
 #
 # shellcheck source=tests/lib
 # shellcheck disable=SC2016
-# SC2016 above: the single-quoted '$(id)' fixtures are deliberate — they
-# must NOT expand, since the whole point is a repo name shaped like a
-# command substitution that the hook has to quote, not execute.
+# SC2016: the '$(id)' fixtures must not expand; the hook must quote them.
 
 function _fr_run_url {
-  # Echo the hook's stdout for a WebFetch-shaped single-url payload.
+  # WebFetch-shaped single-url payload.
   local tool="$1" url="$2"
   jq -n --arg t "${tool}" --arg u "${url}" '{tool_name:$t, tool_input:{url:$u}}' \
     | /bin/zsh "${SCRIPT_DIR}/claude/fetch-route-hook"
 }
 
 function _fr_run_urls {
-  # Echo the hook's stdout for an MCP-shaped urls[] payload.
+  # MCP-shaped urls[] payload.
   local tool="$1"
   shift
   local urls_json
@@ -44,21 +38,19 @@ function _fr_run_urls {
 }
 
 function _fr_run_search {
-  # Echo the hook's stdout for a search-shaped payload; tool defaults to WebSearch.
+  # Search-shaped payload; tool defaults to WebSearch.
   local query="$1" tool="${2:-WebSearch}"
   jq -n --arg q "${query}" --arg t "${tool}" '{tool_name:$t, tool_input:{query:$q}}' \
     | /bin/zsh "${SCRIPT_DIR}/claude/fetch-route-hook"
 }
 
 function _fr_reason {
-  # Echo the deny reason of hook output $1, or empty if it was not a deny.
-  # Non-zero on empty input: callers under errexit must capture it with
-  # `|| true` so a regression is a FAIL line, not an aborted run.
+  # Deny reason of hook output $1. Non-zero on empty input: callers under
+  # errexit capture it with `|| true` so a regression is a FAIL, not an abort.
   printf '%s' "$1" | jq -er '.hookSpecificOutput.permissionDecisionReason' 2>/dev/null
 }
 
 function _fr_expect_url {
-  # Assert the verdict for a single-URL WebFetch-shaped call.
   local want="$1" tool="$2" url="$3" out got
   local label="${4:-$url}"
   out="$(_fr_run_url "${tool}" "${url}")"
@@ -71,10 +63,9 @@ function _fr_expect_url {
 }
 
 function _fr_expect_reason_has {
-  # Assert a single-URL call is denied AND its reason contains a substring —
-  # used for pinning the exact gh command per GitHub URL shape. Checks the
-  # verdict itself (not just the reason text) since a malformed or PASS
-  # response with no reason would otherwise satisfy an empty/absent check.
+  # Denied AND reason contains a substring (pins the gh command per URL
+  # shape). Checks the verdict too: a malformed or PASS response with no
+  # reason would otherwise satisfy an empty check.
   local tool="$1" url="$2" substring="$3" out reason verdict
   local label="${4:-$url}"
   out="$(_fr_run_url "${tool}" "${url}")"
@@ -90,8 +81,7 @@ function _fr_expect_reason_has {
 function run_fetch_route {
   _section "fetch → gh/oEmbed routing hook"
 
-  # claude/ is gitignored and synced out of band — absent hook means the sync
-  # hasn't reached this machine, not a regression. Skip, don't die.
+  # claude/ is gitignored and synced out of band: absent hook = skip.
   if [[ ! -f "${SCRIPT_DIR}/claude/fetch-route-hook" ]]; then
     _skip "claude/fetch-route-hook absent — claude/ not yet synced to this machine"
     return 0
@@ -154,23 +144,22 @@ function run_fetch_route {
   _fr_expect_reason_has WebFetch 'https://raw.githubusercontent.com/example-org/example-repo/main/src/foo.py' \
     'ref may contain slashes' 'raw.githubusercontent.com ambiguity noted'
 
-  # Hosts with no shape-specific branch still get a generic gh pointer.
+  # No shape-specific branch: generic gh pointer.
   _fr_expect_reason_has WebFetch 'https://gist.github.com/example-user/deadbeefcafe' 'gh api' 'gist.github.com generic'
   _fr_expect_reason_has WebFetch 'https://gist.githubusercontent.com/example-user/deadbeef/raw/file.py' 'gh api' 'gist.githubusercontent.com generic'
   _fr_expect_reason_has WebFetch 'https://codeload.github.com/example-org/example-repo/zip/refs/heads/main' 'gh api' 'codeload.github.com generic'
   _fr_expect_reason_has WebFetch 'https://objects.githubusercontent.com/example-blob' 'gh api' 'objects.githubusercontent.com generic'
   _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/settings' 'gh api' 'unrecognised github.com shape falls to generic'
 
-  # Case-insensitive host match, port stripped.
   _fr_expect_url DENY WebFetch 'https://GitHub.com/example-org/example-repo' 'host matched case-insensitively'
   _fr_expect_url DENY WebFetch 'https://github.com:443/example-org/example-repo' 'host matched with a port'
 
-  # NOT github: *.github.io and docs.github.com.
+  # Not GitHub code hosts: *.github.io, docs.github.com.
   _fr_expect_url PASS WebFetch 'https://example-org.github.io/some-page' 'github.io allowed'
   _fr_expect_url PASS WebFetch 'https://docs.github.com/en/actions' 'docs.github.com allowed'
 
   # --- URL authority parsing edge cases -------------------------------------
-  # scheme, userinfo, port and trailing-dot handling in _fr_split_url.
+  # Scheme, userinfo, port and trailing-dot handling in _fr_split_url.
 
   _fr_expect_url PASS WebFetch 'https://github.com:pass@evil.com/o/r' \
     'userinfo before the host must not be mistaken for it — the real host is evil.com, not github.com'
@@ -184,16 +173,11 @@ function run_fetch_route {
     'a non-digit port makes the URL unparseable and fails open'
 
   # --- Shell-quoting in suggested commands ----------------------------------
-  # A URL path segment is arbitrary text, not validated to be shell-safe, so
-  # every dynamic value in a suggested command must be quoted before it is
-  # safe to paste into zsh.
-
-  # Note: the reason string is "${url} blocked: ${FR_REASON}" (main() labels each
-  # denied URL with its own raw form before the reason text), so the label
-  # itself legitimately carries the unquoted URL/query — that is not a
-  # "suggested command" and is out of scope here. The leak-checks below are
-  # scoped to the command text after "use "/inside the backticks, not the
-  # whole reason.
+  # A path segment is arbitrary text, so every dynamic value in a suggested
+  # command must be quoted.
+  # The reason is "${url} blocked: ${FR_REASON}" (main() labels each denied
+  # URL raw), so leak-checks are scoped to the command text after "use "/
+  # inside the backticks, not the whole reason.
 
   local quote_out quote_reason want_quoted cmd_part
   quote_out="$(_fr_run_url WebFetch 'https://github.com/o/$(id)')"
@@ -232,7 +216,7 @@ function run_fetch_route {
   _fr_expect_reason_has WebFetch 'https://api.github.com/repos/example-org/example-repo/issues?state=closed' \
     "gh api 'repos/example-org/example-repo/issues?state=closed'" 'api.github.com query string preserved and quoted'
 
-  # GitHub via the urls[] (MCP) shape, one URL in the batch.
+  # urls[] (MCP) shape.
   _fr_expect_url DENY mcp__exa__web_fetch_exa 'https://github.com/example-org/example-repo' 'exa web_fetch denied for github'
   out="$(_fr_run_urls mcp__parallel__web_fetch 'https://github.com/example-org/example-repo')"
   if [[ "$(_hook_verdict "${out}")" == DENY ]]; then
@@ -250,7 +234,7 @@ function run_fetch_route {
   done
   _fr_expect_url PASS mcp__parallel__web_fetch 'https://x.com/someuser/status/1234567890' 'X status allowed through mcp__parallel__web_fetch'
 
-  # Every documented status-URL shape and host alias, all denied on WebFetch.
+  # Every status-URL shape and host alias.
   _fr_expect_url DENY WebFetch 'https://twitter.com/someuser/status/1234567890' 'twitter.com status'
   _fr_expect_url DENY WebFetch 'https://www.twitter.com/someuser/status/1234567890' 'www.twitter.com status'
   _fr_expect_url DENY WebFetch 'https://mobile.twitter.com/someuser/status/1234567890' 'mobile.twitter.com status'
@@ -259,12 +243,10 @@ function run_fetch_route {
   _fr_expect_url DENY WebFetch 'https://x.com/i/status/1234567890' 'x.com/i/status'
   _fr_expect_url DENY WebFetch 'https://x.com/i/web/status/1234567890' 'x.com/i/web/status'
 
-  # One trailing slash is tolerated on every status shape.
   _fr_expect_url DENY WebFetch 'https://x.com/someuser/status/1234567890/' 'x.com status with one trailing slash'
   _fr_expect_url DENY WebFetch 'https://x.com/i/status/1234567890/' 'x.com/i/status with one trailing slash'
   _fr_expect_url DENY WebFetch 'https://x.com/i/web/status/1234567890/' 'x.com/i/web/status with one trailing slash'
 
-  # Non-status x.com URLs are not this hook's concern.
   _fr_expect_url PASS WebFetch 'https://x.com/someuser' 'x.com profile page allowed'
   _fr_expect_url PASS WebFetch 'https://x.com/search?q=example' 'x.com search allowed'
 
@@ -291,7 +273,7 @@ function run_fetch_route {
       _fail "${ws_tool} deny reason is not one line under 121 chars: ${ws_reason}"
     fi
 
-    # Empty query still denied — the rule is unconditional.
+    # Unconditional: an empty query is denied too.
     ws_empty_out="$(_fr_run_search '' "${ws_tool}")"
     if [[ "$(_hook_verdict "${ws_empty_out}")" == DENY ]]; then
       _pass "DENY: ${ws_tool} with an empty query still denied"
@@ -300,7 +282,7 @@ function run_fetch_route {
     fi
   done
 
-  # Other tools' payloads with a query are not search tools: silent allow.
+  # Other tools carrying a query are not search tools: silent allow.
   ws_out="$(_fr_run_search 'q' mcp__exa__web_search_exa)"
   if [[ "$(_hook_verdict "${ws_out}")" == PASS ]]; then
     _pass "PASS: mcp__exa__web_search_exa is never denied by the search rule"
@@ -308,8 +290,8 @@ function run_fetch_route {
     _fail "mcp__exa__web_search_exa was denied or produced invalid output"
   fi
 
-  # Rule-2 regression: a batch that runs the per-URL classifier repeatedly in
-  # one process must still print exactly one JSON object.
+  # Rule-2 regression: a batch running the per-URL classifier repeatedly in
+  # one process must print exactly one JSON object.
   out="$(_fr_run_urls mcp__exa__web_fetch_exa \
     'https://github.com/example-org/example-repo/blob/main/a.py' \
     'https://github.com/example-org/example-repo/blob/main/b.py' \
@@ -369,7 +351,6 @@ function run_fetch_route {
     _fail "mixed batch: missing the re-issue footer"
   fi
 
-  # An all-innocent batch is allowed outright.
   out="$(_fr_run_urls mcp__exa__web_fetch_exa 'https://example.com/a' 'https://example.com/b')"
   if [[ "$(_hook_verdict "${out}")" == PASS ]]; then
     _pass "PASS: all-innocent batch"
@@ -378,9 +359,8 @@ function run_fetch_route {
   fi
 
   # --- fail-open --------------------------------------------------------------
-  # Every fail-open path must both print nothing AND exit 0 — a nonzero exit
-  # with empty stdout would still leave Claude Code treating the hook as
-  # errored rather than a clean allow.
+  # Every fail-open path must print nothing AND exit 0: a nonzero exit with
+  # empty stdout still reads as a hook error, not a clean allow.
 
   local fo_out fo_rc
 
@@ -405,7 +385,7 @@ function run_fetch_route {
     _fail "fail-open: empty payload — status ${fo_rc}, stdout: ${fo_out}"
   fi
 
-  # A tool_name present but no url/urls at all (e.g. some other tool_input shape).
+  # tool_name present, no url/urls.
   fo_out="$(jq -n '{tool_name:"WebFetch", tool_input:{}}' | /bin/zsh "${SCRIPT_DIR}/claude/fetch-route-hook")"; fo_rc=$?
   if [[ -z "${fo_out}" && "${fo_rc}" -eq 0 ]]; then
     _pass "fail-open: tool_input with no url/urls allows the fetch (status 0, empty stdout)"

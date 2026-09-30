@@ -1,12 +1,11 @@
 #!/bin/zsh
 # tests/agent-reset
 #
-# Hermetic tests for bin/agent-reset (the backup -> verify -> wipe ritual,
-# spec: internals/agent-reset.md). Builds a synthetic $HOME fixture in
-# $TMPDIR and drives the script through its AGENT_RESET_HOME and
-# AGENT_RESET_PS_FILE seams, so no real agent state and no network.
-# Fixture repos use a real `git` with GIT_CONFIG_GLOBAL
-# pinned inside the fixture (no signing, no global hooks, no identity leak).
+# Hermetic tests for bin/agent-reset (backup -> verify -> wipe). A synthetic
+# $HOME fixture in $TMPDIR, driven through the AGENT_RESET_HOME and
+# AGENT_RESET_PS_FILE seams: no real agent state, no network. Fixture repos use
+# real git with GIT_CONFIG_GLOBAL pinned inside the fixture (no signing, no
+# global hooks, no identity leak).
 #
 # Sourced by ./test (chmod 644) — never executed, so: return, never exit.
 # Lint: shellcheck --shell=bash tests/agent-reset
@@ -16,8 +15,8 @@
 # shellcheck disable=SC2154
 
 _ar_mkfix() {
-  # Builds a fixture home and prints its path. PII discipline: every value
-  # here is synthetic — no real hostnames, repo names, or tokens.
+  # Prints the fixture home. Every value is synthetic (no real hostnames,
+  # repo names or tokens).
   local fix
   fix="$(mktemp -d "${TMPDIR:-/tmp}/agent-reset-test.XXXXXX")" || return 1
 
@@ -68,8 +67,7 @@ _ar_mkfix() {
 	defaultBranch = main
 EOF
 
-  # The fixture-building git calls below need the same isolation as the
-  # script under test; local -x scopes the export to this function.
+  # Same git isolation as the script under test; local -x scopes it here.
   local -x GIT_CONFIG_GLOBAL="${fix}/gitconfig" GIT_CONFIG_NOSYSTEM=1
 
   local repo="${fix}/Documents/Projects/fixrepo"
@@ -82,13 +80,11 @@ EOF
     git -C "${repo}" add CLAUDE.md .mcp.json .gitignore .claude/settings.json &&
     git -C "${repo}" commit -q -m 'fixture' || return 1
   echo '# untracked instructions' > "${repo}/AGENTS.md"
-  # gitignored file inside the tracked .claude/ dir: git rm leaves it behind;
-  # the leftover sweep must delete it (adversarial-review finding).
+  # Gitignored file in tracked .claude/: git rm leaves it; sweep must delete it.
   echo '{"grants":[]}' > "${repo}/.claude/settings.local.json"
 
-  # Unrelated WORKTREE dirt next to a tracked artifact. Until 2026-08-17 this
-  # skipped the whole repo; the commit is now pathspec-limited, so the repo is
-  # reset and the unrelated edit stays uncommitted in the worktree.
+  # Unrelated WORKTREE dirt beside a tracked artifact: the commit is
+  # pathspec-limited, the edit stays uncommitted.
   local dirty="${fix}/Documents/Projects/dirtyrepo"
   mkdir -p "${dirty}"
   git -C "${dirty}" init -q &&
@@ -98,9 +94,8 @@ EOF
     git -C "${dirty}" commit -q -m 'fixture' || return 1
   echo 'v2' > "${dirty}/other.txt"
 
-  # Unrelated work STAGED in the index next to a tracked artifact — the shape
-  # that stranded the real-world case. The reset commit must record ONLY the
-  # artifact; the staged work must survive, still staged, still uncommitted.
+  # Unrelated work STAGED beside a tracked artifact: the reset commit records
+  # ONLY the artifact; the staged work survives, still staged.
   local staged="${fix}/Documents/Projects/stagedrepo"
   mkdir -p "${staged}/.claude"
   git -C "${staged}" init -q &&
@@ -113,9 +108,8 @@ EOF
   echo 'brand new' > "${staged}/added.c"
   git -C "${staged}" add inflight.c added.c || return 1
 
-  # No TRACKED artifact (the machine-global *claude* ignore makes this the
-  # common case) + heavy unrelated dirt: no commit is ever made, so there is
-  # nothing to absorb — must be deleted outright, dirt untouched.
+  # No TRACKED artifact (the common case under the machine-global *claude*
+  # ignore) + heavy dirt: no commit is made; delete outright, dirt untouched.
   local untr="${fix}/Documents/Projects/untrackedrepo"
   mkdir -p "${untr}/.claude"
   git -C "${untr}" init -q &&
@@ -127,8 +121,8 @@ EOF
   echo 'v2 dirty' > "${untr}/src.c"
   echo 'also dirty' > "${untr}/stray.c"
 
-  # Mid-merge: git refuses a pathspec commit here, so the repo MUST be
-  # skipped — the one dirty-state case that is still a genuine blocker.
+  # Mid-merge: git refuses a pathspec commit, so the repo MUST be skipped —
+  # the one dirty state that still blocks.
   local merging="${fix}/Documents/Projects/mergerepo"
   mkdir -p "${merging}"
   git -C "${merging}" init -q &&
@@ -145,8 +139,8 @@ EOF
   git -C "${merging}" merge side > /dev/null 2>&1  # conflicts on purpose
   [[ -f "${merging}/.git/MERGE_HEAD" ]] || return 1
 
-  # Artifact-dirty repo: the ONLY dirt is an edited tracked artifact — must
-  # proceed (git rm -f), not crash and not skip.
+  # Artifact-dirty: the only dirt is an edited tracked artifact; must proceed
+  # (git rm -f), not crash, not skip.
   local modrepo="${fix}/Documents/Projects/modrepo"
   mkdir -p "${modrepo}"
   git -C "${modrepo}" init -q &&
@@ -159,9 +153,8 @@ EOF
   mkdir -p "${fix}/Desktop/strayrepo"
   echo '# stray instructions' > "${fix}/Desktop/strayrepo/CLAUDE.md"
 
-  # NOTE the "${fix}" (HOME itself) project key: the critical review finding
-  # — HOME must never be discovered as a repo whose artifacts are ~/.claude
-  # and ~/.codex wholesale.
+  # The "${fix}" (HOME itself) project key: HOME must never be discovered as
+  # a repo whose artifacts are ~/.claude and ~/.codex wholesale.
   cat > "${fix}/.claude.json" <<EOF
 {
   "projects": {
@@ -188,8 +181,8 @@ EOF
 EOF
 
   # Canned ps listings for the process gate. The second line of ps-quiet is
-  # the named regression: an unrelated daemon carrying "claude" inside an
-  # ARGUMENT path must not block the wipe.
+  # the named regression: a daemon with "claude" only in an ARGUMENT path must
+  # not block the wipe.
   cat > "${fix}/ps-quiet" <<'EOF'
   845 keyagent        keyagent serve --blob /h/Library/Application Support/keyagent/blob.bin
   900 zsh              -zsh
@@ -256,8 +249,7 @@ run_agent_reset() {
   else
     _fail "plan modified the fixture"
   fi
-  # plan must predict the wipe-time repo decision — it used to report only
-  # what WOULD be wiped, so a run that went on to skip repos looked clean.
+  # plan must predict the wipe-time repo decision, not only what would be wiped.
   if [[ "${out}" == *"action: SKIP: merge in progress"* \
      && "${out}" == *"would be SKIPPED at wipe time"* ]]; then
     _pass "plan predicts and flags the repos wipe would skip"
@@ -296,8 +288,8 @@ run_agent_reset() {
     return 0
   fi
 
-  # 5. process gate: a claude row in ps must refuse; the keyagent-shaped row
-  #    alone (ps-quiet) must not (proven by every later case passing).
+  # 5. process gate: a claude row refuses; the keyagent row alone (ps-quiet)
+  #    must not (every later case passing proves it).
   rc=0
   out="$(_ar_run "${fix}" "${busy}" wipe "${bdir}" --yes 2>&1)" || rc=$?
   if [[ ${rc} -ne 0 && "${out}" == *"processes are running"* ]]; then
@@ -329,9 +321,9 @@ run_agent_reset() {
     _fail "changed-file gate did not trigger (rc=${rc})"
   fi
 
-  # 8. happy-path wipe with --topup. Exit 2 (not 0) because the fixture holds
-  #    a mid-merge repo that must be skipped — a wipe that leaves ANY repo
-  #    unreset must never exit 0 again (the 2026-08-15 silent-success bug).
+  # 8. happy-path wipe with --topup. Exit 2, not 0: the mid-merge repo is
+  #    skipped, and a wipe leaving ANY repo unreset must never exit 0
+  #    (silent-success bug, 2026-08-15).
   rc=0
   out="$(_ar_run "${fix}" "${quiet}" wipe "${bdir}" --yes --topup 2>&1)" || rc=$?
   if [[ ${rc} -eq 2 ]]; then
@@ -399,8 +391,8 @@ EOF
   else
     _fail "claude.json rewrite wrong"
   fi
-  # clean repo: artifacts removed via a neutral commit; .mcp.json kept;
-  # the gitignored settings.local.json inside tracked .claude/ swept too
+  # clean repo: neutral commit removes artifacts; .mcp.json kept; gitignored
+  # settings.local.json in tracked .claude/ swept too
   local msg
   msg="$(env GIT_CONFIG_GLOBAL="${fix}/gitconfig" GIT_CONFIG_NOSYSTEM=1 \
         git -C "${fix}/Documents/Projects/fixrepo" log -1 --format=%s 2> /dev/null)"
@@ -426,7 +418,7 @@ EOF
   else
     _fail "artifact-dirty repo mishandled (last commit: ${msg})"
   fi
-  # worktree-dirty repo: now RESET, with the unrelated edit left uncommitted
+  # worktree-dirty repo: RESET, with the unrelated edit left uncommitted
   local _git="env GIT_CONFIG_GLOBAL=${fix}/gitconfig GIT_CONFIG_NOSYSTEM=1 git"
   if [[ ! -e "${fix}/Documents/Projects/dirtyrepo/CLAUDE.md" ]]; then
     _pass "worktree-dirty repo reset (unrelated dirt no longer blocks)"
@@ -483,9 +475,8 @@ EOF
   else
     _fail "skipped repos not surfaced in the wipe summary"
   fi
-  # HOME-as-project + out-of-scope stray: the critical review findings —
-  # HOME never becomes a repo (keep-survivor checks above prove ~/.claude
-  # was not rmtree'd) and out-of-scope state is report-only.
+  # HOME-as-project: never a repo (the keep-survivor checks above prove
+  # ~/.claude was not rmtree'd). Out-of-scope stray: report-only.
   if [[ -f "${fix}/Desktop/strayrepo/CLAUDE.md" ]]; then
     _pass "out-of-scope repo untouched (skip-and-report)"
   else
@@ -503,8 +494,8 @@ EOF
   fi
 
   # 8b. --repos-only reconcile: resolve the blocker, re-run the in-repo leg
-  #     alone. Global state is already wiped and must not be re-processed,
-  #     and the first run's report must survive as the record of what it did.
+  #     alone. Already-wiped global state is not re-processed; the first run's
+  #     report survives as its record.
   ${=_git} -C "${fix}/Documents/Projects/mergerepo" merge --abort > /dev/null 2>&1
   local claude_json_before
   claude_json_before="$(cat "${fix}/.claude.json")"

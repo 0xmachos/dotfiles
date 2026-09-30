@@ -1,13 +1,8 @@
 #!/bin/zsh
 # dotfiles/tests/extensions
 #
-# Enforce the no-extension convention for shell scripts. Fails the suite if
-# any file in the repo ends in .sh or .zsh — shell identity belongs in the
-# shebang, not the filename. Extensions leak implementation into the
-# interface and force renames when switching shells.
-#
-# Exclusions: .git/ (internal). poc/ and tests/ ARE scanned — the convention
-# applies everywhere in the repo.
+# Fails if any file in the repo ends in .sh or .zsh: shell identity belongs in
+# the shebang. Skips .git/ only; poc/ and tests/ ARE scanned.
 #
 # ShellCheck: lint with `shellcheck --shell=bash tests/extensions`.
 # This file is sourced, not executed — chmod 644.
@@ -17,7 +12,7 @@
 function run_extensions {
   _section "Shell script extensions"
 
-  # SC2154: fail_count is declared in tests/lib, sourced by the dispatcher.
+  # SC2154: fail_count comes from tests/lib.
   # shellcheck disable=SC2154
   local before_fails=${fail_count}
 

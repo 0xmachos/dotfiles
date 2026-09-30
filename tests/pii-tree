@@ -3,23 +3,20 @@
 #
 # Scans EVERY tracked text file at HEAD with the shared pii-scan core
 # (denylist + MAC/UUID token detector), not just the hunks a commit stages.
-# Added 2026-09-22. The pre-commit scanner only sees staged hunks, so a value
-# that entered a tracked file before its denylist pattern existed stayed in
-# the tree for months with every later commit passing the gate. This suite
-# is the backstop: a new denylist entry is checked against the whole tree the
-# next time ./test runs, and the pre-push hook runs the same tree scan on
-# every pushed tip in a public repository.
+# Added 2026-09-22. Pre-commit sees only staged hunks, so a value that predates
+# its denylist pattern passes every later commit; a new denylist entry is
+# checked against the whole tree on the next ./test. The pre-push hook runs
+# the same tree scan on every pushed tip in a public repository.
 #
-# Live, like tests/okf: it reads the real per-clone denylist and the live
-# ssh config. On a machine without .githooks/pii-patterns the scan degrades
-# to the alias-derived patterns and says so on stderr (pii-scan's own
-# warning); that is a warning, not a failure.
+# Live, like tests/okf: reads the real per-clone denylist and ssh config.
+# Without .githooks/pii-patterns the scan degrades to alias-derived patterns
+# and warns on stderr (pii-scan's own); a warning, not a failure.
 #
-# Symlinks and binary files are skipped; the concatenation carries a
-# `file <path>` marker line before each file so a hit is attributable
-# (mirrors the `commit <sha>` markers of the pre-push message scan).
+# Symlinks and binary files are skipped; a `file <path>` marker line precedes
+# each file so a hit is attributable (mirrors the `commit <sha>` markers of the
+# pre-push message scan).
 #
-# Run: ./test pii-tree    (or ./test for the full suite)
+# Run: ./test pii-tree
 #
 # ShellCheck: lint with `shellcheck --shell=bash tests/pii-tree`.
 # This file is sourced, not executed — chmod 644.
@@ -27,8 +24,7 @@
 # shellcheck source=tests/lib
 
 function _pii_tree_materialise {
-  # $1 = output file. Writes every tracked regular text file at HEAD into it,
-  # each preceded by a marker line. Echoes the number of files included.
+  # $1 = output file, filled with the tracked text files; echoes their count.
   local out="$1" tpath n=0
   : > "${out}"
   while IFS= read -r tpath || [[ -n "${tpath}" ]]; do
@@ -60,7 +56,7 @@ function run_pii_tree {
   fi
 
   # Run from the repo root: pii-scan reads .pii-allowlist from the INDEX of
-  # the repo in cwd. Output captured; shown only on failure.
+  # the repo in cwd.
   out="$(cd "${SCRIPT_DIR}" && "${scanner}" "${tmp}" "Tracked tree at HEAD" 2>&1)" || rc=$?
   /bin/rm -f "${tmp}"
   if (( rc == 0 )); then

@@ -2,21 +2,18 @@
 # dotfiles/tests/git-bypass
 #
 # Behavioural test for claude/git-bypass-hook, the PreToolUse hook that
-# denies, at a real git command position, the forms that switch this repo's
-# own git hooks or commit signing off: `--no-verify` (its abbreviations and the
-# `-n` short form, including short-flag clusters), hooks.* / core.hooksPath
-# config writes and -c overrides, config section edits, alias values carrying a
-# bypass, `--no-gpg-sign` and gpgsign=false, the environment names that
-# redirect git's config or switch a git hook off, and a faked terminal
+# denies, at a real git command position, the forms that switch git hooks or
+# signing off: `--no-verify` (abbreviations, `-n`, short-flag clusters),
+# hooks.* / core.hooksPath writes and -c overrides, config section edits,
+# alias values carrying a bypass, `--no-gpg-sign` and gpgsign=false, env names
+# that redirect git's config or switch a hook off, and a faked terminal
 # (script, expect, unbuffer, socat, ssh -t to loopback) around git. The quoted
 # string of eval, sh -c and env -S is re-scanned one level deep.
 #
-# Feeds commands to the hook as stdin JSON and asserts the verdict, same
-# shape as tests/md5-guard. Every DENY is also checked for a one-line reason of
-# at most 120 characters, and every PASS must print nothing at all (a stray
-# line from the hook would corrupt a later verdict). Guards the parser against silent regressions in
-# both directions: a tweak that started denying `git log -n 5`, or stopped
-# catching `git commit -an`, would fail here.
+# Feeds commands as stdin JSON and asserts the verdict. Every DENY must carry a
+# one-line reason of at most 120 characters; every PASS must print nothing (a
+# stray hook line would corrupt a later verdict). Guards both directions: a
+# tweak denying `git log -n 5` or missing `git commit -an` fails here.
 #
 # Run: ./test git-bypass    (or ./test for the full suite)
 #
@@ -26,7 +23,6 @@
 # shellcheck source=tests/lib
 
 function _hbg_test_run {
-  # Echo the hook's stdout for Bash command $1.
   jq -n --arg c "$1" '{tool_name:"Bash", tool_input:{command:$c}}' \
     | /bin/zsh "${SCRIPT_DIR}/claude/git-bypass-hook"
 }
@@ -65,8 +61,7 @@ function _hbg_test_reason {
 function run_git_bypass {
   _section "git hook-escape guard"
 
-  # claude/ is gitignored and synced out of band — absent hook means the
-  # sync hasn't reached this machine, not a regression. Skip, don't die.
+  # claude/ is gitignored: the hook is absent on a clean clone. Skip, don't die.
   if [[ ! -f "${SCRIPT_DIR}/claude/git-bypass-hook" ]]; then
     _skip "claude/git-bypass-hook absent — claude/ not yet synced to this machine"
     return 0
@@ -86,8 +81,8 @@ function run_git_bypass {
   _hbg_test_expect DENY 'git commit -anm' 'commit -anm cluster — n reached before m'
   _hbg_test_expect DENY 'git commit --amend --no-verify' 'commit --amend --no-verify'
 
-  # -m/-F/-C/-c consume a value — the flag's own value must never be misread
-  # as a flag, whether attached or in the next token.
+  # -m/-F/-C/-c consume a value, attached or in the next token; never misread
+  # it as a flag.
   # shellcheck disable=SC2016
   _hbg_test_expect PASS 'git commit -m "no --no-verify"' 'quoted value mentioning --no-verify stays one token'
   _hbg_test_expect PASS 'git commit -mnope' 'attached -m value containing n'
@@ -104,9 +99,8 @@ function run_git_bypass {
   _hbg_test_expect DENY 'git rebase --no-verify -i HEAD~3' 'rebase --no-verify'
   _hbg_test_expect DENY 'git cherry-pick --no-verify abc123' 'cherry-pick --no-verify'
 
-  # -n on these subcommands is NOT --no-verify (push/merge/rebase/
-  # cherry-pick's own -n is a dry-run or no-commit flag; the commit-only
-  # -n-cluster check must never fire here), and log's -n is unrelated.
+  # -n here is NOT --no-verify (dry-run / no-commit flags); the commit-only
+  # -n check must not fire. log's -n is unrelated.
   _hbg_test_expect PASS 'git push -n' 'push -n is --dry-run, not commit -n'
   _hbg_test_expect PASS 'git merge -n' 'merge -n is --no-stat, not commit -n'
   _hbg_test_expect PASS 'git rebase -n' 'rebase -n, not commit -n'
@@ -144,10 +138,8 @@ function run_git_bypass {
   _hbg_test_expect PASS 'git config user.name "A Name"' 'write to an unrelated key'
   _hbg_test_expect DENY 'git config hooks.pre-commit get' 'value that looks like a mode word still counts as the value'
 
-  # Config KEY containing a literal double quote (shell-quoted so the
-  # command itself is valid): the deny reason must still be well-formed
-  # JSON, not silently swallowed into an INVALID verdict by an unescaped
-  # quote landing in permissionDecisionReason.
+  # A literal double quote in the config key must not break the deny JSON
+  # (an unescaped quote in permissionDecisionReason reads as INVALID).
   # shellcheck disable=SC2016
   _hbg_test_expect DENY 'git config '"'"'hooks.a"b'"'"' x' 'a quote inside the config key does not corrupt the deny JSON'
 
@@ -163,8 +155,7 @@ function run_git_bypass {
   _hbg_test_expect PASS 'GIT_CONFIG_KEY_0=user.name GIT_CONFIG_VALUE_0=x git status' 'GIT_CONFIG_KEY_0 on an unrelated key'
 
   # --- PII_HOOK_BYPASS / MSG_POLICY_SKIP / GIT_SIGN_SKIP --------------------
-  # Whole-command, not same-segment: an export earlier in the same command
-  # string denies exactly like a same-segment prefix does.
+  # Whole-command, not same-segment: an earlier export denies like a prefix.
   _hbg_test_expect DENY 'PII_HOOK_BYPASS=1 git commit -m x' 'PII_HOOK_BYPASS same-segment prefix'
   _hbg_test_expect DENY 'MSG_POLICY_SKIP=1 git commit -m x' 'MSG_POLICY_SKIP same-segment prefix'
   _hbg_test_expect DENY 'GIT_SIGN_SKIP=1 git push' 'GIT_SIGN_SKIP same-segment prefix'
@@ -186,10 +177,8 @@ function run_git_bypass {
   _hbg_test_expect PASS 'echo git commit --no-verify' 'not a command position — an argument to echo'
   _hbg_test_expect PASS 'git log --grep=--no-verify' 'lookalike inside an unrelated flag value'
 
-  # Tab as a word separator: _hbg_words splits on a literal space only (see
-  # its header), so _hbg_walk has to turn an unquoted TAB into a space, or a
-  # tab-separated command never splits into words and the whole line reads as
-  # one unmatched word.
+  # _hbg_words splits on a literal space only, so _hbg_walk must turn an
+  # unquoted TAB into a space or the line reads as one unmatched word.
   _hbg_test_expect DENY $'git\tcommit\t--no-verify' 'tab-separated command without quote characters'
   _hbg_test_expect DENY 'git commit -m "x"'$'\t''--no-verify' 'tab before --no-verify after a quoted word'
 
@@ -212,8 +201,8 @@ function run_git_bypass {
   _hbg_test_expect DENY "${hd}" 'tab-indented heredoc body, bash consumer — the leading tab must not swallow the word split'
 
   # --- verdicts stay a single JSON object across repeated loop iterations ---
-  # Each loop in the hook runs its body more than once here; a stray line on
-  # stdout (from a re-declared local) would turn these into INVALID.
+  # Each hook loop runs its body more than once; a re-declared local prints a
+  # stray stdout line and turns these into INVALID.
   _hbg_test_expect DENY 'git commit -a -s -m x -n' 'two short-flag words before -n'
   _hbg_test_expect DENY 'git commit -a -a --no-verify' 'repeated short flag before --no-verify'
   _hbg_test_expect DENY 'git commit -a -s -v -q -n' 'four short-flag words before -n'

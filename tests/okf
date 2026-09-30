@@ -3,25 +3,20 @@
 #
 # Asserts the internals/ Open Knowledge Format (OKF) bundle is conformant and
 # its index is in sync with the concept frontmatter.
+#   1. Conformance: every internals/*.md except index.md and log.md (reserved,
+#      OKF SPEC.md sections 6-7) has non-empty type, title, description and
+#      timestamp, the keys the OKF reference parser requires.
+#   2. Freshness: regenerating the index into $TMPDIR is byte-identical to
+#      internals/index.md.
 #
-# Two checks:
-#   1. Conformance: every non-reserved internals/*.md declares the four
-#      frontmatter keys the OKF reference parser requires (type, title,
-#      description, timestamp), each with a non-empty value. Reserved files
-#      (index.md, log.md) are exempt per OKF SPEC.md sections 6-7.
-#   2. Freshness: regenerating the index into $TMPDIR yields a file
-#      byte-identical to internals/index.md. Catches a concept whose
-#      type/title/description changed without re-running the generator.
-#
-# Run: ./test okf    (or ./test for the full suite)
+# Run: ./test okf
 #
 # ShellCheck: lint with `shellcheck --shell=bash tests/okf`.
 # This file is sourced, not executed — chmod 644.
 #
 # shellcheck source=tests/lib
 
-# Validate all required scalar fields in one pass. EOF without a closing
-# fence must fail, including an empty file (which executes no AWK rules).
+# EOF without a closing fence fails, including an empty file (no AWK rule runs).
 function _okf_validate_frontmatter {
   /usr/bin/awk '
     BEGIN { split("type title description timestamp", required, " ") }
@@ -92,8 +87,8 @@ function _okf_check_freshness {
 function run_okf {
   _section "OKF internals bundle"
 
-  # internals/ is gitignored and synced out of band, so a fresh clone has no
-  # bundle to check. Skip, don't abort on the empty glob (2026-09-29).
+  # internals/ is gitignored, so a fresh clone has none: skip, don't abort on
+  # the empty glob (2026-09-29).
   if [[ ! -d "${SCRIPT_DIR}/internals" ]]; then
     _skip "internals/ absent — pending out-of-band sync, bundle checks skipped"
     return

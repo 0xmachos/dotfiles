@@ -1,33 +1,25 @@
 #!/bin/zsh
 # dotfiles/tests/bao-mcp-env
 #
-# Hermetic behavioural suite for bin/bao-mcp-env. No network, no secret: the
-# tool's BAO_MCP_ENV_BAO seam points at tests/fixtures/bao-mcp-env/fake-bao,
-# which records every call and serves scripted responses; HOME is pointed at
-# a per-test fixture directory so the tool's own (unmodified) path
-# construction runs against a fake ~/Library/Application Support/openbao/
-# claude/ — the exact shape, space included, of the real migrated path
-# (internals/linux-path-audit.md, 2026-09-18) — rather than mocking the path
-# away with an override.
+# Hermetic suite for bin/bao-mcp-env: no network, no secret. The
+# BAO_MCP_ENV_BAO seam points at tests/fixtures/bao-mcp-env/fake-bao, which
+# records every call and serves scripted responses. HOME points at a per-test
+# fixture dir, so the tool's own path construction runs unmodified against a
+# fake ~/Library/Application Support/openbao/claude/ (space included; path
+# moved 2026-09-18).
 #
-# What this suite proves, beyond "the command runs":
-#   - the fixture path (with its space) resolves and is read correctly —
-#     the regression case for the 2026-09-18 migration;
-#   - role_id/secret_id travel to auth/approle/login as "@<path>" file
-#     references only, never as literal argv values or in the login call's
-#     own environment;
-#   - the exec'd child inherits exactly the secret's fields, verbatim, and
-#     nothing else added — in particular, BAO_TOKEN is never present;
-#   - `token revoke -self` fires exactly once, on both the success path and
-#     the kv-read-failure path (the token is never left live on an error);
-#   - a malformed field name in the secret aborts loudly rather than
-#     reaching `eval` with attacker-shaped input;
-#   - the exit-code contract (64 usage, 1 on every credential/login/read
-#     failure) and that a failure never leaves kv read attempted before a
-#     login failure, or revoke skipped after a kv failure.
+# Pins:
+#   - the path with its space resolves and is read (2026-09-18 regression);
+#   - role_id/secret_id reach auth/approle/login only as "@<path>" file
+#     references, never literal argv values or in the login call's env;
+#   - the exec'd child gets exactly the secret's fields verbatim, never
+#     BAO_TOKEN;
+#   - `token revoke -self` fires exactly once, on success and on kv failure;
+#   - a malformed field name aborts rather than reaching `eval`;
+#   - exit codes: 64 usage, 1 on every credential/login/read failure; kv is
+#     never read after a login failure, revoke never skipped after a kv one.
 #
-# Run: ./test bao-mcp-env    (or ./test for the full suite)
-#
+# Run: ./test bao-mcp-env
 # ShellCheck: lint with `shellcheck --shell=bash tests/bao-mcp-env`.
 # This file is sourced, not executed — chmod 644.
 #
@@ -41,8 +33,7 @@ typeset -ga BME_EXTRA=()
 function _bme_setup {
   BME_T="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/bao-mcp-env-test.XXXXXX")"
   BME_REC="${BME_T}/rec"
-  # The space in "Application Support" is the point — this mirrors the real
-  # migrated path exactly, not a test-simplified stand-in for it.
+  # The space in "Application Support" is the point.
   BME_HOME="${BME_T}/home"
   BME_CRED_DIR="${BME_HOME}/Library/Application Support/openbao/claude"
   /bin/mkdir -p "${BME_REC}" "${BME_CRED_DIR}"
@@ -54,9 +45,8 @@ function _bme_teardown {
   [[ -n "${BME_T}" && -d "${BME_T}" ]] && /bin/rm -rf "${BME_T}"
 }
 
-# Writes readable role_id/secret_id and the server address file into the
-# fixture credential dir. Tests that want to exercise the missing-credentials
-# or missing-address paths skip calling this, or remove one file after it.
+# Writes role_id, secret_id and addr into the fixture credential dir. The
+# missing-credentials/address tests skip it or remove a file after it.
 function _bme_write_creds {
   printf 'fake-role-id-0000\n' > "${BME_CRED_DIR}/role_id"
   printf 'fake-secret-id-0000\n' > "${BME_CRED_DIR}/secret_id"
@@ -64,9 +54,8 @@ function _bme_write_creds {
   /bin/chmod 600 "${BME_CRED_DIR}/role_id" "${BME_CRED_DIR}/secret_id" "${BME_CRED_DIR}/addr"
 }
 
-# Runs bao-mcp-env with the fake bao seam and fixture HOME. Real jq is used
-# (the transform is a pure, deterministic filter — no need to fake it).
-# Extra env pairs come from BME_EXTRA (cleared afterwards).
+# Real jq is used (pure filter). Extra env pairs come from BME_EXTRA, cleared
+# afterwards.
 function _bme_run {
   BME_RC=0
   /bin/rm -rf "${BME_REC}"
@@ -135,8 +124,7 @@ function _bme_test_usage {
 function _bme_test_missing_creds {
   _section "bao-mcp-env: missing credentials"
 
-  # Deliberately no _bme_write_creds — the fixture dir exists but is empty,
-  # exactly the state a fresh clone or a not-yet-migrated home would be in.
+  # No _bme_write_creds: the fixture dir exists but is empty.
   _bme_run mcp/example-service /usr/bin/env
   _bme_expect_rc 1 "credentials absent"
   _bme_expect_err 'AppRole credentials missing or unreadable' "credentials absent: message"
@@ -151,8 +139,7 @@ function _bme_test_missing_creds {
 function _bme_test_missing_addr {
   _section "bao-mcp-env: missing or malformed server address"
 
-  # Credentials present, address file absent: the address is private wiring
-  # that must never fall back to a tracked default.
+  # The address is private wiring: it must never fall back to a tracked default.
   _bme_write_creds
   /bin/rm -f "${BME_CRED_DIR}/addr"
   _bme_run mcp/example-service /usr/bin/env
@@ -234,7 +221,6 @@ function _bme_test_key_hygiene {
   _bme_write_creds
   _bme_run mcp/example-service /usr/bin/env
 
-  # 1. role_id/secret_id reach bao as @file references, never literal values.
   if /usr/bin/grep -q 'role_id=@' "${BME_REC}/argv.1" 2>/dev/null \
       && /usr/bin/grep -q 'secret_id=@' "${BME_REC}/argv.1" 2>/dev/null; then
     _pass "credentials passed as @file references, not literal argv values"
@@ -247,24 +233,23 @@ function _bme_test_key_hygiene {
     _pass "role_id's literal contents never appear in bao's argv"
   fi
 
-  # 2. Neither credential file's own content, nor the fake token, ever shows
-  #    up in the environment any bao call itself ran with (they're read by
-  #    bao-mcp-env, not passed through its own env).
+  # Credential file contents never appear in any bao call's environment
+  # (bao-mcp-env reads them, it does not pass them through its env).
   if /usr/bin/grep -qF "$(cat "${BME_CRED_DIR}/secret_id")" "${BME_REC}"/env.* 2>/dev/null; then
     _fail "secret_id's literal contents leaked into a bao call's environment"
   else
     _pass "secret_id's literal contents never appear in any bao call's environment"
   fi
 
-  # 3. The exec'd child never inherits BAO_TOKEN (unset before exec).
+  # BAO_TOKEN is unset before exec.
   if /usr/bin/grep -q '^BAO_TOKEN=' "${BME_T}/out"; then
     _fail "BAO_TOKEN leaked into the exec'd child's environment"
   else
     _pass "BAO_TOKEN not present in the exec'd child's environment"
   fi
 
-  # 4. BAO_ADDR/BAO_CACERT (connection config, not secret) ARE expected in
-  #    the child — bao-mcp-env exports them itself before exec, on purpose.
+  # BAO_ADDR/BAO_CACERT (non-secret) do reach the child: the tool exports
+  # them on purpose.
   _bme_expect_out '^BAO_ADDR=' "connection config (non-secret) does reach the child, as designed"
 }
 

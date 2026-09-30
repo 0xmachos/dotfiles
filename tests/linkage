@@ -1,13 +1,10 @@
 #!/bin/zsh
 # dotfiles/tests/linkage
 #
-# Detect repo files not managed by any bittersweet subcommand.
-# Prevents "forgot to wire up" bugs — e.g. Ghostty config sat in the
-# repo without a symlink in install_dotfiles until it was caught manually.
-#
-# Maintains registration for repo files and checks deployment owners against
-# the actual installer functions. Filesystem, sudo, Git and launchctl writes
-# are mocked: recording a filename here cannot substitute for wiring it up.
+# Fails on any repo file no bittersweet subcommand owns. Owner maps below are
+# checked against the real installer functions, run with filesystem, sudo,
+# git and launchctl writes mocked: registering a name here cannot substitute
+# for wiring it up.
 #
 # ShellCheck: lint with `shellcheck --shell=bash tests/linkage`.
 # This file is sourced, not executed — chmod 644.
@@ -20,11 +17,10 @@ function _linkage_deployments {
     local fixture_home
     fixture_home="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/linkage-home.XXXXXX")" || return 1
     trap '/bin/rm -rf -- "${fixture_home}"' EXIT
-    # HOME is intentionally overridden only in this fixture subshell: real
-    # shell redirects cannot be mocked and must never reach the user's home.
+    # HOME is overridden only here: real shell redirects cannot be mocked.
     export HOME="${fixture_home}"
     /bin/mkdir -p "${HOME}/Library/LaunchAgents"
-    # Load declarations only, never the orchestrator's top-level setup/main.
+    # Declarations only, never bittersweet's top-level setup/main.
     # shellcheck disable=SC1090,SC1091
     source <(/usr/bin/awk '
       /^function / || /^typeset -ra LAUNCHAGENT_PLISTS=\(/ { block = 1 }
@@ -34,7 +30,7 @@ function _linkage_deployments {
     /bin/mkdir -p "${HOME}/.local/bin"
     /bin/ln -s "${SCRIPT_DIR}/bin/bao-mcp-env" "${HOME}/.local/bin/bao-mcp-env"
 
-    # Descriptor 3 carries operations; normal installer chatter is discarded.
+    # fd 3 carries operations; installer chatter is discarded.
     # shellcheck disable=SC2329
     _linkage_record() { printf '%s\t%s\n' "${owner}" "$1" >&3; }
     # shellcheck disable=SC2329
@@ -42,14 +38,10 @@ function _linkage_deployments {
     # shellcheck disable=SC2329
     cp() { _linkage_record "$1"; }
     # shellcheck disable=SC2329
-    # install_launchagents's __HOME__ substitution: `sed "..." SRC > TMP`,
-    # `plutil -lint TMP`, `mv TMP DEST`. The `> TMP` redirect is the caller's,
-    # not something a mock can intercept, so it still creates a real (empty,
-    # since the mocked sed prints nothing) file at TMP — plutil is stubbed to
-    # pass so the chain reaches mv, and mv deletes TMP instead of moving it
-    # within the fixture home, so no real plist is ever touched.
-    # SRC (sed's last arg) is what gets recorded, matching what cp's mock
-    # recorded from its own first (source) arg.
+    # install_launchagents runs `sed ... SRC > TMP`, `plutil -lint TMP`,
+    # `mv TMP DEST`. The `> TMP` redirect cannot be mocked, so it makes a real
+    # empty file; plutil passes so the chain reaches mv, which deletes TMP.
+    # Records SRC (sed's last arg), as cp records its source.
     sed() { _linkage_record "${@: -1}"; }
     # shellcheck disable=SC2329
     plutil() { return 0; }
@@ -153,7 +145,7 @@ function run_linkage {
   # SC2154: fail_count is declared in tests/lib, sourced by the dispatcher.
   # shellcheck disable=SC2154
   local before_fails=${fail_count}
-  # Read by _linkage_check_deployed through zsh's dynamic function scope.
+  # Read by _linkage_check_deployed via zsh dynamic scope.
   # shellcheck disable=SC2034
   local deployments
   if ! deployments="$(_linkage_deployments)"; then
@@ -161,8 +153,8 @@ function run_linkage {
     return
   fi
 
-  # Every top-level item → owning bittersweet subcommand.
-  # "repo" = docs, metadata, test infra — intentionally not installed.
+  # Top-level item → owning subcommand; "repo" = docs, metadata, test infra,
+  # intentionally not installed.
   local -A top_level=(
     # Repo metadata
     [.mcp.json]=repo                         # Host-local MCP config (gitignored)
@@ -288,7 +280,8 @@ function run_linkage {
   local subdir
   for subdir in .config/*/; do
     [[ -d "${subdir}" ]] || continue
-    # Private per-clone config must not force its name into the public map.
+    # Gitignored per-clone items are skipped: their names must not enter the
+    # tracked map (it would leak them). Same for bin/ and LaunchAgents/.
     if git check-ignore -q "${subdir%/}"; then continue; fi
     name="${subdir%/}"
     name="${name##*/}"
@@ -303,8 +296,6 @@ function run_linkage {
   local script
   for script in bin/*; do
     [[ -f "${script}" ]] || continue
-    # Skip gitignored files: a private, per-clone tool must never be forced
-    # into the tracked manifest — doing so would leak the private filename.
     if git check-ignore -q "${script}"; then continue; fi
     name="${script##*/}"
     if [[ -z "${bin_scripts[${name}]+_}" ]]; then
@@ -331,9 +322,9 @@ function run_linkage {
     _linkage_check_deployed install_launchagents "LaunchDaemons/${name}"
   done
 
-  # 6. claude/ items (files and subdirs, skip .DS_Store). claude/ is gitignored
-  # and synced out of band, so a fresh clone has none: skip the walk rather
-  # than let the empty glob abort the suite under nomatch (2026-09-29).
+  # 6. claude/ items. claude/ is gitignored and synced out of band, so a fresh
+  # clone has none: skip the walk, since an empty glob aborts under nomatch
+  # (2026-09-29).
   local claude_item
   if [[ ! -d claude ]]; then
     _skip "claude/ absent — pending out-of-band sync, claude/ manifest walk skipped"

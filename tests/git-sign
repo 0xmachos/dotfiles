@@ -1,42 +1,32 @@
 #!/bin/zsh
 # dotfiles/tests/git-sign
 #
-# Behavioural tests for claude/git-sign-hook (signing-failure fallback +
-# re-sign nudge — its PreToolUse push-gate leg was removed 2026-09-25; the
-# pre-push cases below exercise the actual boundary) and bin/git-sign-unpushed
-# (batch re-sign of the unpushed range).
+# Pins claude/git-sign-hook (refusal fallback, re-sign nudge; PreToolUse
+# push-gate leg removed 2026-09-25), bin/git-sign-unpushed and the pre-push
+# gate, the actual boundary. Sandbox repos under $TMPDIR with
+# GIT_CONFIG_GLOBAL/SYSTEM nulled and a throwaway ed25519 key: no Secretive.
 #
-# Git-touching assertions run in sandbox repos under $TMPDIR with
-# GIT_CONFIG_GLOBAL/SYSTEM nulled and a throwaway on-disk ed25519 key, so there
-# is no Secretive/Touch ID involvement and no dependence on the user's global
-# config.
-#
-# Guards the findings that shaped the design:
-#   * the re-sign nudge's unsigned-range scope must equal the range
-#     git-sign-unpushed can fix. A repo-wide scan used to deny every push in
-#     the repo over an unsigned commit on a branch the fixer never touches,
-#     and the deny was unclearable — hook said "run git-sign-unpushed", the
-#     tool said "nothing to do", hook denied again (that was the PreToolUse
-#     push-gate leg, removed 2026-09-25; pre-push is the boundary now).
-#   * commits are never pre-emptively unsigned any more (the lock probe was
-#     removed 2026-08-08): the hook reacts to a real signing refusal instead.
-#   * PostToolUse fires only on success and PostToolUseFailure only on failure
-#     (measured on v2.1.224), so the two legs must be driven independently.
-#   * re-sign cost is one tap per commit from the deepest unsigned commit to
-#     the tip; the single-unsigned-tip case takes the amend fast path.
+# Guards:
+#   * nudge scope = the range git-sign-unpushed can fix (the removed leg's
+#     repo-wide scan denied, unclearably, pushes over an unsigned commit on a
+#     branch the fixer never touches)
+#   * commits are never pre-emptively unsigned (lock probe removed
+#     2026-08-08); the hook reacts to a real refusal
+#   * PostToolUse fires only on success, PostToolUseFailure only on failure
+#     (measured on v2.1.224): drive the two legs independently
+#   * re-sign costs one tap per commit from the deepest unsigned commit to the
+#     tip; a single unsigned tip takes the amend fast path
 #   * quoted-string false positives ('git commit -m "about git push"'), wrapper
-#     see-through (sudo/timeout git push), committer-date preservation, and
-#     gpgsig-presence (not %G?) detection.
+#     see-through (sudo/timeout git push), committer-date preservation,
+#     gpgsig-presence (not %G?) detection
 #
-# GIT_SIGN_SKIP and PII_HOOK_BYPASS are honoured only with a real controlling
-# terminal attached (2026-09-25; pii-scan's --check-terminal). Cases expecting
-# the bypass to WORK use _gs_push_expect_tty (/usr/bin/script -q /dev/null, a
-# real pty regardless of how this suite was invoked); cases proving refusal
-# use _gs_push_expect_notty (tests/lib's _run_no_tty, POSIX setsid) and
-# assert the refusal LINE, not just the verdict — needed because an agent's
-# tool call has no controlling terminal already, but a human's interactive
-# `./test` does, and that is this gate's primary real-world path (see
-# tests/pii-hook's header for the mechanism in more detail).
+# GIT_SIGN_SKIP and PII_HOOK_BYPASS are honoured only with a controlling
+# terminal (2026-09-25; pii-scan --check-terminal). An agent's tool call has
+# none, a human's interactive ./test does, so both sides are forced:
+#   _gs_push_expect_tty (bypass must WORK): /usr/bin/script -q /dev/null, a
+#     real pty however the suite was invoked
+#   _gs_push_expect_notty (bypass must be REFUSED): tests/lib's _run_no_tty
+#     (POSIX setsid); asserts the refusal LINE, not just the verdict
 #
 # Run: ./test git-sign    (or ./test for the full suite)
 #
@@ -46,23 +36,21 @@
 # shellcheck source=tests/lib
 # shellcheck disable=SC2030,SC2031  # deliberate: GIT_CONFIG_* exports are scoped to sandbox subshells so the user's global config never leaks in (and vice versa)
 
-# PII seams included: the pre-push hook gained an outgoing-message PII gate
-# (2026-08-17), and without the seams every sandbox push would scan against
-# the machine's real pattern list and live ssh aliases — nondeterministic.
+# PII seams: pre-push scans outgoing messages (2026-08-17); without the seams
+# every sandbox push reads the real pattern list and live ssh aliases.
 # /dev/null patterns = empty list (denylist skipped, token detector active).
-# Message-gate cases override per call: `env "${GS_ENV[@]}" PII_HOOK_PATTERNS=…`
-# — env last-value-wins.
+# Message cases override per call: `env "${GS_ENV[@]}" PII_HOOK_PATTERNS=…`
+# (env last-value-wins).
 GS_ENV=(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
         PII_HOOK_PATTERNS=/dev/null PII_HOOK_SSH_CONFIG=/dev/null)
 
 function _gs_hook {
   # Echo the hook's stdout. $1 event, $2 command, $3 cwd, $4 failure/response
-  # text, $5 optional payload field override. Defaults to the field the LIVE
-  # payload actually carries for that event — `error` for PostToolUseFailure
-  # (Claude Code 2.1.282: only a success carries `tool_response`), `tool_response`
-  # otherwise — so a case that passes here proves the real payload shape, not
-  # just a fixture's. Pass `tool_response` explicitly on a PostToolUseFailure
-  # case to exercise the hook's `.error // .tool_response` legacy fallback.
+  # text, $5 optional payload field override. Default field is the live
+  # payload's: `error` for PostToolUseFailure (Claude Code 2.1.282: only a
+  # success carries `tool_response`), else `tool_response`. Pass
+  # `tool_response` on a failure case to hit the `.error // .tool_response`
+  # legacy fallback.
   local event="$1" field="${5:-}"
   if [[ -z "${field}" ]]; then
     field=tool_response
@@ -96,8 +84,8 @@ function _gs_expect {
 
 function _gs_commit {
   # Unsigned commit in $PWD: message $1, author date $2, committer date $3
-  # (defaults to $2). Pass a DIFFERENT $3 when the assertion is about dates —
-  # equal fixtures make the committer-date check pass vacuously.
+  # (defaults to $2). Pass a DIFFERENT $3 for date assertions: equal fixtures
+  # make the committer-date check pass vacuously.
   echo "$1" >> f
   git add f
   GIT_AUTHOR_DATE="$2" GIT_COMMITTER_DATE="${3:-$2}" \
@@ -114,14 +102,10 @@ function _gs_commit_signed {
 }
 
 function _gs_unsigned_count {
-  # Count commits in HEAD's unpushed range lacking a gpgsig header.
-  #
-  # Uses the SAME pipeline-free predicate as the code under test. The oracle
-  # previously used the bare `grep -q '^gpgsig'` that pre-push and
-  # git-sign-unpushed each spend a comment block forbidding: this harness sets
-  # pipefail (see `test`), so an early-exiting consumer SIGPIPEs the producer
-  # and a signed commit reads as unsigned. An oracle that disagrees with the
-  # code it validates can only mask a real defect (2026-08-08).
+  # Count commits in HEAD's unpushed range lacking a gpgsig header. Same
+  # pipeline-free predicate as the code under test: a bare `grep -q '^gpgsig'`
+  # under pipefail SIGPIPEs the producer, so a signed commit reads as
+  # unsigned. An oracle that disagrees with the code masks defects (2026-08-08).
   local sha out n=0
   for sha in $(git rev-list HEAD --not --remotes); do
     out="$(git cat-file commit "${sha}")"
@@ -130,17 +114,13 @@ function _gs_unsigned_count {
   echo "${n}"
 }
 
-# Fixture templates (2026-09-29). Building a sandbox repo is ~30 process
-# spawns (ssh-keygen, two git inits, seven configs, a commit, a push) and this
-# suite builds 19 of them; process creation is the slow path on this Mac
-# (~6 ms a spawn, 2026-09-29), so the builds alone were most of a 39 s run.
-# Each shape is now built once per run into ${_GS_TEMPLATES} by run_git_sign
-# (the parent shell — the builders below run inside $(...) subshells, so a
-# lazy build there would never persist) and copied per call. The copy is
-# byte-identical apart from the three absolute paths that point back at the
-# template (signing key, origin URL, hooksPath), which are re-pointed at the
-# copy. Fixed commit dates mean a case's SHAs are the same as before; every
-# case compares SHAs within its own copy only.
+# Fixture templates (2026-09-29). A sandbox build is ~30 process spawns at
+# ~6 ms each (2026-09-29) and this suite builds 19, most of a 39 s run. Each
+# shape is built once per run into ${_GS_TEMPLATES} by run_git_sign (the
+# parent shell: builders run in $(...) subshells, so a lazy build there would
+# not persist) and copied per call, re-pointing the three absolute paths that
+# reference the template (signing key, origin URL, hooksPath). Fixed commit
+# dates keep SHAs stable; cases compare SHAs within their own copy only.
 typeset -g _GS_TEMPLATES=""
 
 function _gs_build_templates {
@@ -196,9 +176,9 @@ function _gs_build_newrepo {
 }
 
 function _gs_prepush_repo {
-  # Sandbox repo whose core.hooksPath holds ONLY the global pre-push hook, so
-  # these tests exercise git's real hook path without dragging the pre-commit
-  # scanner (gitleaks + PII) into every fixture commit. $1 = sandbox dir.
+  # Sandbox repo whose core.hooksPath holds ONLY the global pre-push hook: git's
+  # real hook path without the pre-commit scanner (gitleaks + PII) on every
+  # fixture commit. $1 = sandbox dir.
   local sb="$1"
   _gs_copy_template prepush "${sb}"
   echo "${sb}/repo"
@@ -211,9 +191,9 @@ function _gs_build_prepush_repo {
     export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
     export PII_HOOK_PATTERNS=/dev/null PII_HOOK_SSH_CONFIG=/dev/null
     mkdir -p "${sb}/hooks"
-    # pii-scan rides along: pre-push resolves it as a sibling (${0:A:h}), and
-    # without the copy the message gate reads as command-not-found → every
-    # push blocks for the wrong reason.
+    # pii-scan rides along: pre-push resolves it as a sibling (${0:A:h});
+    # without it the message gate is command-not-found and every push blocks
+    # for the wrong reason.
     cp "${SCRIPT_DIR}/.config/git/hooks/pre-push" \
        "${SCRIPT_DIR}/.config/git/hooks/pii-scan" \
        "${SCRIPT_DIR}/.config/git/hooks/commit-signatures" "${sb}/hooks/"
@@ -236,26 +216,21 @@ function _gs_build_prepush_repo {
 }
 
 function _gs_quad_expect {
-  # Drive the global pre-push directly with a crafted ref quad. Needed for the
-  # cases `git push` cannot be made to produce on demand: a remote_sha the
-  # local repo does not hold, a re-entry sentinel already exported, or a ref
-  # stream larger than a pipe buffer. git hands the hook exactly these quads,
-  # so this is the hook's real input, not a stand-in.
+  # Drive the global pre-push directly with a crafted ref quad, for cases
+  # `git push` cannot produce on demand: a remote_sha the local repo lacks, a
+  # re-entry sentinel already exported, a ref stream over the pipe buffer.
+  # git hands the hook exactly these quads.
   # $1 want (ALLOWED|BLOCKED), $2 label, $3 repo, $4 quad file or text,
   # rest = extra env assignments.
   local want="$1" label="$2" dir="$3" quad="$4"
   shift 4
-  # `|| rc=$?`, never a bare subshell: the harness runs under `set -e`, so a
-  # BLOCKED case (the whole point of half these assertions) would abort the
-  # suite mid-run rather than fail one test. That is exactly how the first
-  # draft of this block silently truncated the run at 60 lines with no summary.
+  # `|| rc=$?`, never a bare subshell: under the harness's `set -e` a BLOCKED
+  # case would abort the suite rather than fail one test.
   #
   # `env -u … "${GS_ENV[@]}"`, options BEFORE assignments: env stops parsing
   # options at the first `VAR=val`, so `env A=1 -u X cmd` execs `-u` and exits
-  # 127. Written the wrong way round, every BLOCKED assertion here passed on a
-  # 127 that never reached the hook — a green test measuring nothing. Only the
-  # ALLOWED cases exposed it, which is the argument for pairing each block with
-  # its allow-side control.
+  # 127, and every BLOCKED assertion would pass on a 127 that never reached the
+  # hook. Pair each block with an allow-side control.
   local rc=0 got
   if [[ -f "${quad}" ]]; then
     ( cd "${dir}" && env -u GIT_GLOBAL_HOOKS_SEEN "${GS_ENV[@]}" "$@" \
@@ -293,12 +268,9 @@ function _gs_push_expect {
 }
 
 function _gs_push_expect_tty {
-  # Like _gs_push_expect, but the whole command runs under
-  # /usr/bin/script -q /dev/null, which allocates a real pty regardless of
-  # how this suite itself was invoked — needed when GIT_SIGN_SKIP or
-  # PII_HOOK_BYPASS is expected to be HONOURED (2026-09-25: honoured only
-  # with a real controlling terminal attached; see tests/pii-hook's header
-  # for the mechanism behind the refusal-side cases in more detail).
+  # Like _gs_push_expect, but under /usr/bin/script -q /dev/null (a real pty
+  # however the suite was invoked), for cases where GIT_SIGN_SKIP or
+  # PII_HOOK_BYPASS must be HONOURED.
   local want="$1" label="$2" dir="$3"
   shift 3
   local got
@@ -315,13 +287,10 @@ function _gs_push_expect_tty {
 }
 
 function _gs_push_expect_notty {
-  # Like _gs_push_expect, but the whole command runs under tests/lib's
-  # _run_no_tty, detaching from any controlling terminal regardless of how
-  # this suite itself was invoked — needed when GIT_SIGN_SKIP or
-  # PII_HOOK_BYPASS is expected to be REFUSED (2026-09-25). $4 = a needle
-  # that MUST appear in the hook's output — asserting BLOCKED alone would
-  # also pass if the shim died for an unrelated reason, so the refusal LINE
-  # is the proof.
+  # Like _gs_push_expect, but under tests/lib's _run_no_tty (no controlling
+  # terminal however the suite was invoked), for cases where GIT_SIGN_SKIP or
+  # PII_HOOK_BYPASS must be REFUSED. $4 = a needle that MUST appear in the
+  # output: BLOCKED alone also passes if the shim died for an unrelated reason.
   local want="$1" label="$2" dir="$3" needle="$4"
   shift 4
   local got out
@@ -344,13 +313,11 @@ function _gs_push_expect_notty {
 function run_git_sign {
   _section "git-sign hook + git-sign-unpushed"
 
-  # claude/ is gitignored and synced out of band — absent hook means the sync
-  # hasn't reached this machine, not a regression. Skip THOSE cases, don't
-  # die — and never skip the pre-push gate cases: they exercise
-  # .config/git/hooks/pre-push, which is tracked and always present, and
-  # became load-bearing when commit messages became the ledger (2026-08-17).
-  # Split into functions (zsh dynamic scoping keeps the claude cases' locals
-  # visible to the refusal cases they call).
+  # claude/ is gitignored and synced out of band: an absent hook means the sync
+  # has not reached this machine. Skip THOSE cases, never the pre-push gate
+  # cases (.config/git/hooks/pre-push is tracked). Split into functions (zsh
+  # dynamic scoping keeps the claude cases' locals visible to the refusal
+  # cases they call).
   _gs_build_templates
   if [[ ! -f "${SCRIPT_DIR}/claude/git-sign-hook" ]]; then
     _skip "claude/git-sign-hook absent — claude/ not yet synced (pre-push cases still run)"
@@ -374,8 +341,6 @@ function _git_sign_claude_cases {
   (
     export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
     cd "${repo}" || exit 1
-    # Committer dates deliberately differ from author dates so the date
-    # assertions below cannot pass vacuously.
     _gs_commit c1 '2026-02-02T11:00:00+00:00' '2026-03-02T11:00:00+00:00'
     _gs_commit c2 '2026-02-03T12:00:00+00:00' '2026-03-03T12:00:00+00:00'
   )
@@ -390,11 +355,10 @@ fatal: failed to write commit object'
     'unrelated commit failure is left alone'
   _gs_expect PASS PostToolUseFailure 'git status' "${repo}" "${refusal}" \
     'refusal text on a non-commit command'
-  # Legacy payload shape: a pre-2.1.282 build carried the failure text under
-  # .tool_response instead of .error. The hook's `.error // .tool_response`
-  # fallback must still catch it (the field the live payload actually uses
-  # is exercised by every other PostToolUseFailure case above, via
-  # _gs_hook's default; this one pins the fallback path specifically).
+  # Legacy shape: a pre-2.1.282 build carried the failure text under
+  # .tool_response, not .error. This case pins the hook's
+  # `.error // .tool_response` fallback; the other failure cases use the live
+  # field via _gs_hook's default.
   _gs_expect CONTEXT PostToolUseFailure 'git commit -m x' "${repo}" "${refusal}" \
     'legacy .tool_response payload still triggers the fallback' tool_response
   out="$(_gs_hook PostToolUseFailure 'git commit -m x' "${repo}" "${refusal}")"
@@ -419,9 +383,8 @@ fatal: failed to write commit object'
   fi
 
   # --- PostToolUseFailure: "communication with agent failed" is transient ---
-  # Distinct symptom from an outright refusal: retry once, unmodified: if the
-  # exact same communication error recurs right after that retry, the SAME
-  # (stateless) hook must tell the agent to stop, not retry a third time.
+  # Distinct from an outright refusal: retry once, unmodified. If the same
+  # error recurs right after, the SAME (stateless) hook must say stop.
   local commfail out2
   commfail='Couldn'"'"'t sign message (signer): communication with agent failed?'
   out="$(_gs_hook PostToolUseFailure 'git commit -m x' "${repo}" "${commfail}")"
@@ -442,11 +405,8 @@ fatal: failed to write commit object'
   _gs_expect PASS PostToolUse 'git status' "${repo}" '' 'non-commit command, debt present'
 
   # --- Unsigned-range scope must match what git-sign-unpushed can fix ---
-  # Regression (in the now-removed PreToolUse push-gate leg): an unsigned
-  # commit on a branch that is not checked out used to deny every push in the
-  # repo, and git-sign-unpushed reported "nothing to do". _unsigned_count's
-  # same HEAD-only scoping also governs the PostToolUse re-sign nudge below,
-  # which is what this now tests directly.
+  # An unsigned commit on a branch that is not checked out must not trigger the
+  # PostToolUse re-sign nudge (_unsigned_count scopes to HEAD).
   local scoperepo
   scoperepo="$(_gs_newrepo "$(mktemp -d "${TMPDIR}git-sign-scope.XXXXXX")")"
   (
@@ -505,11 +465,8 @@ function _git_sign_resign_cases {
   else
     _fail "author dates changed: ${after_dates//$'\n'/ } != ${before_dates//$'\n'/ }"
   fi
-  # And the documented limitation: on the rebase path a differing committer
-  # date is NORMALISED to the author date, not preserved. Fixtures above set
-  # the two apart, so this pins the real behaviour instead of passing
-  # vacuously (the old assertion compared %aI-before with %cI-after on
-  # equal-date fixtures and could never fail).
+  # Documented limitation: on the rebase path a differing committer date is
+  # NORMALISED to the author date, not preserved.
   after_committer="$(env "${GS_ENV[@]}" git -C "${repo}" log --format='%cI' origin/main..HEAD)"
   if [[ "${after_committer}" == "${after_dates}" ]]; then
     _pass "rebase path normalises committer dates to author dates (documented)"
@@ -540,8 +497,8 @@ function _git_sign_resign_cases {
   else
     _fail "fast path rewrote history below the tip"
   fi
-  # The newest reflog entry must be the amend itself — a sequencer run would
-  # leave `rebase (finish)` on top instead.
+  # The newest reflog entry must be the amend; a sequencer run leaves
+  # `rebase (finish)` on top.
   if env "${GS_ENV[@]}" git -C "${repo}" reflog -1 | grep -q 'commit (amend)'; then
     _pass "fast path avoids the rebase sequencer"
   else
@@ -576,10 +533,10 @@ function _git_sign_resign_cases {
   /bin/rm -rf "${costrepo:h}"
 
   # --- No remote: replay must start at the deepest UNSIGNED commit ---
-  # `--not --remotes` excludes nothing in a repo with no remote, so every
-  # commit counts as unpushed. Basing the rebase on the deepest *unpushed*
-  # commit therefore rebased from --root and re-signed the whole history:
-  # measured 2026-08-08, 2 unsigned tips in a 12-commit history = 12 picks.
+  # `--not --remotes` excludes nothing without a remote, so every commit counts
+  # as unpushed; basing the rebase on the deepest *unpushed* commit rebased from
+  # --root and re-signed everything (measured 2026-08-08: 2 unsigned tips in a
+  # 12-commit history = 12 picks).
   local norepo old_head picks
   norepo="$(mktemp -d "${TMPDIR}git-sign-noremote.XXXXXX")/repo"
   (
@@ -608,8 +565,8 @@ function _git_sign_resign_cases {
   fi
   old_head="$(env "${GS_ENV[@]}" git -C "${norepo}" rev-parse 'HEAD~2')"
   (cd "${norepo}" && env "${GS_ENV[@]}" "${SCRIPT_DIR}/bin/git-sign-unpushed" >/dev/null)
-  # `|| true`: under the harness's pipefail a zero-match grep would abort the
-  # whole suite instead of failing this one assertion.
+  # `|| true`: under pipefail a zero-match grep would abort the suite, not fail
+  # one assertion.
   picks="$(env "${GS_ENV[@]}" git -C "${norepo}" reflog --all | grep -c 'rebase (pick)' || true)"
   if [[ "${picks}" == "2" ]]; then
     _pass "no remote: only the 2 unsigned commits are replayed"
@@ -624,10 +581,9 @@ function _git_sign_resign_cases {
   /bin/rm -rf "${norepo:h}"
 
   # --- Refusing to rewrite a SHA published on a SECOND remote ---
-  # Candidates used to come from merge-base(HEAD, @{upstream})..HEAD, which
-  # excludes only the UPSTREAM's history. A commit already pushed to another
-  # remote sat inside that range and was rewritten (Codex finding, reproduced
-  # 2026-08-08). Candidates now come from HEAD --not --remotes.
+  # Candidates come from HEAD --not --remotes, not merge-base(HEAD,
+  # @{upstream})..HEAD, which excludes only the UPSTREAM's history: a commit
+  # already pushed to another remote would be rewritten (reproduced 2026-08-08).
   local tworem b_sha
   tworem="$(mktemp -d "${TMPDIR}git-sign-tworemote.XXXXXX")/repo"
   (
@@ -752,10 +708,9 @@ function _git_sign_prepush_cases {
     cd "${ppa}" || exit 1; _gs_commit u1 '2026-02-03T10:00:00+00:00'
   )
   _gs_push_expect BLOCKED "unsigned commit on the pushed branch" "${ppa}" git push origin main
-  # GIT_SIGN_SKIP=1 is honoured only with a real controlling terminal
-  # (2026-09-25): the _tty case forces one via script and publishes u1; a
-  # fresh unsigned commit then proves the same override is refused, and
-  # still blocks, without one.
+  # GIT_SIGN_SKIP=1 needs a controlling terminal (2026-09-25): the _tty case
+  # forces one and publishes u1; a fresh unsigned commit then proves the
+  # override is refused, and still blocks, without one.
   _gs_push_expect_tty ALLOWED "GIT_SIGN_SKIP=1 override (with a terminal)" "${ppa}" env GIT_SIGN_SKIP=1 git push origin main
   (
     export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
@@ -805,10 +760,10 @@ function _git_sign_prepush_cases {
   _gs_push_expect ALLOWED "300KB signed commit is not misread as unsigned" "${ppd}" git push origin main
   /bin/rm -rf "${ppd:h}"
 
-  # --- pre-push outgoing-message PII gate (messages are the ledger now) ---
-  # Fixture token assembled at run time so this file never contains it as a
-  # committed literal in a message context; seam patterns per-case via env
-  # last-value-wins over the GS_ENV /dev/null default.
+  # --- pre-push outgoing-message PII gate ---
+  # Fixture token assembled at run time so this file never holds it as a
+  # committed literal; seam patterns per case via env last-value-wins over
+  # the GS_ENV /dev/null default.
   local ppf msgpat
   ppf="$(_gs_prepush_repo "$(mktemp -d "${TMPDIR}git-sign-ppf.XXXXXX")")"
   msgpat="$(mktemp "${TMPDIR}git-sign-msgpat.XXXXXX")"
@@ -817,7 +772,7 @@ function _git_sign_prepush_cases {
     export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
     export PII_HOOK_PATTERNS=/dev/null PII_HOOK_SSH_CONFIG=/dev/null
     cd "${ppf}" || exit 1
-    # -n: bypass commit-msg deliberately — pre-push must catch what the
+    # -n bypasses commit-msg deliberately: pre-push must catch what the
     # commit-time gate missed. Signed, so the signature layer stays green.
     echo m1 >> f; git add f
     git commit -qn -S -m "redeployed zorblefrobnicate to prod"
@@ -834,10 +789,10 @@ function _git_sign_prepush_cases {
   )
   _gs_push_expect ALLOWED "reworded message pushes" "${ppf}" \
     env PII_HOOK_PATTERNS="${msgpat}" git push origin main
-  # Bypass case takes a FRESH dirty commit and runs after the reword case:
-  # a bypassed push PUBLISHES the dirty tip, and amending it afterwards
-  # would diverge from the remote — the reword push would then block as a
-  # non-fast-forward, not as a gate verdict.
+  # Bypass case takes a FRESH dirty commit and runs after the reword case: a
+  # bypassed push PUBLISHES the dirty tip, and amending it would diverge from
+  # the remote, so the reword push would block as a non-fast-forward, not as a
+  # gate verdict.
   (
     export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
     export PII_HOOK_PATTERNS=/dev/null PII_HOOK_SSH_CONFIG=/dev/null
@@ -849,10 +804,9 @@ function _git_sign_prepush_cases {
     env PII_HOOK_PATTERNS="${msgpat}" git push origin main
   _gs_push_expect_tty ALLOWED "PII_HOOK_BYPASS=1 overrides the message scan (with a terminal)" "${ppf}" \
     env PII_HOOK_PATTERNS="${msgpat}" PII_HOOK_BYPASS=1 git push origin main
-  # PII_HOOK_BYPASS=1 is honoured only with a real controlling terminal
-  # (2026-09-25). A dedicated fixture (not ppf, whose remaining cases below
-  # depend on its exact commit sequence) proves the same override is
-  # refused, and still blocks, without one.
+  # PII_HOOK_BYPASS=1 needs a controlling terminal (2026-09-25). A dedicated
+  # fixture (ppf's later cases depend on its exact commit sequence) proves the
+  # override is refused, and still blocks, without one.
   local ppg
   ppg="$(_gs_prepush_repo "$(mktemp -d "${TMPDIR}git-sign-ppg.XXXXXX")")"
   (
@@ -882,7 +836,7 @@ function _git_sign_prepush_cases {
     export PII_HOOK_PATTERNS=/dev/null PII_HOOK_SSH_CONFIG=/dev/null
     cd "${ppf}" || exit 1
     git commit -qn -S --amend -m "swapped the router NIC"
-    # Non-signing repos get the message gate too (the old early-exit is gone).
+    # Non-signing repos get the message gate too.
     git config commit.gpgsign false
     git tag -a -m "milestone at zorblefrobnicate" leak-tag
   )
@@ -900,8 +854,8 @@ function _git_sign_prepush_cases {
 
   # Chains to the repo's own default-location pre-push.
   ppe="$(_gs_prepush_repo "$(mktemp -d "${TMPDIR}git-sign-ppe.XXXXXX")")"
-  # Needs something to push: with the branch up to date git skips pre-push
-  # entirely and the chain assertion would fail for the wrong reason.
+  # Needs something to push: an up-to-date branch skips pre-push entirely and
+  # the chain assertion would fail for the wrong reason.
   (
     export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
     cd "${ppe}" || exit 1; _gs_commit_signed chained '2026-02-02T10:00:00+00:00'
@@ -909,9 +863,8 @@ function _git_sign_prepush_cases {
   mkdir -p "${ppe}/.git/hooks"
   printf '#!/bin/zsh\nprint -u2 "REPO PRE-PUSH RAN"\nexit 7\n' > "${ppe}/.git/hooks/pre-push"
   chmod 755 "${ppe}/.git/hooks/pre-push"
-  # Capture, do not pipe: the harness sets pipefail, so `(failing push) | grep`
-  # would report the push's status rather than grep's and fail for the wrong
-  # reason. Same rule as claude/rules/shell.md "never pipe a gate command".
+  # Capture, do not pipe: under pipefail `(failing push) | grep` reports the
+  # push's status, not grep's.
   local chainout
   chainout="$( (cd "${ppe}" && env "${GS_ENV[@]}" git push origin main) 2>&1 || true )"
   if [[ "${chainout}" == *'REPO PRE-PUSH RAN'* ]]; then
@@ -922,10 +875,9 @@ function _git_sign_prepush_cases {
   /bin/rm -rf "${ppe:h}"
 
   # --- A repo-local core.hooksPath must not silently opt out of the gate ---
-  # This repo sets core.hooksPath=.githooks, which SHADOWS the global hooks
-  # dir — so the global pre-push gate does not fire here unless
-  # .githooks/pre-push chains to it. Found 2026-08-08: the gate's own repo was
-  # the one repo it did not protect. The fixture below mirrors that layout.
+  # This repo's core.hooksPath=.githooks SHADOWS the global hooks dir, so the
+  # global pre-push gate does not fire here unless .githooks/pre-push chains
+  # to it (2026-08-08). The fixture below mirrors that layout.
   if [[ -x "${SCRIPT_DIR}/.githooks/pre-push" ]] \
      && grep -q 'config/git/hooks/pre-push' "${SCRIPT_DIR}/.githooks/pre-push"; then
     _pass "this repo's .githooks/pre-push chains to the global gate"
@@ -945,9 +897,8 @@ function _git_sign_prepush_cases {
     git -c init.defaultBranch=main init -q repo
     cd repo || exit 1
     # Mirror the dotfiles layout: a repo-local hooksPath plus the chaining
-    # stub. pii-scan rides along — pre-push resolves it as a sibling, and
-    # without it the message gate is command-not-found and the internal push
-    # here dies at 127, taking the whole suite with it under set -e.
+    # stub. pii-scan rides along (see _gs_build_prepush_repo); without it the
+    # internal push dies at 127 and, under set -e, takes the suite with it.
     mkdir -p .config/git/hooks .githooks
     cp "${SCRIPT_DIR}/.config/git/hooks/pre-push" \
        "${SCRIPT_DIR}/.config/git/hooks/pii-scan" \
@@ -969,19 +920,18 @@ function _git_sign_prepush_cases {
     "${shadow}" git push origin main
   /bin/rm -rf "${shadow:h}"
 
-  # --- Bypasses found by the 2026-08-08 dual review (Codex + Opus subagent) ---
-  # Every case below was a live PASS through the gate before that review. They
-  # are grouped because they share one root cause: the gate trusted a git
-  # invocation's *output* without checking its *status*, or matched a pattern
-  # too loosely to be a signature.
+  # --- Gate bypasses (2026-08-08) ---
+  # Each case below once passed through the gate; common root cause: the gate
+  # trusted a git invocation's *output* without checking its *status*, or
+  # matched a pattern too loosely to be a signature.
   local zero=0000000000000000000000000000000000000000
   local ghost=0000000000000000000000000000000000000001
 
   # A failed revision walk must not read as "no unsigned commits". git derives
   # remote_sha from the remote's LIVE advertised refs, not the local
   # remote-tracking cache, so a diverged force-push hands the hook a range
-  # whose left side it does not hold: `fatal: bad object` → empty output →
-  # loop body never ran → exit 0.
+  # whose left side it lacks: `fatal: bad object` → empty output → loop
+  # never ran → exit 0.
   local walk walktip
   walk="$(_gs_prepush_repo "$(mktemp -d "${TMPDIR}git-sign-walk.XXXXXX")")"
   ( cd "${walk}" && _gs_commit unsigned-tip '2026-02-02T10:00:00+00:00' )
@@ -991,9 +941,9 @@ function _git_sign_prepush_cases {
   _gs_quad_expect BLOCKED "control: the same unsigned tip with a resolvable range" \
     "${walk}" "refs/heads/main ${walktip} refs/heads/main ${zero}"
 
-  # `gpgsig` in the commit MESSAGE is not a signature. `git cat-file commit`
-  # prints headers, a blank line, then the message; an unanchored match over
-  # the whole object let an unsigned commit forge its own verdict.
+  # `gpgsig` in the commit MESSAGE is not a signature: `git cat-file commit`
+  # prints headers, a blank line, then the message, so an unanchored match let
+  # an unsigned commit forge its own verdict.
   local spoof spooftip
   spoof="$(_gs_prepush_repo "$(mktemp -d "${TMPDIR}git-sign-spoof.XXXXXX")")"
   (
@@ -1025,7 +975,7 @@ function _git_sign_prepush_cases {
   _gs_quad_expect ALLOWED "a lightweight tag on a signed commit passes" \
     "${tagr}" "refs/tags/lw ${tagbase} refs/tags/lw ${zero}"
 
-  # Re-entry must suppress the CHAINED hook only, never the scan. The sentinel
+  # Re-entry must suppress the CHAINED hook only, never the scan: the sentinel
   # is exported before the scan runs, so a repo pre-push hook that pushed the
   # same repo inherited it and published unsigned commits unexamined.
   local reent reenttip reentdir
@@ -1039,16 +989,15 @@ function _git_sign_prepush_cases {
 
   # stdin replay to the chained hook must not be a pipeline: under pipefail a
   # repo hook that exits 0 without draining a large ref stream SIGPIPEs the
-  # producer and the gate returned 141 — blocking a push the repo hook allowed.
-  # All-zero local shas (branch deletions) keep this to the replay path with no
-  # per-ref git forks, so the case stays fast.
+  # producer and the gate returned 141, blocking a push the repo hook allowed.
+  # All-zero local shas (branch deletions) keep it on the replay path with no
+  # per-ref git forks.
   # `--absolute-git-dir`, NOT `--git-common-dir`: the latter answers `.git`
-  # RELATIVE to the repo, so building a fixture path from it outside the repo
-  # wrote this very repo's `.git/hooks/pre-push` instead. That is not a
-  # cosmetic slip — the global gate chains to `$(git rev-parse
-  # --git-common-dir)/hooks/pre-push`, which `core.hooksPath = .githooks` does
-  # NOT shadow, so an `exit 7` fixture there would have failed every push from
-  # the dotfiles repo itself (caught and removed 2026-08-08).
+  # RELATIVE, so a fixture path built from it outside the repo writes this
+  # very repo's `.git/hooks/pre-push`. The global gate chains to
+  # `$(git rev-parse --git-common-dir)/hooks/pre-push`, which
+  # `core.hooksPath = .githooks` does NOT shadow, so an `exit 7` fixture there
+  # would fail every push from the dotfiles repo itself (2026-08-08).
   local replay replaydir stream
   replay="$(_gs_prepush_repo "$(mktemp -d "${TMPDIR}git-sign-replay.XXXXXX")")"
   replaydir="$(env "${GS_ENV[@]}" git -C "${replay}" rev-parse --absolute-git-dir)"
@@ -1066,9 +1015,9 @@ function _git_sign_prepush_cases {
     "${replay}" "${stream}"
 
   # --- The declared global hooksPath must actually resolve ----------------
-  # A core.hooksPath pointing at a missing directory disables EVERY hook —
-  # the signature gate and the PII/gitleaks scanner together — and git says
-  # nothing at all: the commit simply succeeds with no hooks run.
+  # A core.hooksPath pointing at a missing directory disables EVERY hook (the
+  # signature gate and the PII/gitleaks scanner) and git says nothing: the
+  # commit simply succeeds with no hooks run.
   local declared
   declared="$(env "${GS_ENV[@]}" git config --file "${SCRIPT_DIR}/.config/git/config" \
     --path --get core.hooksPath 2>/dev/null || true)"
@@ -1091,20 +1040,18 @@ function _git_sign_refusal_cases {
   local refusal_resp compound simple
   refusal_resp='Couldn'"'"'t sign message (signer): agent refused operation?
 fatal: failed to write commit object'
-  # The property under test is that the ORIGINAL command is never echoed back
-  # runnable — no branch of the hook hands back any command any more, so
-  # asserting on the verbatim command's absence pins that for the compound
-  # case specifically, where a partial/templated echo would be easiest to
-  # slip back in by accident.
+  # The ORIGINAL command must never be echoed back runnable. No hook branch
+  # hands back any command now, so the verbatim command's absence pins the
+  # compound case, where a partial/templated echo is easiest to reintroduce.
   compound="$(_gs_hook PostToolUseFailure 'git commit -m x && git push' "${repo}" "${refusal_resp}")"
   if [[ "${compound}" == *'NO ready-made retry'* && "${compound}" != *'git commit -m x && git push'* ]]; then
     _pass "compound commit+push is not handed back as a signing-disabled retry"
   else
     _fail "compound command was reproduced with signing disabled"
   fi
-  # A chain with no push at all must also be refused — this is the case that
-  # exercises _is_simple_command; the commit-&&-push case above short-circuits
-  # on the push check and never reaches it.
+  # A chain with no push must also be refused: this case exercises
+  # _is_simple_command; the commit-&&-push case above short-circuits on the
+  # push check and never reaches it.
   local chained_nopush
   chained_nopush="$(_gs_hook PostToolUseFailure 'git commit -m x && echo done' "${repo}" "${refusal_resp}")"
   if [[ "${chained_nopush}" == *'NO ready-made retry'* && "${chained_nopush}" != *'git commit -m x && echo done'* ]]; then
@@ -1112,11 +1059,8 @@ fatal: failed to write commit object'
   else
     _fail "chained command was reproduced with signing disabled"
   fi
-  # A standalone commit used to get a ready-made unsigned retry here —
-  # the exact recipe an unattended session could run without a human
-  # decision. Only the user may authorise an unsigned commit now, so the
-  # standalone case must get the SAME park-and-hand-off text as the compound
-  # cases above, never a runnable recipe.
+  # Only the user may authorise an unsigned commit: a standalone commit gets
+  # the SAME park-and-hand-off text as the compound cases, never a recipe.
   simple="$(_gs_hook PostToolUseFailure 'git commit -m x' "${repo}" "${refusal_resp}")"
   if [[ "${simple}" == *'NO ready-made retry'* && "${simple}" != *'GIT_CONFIG_KEY_0=commit.gpgsign'* ]]; then
     _pass "a standalone commit gets park-and-hand-off text too, never a ready-made unsigned retry"

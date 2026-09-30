@@ -1,17 +1,13 @@
 #!/bin/zsh
 # dotfiles/tests/md5-guard
 #
-# Behavioural test for claude/md5-guard-hook — the PreToolUse hook that denies
-# MD5 checksum tools and points the model at `shasum -a 256`. Feeds commands to
-# the hook as stdin JSON and asserts the verdict: DENY for md5/md5sum/gmd5sum/
-# md5deep and `openssl md5` at a command position (including through wrappers,
-# subshells and command substitution), PASS for lookalikes (`echo md5`, a path
-# containing md5, `--grep=md5`), for the SHA-256 replacements, and for the
-# MD5_GUARD_SKIP=1 bypass.
-#
-# Guards the command-position matcher against silent regressions in both
-# directions — a tweak that started denying `brew install md5deep`, or stopped
-# catching `a && md5 b`, would fail here.
+# Behavioural test for claude/md5-guard-hook (PreToolUse: denies MD5 tools,
+# points at `shasum -a 256`). Feeds commands as stdin JSON, asserts the verdict:
+# DENY for md5/md5sum/gmd5sum/md5deep and `openssl md5` at a command position
+# (through wrappers, subshells, command substitution); PASS for lookalikes
+# (`echo md5`, a path containing md5, `--grep=md5`), the SHA-256 replacements
+# and the MD5_GUARD_SKIP=1 bypass. Pins the matcher in both directions
+# (denying `brew install md5deep`, missing `a && md5 b`).
 #
 # Run: ./test md5-guard    (or ./test for the full suite)
 #
@@ -21,14 +17,12 @@
 # shellcheck source=tests/lib
 
 function _md5_guard_run {
-  # Echo the hook's stdout for Bash command $1.
   jq -n --arg c "$1" '{tool_name:"Bash", tool_input:{command:$c}}' \
     | /bin/zsh "${SCRIPT_DIR}/claude/md5-guard-hook"
 }
 
 function _md5_guard_run_file {
-  # Feed a command string held in a file. The 1MB fixtures are larger than
-  # ARG_MAX, so they cannot travel through argv.
+  # The 1MB fixtures exceed ARG_MAX, so they go through a file, not argv.
   jq -Rs '{tool_name:"Bash", tool_input:{command:.}}' < "$1" \
     | /bin/zsh "${SCRIPT_DIR}/claude/md5-guard-hook"
 }
@@ -58,8 +52,7 @@ function _md5_guard_expect {
 function run_md5_guard {
   _section "md5 → sha256 guard hook"
 
-  # claude/ is gitignored and synced out of band — absent hook means the sync
-  # hasn't reached this machine, not a regression. Skip, don't die.
+  # claude/ syncs out of band: an absent hook is pending sync, so skip.
   if [[ ! -f "${SCRIPT_DIR}/claude/md5-guard-hook" ]]; then
     _skip "claude/md5-guard-hook absent — claude/ not yet synced to this machine"
     return 0
@@ -71,7 +64,7 @@ function run_md5_guard {
   fi
 
   # A session-wide export of the bypass would silently turn ~30 DENY cases
-  # into PASS and the suite would still report green. Clear it for this run.
+  # into PASS with the suite still green.
   unset MD5_GUARD_SKIP
 
   # MD5 tools at a command position → DENY.
@@ -103,8 +96,7 @@ function run_md5_guard {
   _md5_guard_expect DENY 'a || md5 b'
   _md5_guard_expect DENY 'cat f | md5'
   _md5_guard_expect DENY '(md5 f)'
-  # Single quotes are the point: the fixture is a literal command string that
-  # must reach the hook unexpanded.
+  # Single quotes on purpose: the fixture is a literal command string.
   # shellcheck disable=SC2016
   _md5_guard_expect DENY 'echo $(md5 f)'         # command substitution
   # shellcheck disable=SC2016
@@ -123,46 +115,38 @@ function run_md5_guard {
   _md5_guard_expect PASS 'ls && shasum -a 256 f'
   _md5_guard_expect PASS 'gsha256sum f'
 
-  # The boot volume is case-insensitive, so these really do execute the
-  # MD5 binaries. The tool name is lowercased before the match.
+  # The boot volume is case-insensitive, so these execute the MD5 binaries;
+  # the tool name is lowercased before the match.
   _md5_guard_expect DENY 'MD5 f'
   _md5_guard_expect DENY 'MD5SUM f'
   _md5_guard_expect DENY 'OpenSSL DGST -MD5 f'
 
-  # Quoting regressions. A pipe character inside a quoted regex is data, not
-  # a separator - a quote-blind splitter turned the middle alternative of a
-  # grep pattern into a bare md5 command position and denied it (live false
-  # positive, 2026-09-04). The converse still holds: quoting an ARGUMENT of a
-  # real md5 call does not launder it.
+  # Quoting regressions. A pipe inside a quoted regex is data: a quote-blind
+  # splitter made a grep alternative a bare md5 position (false positive,
+  # 2026-09-04). Quoting an ARGUMENT of a real md5 call does not launder it.
   _md5_guard_expect PASS 'grep -iE "claude|md5|muse" f'
   _md5_guard_expect PASS "echo 'a|md5|b'"
   _md5_guard_expect PASS "awk -F'|' '{print}' notes.txt"
   _md5_guard_expect DENY 'md5 "my file.txt"'
 
-  # A backslash escapes the next character outside single quotes. Without
-  # that, an escaped double quote closed the quoted region early and
-  # exposed the pipes after it — a false DENY, not a fail-open miss.
+  # A backslash escapes the next character outside single quotes, else an
+  # escaped double quote closes the region early and exposes pipes (false DENY).
   _md5_guard_expect PASS 'echo "a \" b|md5|c"' 'escaped quote inside a quoted string'
 
-  # Quote state must reset at every newline. Carried across a multi-line
-  # command it desynchronises on the first unbalanced quote: a Python
-  # heredoc's triple-quote opens, closes, opens, so a later double quote
-  # closed the region and re-exposed the pipes in the SAME grep pattern
-  # two lines down. Second live false positive of 2026-09-04. Since the
-  # 2026-09-25 heredoc-skip fix this PASSes for a more direct reason too —
-  # `python3 -` is not a shell consumer, so the whole body is data and
-  # never reaches the per-line quote-reset logic at all — but the reset
-  # itself is kept and still exercised by the <<- and quoted-delimiter
-  # cases below, whose consumers are also non-shell.
+  # Quote state resets at every newline; carried across lines, a Python
+  # heredoc's triple quote desynchronised it and re-exposed pipes in a grep
+  # pattern (false positive, 2026-09-04). Since 2026-09-25 this PASSes because
+  # `python3 -` is not a shell consumer; the reset is still exercised by the
+  # <<- and quoted-delimiter cases below.
   local heredoc
   heredoc=$'python3 - <<\'PY\'\nnew = """  x\n  run PASS \'grep -iE "a|md5|b" f\'\n"""\nPY'
   _md5_guard_expect PASS "${heredoc}" 'python heredoc with a triple-quoted block'
 
-  # Bypass, as a command prefix (a PreToolUse hook never sees the command's
-  # own environment, so the prefix is read out of the command string).
+  # Bypass as a command prefix (a PreToolUse hook never sees the command's
+  # environment, so the prefix is read from the command string).
   _md5_guard_expect PASS 'MD5_GUARD_SKIP=1 md5 f' 'MD5_GUARD_SKIP=1 override'
 
-  # The deny reason must name the replacement tool and the bypass.
+  # The deny reason names the replacement and the bypass.
   local reason
   reason="$(_md5_guard_run 'md5 f')"
   if [[ "${reason}" == *"shasum -a 256"* ]]; then
@@ -176,18 +160,12 @@ function run_md5_guard {
     _fail "deny reason does not mention MD5_GUARD_SKIP"
   fi
 
-  # Size and triage limits. Line-level triage means a large command is still
-  # scanned: only lines that actually contain md5 reach the tokeniser, so a
-  # 100KB heredoc with one md5 line is denied rather than skipped. What fails
-  # open is a command over 1MB, or a single line over 64KB — running past
-  # Claude Code's 60s hook timeout BLOCKS the tool call, which is worse than
-  # a miss. `bash <<EOF`, not `cat > f <<EOF`, so this still denies after the
-  # 2026-09-25 heredoc-skip fix — the consumer here genuinely executes the
-  # body (a non-shell consumer's own heredoc-skip PASS is covered above and
-  # in the "heredoc data" section below). The command word is assembled at
-  # runtime, not written as a literal 'md5 g' line, so this fixture itself
-  # does not read as an executable MD5 invocation to this repo's own
-  # md5-write-hook.
+  # Size and triage limits. Only lines containing md5 reach the tokeniser, so
+  # a 100KB heredoc with one md5 line is denied, not skipped. Fail-open: a
+  # command over 1MB or a single line over 64KB (running past the 60s hook
+  # timeout BLOCKS the tool call, worse than a miss). `bash <<EOF`, not
+  # `cat > f <<EOF`: the consumer executes the body. The command word is
+  # assembled at runtime so fixtures do not trip md5-write-hook.
   local pad big md5word
   md5word='md5'
   pad="$(printf 'x%.0s' {1..100000})"
@@ -210,9 +188,8 @@ EOF"
 
   /bin/rm -rf "${fixture_dir}"
 
-  # Codex adversarial review, 2026-09-04. Every one of these was a live
-  # bypass or a live false denial in the first implementation.
-  # Single quotes are the point: the fixture is a literal command string.
+  # Bypasses and false denials found in the first implementation (2026-09-04).
+  # Single quotes on purpose: the fixture is a literal command string.
   # shellcheck disable=SC2016
   _md5_guard_expect DENY 'echo "$(md5 f)"' 'command substitution inside double quotes'
   # shellcheck disable=SC2016
@@ -230,28 +207,22 @@ EOF"
   _md5_guard_expect DENY 'timeout -k 5 12 md5 f' 'timeout with flag operand and duration'
   _md5_guard_expect DENY 'md5 f # MD5_GUARD_SKIP=' 'bypass marker with no value does not exempt'
   _md5_guard_expect DENY 'MD5_GUARD_SKIP= md5 f' 'bypass assigned an empty value does not exempt'
-  # False denials the review found. The SHA-256 spelling must never be denied
-  # just because a filename contains md5, and a comment is not a command.
+  # False denials: SHA-256 over a file named md5.txt; a comment is not a command.
   _md5_guard_expect PASS 'openssl dgst -sha256 md5.txt' 'openssl sha256 over a file named md5.txt'
   _md5_guard_expect PASS 'shasum -a 256 md5.txt' 'shasum over a file named md5.txt'
   _md5_guard_expect PASS 'echo x # comment | md5 f' 'md5 inside a trailing comment'
   _md5_guard_expect PASS '# md5 f' 'whole line is a comment'
   _md5_guard_expect PASS 'echo "a#b" && ls md5.txt' 'hash inside a word is not a comment'
-  # A hash mid-word is not a comment, so it must not swallow the rest of the
-  # line. A URL fragment is the shape that would turn that into a bypass
-  # class covering every command after it.
+  # A mid-word hash is not a comment; a URL fragment swallowing the rest of the
+  # line would be a bypass class covering every later command.
   _md5_guard_expect DENY 'curl http://x/#frag && md5 f' 'unquoted URL fragment does not start a comment'
   _md5_guard_expect DENY "curl 'http://x/#frag' && md5 f" 'quoted URL fragment does not start a comment'
   _md5_guard_expect DENY 'md5 f;#c' 'comment after the call does not hide the call'
   _md5_guard_expect DENY 'md5 f #c' 'trailing comment does not hide the call'
 
   # --- Heredoc bodies: data unless the consumer actually executes them ----
-  # (2026-09-25 fix.) These hooks used to scan heredoc BODY lines as if they
-  # were commands — a python heredoc whose docstring happened to mention the
-  # tool name was denied even though it never ran. The dangerous word is
-  # assembled at runtime (md5word, not a literal 'md5 f' line), same reason
-  # PII fixtures elsewhere assemble at runtime: this repo's own md5-write-hook
-  # would otherwise refuse to write this very test.
+  # 2026-09-25: heredoc BODY lines are not scanned as commands, so a python
+  # heredoc whose docstring mentions the tool name is not denied.
   local hd
 
   hd="python3 - <<EOF"$'\n'"doc = \"\"\"run ${md5word} f\"\"\""$'\n'"EOF"
@@ -266,49 +237,38 @@ EOF"
   hd=$'cat <<-EOF\n\t'"${md5word} f"$'\n\tEOF'
   _md5_guard_expect PASS "${hd}" 'heredoc body (cat consumer, <<-, tab-indented terminator) is data'
 
-  # A heredoc fed to an actual shell genuinely executes its body — still
-  # scanned, and still denied.
+  # A heredoc fed to an actual shell executes its body: still scanned, denied.
   hd="sh <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
   _md5_guard_expect DENY "${hd}" 'heredoc body (sh consumer, unquoted delimiter) still scanned as commands'
 
   hd="bash <<'EOF'"$'\n'"${md5word} f"$'\n'"EOF"
   _md5_guard_expect DENY "${hd}" 'heredoc body (bash consumer, single-quoted delimiter) still scanned as commands'
 
-  # The line introducing the heredoc is still scanned in full — md5 there is
-  # a real command position, regardless of what the heredoc body turns out
-  # to be.
+  # The heredoc-introducing line is scanned in full.
   hd="cat <<EOF | ${md5word}"
   _md5_guard_expect DENY "${hd}" 'md5 after a pipe on the heredoc-introducing line is still a command position'
 
-  # <<< is a here-string, not a heredoc: it takes its operand from the same
-  # line and never opens a body.
+  # <<< is a here-string: same-line operand, never opens a body.
   hd="${md5word} <<< x"
   _md5_guard_expect DENY "${hd}" 'here-string operand does not open a heredoc body — md5 is still a command position'
   _md5_guard_expect PASS 'cat <<< x' 'here-string with a non-md5 consumer, no body follows'
 
-  # A line after the heredoc terminator is not part of the body and is
-  # scanned normally.
   hd="cat <<EOF"$'\n'"hello"$'\n'"EOF"$'\n'"${md5word} f"
   _md5_guard_expect DENY "${hd}" 'a line after the heredoc terminator is still scanned normally'
 
-  # Unterminated heredoc: the rest of the command is data for a non-shell
-  # consumer (matches the general fail-open posture of this hook), but a
-  # shell consumer's body keeps being scanned even with no terminator seen —
-  # real bash executes an unterminated heredoc up to EOF too.
+  # Unterminated heredoc: data for a non-shell consumer (fail-open), still
+  # scanned for a shell consumer (bash executes an unterminated one to EOF).
   hd="bash <<EOF"$'\n'"${md5word} f"
   _md5_guard_expect DENY "${hd}" 'unterminated heredoc, shell consumer, body still scanned'
 
   hd="cat <<EOF"$'\n'"${md5word} f"
   _md5_guard_expect PASS "${hd}" 'unterminated heredoc, non-shell consumer, body treated as data'
 
-  # --- Newly covered heredoc consumers (2026-09-25, second pass) ----------
-  # Closes the gap _md5_guard_scan_heredocs used to document as accepted:
-  # ssh (any invocation), su (every form), sudo -s/-i/--shell/--login, doas
-  # -s/-i, absolute/relative shell paths, and any consumer word this hook
-  # cannot resolve at all (anything starting with $) are now treated as
-  # shell consumers — the body is scanned exactly as a bash/sh consumer's
-  # always was. Each DENY is paired with a same-shape PASS to prove the
-  # match is on the exact resolved word, not a prefix or a coincidence.
+  # --- More heredoc shell consumers (2026-09-25) ---------------------------
+  # Shell consumers, body scanned as for bash/sh: ssh (any invocation), su
+  # (every form), sudo -s/-i/--shell/--login, doas -s/-i, absolute/relative
+  # shell paths, and any consumer word starting with $. Each DENY is paired
+  # with a same-shape PASS to prove an exact-word match, not a prefix.
 
   hd="ssh host <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
   _md5_guard_expect DENY "${hd}" 'ssh host <<EOF — remote command reads the body as commands'
@@ -382,8 +342,7 @@ EOF"
   hd="env python3 - <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
   _md5_guard_expect PASS "${hd}" 'env python3 - <<EOF'
 
-  # Dynamic/unresolvable consumer words fail toward scanning: anything at a
-  # heredoc-owning command position that begins with $ is treated as shell.
+  # Unresolvable consumer words (starting with $) fail toward scanning.
   # shellcheck disable=SC2016
   hd='$SHELL <<EOF'$'\n'"${md5word} f"$'\n'"EOF"
   # shellcheck disable=SC2016
@@ -409,39 +368,28 @@ EOF"
   # shellcheck disable=SC2016
   _md5_guard_expect PASS "${hd}" 'dollar in argument position does not trigger the dynamic-consumer rule'
 
-  # Two heredocs on one line, neither consumer dynamic: isolates a separate,
-  # pre-existing bug from the ${...}/pdepth one below. _md5_guard_scan_heredocs
-  # declares `local hdelim='' hdstack=P hdch` and `local hconsumer hshell=0`
-  # — both bare, no `=value` — inside the outer while loop, so they run once
-  # per heredoc found on a line. zsh's `local`/`typeset` on a bare name that
-  # is ALREADY set at the current scope prints it as `name=value` to stdout
-  # unless TYPESET_SILENT is set (documented zsh behaviour, not a shell bug).
-  # A line's first heredoc declares them fresh (silent); its second heredoc
-  # redeclares the same already-set locals and echoes the first heredoc's
-  # stale value, corrupting the hook's JSON stdout. Predates this task —
-  # never exercised because no existing fixture had two heredocs on one
-  # line. Fixed by giving both an explicit initial value.
+  # Two heredocs on one line, neither consumer dynamic. The outer while loop of
+  # _md5_guard_scan_heredocs declares `local hdelim='' hdstack=P hdch` and
+  # `local hconsumer hshell=0` once per heredoc; zsh prints an already-set
+  # local as `name=value` to stdout unless TYPESET_SILENT, so the second
+  # heredoc echoed stale values and corrupted the hook's JSON. Fixed by
+  # giving both an explicit initial value.
   hd="cat <<A; cat <<B"$'\n'"harmless"$'\n'"A"$'\n'"${md5word} f"$'\n'"B"
   _md5_guard_expect PASS "${hd}" 'two heredocs, one line, neither consumer dynamic — bare-local echo must not corrupt stdout'
 
-  # Two heredocs on one line: the first consumer is a ${...} expansion
-  # (parsed via a brace-depth counter, pdepth, so `{`/`}` inside it don't
-  # look like command separators). pdepth must return to exactly 0 once
-  # that expansion closes, even from inside a double-quoted "${...}" —
-  # otherwise it stays stuck "open" for the rest of the line, swallows the
-  # `;` reset, and the second `<<` is never recognised as a heredoc at all
-  # (advisor review finding, 2026-09-25). PASS only holds if the
-  # second heredoc (cat, non-shell) is correctly recognised as its own,
-  # separate, data-only body.
+  # Two heredocs on one line, the first consumer a ${...} expansion (brace-depth
+  # counter pdepth keeps `{`/`}` inside it from reading as separators). pdepth
+  # must return to 0 when it closes, even inside a double-quoted "${...}", else
+  # it swallows the `;` reset and the second `<<` is never recognised. PASS
+  # holds only if the second (cat) heredoc is its own data-only body.
   # shellcheck disable=SC2016
   hd='"${I:-bash}" <<A; cat <<B'$'\n'"harmless"$'\n'"A"$'\n'"${md5word} f"$'\n'"B"
   # shellcheck disable=SC2016
   _md5_guard_expect PASS "${hd}" 'two heredocs on one line — pdepth from the first ${...} consumer must not corrupt the second heredoc-open'
 
-  # docker exec / container exec: not trivially reachable through the
-  # existing wrapper unwrap (their own "exec" is a subcommand name, not the
-  # shell exec builtin this hook already sees through), so left as an
-  # accepted gap rather than forced in — see _md5_guard_scan_heredocs.
+  # docker exec / container exec: accepted gap, their "exec" is a subcommand,
+  # not the shell builtin the wrapper unwrap sees through. See
+  # _md5_guard_scan_heredocs.
   hd="docker exec -i c sh <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
   _md5_guard_expect PASS "${hd}" 'docker exec ... sh <<EOF — accepted gap, not a pass-through wrapper unwrap'
 
@@ -450,10 +398,9 @@ EOF"
 
   # --- C3: N>&M / >&N / <&N / &>/&>> are redirections, not separators ----
   # A bare & is a command boundary, but the & in 2>&1, >&2, <&1, &>out and
-  # &>>out is part of a redirection operator — treating it as a boundary
-  # split `bash 2>&1 <<EOF` at the &, throwing away `bash` and losing the
-  # consumer entirely. |& (merge stderr into the pipe) still resets like a
-  # plain pipe: its & is preceded by | rather than >/<.
+  # &>>out is part of a redirection; as a boundary it would split
+  # `bash 2>&1 <<EOF` and lose the consumer. |& still resets like a pipe (its
+  # & follows |, not >/<).
 
   hd="bash 2>&1 <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
   _md5_guard_expect DENY "${hd}" 'bash 2>&1 <<EOF — the & in 2>&1 is a redirection, not a boundary'
@@ -471,10 +418,8 @@ EOF"
   _md5_guard_expect DENY "${hd}" 'cmd |& bash <<EOF — |& still resets, so bash is a fresh consumer'
 
   # --- C4: every heredoc on one line must resolve to the same consumer ---
-  # `bash <<A <<B` feeds BOTH heredocs to bash — seg was being reset right
-  # after the first heredoc's delimiter was parsed, so the second lost its
-  # consumer and fell back to data. Neither heredoc may lose a shell
-  # consumer this way, whichever one carries the dangerous line.
+  # `bash <<A <<B` feeds BOTH to bash: the consumer must not reset after the
+  # first delimiter, or the second falls back to data. Either must deny.
 
   hd="bash <<A <<B"$'\n'"echo hi"$'\n'"A"$'\n'"${md5word} f"$'\n'"B"
   _md5_guard_expect DENY "${hd}" 'bash <<A <<B — danger in B, the second heredoc, must still deny'
@@ -486,12 +431,9 @@ EOF"
   _md5_guard_expect PASS "${hd}" 'bash <<A | cat <<B — a real pipe resets the consumer, so B belongs to cat, not bash'
 
   # --- C2: an unquoted heredoc delimiter still expands $(...)/backticks --
-  # The OUTER shell performs command/parameter/arithmetic expansion on an
-  # UNQUOTED heredoc's body before handing the result to the consumer, even
-  # when the consumer itself never interprets the body as a script —
-  # `cat <<EOF` / `$(md5 f)` / `EOF` really runs md5. A quoted delimiter
-  # (<<'EOF' or <<"EOF") suppresses all of that expansion, so the body
-  # stays fully inert there.
+  # The OUTER shell expands an UNQUOTED heredoc body before the consumer sees
+  # it, so `cat <<EOF` / `$(md5 f)` / `EOF` really runs md5. A quoted
+  # delimiter (<<'EOF' or <<"EOF") suppresses that, so the body is inert.
 
   hd="cat <<EOF"$'\n'"\$(${md5word} f)"$'\n'"EOF"
   # shellcheck disable=SC2016
@@ -520,7 +462,7 @@ EOF"
   # shellcheck disable=SC2016
   _md5_guard_expect DENY "${hd}" 'cat <<EOF with two substitution lines — the deny stays valid JSON'
 
-  # Malformed / non-Bash payloads must fail open, never block.
+  # Malformed and non-Bash payloads fail open, never block.
   if [[ -z "$(printf '%s' '{}' | /bin/zsh "${SCRIPT_DIR}/claude/md5-guard-hook")" ]]; then
     _pass "fail-open: payload with no command allowed through"
   else

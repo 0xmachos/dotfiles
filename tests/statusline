@@ -1,29 +1,26 @@
 #!/bin/zsh
 # dotfiles/tests/statusline
 #
-# Behavioural test for claude/statusline-command and claude/subagent-statusline.
-# Feeds stdin JSON payloads and asserts the rendered text, its ANSI colours,
-# and above all the exit code: Claude Code discards the whole status line on a
-# non-zero exit, and that is the one regression the rebuild actually shipped
-# (2026-09-24, a trailing `[ -n "$x" ] && printf` with x empty).
+# Feeds stdin JSON to claude/statusline-command and claude/subagent-statusline;
+# asserts rendered text, ANSI colours and the exit code. Claude Code discards
+# the whole status line on non-zero exit (2026-09-24: a trailing
+# `[ -n "$x" ] && printf` with x empty).
 #
-# Hermetic: HOME is a $TMPDIR sandbox holding a fresh FX cache of 1 (so curl
-# never fires and £ equals USD) and a settings.json with autoCompactWindow.
-# STATUSLINE_NOW pins the clock, STATUSLINE_OSASCRIPT swaps the notification
-# for a stub that logs its argv. current_dir is a non-repo sandbox dir, so the
-# git segment (cached in /tmp) stays out.
+# Hermetic: HOME is a $TMPDIR sandbox with a fresh FX cache of 1 (curl never
+# fires, £ equals USD) and a settings.json with autoCompactWindow.
+# STATUSLINE_NOW pins the clock; STATUSLINE_OSASCRIPT swaps the notification
+# for a stub logging its argv. current_dir is a non-repo dir, so the git
+# segment (cached in /tmp) stays out.
 #
-# Thresholds under test are recorded with their reasons in
-# internals/claude-code-statusline.md; change both together.
+# Thresholds mirror claude/statusline-command; change both together.
 #
-# Run: ./test statusline    (or ./test for the full suite)
-#
-# ShellCheck: lint with `shellcheck --shell=bash tests/statusline`.
-# This file is sourced, not executed — chmod 644.
+# Run: ./test statusline
+# ShellCheck: shellcheck --shell=bash tests/statusline
+# Sourced, not executed — chmod 644.
 #
 # shellcheck source=tests/lib
 
-# tests/lib owns RED/GREEN/YELLOW/BOLD/RESET with the same escapes the scripts
+# tests/lib owns RED/GREEN/YELLOW/BOLD/RESET, with the same escapes the scripts
 # emit; these are the ones it lacks.
 readonly _SL_DIM=$'\e[2m'
 readonly _SL_CYAN=$'\e[36m'
@@ -42,18 +39,17 @@ function _sl_json {
     | $1"
 }
 
-# _sl_run <cols> <payload> [NAME=value ...] — sets _SL_OUT and _SL_RC. The
-# `|| _SL_RC=$?` keeps a non-zero exit from tripping the runner's set -e, and
-# every run then fails loudly on it: an exit-1 run can still print the text an
-# assertion wants, or an empty line a "hidden" assertion accepts.
+# _sl_run <cols> <payload> [NAME=value ...] — sets _SL_OUT and _SL_RC.
+# `|| _SL_RC=$?` keeps a non-zero exit from tripping set -e; every run then
+# fails loudly on it (an exit-1 run can still print the text an assertion
+# wants, or an empty line a "hidden" assertion accepts).
 # GIT_CEILING_DIRECTORIES stops git discovery at the sandbox, so a TMPDIR
 # inside a checkout cannot pull in a real repo (or write its /tmp cache).
-# _run_no_tty (tests/lib, setsid) matches production: Claude Code runs the
-# statusline with no controlling terminal (ps shows TTY ??, 2026-09-29). With
-# one, zsh rewrites COLUMNS from the tty window size at startup, even with all
-# stdio redirected, and the case's COLUMNS=<n> is lost (56/142 failed from a
-# real terminal; repro: script -q /dev/null zsh -c 'stty cols 80; ./test
-# statusline' — script's own pty is 0x0, which zsh ignores).
+# _run_no_tty (tests/lib, setsid) matches production: no controlling terminal
+# (ps shows TTY ??, 2026-09-29). With one, zsh rewrites COLUMNS from the tty
+# size even with all stdio redirected (56/142 failed from a real terminal;
+# repro: script -q /dev/null zsh -c 'stty cols 80; ./test statusline' —
+# script's own pty is 0x0, which zsh ignores).
 function _sl_run {
   local cols="$1" payload="$2"
   shift 2
@@ -144,9 +140,8 @@ function _sl_exit_codes {
     done
   done
 
-  # Tier edges, each side: the calm payload renders a different plain shape
-  # per tier (full: 10-cell bar; medium: 5-cell; compact: one labelled line;
-  # tiny: tokens only)
+  # Tier edges, each side. Plain shapes: full 10-cell bar; medium 5-cell;
+  # compact one labelled line; tiny tokens only
   _sl_tier_case 100 $'work Opus\n░░░░░░░░░░ 0K'
   _sl_tier_case 99 $'work Opus\n░░░░░ 0K'
   _sl_tier_case 70 $'work Opus\n░░░░░ 0K'
@@ -165,8 +160,8 @@ function _sl_tier_case {
 # One case per call, not a multi-variable for loop: shellcheck's bash parser
 # rejects zsh's `for a b in` outright, and a parse error cannot be disabled.
 function _sl_ctx_case {
-  # <tokens> <colour> <label> — tokens spread over all three current_usage
-  # fields, so the sum is what is tested
+  # <tokens> <colour> <label> — tokens split over all three current_usage
+  # fields, so the sum is tested
   _sl_run 30 "$(_sl_json ".context_window.current_usage = {input_tokens: 1000,
     cache_creation_input_tokens: 2000, cache_read_input_tokens: ($1 - 3000)}")"
   # The whole tiny-tier output, so a dropped reset fails too
@@ -199,9 +194,8 @@ function _sl_context {
   printf '{"autoCompactWindow":2000000}' > "${_SL_SB}/.claude/settings.json"
   _sl_run 140 "${p250k}"
   _sl_expect_has "above-range settings → 500K fallback" "$(_sl_line 2)" "█████░░░░░"
-  # The documented range edges, 100K and 1M, are inclusive
-  # 50K tokens so the 100K edge doesn't saturate: 99,999 falls back to 500K
-  # (one cell), 100,000 is honoured (five)
+  # Range edges 100K and 1M are inclusive. 50K tokens so the 100K edge doesn't
+  # saturate: 99,999 falls back to 500K (one cell), 100,000 is honoured (five)
   local p50k
   p50k="$(_sl_json '.context_window.current_usage.input_tokens = 50000')"
   _sl_barmax_case "${p50k}" 99999 "█░░░░░░░░░"
@@ -209,7 +203,6 @@ function _sl_context {
   _sl_barmax_case "${p250k}" 1000000 "██░░░░░░░░"
   _sl_barmax_case "${p250k}" 1000001 "█████░░░░░"
   printf '{"autoCompactWindow":500000}' > "${_SL_SB}/.claude/settings.json"
-  # Past the max the bar clamps at its 10 cells rather than overflowing
   _sl_run 140 "$(_sl_json '.context_window.current_usage.input_tokens = 750000')"
   _sl_expect_eq "bar clamps at 10 cells past the max" \
     "$(_sl_plain "$(_sl_line 2)")" "██████████ 750K"
@@ -239,8 +232,8 @@ function _sl_usage {
   _sl_expect_has "7d 75% shown red" "$(_sl_line 3)" "${RED}${BOLD}75%"
   _sl_expect_eq "7d 75% carries its countdown, no pace" "$(_sl_plain "$(_sl_line 3)")" "7d 75% · 1d"
 
-  # 5h red and countdown start at 80, not 79. Resets far enough that elapsed
-  # share exceeds usage, so pace stays hidden.
+  # 5h red and countdown start at 80, not 79; elapsed share exceeds usage, so
+  # pace stays hidden
   _sl_run 140 "$(_sl_json '.rate_limits.five_hour = {used_percentage: 79, resets_at: ($now + 600)}')"
   _sl_expect_eq "5h 79%: yellow, no countdown" "$(_sl_line 3)" \
     "${_SL_DIM}5h${RESET} ${YELLOW}${BOLD}79%${RESET}"
@@ -334,7 +327,6 @@ function _sl_hit_case {
 }
 
 function _sl_economics {
-  # Session time stays; the API-share ratio beside it is gone
   _sl_run 140 "$(_sl_json ".cost = {total_cost_usd: 0, total_duration_ms: 600000, total_api_duration_ms: 1320000}")"
   _sl_expect_eq "session time, no API share" "$(_sl_plain "$(_sl_line 2)")" "░░░░░░░░░░ 0K · 10m"
   _sl_run 140 "$(_sl_json ".cost = {total_cost_usd: 0, total_duration_ms: 70920000}")"
@@ -422,8 +414,7 @@ function _sl_expired {
   _sl_expect_eq "expired: under a point of signal → no %" "$(_sl_plain "$(_sl_line 2)")" \
     "142K tokens to Opus Med is £1.14"
 
-  # Recording: a session's first render only sets its baseline, the next
-  # appends its spend since then
+  # A session's first render only sets its baseline; the next appends the delta
   _sl_usage_reset
   _sl_run 140 "$(_sl_json '.session_id = "rec" | .cost.total_cost_usd = 3
     | .rate_limits.five_hour.used_percentage = 40')"
@@ -433,8 +424,7 @@ function _sl_expired {
   _sl_expect_eq "ledger: second render appends the delta" "$(cat "${u}/spend" 2>/dev/null)" "${_SL_NOW} 0.500000"
   _sl_expect_eq "ledger: 5h sample recorded" "$(cat "${u}/five" 2>/dev/null)" "${_SL_NOW} 41"
 
-  # A resumed session's counter restarts below its last value: all of the new
-  # figure is fresh spend
+  # A resumed session's counter restarts below its last value: all fresh spend
   _sl_run 140 "$(_sl_json '.session_id = "rec" | .cost.total_cost_usd = 0.25
     | .rate_limits.five_hour.used_percentage = 41')"
   _sl_expect_eq "ledger: restarted counter counts in full" "$(tail -1 "${u}/spend")" "${_SL_NOW} 0.250000"
@@ -472,9 +462,9 @@ function _sl_ledger_prune {
     "$([[ -f "${u}/last-stale" ]] && echo kept || echo gone)" "gone"
   _sl_expect_eq "sweep: recent session baseline kept" \
     "$([[ -f "${u}/last-fresh" ]] && echo kept || echo gone)" "kept"
-  # Another session appends while the ledger is mid-prune: its line survives.
-  # Deterministic, unlike the concurrent case below, which never lost a line
-  # even against the old rewrite-in-place prune (40 parallel runs, 2026-09-25).
+  # An append during the prune survives. Deterministic, unlike the concurrent
+  # case below (40 parallel runs never lost a line against a rewrite-in-place
+  # prune, 2026-09-25).
   _sl_usage_reset
   mkdir -p "${u}"
   printf '%s 1.0\n' $(( _SL_NOW - 600 )) > "${u}/spend"
@@ -491,8 +481,8 @@ function _sl_ledger_prune {
     "$(awk '{ s += $2 } END { printf "%.1f", s }' "${u}/spend")" "9.0"
 }
 
-# Eight sessions render at once, each with a baseline, while every one of
-# them also ticks the prune: no appended line may be lost
+# Eight sessions render at once, each with a baseline, each ticking the prune:
+# no appended line may be lost
 function _sl_ledger_concurrent {
   local u="${_SL_SB}/Library/Caches/statusline/usage" i rcs=""
   _sl_usage_reset
@@ -568,10 +558,9 @@ function _sl_cache_alert {
   _sl_run 140 "$(_sl_alert_payload '"s6"' true 300 50000)"
   _sl_expect_eq "cache_alert claims at exactly 5 min / 50K" "$(_sl_alert_markers)" "1"
 
-  # Delivery is backgrounded, so the log can only be checked after a settle.
-  # Expected: the s1 alert and the s6 boundary alert, nothing from the silent
-  # cases or the s1 repeat. Timing can only hide an extra notification (a
-  # false pass under heavy load), never invent one.
+  # Delivery is backgrounded, so settle first. Expected: the s1 and s6
+  # boundary alerts only. Timing can only hide an extra notification (a false
+  # pass under load), never invent one.
   for (( i = 0; i < 20; i++ )); do
     [[ -f "${log}" ]] && (( $(/usr/bin/grep -c 'cache goes cold' "${log}") >= 2 )) && break
     sleep 0.1
@@ -607,8 +596,7 @@ function _sl_subagent {
     content="$(jq -r .content <<< "${line}")"
     case "${id}" in
       a) _sl_expect_has "subagent: 199,999 tokens green" "${content}" "${GREEN}199K${RESET}"
-         # The whole row once, at >= 90 cols: status colour, description,
-         # model and effort badge, not only the token segment
+         # Whole row once, at >= 90 cols: status, description, model, badge
          _sl_expect_eq "subagent: full row at 100 cols" "${content}" \
            "${_SL_CYAN}Explore${RESET} ${_SL_DIM}·${RESET} ${_SL_CYAN}running${RESET} ${_SL_DIM}·${RESET} ${_SL_DIM}d${RESET} ${_SL_DIM}·${RESET} ${_SL_DIM}sonnet${RESET} ${_SL_DIM}·${RESET} ${_SL_MAGENTA}▲ high${RESET} ${_SL_DIM}·${RESET} ${GREEN}199K${RESET}" ;;
       b) _sl_expect_has "subagent: 200,000 tokens yellow" "${content}" "${YELLOW}200K${RESET}" ;;
@@ -634,8 +622,7 @@ function _sl_subagent {
 function run_statusline {
   _section "Claude Code status lines"
 
-  # claude/ is gitignored and synced out of band — absent scripts mean the
-  # sync hasn't reached this machine, not a regression. Skip, don't die.
+  # claude/ is gitignored and synced out of band: absent scripts skip
   if [[ ! -f "${SCRIPT_DIR}/claude/statusline-command" \
         || ! -f "${SCRIPT_DIR}/claude/subagent-statusline" ]]; then
     _skip "claude/statusline-command or subagent-statusline absent — claude/ not yet synced to this machine"
@@ -648,7 +635,7 @@ function run_statusline {
   fi
 
   # Remove the sandbox even if a set -e abort ends the run early, setup
-  # included (an empty _SL_SB makes this a no-op)
+  # included (empty _SL_SB is a no-op)
   _SL_SB=""
   trap '[[ -n "${_SL_SB}" ]] && /bin/rm -rf "${_SL_SB}"' EXIT
   _sl_setup

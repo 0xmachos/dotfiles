@@ -1,34 +1,24 @@
 #!/bin/zsh
 # dotfiles/tests/session-host-context
 #
-# Behavioural test for claude/session-host-context — the SessionStart hook
-# that injects live host identity (hostname, macOS version+build, running
-# Claude Code version) into session context, as one line. Feeds SessionStart
-# payloads as stdin JSON and asserts stdout text and exit code directly:
-# this hook never emits a hookSpecificOutput deny verdict (only PreToolUse
-# hooks do), so _hook_verdict, built for parsing those, does not apply here.
+# Pins claude/session-host-context, the SessionStart hook that prints one line
+# of host identity (hostname, macOS version+build, Claude Code version).
+# Feeds SessionStart JSON on stdin and asserts stdout and exit code directly;
+# the hook emits no hookSpecificOutput verdict, so _hook_verdict is not used.
 #
-# The hook resolves scutil/sw_vers/readlink by absolute path, not PATH, so
-# the PATH-prefix stubbing pattern (tests/git-sign) cannot intercept them.
-# This suite instead uses the SESSION_HOST_CONTEXT_SCUTIL/_SW_VERS/_READLINK
-# env-seam overrides the hook itself defines — the same seam style AGENTS.md
-# names for other hook suites (GH_PUBLISH_*, PII_HOOK_*).
+# The hook calls scutil/sw_vers/readlink by absolute path, so PATH-prefix
+# stubs (tests/git-sign) cannot intercept them; the suite uses the hook's
+# SESSION_HOST_CONTEXT_SCUTIL/_SW_VERS/_READLINK seams (as GH_PUBLISH_*,
+# PII_HOOK_*).
 #
-# The hosts/<host>.md mechanism, present in the pre-2026-09-25 version of
-# this hook, is dropped entirely as of the 2026-09-25 restore — see the
-# "mechanism is gone, not inert" case below, which asserts a
-# hosts/<host>.md file present on disk has no effect.
-#
-# Run: ./test session-host-context    (or ./test for the full suite)
-#
+# Run: ./test session-host-context
 # ShellCheck: lint with `shellcheck --shell=bash tests/session-host-context`.
-# This file is sourced, not executed — chmod 644.
+# Sourced, not executed — chmod 644.
 #
 # shellcheck source=tests/lib
 
 function _shc_run {
-  # Echo the hook's stdout for stdin payload $1, with any extra `env`
-  # arguments ($2...) applied around the call (VAR=value or -u VAR forms).
+  # Echo the hook's stdout for stdin $1; $2... are `env` arguments.
   local payload="$1"
   shift
   printf '%s' "${payload}" \
@@ -36,8 +26,7 @@ function _shc_run {
 }
 
 function _shc_expect_exit0 {
-  # Run the hook with stdin payload $1 (remaining args are `env` arguments)
-  # and assert it exits 0, labelled $2.
+  # Assert the hook exits 0 for stdin $1, labelled $2; $3... are `env` args.
   local payload="$1" label="$2" got=0
   shift 2
   printf '%s' "${payload}" \
@@ -53,8 +42,7 @@ function _shc_expect_exit0 {
 function run_session_host_context {
   _section "Session host context hook"
 
-  # The hook file may be absent (a clean clone, or claude/ not yet synced):
-  # that is not a regression. Skip, don't die.
+  # Hook absent (clean clone, claude/ not synced): skip, not a regression.
   if [[ ! -f "${SCRIPT_DIR}/claude/session-host-context" ]]; then
     _skip "claude/session-host-context absent — claude/ not yet synced to this machine"
     return 0
@@ -63,25 +51,22 @@ function run_session_host_context {
   local stub_dir out got
   stub_dir="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/session-host-context-test.XXXXXX")"
 
-  # A stub scutil emitting a mixed-case hostname, so the lowercasing
-  # assertion has something to bite on.
+  # Mixed-case hostname, so the lowercasing assertion has something to bite on.
   {
     print -r -- '#!/bin/sh'
     print -r -- 'echo "TestHost-Mixed"'
   } > "${stub_dir}/scutil"
   chmod 755 "${stub_dir}/scutil"
 
-  # A stub scutil that fails outright, for the "unknown" fallback.
+  # Failing scutil, for the "unknown" fallback.
   {
     print -r -- '#!/bin/sh'
     print -r -- 'exit 1'
   } > "${stub_dir}/scutil-fail"
   chmod 755 "${stub_dir}/scutil-fail"
 
-  # sw_vers stubs mimic the real no-flag form (three tab-separated
-  # ProductName/ProductVersion/BuildVersion lines) since the hook now makes
-  # one sw_vers call, not two flagged ones: a pre-release (letter-ending
-  # build), a release (digit-ending build), and one that fails.
+  # sw_vers stubs mimic the real no-flag three-line form (the hook makes one
+  # call): pre-release (letter-ending build), release (digit), failing.
   {
     print -r -- '#!/bin/sh'
     print -r -- 'printf "ProductName:\t\tmacOS\nProductVersion:\t\t26.5\nBuildVersion:\t\t26A5378n\n"'
@@ -98,13 +83,13 @@ function run_session_host_context {
   } > "${stub_dir}/sw_vers-fail"
   chmod 755 "${stub_dir}/sw_vers-fail"
 
-  # readlink stub returning a fake versions/ path.
+  # readlink: a fake versions/ path.
   {
     print -r -- '#!/bin/sh'
     print -r -- 'echo "/fake/versions/9.9.9/cli.js"'
   } > "${stub_dir}/readlink-fake"
   chmod 755 "${stub_dir}/readlink-fake"
-  # readlink stub that resolves nothing (empty), for the "neither present" case.
+  # readlink resolving nothing, for the "neither present" case.
   {
     print -r -- '#!/bin/sh'
     print -r -- 'exit 1'
@@ -136,11 +121,8 @@ function run_session_host_context {
   _shc_expect_exit0 '{"source":"fork"}' "fork"
 
   # --- regression: a stripped PATH must not defeat the resume skip -------
-  # Regression, 2026-09-25: the pre-2026-09-25 version read stdin via a bare
-  # `cat`, so a hostile/stripped PATH made `cat` fail, left `input` empty,
-  # and let the resume/fork skip fall through silently (double injection).
-  # Stdin is now read via the `read` builtin, which has no PATH dependency
-  # at all.
+  # The hook reads stdin with the `read` builtin; a bare `cat` would fail
+  # here, leave `input` empty and double-inject.
   out="$(_shc_run '{"source":"resume"}' 'PATH=/nonexistent')"
   if [[ -z "${out}" ]]; then
     _pass "resume under a stripped PATH: empty stdout (PATH-independent stdin read)"
@@ -149,9 +131,8 @@ function run_session_host_context {
   fi
   _shc_expect_exit0 '{"source":"resume"}' "resume under a stripped PATH" 'PATH=/nonexistent'
 
-  # --- regression: HOME and CLAUDE_CODE_EXECPATH both unset must still
-  # exit 0 (fail-open even with set -u; the readlink fallback path
-  # references $HOME) ------------------------------------------------------
+  # --- regression: HOME and CLAUDE_CODE_EXECPATH both unset must still exit 0
+  # (fail-open under set -u; the readlink fallback references $HOME) ---------
   _shc_expect_exit0 '{"source":"startup"}' "HOME and CLAUDE_CODE_EXECPATH both unset" \
     -u HOME -u CLAUDE_CODE_EXECPATH
 
@@ -222,11 +203,8 @@ function run_session_host_context {
     _fail "readlink fallback version not printed, got: ${out}"
   fi
 
-  # --- regression: EXECPATH set but without "versions/" must still fall
-  # back to readlink, not omit the version outright. Regression, 2026-09-25:
-  # a global npm/Homebrew EXECPATH shape (e.g. .../claude-code/cli.js)
-  # previously short-circuited the readlink fallback because it only ran
-  # when EXECPATH was *unset*.
+  # --- regression: EXECPATH without "versions/" (npm/Homebrew shape) must
+  # still fall back to readlink, not only when EXECPATH is unset.
   out="$(_shc_run '{"source":"startup"}' \
     'CLAUDE_CODE_EXECPATH=/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/cli.js' \
     "SESSION_HOST_CONTEXT_READLINK=${stub_dir}/readlink-fake")"
@@ -246,10 +224,7 @@ function run_session_host_context {
     -u CLAUDE_CODE_EXECPATH "SESSION_HOST_CONTEXT_READLINK=${stub_dir}/readlink-fail"
 
   # --- regression: the hosts/<host>.md mechanism is gone, not inert -------
-  # Regression, 2026-09-25: the pre-2026-09-25 version's cat step read and
-  # appended ~/.claude/hosts/<host>.md with no provenance check. Dropped entirely —
-  # a file at that path (even one that would have matched the stubbed
-  # hostname) must never appear in the output.
+  # A ~/.claude/hosts/<host>.md matching the stubbed hostname must not appear.
   local sandbox_home
   sandbox_home="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/session-host-context-home.XXXXXX")"
   mkdir -p "${sandbox_home}/.claude/hosts"
@@ -264,11 +239,8 @@ function run_session_host_context {
     "HOME=${sandbox_home}" "SESSION_HOST_CONTEXT_SCUTIL=${stub_dir}/scutil"
   /bin/rm -rf "${sandbox_home}"
 
-  # --- real common-path output stays at or under the 150-byte target (no
-  # stubs — the actual scutil/sw_vers/EXECPATH this Mac has). Measured with
-  # `wc -c` (bytes), not `${#out}` (zsh counts characters under a UTF-8
-  # locale, and the "·" separator is 2 bytes but 1 character — the two
-  # metrics disagree by a few bytes on this hook's own output). -----------
+  # --- real (unstubbed) output stays within the 150-byte target. Counted with
+  # `wc -c`, not `${#out}`: the "·" separator is 2 bytes but 1 character. ----
   out="$(_shc_run '{"source":"startup"}')"
   got="$(printf '%s' "${out}" | /usr/bin/wc -c | tr -d ' ')"
   if [[ "${out}" == 'Host: '* && "${out}" != *$'\n'* && ${got} -le 150 ]]; then
@@ -277,16 +249,9 @@ function run_session_host_context {
     _fail "real common-path output failed the one-line/150-byte check (${got} bytes): ${out}"
   fi
 
-  # --- worst-case stubbed output stays comfortably under the documented
-  # 10,000-char harness output cap (characters, matching the cap's own
-  # unit — not the byte metric above), with enough margin below the cap
-  # that a shape regression (a duplicated segment, an unbounded hostname)
-  # would trip this case well before the cap itself would: the exact
-  # string is deterministic from the stubs above, so this checks it
-  # directly rather than against a loose bound the real content could
-  # never approach. Not a live trip of the harness's own truncation
-  # behaviour, which needs an actual session — a regression guard on this
-  # hook's own output shape only. ----------------------------------------
+  # --- worst-case stubbed output: exact string, and well under the documented
+  # 10,000-char harness output cap (characters, the cap's unit). A guard on
+  # this hook's output shape only, not a live trip of harness truncation. ----
   local big_out big_len long_host expected_big_out
   long_host="$(/usr/bin/python3 -c "print('x' * 200)")"
   {
@@ -306,11 +271,10 @@ function run_session_host_context {
     _fail "worst-case stubbed output changed shape (${big_len} chars): ${big_out}"
   fi
 
-  # --- regression: a newline embedded in a probed value must not turn the
-  # one-line output contract into two lines. Not reachable today
-  # (LocalHostName is RFC-1034-restricted; $CLAUDE_CODE_EXECPATH is this
-  # installation's own path) but the hook strips at the first newline in
-  # both, so this guards that behaviour directly. --------------------------
+  # --- regression: a newline in a probed value must not make the one-line
+  # output two lines. Not reachable today (LocalHostName is RFC-1034-restricted;
+  # EXECPATH is this install's own path); the hook strips at the first newline
+  # in both. ----------------------------------------------------------------
   {
     print -r -- '#!/bin/sh'
     print -r -- 'echo "firstline"'

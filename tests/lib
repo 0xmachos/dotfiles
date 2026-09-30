@@ -1,9 +1,8 @@
 #!/bin/zsh
 # dotfiles/tests/lib
 #
-# Shared helpers for dotfiles test suites. Sourced by ./test and each
-# tests/<suite> fragment. Owns colour constants, pass/fail/skip counters,
-# and common expectation helpers.
+# Shared helpers, sourced by ./test and each tests/<suite>: colour constants,
+# pass/fail/skip counters, expectation helpers.
 #
 # ShellCheck: lint with `shellcheck --shell=bash tests/lib`.
 # This file is sourced, not executed — chmod 644.
@@ -33,17 +32,16 @@ function _skip {
   (( skip_count += 1 ))
 }
 
-# Each header carries the wall-clock time the suite reached it. In the
-# parallel run that is when the suite started in its worker, not when the
-# parent replayed the line, which is the useful number: it shows where the
-# queue stalled and lines up with `/usr/bin/log show` timestamps.
+# Header carries the wall-clock time the suite reached it; in the parallel run
+# that is when it started in its worker, not when the parent replayed the line,
+# so it shows where the queue stalled and matches `/usr/bin/log show` times.
 function _section {
   echo ""
   echo "$(strftime '%H:%M:%S' "${EPOCHSECONDS}") ${BOLD}── $1 ──${RESET}"
 }
 
-# These hooks emit either nothing or one deny object. An allow response,
-# malformed JSON, or unrelated output must never satisfy a deny assertion.
+# Hooks emit nothing (PASS) or one deny object (DENY); an allow response,
+# malformed JSON or unrelated output is INVALID, never a deny.
 function _hook_verdict {
   local out="$1"
   if [[ -z "${out}" ]]; then
@@ -56,18 +54,13 @@ function _hook_verdict {
   fi
 }
 
-# Run "$@" detached from any controlling terminal, regardless of whether the
-# CALLING process (this test suite) has one or not (2026-09-25, added for the
-# git-hook terminal-gated bypass variables: PII_HOOK_BYPASS, MSG_POLICY_SKIP,
-# GIT_SIGN_SKIP). A case proving one of those is REFUSED without a terminal
-# must be deterministic whether the suite itself runs from an agent's tool
-# call (no ctty already) or a human's interactive `./test` at a real
-# terminal (a ctty the hook would otherwise inherit) — the latter is the
-# gate's primary real-world path, so relying on the suite's own ambient tty
-# state is not enough. POSIX::setsid() moves the perl process into a new
-# session with no controlling terminal; it fails only when the CALLING
-# process is already a process-group leader, which a plain command
-# substitution or `( … )` subshell child never is. perl is stock on macOS.
+# Run "$@" detached from any controlling terminal, whether or not the caller
+# has one (2026-09-25), so cases proving the terminal-gated bypass variables
+# (PII_HOOK_BYPASS, MSG_POLICY_SKIP, GIT_SIGN_SKIP) are REFUSED give the same
+# result from an agent's tool call and an interactive `./test`.
+# POSIX::setsid() (stock perl) starts a session with no controlling terminal;
+# it fails only for a process-group leader, which a command substitution or
+# `( … )` subshell child never is.
 function _run_no_tty {
   /usr/bin/perl -MPOSIX -e 'POSIX::setsid() != -1 or die "setsid: $!"; exec @ARGV or die "exec: $!: $ARGV[0]"' -- "$@"
 }

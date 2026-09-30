@@ -3,20 +3,19 @@
 #
 # Behavioural test for claude/container-tmp-hook — the PreToolUse hook that
 # denies Apple `container` builds/mounts rooted in tmp paths (home-scoped file
-# sharing silently shares them as empty — see internals/apple-container.md).
-# Feeds commands (plus a cwd) to the hook as stdin JSON and asserts the
-# verdict: DENY for tmp-rooted build contexts/cwds and -v/--mount sources,
-# PASS for $HOME paths, guest paths, docker commands, and lookalikes.
+# sharing silently shares them as empty).
+# Feeds commands plus a cwd as stdin JSON; asserts DENY for tmp-rooted build
+# contexts/cwds and -v/--mount sources, PASS for $HOME paths, guest paths,
+# docker commands and lookalikes.
 #
-# Run: ./test container-tmp    (or ./test for the full suite)
-#
+# Run: ./test container-tmp
 # ShellCheck: lint with `shellcheck --shell=bash tests/container-tmp`.
 # This file is sourced, not executed — chmod 644.
 #
 # shellcheck source=tests/lib
 
 function _container_tmp_run {
-  # Echo the hook's stdout for Bash command $1 with cwd $2 (default $HOME).
+  # $1 = command, $2 = cwd (default $HOME).
   jq -n --arg c "$1" --arg d "${2:-${HOME}}" \
     '{tool_name:"Bash", tool_input:{command:$c}, cwd:$d}' \
     | /bin/zsh "${SCRIPT_DIR}/claude/container-tmp-hook"
@@ -36,8 +35,7 @@ function _container_tmp_expect {
 function run_container_tmp {
   _section "container tmp-path hook"
 
-  # claude/ is gitignored and synced out of band — absent hook means the sync
-  # hasn't reached this machine, not a regression. Skip, don't die.
+  # claude/ is gitignored: an absent hook is a skip.
   if [[ ! -f "${SCRIPT_DIR}/claude/container-tmp-hook" ]]; then
     _skip "claude/container-tmp-hook absent — claude/ not yet synced to this machine"
     return 0
@@ -48,16 +46,16 @@ function run_container_tmp {
     return
   fi
 
-  # Build with a tmp-rooted context argument → DENY.
+  # Tmp-rooted build context → DENY.
   _container_tmp_expect DENY 'container build -t x /tmp/ctx'
   _container_tmp_expect DENY 'container build -t x /private/tmp/claude-501/s/scratchpad'
   _container_tmp_expect DENY 'container build -f /var/folders/ab/x/Dockerfile .'
-  # Relative/implicit context resolved against a tmp cwd → DENY.
+  # Implicit context resolved against a tmp cwd → DENY.
   _container_tmp_expect DENY 'container build -t x .' /private/tmp/claude-501/s \
     'container build . (cwd in scratchpad)'
   _container_tmp_expect DENY 'container build -t x .' /tmp \
     'container build . (cwd /tmp)'
-  # cd into tmp inside a compound command → DENY (path is in the string).
+  # cd into tmp inside a compound command → DENY.
   _container_tmp_expect DENY 'cd /tmp/ctx && container build .'
   # Tmp-rooted bind-mount sources → DENY.
   _container_tmp_expect DENY 'container run -v /tmp/data:/data img'
@@ -65,7 +63,7 @@ function run_container_tmp {
   _container_tmp_expect DENY 'container run --mount type=bind,source=/var/folders/ab/x,target=/y img'
   _container_tmp_expect DENY 'container create -v /tmp/d:/d img'
 
-  # $HOME paths, guest paths, other runtimes, lookalikes → PASS.
+  # $HOME paths, guest paths, docker, lookalikes → PASS.
   _container_tmp_expect PASS 'container build -t x .' "${HOME}/Documents/Projects/x" \
     "container build . (cwd under \$HOME)"
   _container_tmp_expect PASS "container build -t x ${HOME}/proj/ctx"
@@ -80,7 +78,7 @@ function run_container_tmp {
   _container_tmp_expect PASS 'CONTAINER_TMP_SKIP=1 container build -t x /tmp/ctx' '' \
     'CONTAINER_TMP_SKIP=1 override'
 
-  # The deny reason must name the fix (move under $HOME).
+  # The deny reason names the fix (move under $HOME).
   if [[ "$(_container_tmp_run 'container build /tmp/ctx')" == *HOME* ]]; then
     _pass "deny reason names \$HOME fix"
   else
