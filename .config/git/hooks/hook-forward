@@ -23,8 +23,7 @@
 #
 # Recursion guard: a forwarded hook that dispatches back into the global
 # hooks (e.g. `git hook run <name>`) finds its name in GIT_GLOBAL_HOOKS_SEEN
-# and exits 0. Trade-off: a forwarded hook that runs the same git operation
-# in ANOTHER repo skips the global layer there for that nested operation.
+# and exits 0.
 
 set -euo pipefail
 
