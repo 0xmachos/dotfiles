@@ -51,7 +51,7 @@ EXIT_REPOS_SKIPPED = 2
 
 HOME = Path(os.environ.get("AGENT_RESET_HOME") or Path.home()).resolve()
 CONFIG_DIR = HOME / ".config" / "agent-reset"
-BACKUP_ROOT = HOME / "Backups" / "claude-resets"
+BACKUP_ROOT = HOME / "Library" / "Backups" / "claude-resets"
 
 CLAUDE_DIR = HOME / ".claude"
 CODEX_DIR = HOME / ".codex"
@@ -468,9 +468,10 @@ def cmd_backup(args):
     stamp = utc_stamp()
     bdir = BACKUP_ROOT / stamp
     # Tighten modes only on directories this script creates — a pre-existing
-    # ~/Backups may serve other tools with deliberate broader modes.
+    # ~/Library/Backups may serve other tools with deliberate broader modes.
+    # parents=True covers a test HOME with no Library/ at all.
     if not BACKUP_ROOT.parent.exists():
-        BACKUP_ROOT.parent.mkdir(mode=0o700)
+        BACKUP_ROOT.parent.mkdir(mode=0o700, parents=True)
     if not BACKUP_ROOT.exists():
         BACKUP_ROOT.mkdir(mode=0o700)
     os.chmod(str(BACKUP_ROOT), 0o700)
@@ -1334,9 +1335,9 @@ def cmd_offsite(args):
     if not (bdir / "MANIFEST.json").is_file():
         fail("not a backup dir: %s" % bdir)
     remote = offsite_remote()
-    dest = "%s:Backups/claude-resets/" % remote
+    dest = "%s:Library/Backups/claude-resets/" % remote
     # macOS ships an rsync without --mkpath: pre-create the remote dir.
-    subprocess.run(["ssh", remote, "mkdir", "-p", "Backups/claude-resets"],
+    subprocess.run(["ssh", remote, "mkdir", "-p", "Library/Backups/claude-resets"],
                    check=False)
     log("rsync %s -> %s" % (bdir, dest))
     # Stock macOS rsync (2.6.9/openrsync) has no --info=progress2; --partial
@@ -1348,7 +1349,7 @@ def cmd_offsite(args):
         manifest = json.loads((bdir / "MANIFEST.json").read_text())
         biggest = max(manifest["scopes"].values(),
                       key=lambda s: (bdir / s["archive"]).stat().st_size)
-        rel = "Backups/claude-resets/%s/%s" % (bdir.name, biggest["archive"])
+        rel = "Library/Backups/claude-resets/%s/%s" % (bdir.name, biggest["archive"])
         # shasum on macOS remotes, sha256sum on Linux remotes.
         check_cmd = ("shasum -a 256 %s 2>/dev/null || sha256sum %s"
                      % (shlex.quote(rel), shlex.quote(rel)))
