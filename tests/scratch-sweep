@@ -2,11 +2,11 @@
 # dotfiles/tests/scratch-sweep
 #
 # Behavioural test for bin/scratch-sweep, the unattended job that deletes idle
-# scratch under ~/Library/Caches/claude-tmp. It deletes recursively, so the
+# scratch under ~/Library/Caches/tint. It deletes recursively, so the
 # suite pins what must SURVIVE: recent entries, an old entry holding one recent
 # file, symlink targets, and everything under a refused root.
 #
-# Hermetic: each case builds <tmp>/Caches/claude-tmp, sources the script in a
+# Hermetic: each case builds <tmp>/Caches/tint, sources the script in a
 # child zsh (`main` does not run when sourced) and calls _sweep_root_dir on it.
 # The real main runs only with HOME pointed at a fixture.
 #
@@ -58,11 +58,11 @@ function _sweep_t_expect_kept {
 }
 
 function _sweep_t_fixture {
-  # Echo a fresh fixture directory (physical path) holding Caches/claude-tmp.
+  # Echo a fresh fixture directory (physical path) holding Caches/tint.
   local fx
   fx="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/scratch-sweep-test.XXXXXX")" || return 1
   fx="${fx:A}"
-  /bin/mkdir -p "${fx}/Caches/claude-tmp"
+  /bin/mkdir -p "${fx}/Caches/tint"
   printf '%s' "${fx}"
 }
 
@@ -79,7 +79,7 @@ function run_scratch_sweep {
   local -i stray=0 cwds=0
 
   # --- Idle and recent entries ----------------------------------------------
-  fx="$(_sweep_t_fixture)"; root="${fx}/Caches/claude-tmp"
+  fx="$(_sweep_t_fixture)"; root="${fx}/Caches/tint"
   /bin/mkdir -p "${root}/idle-dir/sub" "${root}/recent-dir/sub"
   : > "${root}/idle-dir/sub/f"
   : > "${root}/recent-dir/sub/f"
@@ -109,7 +109,7 @@ function run_scratch_sweep {
   /bin/rm -rf "${fx}"
 
   # --- The 14-day boundary ---------------------------------------------------
-  fx="$(_sweep_t_fixture)"; root="${fx}/Caches/claude-tmp"
+  fx="$(_sweep_t_fixture)"; root="${fx}/Caches/tint"
   d13="$(/bin/date -v-13d '+%Y%m%d%H%M')"
   d15="$(/bin/date -v-15d '+%Y%m%d%H%M')"
   /bin/mkdir -p "${root}/d13" "${root}/d15"
@@ -121,7 +121,7 @@ function run_scratch_sweep {
   /bin/rm -rf "${fx}"
 
   # --- Symlinks --------------------------------------------------------------
-  fx="$(_sweep_t_fixture)"; root="${fx}/Caches/claude-tmp"
+  fx="$(_sweep_t_fixture)"; root="${fx}/Caches/tint"
   outside="${fx}/outside"
   /bin/mkdir -p "${outside}/keep"
   : > "${outside}/keep/precious"
@@ -146,7 +146,7 @@ function run_scratch_sweep {
   /bin/rm -rf "${fx}"
 
   # --- Awkward names ---------------------------------------------------------
-  fx="$(_sweep_t_fixture)"; root="${fx}/Caches/claude-tmp"
+  fx="$(_sweep_t_fixture)"; root="${fx}/Caches/tint"
   /bin/mkdir -p -- "${root}/has space" "${root}/nl"$'\n'"name" "${root}/-rf" \
     "${root}/--" "${root}/.hidden" "${root}/'quote" "${root}/glob*[x]" \
     "${root}/recent space" "${root}/.recent-hidden"
@@ -176,17 +176,17 @@ function run_scratch_sweep {
   # --- Roots the script must refuse -----------------------------------------
   # Each fixture holds an idle sentinel that must survive the refusal.
   fx="$(_sweep_t_fixture)"
-  /bin/mkdir -p "${fx}/Caches/other" "${fx}/Other/claude-tmp" "${fx}/real/Caches/claude-tmp" \
-    "${fx}/Caches/x" "${fx}/Caches/claude-tmp/keepdir"
-  for name in Caches/other Other/claude-tmp real/Caches/claude-tmp; do
+  /bin/mkdir -p "${fx}/Caches/other" "${fx}/Other/tint" "${fx}/real/Caches/tint" \
+    "${fx}/Caches/x" "${fx}/Caches/tint/keepdir"
+  for name in Caches/other Other/tint real/Caches/tint; do
     /bin/mkdir -p "${fx}/${name}/sentinel"
     _sweep_t_age "${fx}/${name}/sentinel"
   done
   /bin/mkdir -p "${fx}/sym/Caches"
-  /bin/ln -s "${fx}/real/Caches/claude-tmp" "${fx}/sym/Caches/claude-tmp"
+  /bin/ln -s "${fx}/real/Caches/tint" "${fx}/sym/Caches/tint"
   : > "${fx}/filecase"
-  /bin/mkdir -p "${fx}/Caches/claude-tmp/sentinel"
-  _sweep_t_age "${fx}/Caches/claude-tmp/sentinel"
+  /bin/mkdir -p "${fx}/Caches/tint/sentinel"
+  _sweep_t_age "${fx}/Caches/tint/sentinel"
 
   _sweep_t_run "${fx}/Caches/other"
   if (( SWEEP_T_RC == 2 )) && [[ "${SWEEP_T_OUT}" == *refusing* ]] && _sweep_t_exists "${fx}/Caches/other/sentinel"; then
@@ -194,33 +194,33 @@ function run_scratch_sweep {
   else
     _fail "wrong basename: rc=${SWEEP_T_RC} out=${SWEEP_T_OUT}"
   fi
-  _sweep_t_run "${fx}/Other/claude-tmp"
-  if (( SWEEP_T_RC == 2 )) && _sweep_t_exists "${fx}/Other/claude-tmp/sentinel"; then
+  _sweep_t_run "${fx}/Other/tint"
+  if (( SWEEP_T_RC == 2 )) && _sweep_t_exists "${fx}/Other/tint/sentinel"; then
     _pass "refuses a root whose parent is not Caches"
   else
     _fail "wrong parent: rc=${SWEEP_T_RC} out=${SWEEP_T_OUT}"
   fi
-  _sweep_t_run "${fx}/sym/Caches/claude-tmp"
-  if (( SWEEP_T_RC == 2 )) && _sweep_t_exists "${fx}/real/Caches/claude-tmp/sentinel"; then
+  _sweep_t_run "${fx}/sym/Caches/tint"
+  if (( SWEEP_T_RC == 2 )) && _sweep_t_exists "${fx}/real/Caches/tint/sentinel"; then
     _pass "refuses a root that is a symlink"
   else
     _fail "symlink root: rc=${SWEEP_T_RC} out=${SWEEP_T_OUT}"
   fi
   /bin/mkdir -p "${fx}/filecase-dir/Caches"
-  : > "${fx}/filecase-dir/Caches/claude-tmp"
-  _sweep_t_run "${fx}/filecase-dir/Caches/claude-tmp"
+  : > "${fx}/filecase-dir/Caches/tint"
+  _sweep_t_run "${fx}/filecase-dir/Caches/tint"
   if (( SWEEP_T_RC == 2 )) && [[ "${SWEEP_T_OUT}" == *"not a directory"* ]]; then
     _pass "refuses a root that is a file"
   else
     _fail "file root: rc=${SWEEP_T_RC} out=${SWEEP_T_OUT}"
   fi
-  _sweep_t_run "${fx}/Caches/x/../claude-tmp"
-  if (( SWEEP_T_RC == 2 )) && _sweep_t_exists "${fx}/Caches/claude-tmp/sentinel"; then
+  _sweep_t_run "${fx}/Caches/x/../tint"
+  if (( SWEEP_T_RC == 2 )) && _sweep_t_exists "${fx}/Caches/tint/sentinel"; then
     _pass "refuses a root with a .. component"
   else
     _fail "dot-dot root: rc=${SWEEP_T_RC} out=${SWEEP_T_OUT}"
   fi
-  _sweep_t_run "Caches/claude-tmp"
+  _sweep_t_run "Caches/tint"
   if (( SWEEP_T_RC == 2 )); then
     _pass "refuses a relative root"
   else
@@ -238,8 +238,8 @@ function run_scratch_sweep {
   else
     _fail "slash root: rc=${SWEEP_T_RC} out=${SWEEP_T_OUT}"
   fi
-  SWEEP_T_OWNER=$(( UID + 1 )) _sweep_t_run "${fx}/Caches/claude-tmp"
-  if (( SWEEP_T_RC == 2 )) && [[ "${SWEEP_T_OUT}" == *"not owned"* ]] && _sweep_t_exists "${fx}/Caches/claude-tmp/sentinel"; then
+  SWEEP_T_OWNER=$(( UID + 1 )) _sweep_t_run "${fx}/Caches/tint"
+  if (( SWEEP_T_RC == 2 )) && [[ "${SWEEP_T_OUT}" == *"not owned"* ]] && _sweep_t_exists "${fx}/Caches/tint/sentinel"; then
     _pass "refuses a root owned by another user"
   else
     _fail "foreign owner: rc=${SWEEP_T_RC} out=${SWEEP_T_OUT}"
@@ -248,9 +248,9 @@ function run_scratch_sweep {
 
   # --- Missing root ----------------------------------------------------------
   fx="$(_sweep_t_fixture)"
-  /bin/rmdir "${fx}/Caches/claude-tmp"
-  _sweep_t_run "${fx}/Caches/claude-tmp"
-  if (( SWEEP_T_RC == 0 )) && [[ ! -e "${fx}/Caches/claude-tmp" ]]; then
+  /bin/rmdir "${fx}/Caches/tint"
+  _sweep_t_run "${fx}/Caches/tint"
+  if (( SWEEP_T_RC == 0 )) && [[ ! -e "${fx}/Caches/tint" ]]; then
     _pass "a missing root exits 0 and creates nothing"
   else
     _fail "missing root: rc=${SWEEP_T_RC} out=${SWEEP_T_OUT}"
@@ -258,7 +258,7 @@ function run_scratch_sweep {
   /bin/rm -rf "${fx}"
 
   # --- Dry run ---------------------------------------------------------------
-  fx="$(_sweep_t_fixture)"; root="${fx}/Caches/claude-tmp"
+  fx="$(_sweep_t_fixture)"; root="${fx}/Caches/tint"
   /bin/mkdir -p "${root}/idle" "${root}/recent"
   _sweep_t_age "${root}/idle"
   /bin/ln -s "${fx}" "${root}/idle-link"
@@ -275,7 +275,7 @@ function run_scratch_sweep {
   /bin/rm -rf "${fx}"
 
   # --- Lock ------------------------------------------------------------------
-  fx="$(_sweep_t_fixture)"; root="${fx}/Caches/claude-tmp"
+  fx="$(_sweep_t_fixture)"; root="${fx}/Caches/tint"
   /bin/mkdir -p "${root}/idle"
   _sweep_t_age "${root}/idle"
   /bin/mkdir "${root}/.sweep.lock"
@@ -292,7 +292,7 @@ function run_scratch_sweep {
   _sweep_t_expect_gone "${root}/.sweep.lock" "the replaced lock is released"
   /bin/rm -rf "${fx}"
 
-  fx="$(_sweep_t_fixture)"; root="${fx}/Caches/claude-tmp"
+  fx="$(_sweep_t_fixture)"; root="${fx}/Caches/tint"
   /bin/mkdir -p "${root}/idle"
   _sweep_t_age "${root}/idle"
   : > "${root}/.sweep.lock"
@@ -305,7 +305,7 @@ function run_scratch_sweep {
   /bin/rm -rf "${fx}"
 
   # A lock that cannot be taken is not a lock held by another sweep.
-  fx="$(_sweep_t_fixture)"; root="${fx}/Caches/claude-tmp"
+  fx="$(_sweep_t_fixture)"; root="${fx}/Caches/tint"
   /bin/mkdir -p "${root}/idle"
   _sweep_t_age "${root}/idle"
   /bin/chmod 555 "${root}"
@@ -319,7 +319,7 @@ function run_scratch_sweep {
   fi
   /bin/rm -rf "${fx}"
 
-  fx="$(_sweep_t_fixture)"; root="${fx}/Caches/claude-tmp"
+  fx="$(_sweep_t_fixture)"; root="${fx}/Caches/tint"
   /bin/mkdir -p "${root}/idle" "${root}/.sweep.lock"
   : > "${root}/.sweep.lock/junk"
   _sweep_t_age "${root}/idle"
@@ -344,7 +344,7 @@ function run_scratch_sweep {
   fi
   /bin/rm -rf "${fx}"
 
-  fx="$(_sweep_t_fixture)"; root="${fx}/Caches/claude-tmp"
+  fx="$(_sweep_t_fixture)"; root="${fx}/Caches/tint"
   /bin/mkdir -p "${root}/idle" "${root}/.sweep.lock"
   _sweep_t_age "${root}/idle"
   _sweep_t_age "${root}/.sweep.lock"
@@ -362,7 +362,7 @@ function run_scratch_sweep {
 
   # --- Errors do not stop the other entries ---------------------------------
   if (( EUID != 0 )); then
-    fx="$(_sweep_t_fixture)"; root="${fx}/Caches/claude-tmp"
+    fx="$(_sweep_t_fixture)"; root="${fx}/Caches/tint"
     /bin/mkdir -p "${root}/a-unreadable/sub" "${root}/b-idle"
     _sweep_t_age "${root}/a-unreadable"
     _sweep_t_age "${root}/b-idle"
@@ -380,7 +380,7 @@ function run_scratch_sweep {
   fi
 
   # --- The per-uid claude-<digits> directory is never swept ------------------
-  fx="$(_sweep_t_fixture)"; root="${fx}/Caches/claude-tmp"
+  fx="$(_sweep_t_fixture)"; root="${fx}/Caches/tint"
   /bin/mkdir -p "${root}/claude-501/tasks" "${root}/claude-501x" "${root}/claude-" \
     "${root}/xclaude-501" "${root}/claude-1"$'\n'"x" "${root}/x"$'\n'"claude-1" \
     "${root}/claude-Y" "${root}/Claude-4242"
@@ -410,8 +410,30 @@ function run_scratch_sweep {
   fi
   /bin/rm -rf "${fx}"
 
+  # --- cc-socks and _tools are never swept -----------------------------------
+  fx="$(_sweep_t_fixture)"; root="${fx}/Caches/tint"
+  /bin/mkdir -p "${root}/cc-socks" "${root}/_tools/venv/bin" "${root}/cc-socksx" \
+    "${root}/_toolsx" "${root}/x_tools"
+  : > "${root}/cc-socks/1.sock"
+  : > "${root}/_tools/venv/bin/python"
+  for name in cc-socks _tools cc-socksx _toolsx x_tools; do
+    _sweep_t_age "${root}/${name}"
+  done
+  _sweep_t_run "${root}"
+  _sweep_t_expect_kept "${root}/cc-socks/1.sock" "an idle cc-socks directory is exempt"
+  _sweep_t_expect_kept "${root}/_tools/venv/bin/python" "an idle _tools directory is exempt"
+  _sweep_t_expect_gone "${root}/cc-socksx" "cc-socks with a suffix is not exempt"
+  _sweep_t_expect_gone "${root}/_toolsx" "_tools with a suffix is not exempt"
+  _sweep_t_expect_gone "${root}/x_tools" "a prefix before _tools is not exempt"
+  if [[ "${SWEEP_T_OUT}" == *"exempt=2 "* ]]; then
+    _pass "the summary counts cc-socks and _tools as exempt"
+  else
+    _fail "exempt count unexpected: ${SWEEP_T_OUT}"
+  fi
+  /bin/rm -rf "${fx}"
+
   # --- Lock owner and age ----------------------------------------------------
-  fx="$(_sweep_t_fixture)"; root="${fx}/Caches/claude-tmp"
+  fx="$(_sweep_t_fixture)"; root="${fx}/Caches/tint"
   /bin/mkdir -p "${root}/idle" "${root}/.sweep.lock"
   _sweep_t_age "${root}/idle"
   out="$(/bin/sh -c 'echo $$')"
@@ -420,7 +442,7 @@ function run_scratch_sweep {
   _sweep_t_expect_gone "${root}/idle" "a fresh lock whose pid is dead is replaced"
   _sweep_t_expect_gone "${root}/.sweep.lock" "the replaced lock, pid file included, is released"
   /bin/rm -rf "${fx}"
-  fx="$(_sweep_t_fixture)"; root="${fx}/Caches/claude-tmp"
+  fx="$(_sweep_t_fixture)"; root="${fx}/Caches/tint"
   /bin/mkdir -p "${root}/idle" "${root}/.sweep.lock"
   _sweep_t_age "${root}/idle"
   print -r -- "$$" > "${root}/.sweep.lock/pid"
@@ -434,7 +456,7 @@ function run_scratch_sweep {
   _sweep_t_run "${root}"
   _sweep_t_expect_gone "${root}/idle" "a lock past the age limit is replaced even with a live pid"
   /bin/rm -rf "${fx}"
-  fx="$(_sweep_t_fixture)"; root="${fx}/Caches/claude-tmp"
+  fx="$(_sweep_t_fixture)"; root="${fx}/Caches/tint"
   /bin/mkdir -p "${root}/idle" "${root}/.sweep.lock"
   _sweep_t_age "${root}/idle"
   print -r -- "not-a-pid" > "${root}/.sweep.lock/pid"
@@ -447,7 +469,7 @@ function run_scratch_sweep {
   /bin/rm -rf "${fx}"
 
   # --- An entry that becomes active is re-checked before the delete ---------
-  fx="$(_sweep_t_fixture)"; root="${fx}/Caches/claude-tmp"
+  fx="$(_sweep_t_fixture)"; root="${fx}/Caches/tint"
   /bin/mkdir -p "${root}/busy" "${root}/quiet"
   _sweep_t_age "${root}/busy"
   _sweep_t_age "${root}/quiet"
@@ -464,7 +486,7 @@ function run_scratch_sweep {
   /bin/rm -rf "${fx}"
 
   # --- A root swapped for a symlink after the checks is not followed --------
-  fx="$(_sweep_t_fixture)"; root="${fx}/Caches/claude-tmp"
+  fx="$(_sweep_t_fixture)"; root="${fx}/Caches/tint"
   /bin/mkdir -p "${fx}/outside/victim" "${fx}/caller"
   : > "${fx}/outside/victim/f"
   : > "${fx}/caller/victim2"
@@ -490,7 +512,7 @@ function run_scratch_sweep {
   /bin/rm -rf "${fx}"
 
   # --- The working directory is restored, and output is only log lines ------
-  fx="$(_sweep_t_fixture)"; root="${fx}/Caches/claude-tmp"
+  fx="$(_sweep_t_fixture)"; root="${fx}/Caches/tint"
   /bin/mkdir -p "${root}/idle1" "${root}/idle2" "${root}/idle3" "${root}/recent1" "${root}/recent2" \
     "${root}/claude-5" "${fx}/here"
   _sweep_t_age "${root}/idle1"; _sweep_t_age "${root}/idle2"; _sweep_t_age "${root}/idle3"
@@ -521,13 +543,13 @@ function run_scratch_sweep {
 
   # --- The real main: hardcoded root under HOME -----------------------------
   fx="$(_sweep_t_fixture)"
-  root="${fx}/Library/Caches/claude-tmp"
-  /bin/mkdir -p "${root}/idle" "${root}/recent" "${fx}/Caches/claude-tmp/elsewhere"
+  root="${fx}/Library/Caches/tint"
+  /bin/mkdir -p "${root}/idle" "${root}/recent" "${fx}/Caches/tint/elsewhere"
   _sweep_t_age "${root}/idle"
-  _sweep_t_age "${fx}/Caches/claude-tmp/elsewhere"
+  _sweep_t_age "${fx}/Caches/tint/elsewhere"
   if out="$(HOME="${fx}" /bin/zsh "${script}" --dry-run 2>&1)"; then rc=0; else rc=$?; fi
   if (( rc == 0 )) && [[ "${out}" == *"would remove"*idle* ]] && _sweep_t_exists "${root}/idle"; then
-    _pass "main --dry-run reads \${HOME}/Library/Caches/claude-tmp and deletes nothing"
+    _pass "main --dry-run reads \${HOME}/Library/Caches/tint and deletes nothing"
   else
     _fail "main --dry-run: rc=${rc} out=${out}"
   fi
@@ -535,11 +557,11 @@ function run_scratch_sweep {
   if (( rc == 0 )); then _pass "main exits 0"; else _fail "main exit ${rc}: ${out}"; fi
   _sweep_t_expect_gone "${root}/idle" "main removes an idle entry under the hardcoded root"
   _sweep_t_expect_kept "${root}/recent" "main keeps a recent entry"
-  _sweep_t_expect_kept "${fx}/Caches/claude-tmp/elsewhere" "main does not touch any other Caches/claude-tmp"
+  _sweep_t_expect_kept "${fx}/Caches/tint/elsewhere" "main does not touch any other Caches/tint"
   if out="$(HOME="${fx}" /bin/zsh "${script}" --bogus 2>&1)"; then rc=0; else rc=$?; fi
   if (( rc == 2 )) && [[ "${out}" == *usage* ]]; then _pass "main rejects an unknown argument"; else _fail "bogus argument: rc=${rc} out=${out}"; fi
-  if out="$(HOME="${fx}" /bin/zsh "${script}" "${fx}/Caches/claude-tmp" 2>&1)"; then rc=0; else rc=$?; fi
-  if (( rc == 2 )) && _sweep_t_exists "${fx}/Caches/claude-tmp/elsewhere"; then
+  if out="$(HOME="${fx}" /bin/zsh "${script}" "${fx}/Caches/tint" 2>&1)"; then rc=0; else rc=$?; fi
+  if (( rc == 2 )) && _sweep_t_exists "${fx}/Caches/tint/elsewhere"; then
     _pass "main takes no root argument"
   else
     _fail "root argument accepted: rc=${rc} out=${out}"
@@ -548,8 +570,8 @@ function run_scratch_sweep {
   if (( rc == 2 )); then _pass "main refuses a relative HOME"; else _fail "relative HOME: rc=${rc} out=${out}"; fi
   if out="$(HOME="" /bin/zsh "${script}" 2>&1)"; then rc=0; else rc=$?; fi
   if (( rc == 2 )); then _pass "main refuses an empty HOME"; else _fail "empty HOME: rc=${rc} out=${out}"; fi
-  if out="$(HOME="${fx}" SWEEP_ROOT="${fx}/Caches/claude-tmp" CLAUDE_TMP_ROOT="${fx}/Caches/claude-tmp" /bin/zsh "${script}" 2>&1)"; then rc=0; else rc=$?; fi
-  if (( rc == 0 )) && _sweep_t_exists "${fx}/Caches/claude-tmp/elsewhere"; then
+  if out="$(HOME="${fx}" SWEEP_ROOT="${fx}/Caches/tint" CLAUDE_TMP_ROOT="${fx}/Caches/tint" /bin/zsh "${script}" 2>&1)"; then rc=0; else rc=$?; fi
+  if (( rc == 0 )) && _sweep_t_exists "${fx}/Caches/tint/elsewhere"; then
     _pass "root-like environment variables change nothing"
   else
     _fail "environment override: rc=${rc} out=${out}"
@@ -565,7 +587,7 @@ function run_scratch_sweep {
   # Startup-file options must not change what is swept: zsh reads
   # $ZDOTDIR/.zshenv for every invocation, scripts included.
   fx="$(_sweep_t_fixture)"
-  root="${fx}/Library/Caches/claude-tmp"
+  root="${fx}/Library/Caches/tint"
   /bin/mkdir -p "${root}/idle" "${root}/recent" "${fx}/zdotdir"
   _sweep_t_age "${root}/idle"
   print -r -- 'setopt nobareglobqual ksharrays shwordsplit nomatch errexit' > "${fx}/zdotdir/.zshenv"

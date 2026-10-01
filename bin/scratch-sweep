@@ -1,7 +1,7 @@
 #!/bin/zsh
 # dotfiles/bin/scratch-sweep
 #
-# Deletes idle scratch under ~/Library/Caches/claude-tmp. Run daily by the
+# Deletes idle scratch under ~/Library/Caches/tint. Run daily by the
 # com.0xmachos.scratch-sweep LaunchAgent; safe to run by hand.
 #
 #   scratch-sweep [--dry-run]
@@ -15,13 +15,15 @@
 # is kept. Bare `-mtime -14` agreed on this macOS (2026-09-29) but leaves the
 # rounding to find.
 # Never swept: claude-<digits> (the per-uid directory of the tool owning the
-# root; it refuses a symlink or another owner) and .sweep.lock.
+# root; it refuses a symlink or another owner), cc-socks (that tool's live
+# session sockets, which no write refreshes), _tools (shared venvs and helpers,
+# used without being modified; pruned by hand) and .sweep.lock.
 #
 # Safety (unattended recursive delete):
-#   - Root hardcoded to ${HOME}/Library/Caches/claude-tmp; only HOME moves it,
+#   - Root hardcoded to ${HOME}/Library/Caches/tint; only HOME moves it,
 #     and an unset, empty or relative HOME is refused.
 #   - _sweep_root_dir (the tests drive it with a fixture root) refuses a root
-#     that is not absolute, does not end in Caches/claude-tmp, has a . or ..
+#     that is not absolute, does not end in Caches/tint, has a . or ..
 #     component, is a symlink or not a directory, or is not owned by $UID (a
 #     sudo run has a different HOME and must not pass a root-owned tree).
 #   - `cd -P` into the root, then $PWD must equal the validated physical path
@@ -62,7 +64,7 @@ umask 077
 readonly SWEEP_IDLE_SECONDS=1209600   # 14 days
 readonly SWEEP_LOCK_NAME=.sweep.lock
 readonly SWEEP_LOCK_STALE_MIN=60
-readonly SWEEP_EXEMPT_RE='^claude-[0-9]+$'
+readonly SWEEP_EXEMPT_RE='^(claude-[0-9]+|cc-socks|_tools)$'
 
 typeset -ga SWEEP_NAMES=()
 typeset -g SWEEP_PHYS=''
@@ -99,8 +101,8 @@ function _sweep_check_root {
   done
   if [[ "${root}" != /* ]]; then
     reason='not an absolute path'
-  elif [[ "${root:t}" != claude-tmp || "${root:h:t}" != Caches ]]; then
-    reason='not a Caches/claude-tmp directory'
+  elif [[ "${root:t}" != tint || "${root:h:t}" != Caches ]]; then
+    reason='not a Caches/tint directory'
   elif [[ "${root}/" == */../* || "${root}/" == */./* ]]; then
     reason='contains a . or .. component'
   elif [[ -L "${root}" ]]; then
@@ -383,7 +385,7 @@ function main {
     print -u2 -r -- "scratch-sweep: HOME is unset or not absolute"
     return 2
   fi
-  _sweep_root_dir "${HOME}/Library/Caches/claude-tmp" "${mode}"
+  _sweep_root_dir "${HOME}/Library/Caches/tint" "${mode}"
 }
 
 # Sourced by the tests: define the functions, run nothing.
