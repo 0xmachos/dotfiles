@@ -30,7 +30,17 @@ if [[ -x "/opt/homebrew/bin/brew" && (
   "${HOMEBREW_REPOSITORY:-}" != "/opt/homebrew" ||
   ":${PATH}:" != *":/opt/homebrew/bin:"*
 ) ]]; then
-  eval "$(/opt/homebrew/bin/brew shellenv)"
+  # Static copy of `brew shellenv zsh` (Homebrew 2026-10): running brew here
+  # costs a bash process tree on every new terminal. Re-diff after brew upgrades.
+  export HOMEBREW_PREFIX="/opt/homebrew"
+  export HOMEBREW_CELLAR="/opt/homebrew/Cellar"
+  export HOMEBREW_REPOSITORY="/opt/homebrew"
+  # shellcheck disable=SC2034
+  fpath[1,0]="/opt/homebrew/share/zsh/site-functions"
+  export FPATH
+  export PATH="/opt/homebrew/bin:/opt/homebrew/sbin${PATH+:$PATH}"
+  [ -z "${MANPATH-}" ] || { export MANPATH="${MANPATH%"${MANPATH##*[!:]}"}"; export MANPATH=":${MANPATH#"${MANPATH%%[!:]*}"}"; }
+  export INFOPATH="/opt/homebrew/share/info:${INFOPATH:-}"
 fi
 
 
@@ -211,21 +221,6 @@ setopt HIST_FIND_NO_DUPS
 setopt HIST_REDUCE_BLANKS
 setopt HIST_IGNORE_SPACE
 # Do not store command lines starting with a space
-
-
-### Zoxide ###
-
-if [[ -x "/opt/homebrew/bin/zoxide" ]]; then
-  # Init script cached; regenerated when the executable is newer.
-  typeset -r ZOXIDE_INIT_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/zoxide-init.zsh"
-  if [[ ! -r "${ZOXIDE_INIT_CACHE}" || "/opt/homebrew/bin/zoxide" -nt "${ZOXIDE_INIT_CACHE}" ]]; then
-    /bin/mkdir -p "${ZOXIDE_INIT_CACHE:h}"
-    "/opt/homebrew/bin/zoxide" init zsh >| "${ZOXIDE_INIT_CACHE}"
-  fi
-  # Generated at runtime under $XDG_CACHE_HOME — no file for shellcheck to follow.
-  # shellcheck source=/dev/null
-  source "${ZOXIDE_INIT_CACHE}"
-fi
 
 
 ### Change into Initial Directory ###
