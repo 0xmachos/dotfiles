@@ -223,6 +223,68 @@ function run_session_host_context {
   _shc_expect_exit0 '{"source":"startup"}' "no version resolvable" \
     -u CLAUDE_CODE_EXECPATH "SESSION_HOST_CONTEXT_READLINK=${stub_dir}/readlink-fail"
 
+  # --- Terminal segment: env-only, every case clears the runner's own
+  # HERDR_ENV/TERM_PROGRAM/TERM_PROGRAM_VERSION first, then sets its inputs.
+  local -a term_clear=(-u HERDR_ENV -u TERM_PROGRAM -u TERM_PROGRAM_VERSION)
+  local -a term_case
+  local term_label term_want term_seg term_case_str
+  local -a term_cases=(
+    'herdr + Ghostty, "+" commit trimmed|HERDR_ENV=1 TERM_PROGRAM=ghostty TERM_PROGRAM_VERSION=1.3.2-main+0081d4530|Terminal: herdr pane (server launched from Ghostty 1.3.2-main)'
+    'herdr, no TERM_PROGRAM|HERDR_ENV=1|Terminal: herdr pane'
+    'herdr, invalid program keeps "herdr pane"|HERDR_ENV=1 TERM_PROGRAM=bad;prog TERM_PROGRAM_VERSION=1.0|Terminal: herdr pane'
+    'no herdr, Ghostty|TERM_PROGRAM=ghostty TERM_PROGRAM_VERSION=1.3.2|Terminal: Ghostty 1.3.2'
+    'other program printed as-is|TERM_PROGRAM=Apple_Terminal TERM_PROGRAM_VERSION=470|Terminal: Apple_Terminal 470'
+    'invalid version keeps the program|TERM_PROGRAM=ghostty TERM_PROGRAM_VERSION=1.0;x|Terminal: Ghostty'
+    'empty version keeps the program|TERM_PROGRAM=ghostty TERM_PROGRAM_VERSION=|Terminal: Ghostty'
+    'HERDR_ENV=0 is not herdr|HERDR_ENV=0 TERM_PROGRAM=ghostty|Terminal: Ghostty'
+    'over-long program is dropped|TERM_PROGRAM=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx|'
+    'version without program is dropped|TERM_PROGRAM_VERSION=1.0|'
+    'empty program is dropped|TERM_PROGRAM=|'
+    'nothing set: segment omitted||'
+  )
+  for term_case_str in "${term_cases[@]}"; do
+    term_label="${term_case_str%%|*}"
+    term_want="${term_case_str##*|}"
+    term_seg="${term_case_str#*|}"
+    term_seg="${term_seg%|*}"
+    # shellcheck disable=SC2296,SC2206  # (=): split the case's env args on spaces
+    term_case=(${=term_seg})
+    out="$(_shc_run '{"source":"startup"}' "${term_clear[@]}" "${term_case[@]}")"
+    if [[ -n "${term_want}" ]]; then
+      if [[ "${out}" == *" · ${term_want}" && "${out}" != *$'\n'* ]]; then
+        _pass "terminal: ${term_label}"
+      else
+        _fail "terminal: ${term_label}: expected '${term_want}', got: ${out}"
+      fi
+    elif [[ "${out}" != *"Terminal:"* ]]; then
+      _pass "terminal: ${term_label}"
+    else
+      _fail "terminal: ${term_label}: expected no Terminal segment, got: ${out}"
+    fi
+  done
+
+  # A newline in TERM_PROGRAM must not break the one-line contract.
+  out="$(_shc_run '{"source":"startup"}' "${term_clear[@]}" $'TERM_PROGRAM=ghostty\nevil')"
+  if [[ "${out}" == *' · Terminal: Ghostty' && "${out}" != *$'\n'* ]]; then
+    _pass "terminal: a newline in TERM_PROGRAM is truncated to one line"
+  else
+    _fail "terminal: a newline in TERM_PROGRAM was not truncated, got: ${out}"
+  fi
+
+  # Fixed representative herdr+Ghostty line stays within the 150-byte target
+  # regardless of where the suite runs.
+  out="$(_shc_run '{"source":"startup"}' "${term_clear[@]}" \
+    "SESSION_HOST_CONTEXT_SCUTIL=${stub_dir}/scutil" \
+    "SESSION_HOST_CONTEXT_SW_VERS=${stub_dir}/sw_vers-seed" \
+    'CLAUDE_CODE_EXECPATH=/x/versions/2.1.286' \
+    HERDR_ENV=1 TERM_PROGRAM=ghostty TERM_PROGRAM_VERSION=1.3.2-main+0081d4530)"
+  got="$(printf '%s' "${out}" | /usr/bin/wc -c | tr -d ' ')"
+  if [[ "${out}" == *'Terminal: herdr pane'* && ${got} -le 150 ]]; then
+    _pass "representative herdr+Ghostty line is ${got} bytes (<= 150)"
+  else
+    _fail "representative herdr+Ghostty line failed the 150-byte check (${got} bytes): ${out}"
+  fi
+
   # --- regression: the hosts/<host>.md mechanism is gone, not inert -------
   # A ~/.claude/hosts/<host>.md matching the stubbed hostname must not appear.
   local sandbox_home
@@ -260,6 +322,7 @@ function run_session_host_context {
   } > "${stub_dir}/scutil-long"
   chmod 755 "${stub_dir}/scutil-long"
   big_out="$(_shc_run '{"source":"startup"}' \
+    -u HERDR_ENV -u TERM_PROGRAM -u TERM_PROGRAM_VERSION \
     "SESSION_HOST_CONTEXT_SCUTIL=${stub_dir}/scutil-long" \
     "SESSION_HOST_CONTEXT_SW_VERS=${stub_dir}/sw_vers-seed" \
     'CLAUDE_CODE_EXECPATH=/x/versions/2026.99.99-a-very-long-pre-release-suffix')"
