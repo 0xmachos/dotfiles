@@ -76,7 +76,7 @@ export GH_TELEMETRY=false
 # Claude Code temp files go under ~/Library/Caches, not /tmp (cleared on
 # reboot); bin/scratch-sweep removes entries idle 14 days. Set here, not in
 # claude/settings.json: that value is a literal path and $HOME varies.
-export CLAUDE_CODE_TMPDIR="${HOME}/Library/Caches/claude-tmp"
+export CLAUDE_CODE_TMPDIR="${HOME}/Library/Caches/tint"
 
 # Undocumented ImageIO out-of-process parsing (ImageIOXPCService sandbox).
 # Value must be 1, not YES: ImageIO uses atoi(), atoi("YES") is 0.

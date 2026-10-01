@@ -3,7 +3,7 @@
 #
 # Behavioural test for claude/tmp-guard-hook, the PreToolUse hook that denies
 # writes into /tmp, /private/tmp, /var/tmp, /private/var/tmp, /var/folders and
-# /private/var/folders and points at ~/Library/Caches/claude-tmp/<name>/.
+# /private/var/folders and points at ~/Library/Caches/tint/<repo>-<job>/.
 # Feeds tool calls as stdin JSON and asserts the verdict:
 #   DENY: Write/Edit/NotebookEdit targets and Bash write positions under a root
 #   PASS: reads, devices, lookalike and variable-based paths, text mentions,
@@ -108,7 +108,7 @@ function run_tmp_guard {
   _tmp_guard_expect_path DENY Write file_path /TMP/x
   _tmp_guard_expect_path DENY Write file_path /Private/Var/Folders/x
   _tmp_guard_expect_path PASS Write file_path /Users/x/tmp/y
-  _tmp_guard_expect_path PASS Write file_path /Users/x/Library/Caches/claude-tmp/a/b
+  _tmp_guard_expect_path PASS Write file_path /Users/x/Library/Caches/tint/a/b
   _tmp_guard_expect_path PASS Write file_path /tmpfoo/x
   _tmp_guard_expect_path PASS Write file_path /var/tmpx/y
   _tmp_guard_expect_path PASS Write file_path /var/folder/x
@@ -399,7 +399,7 @@ function run_tmp_guard {
   _tmp_guard_expect PASS 'echo hi > ~/tmp/x'
   _tmp_guard_expect PASS 'echo hi > ./tmp/x'
   _tmp_guard_expect PASS 'echo hi > /Users/x/tmp/y'
-  _tmp_guard_expect PASS 'echo hi > ~/Library/Caches/claude-tmp/a/b'
+  _tmp_guard_expect PASS 'echo hi > ~/Library/Caches/tint/a/b'
   _tmp_guard_expect PASS 'mkdir ~/tmp'
   _tmp_guard_expect PASS 'mkdir -p tmp/x'
   _tmp_guard_expect PASS 'touch ./tmp/x'
@@ -435,7 +435,7 @@ function run_tmp_guard {
   _tmp_guard_expect PASS 'echo "a#b" > out'
   _tmp_guard_expect PASS 'awk "{print \$1}" /tmp/x'
   _tmp_guard_expect PASS 'some-tool --output=/tmp/x' 'unknown tool: only known write verbs are parsed'
-  _tmp_guard_expect PASS 'ls ~/Library/Caches/claude-tmp/x'
+  _tmp_guard_expect PASS 'ls ~/Library/Caches/tint/x'
   _tmp_guard_expect PASS 'echo hi'
 
   # --- Heredocs -------------------------------------------------------------
@@ -634,7 +634,7 @@ function run_tmp_guard {
   _tmp_guard_expect DENY 'cp a ~/../../var/folders/x/b' 'home-relative escape to /var/folders'
   _tmp_guard_expect PASS 'cp a ~/tmp/b' 'a directory called tmp under home'
   _tmp_guard_expect PASS 'cp a ~/../x' 'home-relative path that is not a root'
-  _tmp_guard_expect PASS 'cp a ~/Library/Caches/claude-tmp/b'
+  _tmp_guard_expect PASS 'cp a ~/Library/Caches/tint/b'
 
   # --- More wrappers and env -S ---------------------------------------------
   _tmp_guard_expect DENY 'exec -a x cp a /tmp/x' 'exec -a name'
@@ -736,7 +736,7 @@ function run_tmp_guard {
   local out reason rc root length
   out="$(_tmp_guard_run 'echo hi > /tmp/x')"
   reason="$(jq -r '.hookSpecificOutput.permissionDecisionReason' <<< "${out}")"
-  if [[ "${reason}" == 'write to /tmp blocked: use ~/Library/Caches/claude-tmp/<name>/ instead.' ]]; then
+  if [[ "${reason}" == 'write to /tmp blocked: use ~/Library/Caches/tint/<repo>-<job>/ instead.' ]]; then
     _pass "deny reason is the one-line message"
   else
     _fail "deny reason unexpected: ${reason}"
