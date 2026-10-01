@@ -45,8 +45,9 @@ function _lh_find_tool {
 }
 
 # Runs the hook on JSON payload $1 with optional NAME=VALUE env overrides
-# ($2...); sets globals LH_LAST_STDOUT, LH_LAST_STDERR, LH_LAST_RC. Call it
-# as a plain statement, never inside `$(...)`: the subshell would lose the
+# ($2...); LINT_HOOK_LOG defaults to empty (logging off) so no case writes the
+# real log, and a later LINT_HOOK_LOG=... override wins. Sets globals
+# LH_LAST_STDOUT, LH_LAST_STDERR, LH_LAST_RC. Call it as a plain statement, never inside `$(...)`: the subshell would lose the
 # globals. Stdin is a temp file, not a pipe, and rc is captured via if/else,
 # not a bare `rc=$?`: under ./test's `set -euo pipefail` a bare failure
 # would abort the ENTIRE suite run, not just one case.
@@ -58,7 +59,7 @@ function _lh_exec {
   payloadf="$(/usr/bin/mktemp "${TMPDIR:-/tmp}/lint-hook-test.XXXXXX")"
   printf '%s' "${payload}" > "${payloadf}"
 
-  if env "$@" /bin/zsh "${SCRIPT_DIR}/claude/lint-hook" < "${payloadf}" > "${outf}" 2> "${errf}"; then
+  if env LINT_HOOK_LOG= "$@" /bin/zsh "${SCRIPT_DIR}/claude/lint-hook" < "${payloadf}" > "${outf}" 2> "${errf}"; then
     LH_LAST_RC=0
   else
     LH_LAST_RC=$?
@@ -471,6 +472,53 @@ function run_lint_hook {
   printf '# notes\n' > "${LH_NOREPO}/notes.md"
   _lh_expect PASS "${LH_NOREPO}/notes.md" "markdown file"
 
+  # --- unlinted-type log (fallback arm) ------------------------------------
+
+  local lh_log="${LH_NOREPO}/logdir/sub/unlinted.tsv" lh_line lh_mg
+  local -a lh_f
+  lh_mg="$(_lh_find_tool magika)"
+  if [[ -n "${lh_mg}" ]]; then
+    _lh_exec "$(jq -n --arg f "${LH_NOREPO}/notes.md" '{tool_input:{file_path:$f}}')" "LINT_HOOK_LOG=${lh_log}"
+    lh_line="$(< "${lh_log}")" 2>/dev/null || lh_line=""
+    # shellcheck disable=SC2296  # zsh-only ${(ps:\t:)} split on tabs
+    lh_f=("${(@ps:\t:)lh_line}")
+    if [[ -z "${LH_LAST_STDOUT}" && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" \
+          && ${#lh_f} == 4 && "${lh_f[1]}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T \
+          && "${lh_f[2]}" =~ ^[a-z0-9_.+-]+$ && "${lh_f[3]}" == md \
+          && "${lh_f[4]}" == "${LH_NOREPO}/notes.md" ]]; then
+      _pass "unlinted .md: no output, one 4-field log line (time, label ${lh_f[2]}, md, path), parent dirs created"
+    else
+      _fail "unlinted .md log line wrong (rc=${LH_LAST_RC} out=${LH_LAST_STDOUT} line=${lh_line})"
+    fi
+
+    _lh_exec "$(jq -n --arg f "${LH_NOREPO}/noshebang" '{tool_input:{file_path:$f}}')" "LINT_HOOK_LOG=${lh_log}"
+    lh_line="$(/usr/bin/tail -n 1 "${lh_log}")"
+    # shellcheck disable=SC2296  # zsh-only ${(ps:\t:)} split on tabs
+    lh_f=("${(@ps:\t:)lh_line}")
+    if [[ "$(/usr/bin/wc -l < "${lh_log}")" -eq 2 && "${lh_f[3]}" == - ]]; then
+      _pass "unlinted extensionless file: appended, extension column is -"
+    else
+      _fail "extensionless file not appended with ext - (line=${lh_line})"
+    fi
+
+    printf '{}\n' > "${LH_NOREPO}/clean.json"
+    _lh_exec "$(jq -n --arg f "${LH_NOREPO}/clean.json" '{tool_input:{file_path:$f}}')" "LINT_HOOK_LOG=${lh_log}"
+    if [[ "$(/usr/bin/wc -l < "${lh_log}")" -eq 2 ]]; then
+      _pass "linted file (.json) is not logged"
+    else
+      _fail "a linted .json file was written to the unlinted log"
+    fi
+  else
+    _skip "magika not installed — unlinted-log content cases"
+  fi
+
+  _lh_exec "$(jq -n --arg f "${LH_NOREPO}/notes.md" '{tool_input:{file_path:$f}}')" "LINT_HOOK_LOG=${LH_NOREPO}/absent.tsv" LINT_HOOK_MAGIKA=/nonexistent
+  if [[ ! -e "${LH_NOREPO}/absent.tsv" && -z "${LH_LAST_STDOUT}" && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
+    _pass "LINT_HOOK_MAGIKA=/nonexistent: nothing logged, exit 0, empty stderr"
+  else
+    _fail "absent magika still wrote a log or failed (rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR})"
+  fi
+
   # --- plist / mobileconfig -------------------------------------------------
 
   cat > "${LH_NOREPO}/good.plist" <<'PLIST'
@@ -487,6 +535,13 @@ PLIST
 
   printf 'not a plist\n' > "${LH_NOREPO}/bad.plist"
   _lh_expect CONTEXT "${LH_NOREPO}/bad.plist" "invalid plist"
+
+  # Unreadable: plutil would exit 1 as for an invalid plist; the -r check
+  # skips it instead of reporting a false finding.
+  printf 'not a plist\n' > "${LH_NOREPO}/permbad.plist"
+  /bin/chmod 000 "${LH_NOREPO}/permbad.plist"
+  _lh_expect PASS "${LH_NOREPO}/permbad.plist" "unreadable plist (chmod 000): skipped, not reported as invalid"
+  /bin/chmod 644 "${LH_NOREPO}/permbad.plist"
 
   /bin/cp "${LH_NOREPO}/good.plist" "${LH_NOREPO}/good.mobileconfig"
   _lh_expect PASS "${LH_NOREPO}/good.mobileconfig" "valid mobileconfig"
