@@ -74,9 +74,3 @@ switch_tab = "alt+1..9"
 previous_workspace = "alt+shift+["
 next_workspace = "alt+shift+]"
 switch_workspace = "alt+shift+1..9"
-
-# Splits and pane close on the Cmd chords. Ghostty unbinds them (see its
-# config) so the keys reach herdr instead of acting on Ghostty's own window.
-split_vertical = "cmd+d"
-split_horizontal = "cmd+shift+d"
-close_pane = "cmd+w"

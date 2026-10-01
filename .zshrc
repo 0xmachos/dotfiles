@@ -122,6 +122,10 @@ setopt correct_all
 # Argument correction
 
 # shellcheck disable=SC2034
+CORRECT_IGNORE_FILE='.*'
+# Never offer a dotfile as an argument correction (claude -> .claude in ~)
+
+# shellcheck disable=SC2034
 SPROMPT="Correct %F{red}%R%f to %F{green}%r%f [nyae]?"
 
 
