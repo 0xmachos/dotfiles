@@ -1,0 +1,74 @@
+#!/usr/bin/env zsh
+# dotfiles/.functions/herdr-keys
+
+function herdr-keys {
+  # herdr-keys [-a] [pattern]
+  #   Print herdr's effective key bindings: the defaults from
+  #   `herdr --default-config`, overlaid with [keys] from the live
+  #   config.toml (marked *). "prefix" is spelled out as the real prefix.
+  #   -a also lists actions left unbound; a pattern filters action names.
+
+  local all=0
+  [[ "${1:-}" == "-a" ]] && { all=1; shift; }
+  [[ "${1:-}" == -* ]] && { echo "Usage: herdr-keys [-a] [pattern]"; return 1; }
+  local filter="${1:-}"
+
+  # shellcheck disable=SC2154
+  (( $+commands[herdr] )) || { echo "herdr-keys: herdr not on PATH"; return 1; }
+
+  local config="${HOME}/.config/herdr/config.toml"
+  local -a order
+  local -A keys mine
+  local line in_keys=0 name value
+  # A binding line, optionally commented out, with nothing after the value
+  # but a comment: `# type = "shell" runs ...` prose does not match.
+  local pattern='^#? *([a-z_]+) *= *"([^"]*)" *(#.*)?$'
+
+  # Defaults: the commented `# action = "key"` lines in the [keys] table,
+  # up to the first sub-table ([[keys.command]] examples) or next table.
+  while IFS= read -r line; do
+    case "${line}" in
+      "[keys]") in_keys=1; continue ;;
+      "[["*|"# [["*|"["*) (( in_keys )) && break; continue ;;
+    esac
+    (( in_keys )) || continue
+    [[ "${line}" =~ ${pattern} ]] || continue
+    # shellcheck disable=SC2154
+    name="${match[1]}"; value="${match[2]}"
+    (( ${+keys[${name}]} )) || order+=("${name}")
+    keys[${name}]="${value}"
+  done < <(herdr --default-config 2>/dev/null)
+
+  # Overrides: uncommented lines in the live [keys] table.
+  in_keys=0
+  if [[ -r "${config}" ]]; then
+    while IFS= read -r line; do
+      case "${line}" in
+        "[keys]") in_keys=1; continue ;;
+        "["*) in_keys=0; continue ;;
+        "#"*) continue ;;
+      esac
+      (( in_keys )) || continue
+      [[ "${line}" =~ ${pattern} ]] || continue
+      name="${match[1]}"; value="${match[2]}"
+      (( ${+keys[${name}]} )) || order+=("${name}")
+      keys[${name}]="${value}"
+      # shellcheck disable=SC2034  # read via ${+mine[...]} below
+      mine[${name}]=1
+    done < "${config}"
+  fi
+
+  local prefix="${keys[prefix]:-ctrl+b}"
+  local mark shown
+  for name in "${order[@]}"; do
+    [[ "${name}" == prefix ]] && continue
+    [[ -n "${filter}" && "${name}" != *${filter}* ]] && continue
+    value="${keys[${name}]}"
+    [[ -z "${value}" ]] && (( ! all )) && continue
+    shown="${value//prefix+/${prefix} then }"
+    [[ -z "${shown}" ]] && shown="(unbound)"
+    mark=" "; (( ${+mine[${name}]} )) && mark="*"
+    printf '%s %-26s %s\n' "${mark}" "${name}" "${shown}"
+  done
+  printf '\nprefix: %s   * = set in %s\n' "${prefix}" "${config/#${HOME}/~}"
+}
