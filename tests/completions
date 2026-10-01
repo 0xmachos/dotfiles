@@ -99,6 +99,10 @@ function _completions_check_large_commit {
   fixture="$(mktemp -d "${TMPDIR}completion-hook.XXXXXX")"
   if (
     export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+    # A caller committing through a private index (or from a hook) exports
+    # these; inherited, they point the fixture's git at the caller's index and
+    # objects, and the fixture's `git add` corrupts that index.
+    unset GIT_INDEX_FILE GIT_DIR GIT_WORK_TREE GIT_OBJECT_DIRECTORY GIT_COMMON_DIR
     cd "${fixture}" || exit 1
     git init -q
     git config core.hooksPath /dev/null
