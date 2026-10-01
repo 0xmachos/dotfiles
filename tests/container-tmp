@@ -64,7 +64,7 @@ function run_container_tmp {
   _container_tmp_expect DENY 'container create -v /tmp/d:/d img'
 
   # $HOME paths, guest paths, docker, lookalikes → PASS.
-  _container_tmp_expect PASS 'container build -t x .' "${HOME}/Documents/Projects/x" \
+  _container_tmp_expect PASS 'container build -t x .' "${HOME}/Dev/x" \
     "container build . (cwd under \$HOME)"
   _container_tmp_expect PASS "container build -t x ${HOME}/proj/ctx"
   _container_tmp_expect PASS "container run -v ${HOME}/data:/data img"

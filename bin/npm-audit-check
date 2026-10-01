@@ -2,7 +2,7 @@
 # dotfiles/bin/npm-audit-check
 #
 # Audits npm projects for vulnerabilities and verifies package signatures, for
-# every project with a package-lock.json under ~/Documents/Projects/. Called
+# every project with a package-lock.json under ~/Dev/. Called
 # from jump-user via run_and_log or interactively. Production vulnerabilities
 # and signature failures are errors; dev-only vulnerabilities warn.
 #
@@ -14,7 +14,7 @@ set -uo pipefail
 IFS=$'\n\t'
 
 readonly NPM_BINARY="/opt/homebrew/bin/npm"
-readonly PROJECTS_DIR="${HOME}/Documents/Projects"
+readonly PROJECTS_DIR="${HOME}/Dev"
 
 function audit_project {
   local project_dir="$1"

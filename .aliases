@@ -51,8 +51,8 @@ alias brew='PATH="/opt/homebrew/bin:${PATH}" brew'
 ## Navigation
 alias dl='cd ~/Downloads'
 alias dk='cd ~/Desktop'
-alias pj='cd ~/Documents/Projects'
-alias dot='cd ~/Documents/Projects/dotfiles'
+alias pj='cd ~/Dev'
+alias dot='cd ~/dotfiles'
 alias ap='cd /Applications/'
 alias xdd='cd ~/Library/Developer/Xcode/DerivedData'
 # EndpointSecurity SDK headers path (AUTO_CD will cd into it)

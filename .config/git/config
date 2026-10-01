@@ -8,7 +8,7 @@
 	# key exchange today), and GitHub verifies ML-DSA SSH commit signatures.
 
 [core]
-	hooksPath = ~/Documents/Projects/dotfiles/.config/git/hooks
+	hooksPath = ~/dotfiles/.config/git/hooks
 	# Global hooks for every repo: pre-commit scanner (gitleaks + PII denylist
 	# + MAC/UUID token detector) plus forwarder stubs for the other hook types
 	# that exec the repo's own .git/hooks/<name>, so no repo hook is shadowed.

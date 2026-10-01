@@ -16,7 +16,7 @@ readonly SCRIPT_DIR="${0:A:h}"
 if [[ ! -f "${SCRIPT_DIR}/bittersweet" ]]; then
   echo "[❌] SCRIPT_DIR failed to resolve (got: ${SCRIPT_DIR})"
   echo "    zsh :A cannot follow symlinks with restricted permissions."
-  echo "    Run directly from the repo: ~/Documents/Projects/dotfiles/bittersweet"
+  echo "    Run directly from the repo: ~/dotfiles/bittersweet"
   exit 1
 fi
 
@@ -813,7 +813,7 @@ function install_scripts {
   fi
 
   for macos_script in "${macos_script_bin_files[@]}"; do
-    if sudo ln -sfn "$HOME/Documents/Projects/macos-scripts/${macos_script}" "/usr/local/bin/${macos_script}"; then
+    if sudo ln -sfn "$HOME/Dev/macos-scripts/${macos_script}" "/usr/local/bin/${macos_script}"; then
       sudo chmod -h 755 "/usr/local/bin/${macos_script}"
       echo "[✅] Successfully linked ${macos_script} to /usr/local/bin/${macos_script}"
     else
@@ -1265,7 +1265,7 @@ function _retire_bao_mcp_link {
 function install_herald {
   # Builds and installs the herald Bonjour/mDNS browser CLI, macOS companion to
   # the Herald iOS app (jessedc/herald-ios-bonjour-browser).
-  #   Source: ~/Documents/Projects/herald-cli/HeraldCLI (Package.swift subdir)
+  #   Source: ~/Dev/herald-cli/HeraldCLI (Package.swift subdir)
   #   Destination: /usr/local/bin/herald, a root-owned COPY (2026-09-18): a
   #   symlink would point at a user-writable Swift build directory, the
   #   privilege-escalation shape jump-system/jump-user avoid (see
@@ -1276,7 +1276,7 @@ function install_herald {
   # before each pull. No Sigstore/Homebrew attestation is available.
 
   local -r repo_url="https://github.com/jessedc/herald-ios-bonjour-browser.git"
-  local -r src_dir="${HOME}/Documents/Projects/herald-cli"
+  local -r src_dir="${HOME}/Dev/herald-cli"
   local -r pkg_dir="${src_dir}/HeraldCLI"
   local -r binary="/usr/local/bin/herald"
   local -r build_output="${pkg_dir}/.build/release/herald"

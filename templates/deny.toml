@@ -1,5 +1,5 @@
 # cargo-deny configuration — supply chain hardening
-# Copy to project root: cp ~/Documents/Projects/dotfiles/templates/deny.toml .
+# Copy to project root: cp ~/dotfiles/templates/deny.toml .
 # Run: cargo deny check
 # https://embarkstudios.github.io/cargo-deny/
 

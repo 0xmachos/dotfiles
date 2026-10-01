@@ -17,5 +17,5 @@ function git-clean {
       git gc --quiet
       git fsck --full --strict &>/dev/null
     )
-  done < <(find "$HOME/Documents/Projects" -maxdepth 5 -type d -name .git -print -prune)
+  done < <(find "$HOME/Dev" -maxdepth 5 -type d -name .git -print -prune; find "$HOME" -mindepth 2 -maxdepth 2 -type d -name .git)
 }

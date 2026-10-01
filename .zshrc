@@ -15,7 +15,7 @@
 
 ### Constants ####
 
-INITIAL_DIR="${HOME}/Documents/Projects"
+INITIAL_DIR="${HOME}/Dev"
 
 
 # $PATH & ENV exports MUST be at the top of .zshrc

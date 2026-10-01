@@ -96,7 +96,7 @@ function jump {
   ## Local extras (gitignored, sourced if present) ##
   # Per-host updaters live in dotfiles/.extra/jump (gitignored by the .extra*
   # rule). Sourced inside this function's scope; may use ${SUDO_BINARY}.
-  local -r EXTRA_JUMP="${HOME}/Documents/Projects/dotfiles/.extra/jump"
+  local -r EXTRA_JUMP="${HOME}/dotfiles/.extra/jump"
   if [[ -r "${EXTRA_JUMP}" ]]; then
     # shellcheck disable=SC1090
     source "${EXTRA_JUMP}"
