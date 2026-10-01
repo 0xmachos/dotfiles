@@ -1,0 +1,79 @@
+#!/usr/bin/env zsh
+# dotfiles/.functions/fslayout
+
+function fslayout {
+  # fslayout [-v]
+  #   Print the home-folder layout as a tree, marking anything missing.
+  #   -v adds a sentence on what belongs in each place.
+  #   Layout set 2026-10-01: projects left iCloud Documents, scratch moved
+  #   to Caches/tint, kept downloads to ~/Tempora, Go out of ~/go.
+
+  local verbose=0
+  case "${1:-}" in
+    -v|--verbose) verbose=1 ;;
+    "") ;;
+    *) echo "Usage: fslayout [-v]"; return 1 ;;
+  esac
+
+  local -r TINT="Library/Caches/tint"
+
+  # Rows: tree prefix | name shown | path checked under $HOME (empty: no
+  # check) | short note | sentence shown with -v.
+  # Repos kept at the home root are found at run time, so this file names none.
+  local -a rows
+  setopt local_options null_glob
+  local dir repo
+  for dir in "${HOME}"/*/.git; do
+    [[ -d "${dir}" ]] || continue
+    repo="${dir:h:t}"
+    rows+=("├── |${repo}/|${repo}|repo at the home root|Kept out of Dev for one-step access; nothing else goes at the home root.")
+  done
+  rows+=(
+    "├── |Dev/|Dev|every other project|One folder per project or clone; INDEX.md maps their docs. Outside iCloud, so builds and venvs stay local."
+    "│   └── |INDEX.md|Dev/INDEX.md|cross-project index|A navigable map of each project's documentation."
+    "├── |Tempora/|Tempora|kept downloads|Downloads worth keeping, as Tempora/<kind>/<name>/; tmutil addexclusion on each item, never on Tempora or <kind>."
+    "│   └── |<kind>/SOURCES.md||provenance|One section per item: URL, pinned revision or SHA-256, how to regenerate it. Backed up; the items are not."
+    "└── |Library/|Library||"
+    "    ├── |Caches/tint/|${TINT}|scratch root, \$CLAUDE_CODE_TMPDIR|One flat <repo>-<job>/ folder per job, never loose files. scratch-sweep deletes anything idle for 14 days."
+    "    │   ├── |_tools/|${TINT}/_tools|shared venvs and helpers|Exempt from the sweep; pruned by hand."
+    "    │   ├── |claude-<uid>/|${TINT}/claude-$(/usr/bin/id -u)|Claude Code's own|Never write into, move or delete."
+    "    │   └── |cc-socks/|${TINT}/cc-socks|Claude Code's own|Never write into, move or delete."
+    "    ├── |Caches/go/mod/|Library/Caches/go/mod|GOMODCACHE|Go module downloads; regenerable."
+    "    ├── |Application Support/go/|Library/Application Support/go|GOPATH|Go-installed binaries and Go's env file (was ~/go)."
+    "    └── |Backups/|Library/Backups|local backups|Point-in-time copies taken before risky changes. Not in Time Machine."
+  )
+  local -a retired=(
+    "Documents/Projects|moved to ~/Dev and the home-root repos (2026-10-01)"
+    "Library/Caches/claude-tmp|replaced by Library/Caches/tint (2026-10-01)"
+    "Depot|replaced by ~/Tempora (2026-10-01)"
+    "go|GOPATH moved to Library/Application Support/go (2026-10-01)"
+  )
+
+  local row prefix name check note sentence mark cont
+  echo "~"
+  for row in "${rows[@]}"; do
+    IFS='|' read -r prefix name check note sentence <<< "${row}"
+    mark=""
+    if [[ -n "${check}" && ! -e "${HOME}/${check}" ]]; then
+      mark="  (absent)"
+    fi
+    printf '%-32s %s%s\n' "${prefix}${name}" "${note}" "${mark}"
+    if (( verbose )) && [[ -n "${sentence}" ]]; then
+      cont="${prefix//├/│}"
+      printf '%-32s   %s\n' "${cont//[└─]/ }" "${sentence}"
+    fi
+  done
+
+  echo
+  echo "Retired:"
+  local old why
+  for row in "${retired[@]}"; do
+    IFS='|' read -r old why <<< "${row}"
+    if [[ -e "${HOME}/${old}" ]]; then mark="STILL PRESENT"; else mark="gone"; fi
+    if (( verbose )); then
+      printf '  ~/%-26s %-14s %s\n' "${old}" "${mark}" "${why}"
+    else
+      printf '  ~/%-26s %s\n' "${old}" "${mark}"
+    fi
+  done
+}
