@@ -1,0 +1,67 @@
+#!/bin/zsh
+# The container() wrapper default-mounts ~/Sandbox at /sandbox on `run` only,
+# honours an explicit /sandbox mount and the CONTAINER_NO_SANDBOX opt-out, and
+# leaves other subcommands untouched. The real binary is stubbed via
+# CONTAINER_BIN and HOME is redirected to a fixture.
+# shellcheck source=tests/lib
+
+function run_container_sandbox {
+  _section "container sandbox wrapper"
+  local fixture
+  fixture="$(mktemp -d "${TMPDIR}container-sandbox.XXXXXX")"
+  local fake="${fixture}/fake-container"
+  printf '#!/bin/zsh\nprintf "%%s\\n" "$@"\n' > "${fake}"
+  chmod +x "${fake}"
+
+  # _csbx <argstring> [no_sandbox]: run the wrapper against the stub, in an
+  # isolated HOME. ${=1} is zsh word-splitting of the arg string.
+  _csbx() {
+    (
+      export HOME="${fixture}" CONTAINER_BIN="${fake}"
+      [[ -n "${2:-}" ]] && export CONTAINER_NO_SANDBOX=1
+      # shellcheck source=.functions/container disable=SC1091
+      source "${SCRIPT_DIR}/.functions/container"
+      # shellcheck disable=SC2086
+      container ${=1}
+    )
+  }
+
+  local out
+  out="$(_csbx 'run alpine')"
+  if [[ "${out}" == *"--volume"* \
+     && "${out}" == *"${fixture}/Sandbox:/sandbox"* \
+     && "${out}" == *"alpine"* ]]; then
+    _pass "run: auto-mounts ~/Sandbox at /sandbox"
+  else
+    _fail "run did not get the default mount: ${out//$'\n'/ }"
+  fi
+
+  out="$(_csbx 'ls')"
+  if [[ "${out}" == "ls" ]]; then
+    _pass "non-run subcommand passes through unmounted"
+  else
+    _fail "ls was altered: ${out//$'\n'/ }"
+  fi
+
+  out="$(_csbx 'run -v /x:/sandbox alpine')"
+  if [[ "${out}" != *"${fixture}/Sandbox:/sandbox"* ]]; then
+    _pass "explicit /sandbox mount is not doubled"
+  else
+    _fail "wrapper double-mounted /sandbox: ${out//$'\n'/ }"
+  fi
+
+  out="$(_csbx 'run alpine' 1)"
+  if [[ "${out}" != *"--volume"* ]]; then
+    _pass "CONTAINER_NO_SANDBOX=1 disables the auto-mount"
+  else
+    _fail "opt-out still mounted: ${out//$'\n'/ }"
+  fi
+
+  rm -rf "${fixture}/Sandbox"
+  _csbx 'run alpine' > /dev/null
+  if [[ -d "${fixture}/Sandbox" ]]; then
+    _pass "run creates the host dir if absent"
+  else
+    _fail "host dir not created on demand"
+  fi
+}

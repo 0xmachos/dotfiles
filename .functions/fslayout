@@ -33,6 +33,7 @@ function fslayout {
     "│   └── |INDEX.md|Dev/INDEX.md|cross-project index|A navigable map of each project's documentation."
     "├── |Tempora/|Tempora|kept downloads|Downloads worth keeping, as Tempora/<kind>/<name>/; tmutil addexclusion on each item, never on Tempora or <kind>."
     "│   └── |<kind>/SOURCES.md||provenance|One section per item: URL, pinned revision or SHA-256, how to regenerate it. Backed up; the items are not."
+    "├── |Sandbox/|Sandbox|container VM share|The one host dir bind-mounted into Apple container VMs (at /sandbox) by \`container run\`; file sharing is \$HOME-scoped, so nothing else is exposed by default."
     "└── |Library/|Library||"
     "    ├── |Caches/tint/|${TINT}|scratch root, \$CLAUDE_CODE_TMPDIR|One flat <repo>-<job>/ folder per job, never loose files. scratch-sweep deletes anything idle for 14 days."
     "    │   ├── |_tools/|${TINT}/_tools|shared venvs and helpers|Exempt from the sweep; pruned by hand."

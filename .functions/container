@@ -1,0 +1,29 @@
+#!/usr/bin/env zsh
+# dotfiles/.functions/container
+
+function container {
+  # Apple `container` wrapper: `run` bind-mounts ~/Sandbox at /sandbox by
+  # default — the one host directory shared into container VMs. File sharing is
+  # $HOME-scoped, so nothing else under $HOME reaches a VM unless you mount it
+  # yourself, and nothing OUTSIDE $HOME can be shared at all (it arrives
+  # silently empty; internals/apple-container.md). Only `run` is wrapped:
+  # `build` takes a context path, not a volume. Opt a single run out with
+  # CONTAINER_NO_SANDBOX=1. The real binary ($CONTAINER_BIN, else the Homebrew
+  # path) is called by absolute path, so it is never itself shadowed.
+  local -r real="${CONTAINER_BIN:-/opt/homebrew/bin/container}"
+  local -r host="${HOME}/Sandbox" guest=/sandbox
+
+  if [[ "${1:-}" != run || -n "${CONTAINER_NO_SANDBOX:-}" ]]; then
+    "${real}" "$@"
+    return
+  fi
+  # The caller already mounts something at /sandbox (as a mount target or a
+  # workdir): leave their invocation untouched rather than double-mount.
+  if [[ " $* " == *" ${guest} "* || " $* " == *":${guest} "* ]]; then
+    "${real}" "$@"
+    return
+  fi
+  [[ -d "${host}" ]] || /bin/mkdir -p "${host}"
+  shift
+  "${real}" run --volume "${host}:${guest}" "$@"
+}
