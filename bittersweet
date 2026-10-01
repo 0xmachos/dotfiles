@@ -542,6 +542,7 @@ function install_dotfiles {
     "claude/exa-redirect-hook:exa-redirect-hook"
     "claude/rm-redirect-hook:rm-redirect-hook"
     "claude/ssh-redirect-hook:ssh-redirect-hook"
+    "claude/sudo-askpass-hook:sudo-askpass-hook"
     "claude/git-sign-hook:git-sign-hook"
     "claude/container-tmp-hook:container-tmp-hook"
     "claude/md5-guard-hook:md5-guard-hook"

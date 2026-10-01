@@ -1,0 +1,74 @@
+#!/bin/zsh
+# dotfiles/tests/sudo-askpass
+#
+# Behavioural test for claude/sudo-askpass-hook — the PreToolUse hook that
+# DENIES `sudo -n` sent over ssh to a host whose sudo runs through an askpass,
+# where -n always fails. Feeds Bash tool payloads as stdin JSON and asserts the
+# verdict. The host list comes from the hook's own environment, so the suite
+# uses a neutral name.
+#
+# Run: ./test sudo-askpass    (or ./test for the full suite)
+#
+# ShellCheck: lint with `shellcheck --shell=bash tests/sudo-askpass`.
+# This file is sourced, not executed — chmod 644.
+#
+# shellcheck source=tests/lib
+
+function _sudo_askpass_run {
+  jq -n --arg c "$1" '{tool_name:"Bash", tool_input:{command:$c}}' \
+    | SUDO_ASKPASS_HOSTS="box-claude other-claude" /bin/zsh "${SCRIPT_DIR}/claude/sudo-askpass-hook"
+}
+
+function _sudo_askpass_expect {
+  local want="$1" cmd="$2" label="${3:-$2}" out got
+  out="$(_sudo_askpass_run "${cmd}")"
+  got="$(_hook_verdict "${out}")"
+  if [[ "${got}" == "${want}" ]]; then
+    _pass "${want}: ${label}"
+  else
+    _fail "${label} — expected ${want}, got ${got}"
+  fi
+}
+
+function run_sudo_askpass {
+  _section "sudo -n over an askpass host"
+
+  # claude/ is gitignored and synced out of band: an absent hook is pending
+  # sync, not a regression.
+  if [[ ! -f "${SCRIPT_DIR}/claude/sudo-askpass-hook" ]]; then
+    _skip "claude/sudo-askpass-hook absent — claude/ not yet synced to this machine"
+    return 0
+  fi
+  if ! [[ -x "$(command -v jq)" ]]; then
+    _skip "jq not installed (brew install jq)"
+    return
+  fi
+
+  # Single quotes are the point: the fixtures are literal command text.
+  # shellcheck disable=SC2016
+  {
+    _sudo_askpass_expect DENY "ssh box-claude 'sudo -n launchctl list'" 'sudo -n in the remote command'
+    _sudo_askpass_expect DENY "ssh box-claude \"sudo -n true\"" 'double-quoted remote command'
+    _sudo_askpass_expect DENY "ssh -o BatchMode=yes box-claude 'sudo -nu root id'" 'flag cluster -nu'
+    _sudo_askpass_expect DENY "ssh box-claude 'sudo -A -n id'" '-n after -A'
+    _sudo_askpass_expect DENY "ssh other-claude 'sudo --non-interactive id'" 'long form, second host'
+    _sudo_askpass_expect DENY "cd /x && ssh box-claude 'cd /y && sudo -n ./deploy -y'" 'after a cd chain'
+
+    _sudo_askpass_expect PASS "ssh box-claude 'SUDO_ASKPASS=\$HOME/.local/bin/bao-askpass sudo -A id'" 'the askpass form'
+    _sudo_askpass_expect PASS "ssh box-claude 'sudo launchctl list'" 'plain sudo'
+    _sudo_askpass_expect PASS "ssh box-claude 'grep -n foo /etc/hosts'" 'grep -n, no sudo'
+    _sudo_askpass_expect PASS "ssh elsewhere 'sudo -n id'" 'a host not in the list'
+    _sudo_askpass_expect PASS "ssh box-claudex 'sudo -n id'" 'a longer host name'
+    _sudo_askpass_expect PASS "sudo -n true" 'local sudo -n, no ssh'
+    _sudo_askpass_expect PASS "ssh box-claude 'sudo -u nobody id'" 'sudo -u with an operand'
+  }
+
+  # Fail-open on malformed input.
+  local out
+  out="$(printf 'not json' | /bin/zsh "${SCRIPT_DIR}/claude/sudo-askpass-hook")"
+  if [[ -z "${out}" ]]; then
+    _pass "PASS: malformed payload fails open"
+  else
+    _fail "malformed payload — expected no output, got ${out}"
+  fi
+}
