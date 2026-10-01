@@ -27,7 +27,7 @@ _ar_mkfix() {
            "${fix}/.codex/memories" \
            "${fix}/Downloads" \
            "${fix}/liverepo" \
-           "${fix}/Documents/Projects"
+           "${fix}/Dev"
 
   echo '{"role":"user"}' > "${fix}/.claude/projects/-fix-proj/session.jsonl"
   echo '# fixture memory' > "${fix}/.claude/projects/-fix-proj/memory/MEMORY.md"
@@ -69,7 +69,7 @@ EOF
   # Same git isolation as the script under test; local -x scopes it here.
   local -x GIT_CONFIG_GLOBAL="${fix}/gitconfig" GIT_CONFIG_NOSYSTEM=1
 
-  local repo="${fix}/Documents/Projects/fixrepo"
+  local repo="${fix}/Dev/fixrepo"
   mkdir -p "${repo}/.claude"
   git -C "${repo}" init -q &&
     echo '# tracked instructions' > "${repo}/CLAUDE.md" &&
@@ -84,7 +84,7 @@ EOF
 
   # Unrelated WORKTREE dirt beside a tracked artifact: the commit is
   # pathspec-limited, the edit stays uncommitted.
-  local dirty="${fix}/Documents/Projects/dirtyrepo"
+  local dirty="${fix}/Dev/dirtyrepo"
   mkdir -p "${dirty}"
   git -C "${dirty}" init -q &&
     echo '# tracked instructions' > "${dirty}/CLAUDE.md" &&
@@ -95,7 +95,7 @@ EOF
 
   # Unrelated work STAGED beside a tracked artifact: the reset commit records
   # ONLY the artifact; the staged work survives, still staged.
-  local staged="${fix}/Documents/Projects/stagedrepo"
+  local staged="${fix}/Dev/stagedrepo"
   mkdir -p "${staged}/.claude"
   git -C "${staged}" init -q &&
     echo '# tracked instructions' > "${staged}/CLAUDE.md" &&
@@ -109,7 +109,7 @@ EOF
 
   # No TRACKED artifact (the common case under the machine-global *claude*
   # ignore) + heavy dirt: no commit is made; delete outright, dirt untouched.
-  local untr="${fix}/Documents/Projects/untrackedrepo"
+  local untr="${fix}/Dev/untrackedrepo"
   mkdir -p "${untr}/.claude"
   git -C "${untr}" init -q &&
     echo 'v1' > "${untr}/src.c" &&
@@ -122,7 +122,7 @@ EOF
 
   # Mid-merge: git refuses a pathspec commit, so the repo MUST be skipped —
   # the one dirty state that still blocks.
-  local merging="${fix}/Documents/Projects/mergerepo"
+  local merging="${fix}/Dev/mergerepo"
   mkdir -p "${merging}"
   git -C "${merging}" init -q &&
     echo '# tracked instructions' > "${merging}/CLAUDE.md" &&
@@ -140,7 +140,7 @@ EOF
 
   # Artifact-dirty: the only dirt is an edited tracked artifact; must proceed
   # (git rm -f), not crash, not skip.
-  local modrepo="${fix}/Documents/Projects/modrepo"
+  local modrepo="${fix}/Dev/modrepo"
   mkdir -p "${modrepo}"
   git -C "${modrepo}" init -q &&
     echo '# v1' > "${modrepo}/CLAUDE.md" &&
@@ -148,7 +148,16 @@ EOF
     git -C "${modrepo}" commit -q -m 'fixture' || return 1
   echo '# v2 uncommitted' >> "${modrepo}/CLAUDE.md"
 
-  # Agent state OUTSIDE ~/Documents/Projects: skip-and-report, never touched.
+  # A repo checked out at the home root (the dotfiles/RSP layout): in scope
+  # in scope via home-root repo discovery, handled like any ~/Dev repo.
+  local homerepo="${fix}/dotfiles"
+  mkdir -p "${homerepo}"
+  git -C "${homerepo}" init -q &&
+    echo '# tracked instructions' > "${homerepo}/CLAUDE.md" &&
+    git -C "${homerepo}" add CLAUDE.md &&
+    git -C "${homerepo}" commit -q -m 'fixture' || return 1
+
+  # Agent state OUTSIDE every project root: skip-and-report, untouched.
   mkdir -p "${fix}/Desktop/strayrepo"
   echo '# stray instructions' > "${fix}/Desktop/strayrepo/CLAUDE.md"
 
@@ -161,12 +170,12 @@ EOF
       "mcpServers": {"hm": {"command": "h"}},
       "allowedTools": ["Bash"]
     },
-    "${fix}/Documents/Projects/fixrepo": {
+    "${fix}/Dev/fixrepo": {
       "mcpServers": {"m1": {"command": "x"}},
       "allowedTools": ["Bash"],
       "hasTrustDialogAccepted": true
     },
-    "${fix}/Documents/Projects/dirtyrepo": {
+    "${fix}/Dev/dirtyrepo": {
       "allowedTools": ["Read"]
     },
     "${fix}/Desktop/strayrepo": {
@@ -381,9 +390,9 @@ assert d["someTopLevel"] == 1
 assert d["mcpServers"] == {"g": {"command": "y"}}
 assert d["oauthAccount"] == {"id": "fixture"}
 p = d["projects"]
-assert set(p) == {fix, fix + "/Documents/Projects/fixrepo"}, p
+assert set(p) == {fix, fix + "/Dev/fixrepo"}, p
 assert p[fix] == {"mcpServers": {"hm": {"command": "h"}}}
-assert p[fix + "/Documents/Projects/fixrepo"] == {"mcpServers": {"m1": {"command": "x"}}}
+assert p[fix + "/Dev/fixrepo"] == {"mcpServers": {"m1": {"command": "x"}}}
 EOF
   then
     _pass "claude.json surgical rewrite (MCP kept, grants dropped)"
@@ -394,38 +403,48 @@ EOF
   # settings.local.json in tracked .claude/ swept too
   local msg
   msg="$(env GIT_CONFIG_GLOBAL="${fix}/gitconfig" GIT_CONFIG_NOSYSTEM=1 \
-        git -C "${fix}/Documents/Projects/fixrepo" log -1 --format=%s 2> /dev/null)"
-  if [[ ! -e "${fix}/Documents/Projects/fixrepo/CLAUDE.md" \
-     && ! -e "${fix}/Documents/Projects/fixrepo/AGENTS.md" \
-     && -f "${fix}/Documents/Projects/fixrepo/.mcp.json" \
+        git -C "${fix}/Dev/fixrepo" log -1 --format=%s 2> /dev/null)"
+  if [[ ! -e "${fix}/Dev/fixrepo/CLAUDE.md" \
+     && ! -e "${fix}/Dev/fixrepo/AGENTS.md" \
+     && -f "${fix}/Dev/fixrepo/.mcp.json" \
      && "${msg}" == "Reset agent instruction state (2026-08 ablation)" ]]; then
     _pass "clean repo: artifacts wiped, neutral commit, .mcp.json kept"
   else
     _fail "clean-repo handling wrong (last commit: ${msg})"
   fi
-  if [[ ! -e "${fix}/Documents/Projects/fixrepo/.claude" ]]; then
+  if [[ ! -e "${fix}/Dev/fixrepo/.claude" ]]; then
     _pass "gitignored leftover inside tracked .claude/ swept"
   else
     _fail "settings.local.json-style leftover survived"
   fi
   # artifact-dirty repo: proceeds via git rm -f with the neutral commit
   msg="$(env GIT_CONFIG_GLOBAL="${fix}/gitconfig" GIT_CONFIG_NOSYSTEM=1 \
-        git -C "${fix}/Documents/Projects/modrepo" log -1 --format=%s 2> /dev/null)"
-  if [[ ! -e "${fix}/Documents/Projects/modrepo/CLAUDE.md" \
+        git -C "${fix}/Dev/modrepo" log -1 --format=%s 2> /dev/null)"
+  if [[ ! -e "${fix}/Dev/modrepo/CLAUDE.md" \
      && "${msg}" == "Reset agent instruction state (2026-08 ablation)" ]]; then
     _pass "artifact-dirty repo wiped (git rm -f), not crashed or skipped"
   else
     _fail "artifact-dirty repo mishandled (last commit: ${msg})"
   fi
+  # home-root repo (dotfiles/RSP layout): reset like any Dev repo, proving
+  # home-root discovery finds it and the delete boundary allows it.
+  msg="$(env GIT_CONFIG_GLOBAL="${fix}/gitconfig" GIT_CONFIG_NOSYSTEM=1 \
+        git -C "${fix}/dotfiles" log -1 --format=%s 2> /dev/null)"
+  if [[ ! -e "${fix}/dotfiles/CLAUDE.md" \
+     && "${msg}" == "Reset agent instruction state (2026-08 ablation)" ]]; then
+    _pass "home-root repo (dotfiles layout) reset, neutral commit"
+  else
+    _fail "home-root repo mishandled (last commit: ${msg})"
+  fi
   # worktree-dirty repo: RESET, with the unrelated edit left uncommitted
   local _git="env GIT_CONFIG_GLOBAL=${fix}/gitconfig GIT_CONFIG_NOSYSTEM=1 git"
-  if [[ ! -e "${fix}/Documents/Projects/dirtyrepo/CLAUDE.md" ]]; then
+  if [[ ! -e "${fix}/Dev/dirtyrepo/CLAUDE.md" ]]; then
     _pass "worktree-dirty repo reset (unrelated dirt no longer blocks)"
   else
     _fail "worktree-dirty repo still skipped"
   fi
-  if [[ "$(cat "${fix}/Documents/Projects/dirtyrepo/other.txt")" == "v2" ]] \
-     && ${=_git} -C "${fix}/Documents/Projects/dirtyrepo" diff --quiet \
+  if [[ "$(cat "${fix}/Dev/dirtyrepo/other.txt")" == "v2" ]] \
+     && ${=_git} -C "${fix}/Dev/dirtyrepo" diff --quiet \
         -- other.txt; then
     _fail "unrelated worktree edit was committed by the reset"
   else
@@ -433,7 +452,7 @@ EOF
   fi
 
   # staged-work repo: reset commit must contain ONLY the artifacts
-  local sfiles srepo="${fix}/Documents/Projects/stagedrepo"
+  local sfiles srepo="${fix}/Dev/stagedrepo"
   sfiles="$(${=_git} -C "${srepo}" show --name-only --format= HEAD | sort | tr '\n' ' ')"
   if [[ ! -e "${srepo}/CLAUDE.md" && ! -e "${srepo}/.claude" \
      && "${sfiles}" == ".claude/skill.md CLAUDE.md " ]]; then
@@ -449,7 +468,7 @@ EOF
   fi
 
   # no-tracked-artifact repo: deleted outright, no commit, dirt untouched
-  local urepo="${fix}/Documents/Projects/untrackedrepo"
+  local urepo="${fix}/Dev/untrackedrepo"
   if [[ ! -e "${urepo}/CLAUDE.md" && ! -e "${urepo}/.claude" ]]; then
     _pass "untracked artifacts deleted despite unrelated dirt"
   else
@@ -464,7 +483,7 @@ EOF
   fi
 
   # mid-merge repo: the one dirty state that still blocks
-  if [[ -f "${fix}/Documents/Projects/mergerepo/CLAUDE.md" ]]; then
+  if [[ -f "${fix}/Dev/mergerepo/CLAUDE.md" ]]; then
     _pass "mid-merge repo skipped (pathspec commit impossible)"
   else
     _fail "mid-merge repo was swept"
@@ -495,13 +514,13 @@ EOF
   # 8b. --repos-only reconcile: resolve the blocker, re-run the in-repo leg
   #     alone. Already-wiped global state is not re-processed; the first run's
   #     report survives as its record.
-  ${=_git} -C "${fix}/Documents/Projects/mergerepo" merge --abort > /dev/null 2>&1
+  ${=_git} -C "${fix}/Dev/mergerepo" merge --abort > /dev/null 2>&1
   local claude_json_before
   claude_json_before="$(cat "${fix}/.claude.json")"
   rc=0
   out="$(_ar_run "${fix}" "${quiet}" wipe "${bdir}" --yes --topup \
         --repos-only 2>&1)" || rc=$?
-  if [[ ${rc} -eq 0 && ! -e "${fix}/Documents/Projects/mergerepo/CLAUDE.md" ]]; then
+  if [[ ${rc} -eq 0 && ! -e "${fix}/Dev/mergerepo/CLAUDE.md" ]]; then
     _pass "--repos-only reconciles a previously skipped repo (exit 0)"
   else
     _fail "--repos-only reconcile failed (rc=${rc})"

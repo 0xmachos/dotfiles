@@ -50,7 +50,28 @@ CLAUDE_JSON = HOME / ".claude.json"
 VSCODE_DIR = (HOME / "Library" / "Application Support" / "Code" / "User"
               / "globalStorage" / "anthropic.claude-code")
 DOWNLOADS_DIR = HOME / "Downloads"
-PROJECTS_DIR = HOME / "Documents" / "Projects"
+DEV_DIR = HOME / "Dev"
+
+
+def _home_root_repos():
+    """Git checkouts directly under the home root. Discovered by their .git,
+    never named: one is private and its name is on the public denylist."""
+    repos = []
+    try:
+        for child in sorted(HOME.iterdir()):
+            if (child.is_dir() and not child.is_symlink()
+                    and (child / ".git").is_dir()):
+                repos.append(child)
+    except OSError:
+        pass
+    return repos
+
+
+# Agent-artifact scope roots after the 2026-10-01 move off iCloud. ~/Dev is a
+# container (its children are repos, their children monorepo members); the
+# home-root checkouts are repos themselves. Replaces the single pre-move
+# ~/Documents/Projects container.
+PROJECT_ROOTS = (DEV_DIR,) + tuple(_home_root_repos())
 
 # Not in WIPE and not matching KEEP = UNKNOWN: protected, reported, never
 # deleted (fail-closed for state the CLI grows between runs).
@@ -219,7 +240,8 @@ def codex_entry_action(name):
 
 def discover_repos():
     """Union of ~/.claude.json project keys, decoded transcript slugs, and a
-    depth-2 artifact sweep of ~/Documents/Projects. Returns
+    depth-2 artifact sweep of the project roots (~/Dev container plus the
+    home-root repos). Returns
     {repo_path: {"artifacts": [paths], "backup_only": [paths],
                  "git": bool, "stale": bool}}."""
     candidates = set()
@@ -236,16 +258,25 @@ def discover_repos():
             decoded = slug_dir.name.replace("-", "/")
             if decoded.startswith("/") and Path(decoded).is_dir():
                 candidates.add(decoded)
-    if PROJECTS_DIR.is_dir():
-        for child in PROJECTS_DIR.iterdir():
+    # ~/Dev is a container: its children are repos, their children monorepo
+    # members (depth-2, as ~/Documents/Projects was before the move).
+    if DEV_DIR.is_dir():
+        for child in DEV_DIR.iterdir():
             if child.is_dir() and not child.is_symlink():
                 candidates.add(str(child))
                 for sub in child.iterdir():
                     if sub.is_dir() and not sub.is_symlink():
                         candidates.add(str(sub))
+    # The home-root repos are repos themselves; sweep each repo and its
+    # immediate subdirs (monorepo members).
+    for repo_root in _home_root_repos():
+        candidates.add(str(repo_root))
+        for sub in repo_root.iterdir():
+            if sub.is_dir() and not sub.is_symlink():
+                candidates.add(str(sub))
 
     excluded = read_exclusions()
-    projects_real = os.path.realpath(str(PROJECTS_DIR))
+    project_roots_real = [os.path.realpath(str(p)) for p in PROJECT_ROOTS]
     scope_roots = {os.path.realpath(str(p))
                    for p in (HOME, CLAUDE_DIR, CODEX_DIR, AGENTS_DIR,
                              VSCODE_DIR, BACKUP_ROOT)}
@@ -276,11 +307,12 @@ def discover_repos():
         if any(root_str == e or root_str.startswith(e + "/")
                for e in excluded):
             continue
-        # Only repos under ~/Documents/Projects are handled; others (a clone
-        # in ~/Desktop, an old /opt path) are skip-and-report, never an abort.
-        if not (root_str == projects_real
-                or root_str.startswith(projects_real + "/")):
-            skipped.append((root_str, "outside " + str(PROJECTS_DIR)))
+        # Only repos under a project root (~/Dev or a home-root repo) are
+        # handled; others (a clone in ~/Desktop, an old /opt path) are
+        # skip-and-report, never an abort.
+        if not any(root_str == r or root_str.startswith(r + "/")
+                   for r in project_roots_real):
+            skipped.append((root_str, "outside the project roots"))
             continue
         # Monorepo member (own artifacts, no own .git): attach to the
         # enclosing repo so the dirty gate and git handling apply.
@@ -725,7 +757,7 @@ def cmd_plan(_args):
 # --------------------------------------------------------------------- wipe
 
 def _under_allowed_roots(path):
-    roots = [CLAUDE_DIR, CODEX_DIR, AGENTS_DIR, VSCODE_DIR, PROJECTS_DIR]
+    roots = [CLAUDE_DIR, CODEX_DIR, AGENTS_DIR, VSCODE_DIR, *PROJECT_ROOTS]
     p = Path(path)
     # Lexical containment of the unresolved path (the final symlink is never
     # followed), plus the resolved PARENT must stay under HOME so a symlinked
