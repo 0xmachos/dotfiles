@@ -4,7 +4,9 @@
 # Guards deploy skew between claude/settings.json and ~/.claude/: every
 # ~/.claude/<file> that settings.json invokes as a command (PreToolUse /
 # PostToolUse hooks + statusline commands) must be
-#   1. registered in the bittersweet claude_files map (hermetic, always runs);
+#   1. registered for deploy (hermetic, always runs): a hooks/<name> file must
+#      exist in claude/hooks/, which install_dotfiles links per file; any other
+#      file needs a bittersweet claude_files entry;
 #   2. present in ~/.claude/ (environment-gated: runs only when
 #      ~/.claude/settings.json links back to claude/settings.json).
 # Motivating bug (2026-06): ssh-redirect-hook was in settings.json, the map and
@@ -44,12 +46,12 @@ function run_hook_links {
   local ref dest
   while IFS= read -r ref; do
     [[ -z "${ref}" ]] && continue
-    dest="${ref##*/}"
+    dest="${ref#*/.claude/}"
     [[ -n "${seen[${dest}]+_}" ]] && continue
     seen[${dest}]=1
     dests+=("${dest}")
   done < <(jq -r '.. | objects | .command // empty' < "${settings}" \
-            | /usr/bin/grep -oE '[~]/\.claude/[A-Za-z0-9._-]+' || true)
+            | /usr/bin/grep -oE '[~]/\.claude/(hooks/)?[A-Za-z0-9._-]+' || true)
 
   if (( ${#dests[@]} == 0 )); then
     # No commands at all = minimal not-yet-synced config (skip); commands but
@@ -64,7 +66,13 @@ function run_hook_links {
 
   # 1. Registration parity.
   for dest in "${dests[@]}"; do
-    if /usr/bin/grep -qE "\"claude/[^\"]+:${dest}\"" "${bittersweet}"; then
+    if [[ "${dest}" == hooks/* ]]; then
+      if [[ -f "${SCRIPT_DIR}/claude/${dest}" ]]; then
+        _pass "registered: ${dest} in claude/hooks/"
+      else
+        _fail "${dest} invoked by settings.json but absent from claude/hooks/"
+      fi
+    elif /usr/bin/grep -qE "\"claude/[^\"]+:${dest}\"" "${bittersweet}"; then
       _pass "registered: ${dest} in bittersweet claude_files map"
     else
       _fail "${dest} invoked by settings.json but absent from bittersweet claude_files map — add it"

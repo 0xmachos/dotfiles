@@ -1,7 +1,7 @@
 #!/bin/zsh
 # dotfiles/tests/sudo-askpass
 #
-# Behavioural test for claude/sudo-askpass-hook — the PreToolUse hook that
+# Behavioural test for claude/hooks/sudo-askpass-hook — the PreToolUse hook that
 # DENIES `sudo -n` sent over ssh to a host whose sudo runs through an askpass,
 # where -n always fails. Feeds Bash tool payloads as stdin JSON and asserts the
 # verdict. The host list comes from the hook's own environment, so the suite
@@ -16,7 +16,7 @@
 
 function _sudo_askpass_run {
   jq -n --arg c "$1" '{tool_name:"Bash", tool_input:{command:$c}}' \
-    | SUDO_ASKPASS_HOSTS="box-claude other-claude" /bin/zsh "${SCRIPT_DIR}/claude/sudo-askpass-hook"
+    | SUDO_ASKPASS_HOSTS="box-claude other-claude" /bin/zsh "${SCRIPT_DIR}/claude/hooks/sudo-askpass-hook"
 }
 
 function _sudo_askpass_expect {
@@ -35,8 +35,8 @@ function run_sudo_askpass {
 
   # claude/ is gitignored and synced out of band: an absent hook is pending
   # sync, not a regression.
-  if [[ ! -f "${SCRIPT_DIR}/claude/sudo-askpass-hook" ]]; then
-    _skip "claude/sudo-askpass-hook absent — claude/ not yet synced to this machine"
+  if [[ ! -f "${SCRIPT_DIR}/claude/hooks/sudo-askpass-hook" ]]; then
+    _skip "claude/hooks/sudo-askpass-hook absent — claude/ not yet synced to this machine"
     return 0
   fi
   if ! [[ -x "$(command -v jq)" ]]; then
@@ -65,7 +65,7 @@ function run_sudo_askpass {
 
   # Fail-open on malformed input.
   local out
-  out="$(printf 'not json' | /bin/zsh "${SCRIPT_DIR}/claude/sudo-askpass-hook")"
+  out="$(printf 'not json' | /bin/zsh "${SCRIPT_DIR}/claude/hooks/sudo-askpass-hook")"
   if [[ -z "${out}" ]]; then
     _pass "PASS: malformed payload fails open"
   else

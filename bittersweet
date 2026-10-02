@@ -523,13 +523,13 @@ function install_dotfiles {
   local _harden_count=0
   local _error_count=0
   # null_glob (function-scoped): claude/ is gitignored and synced out of band,
-  # so hosts/, skills/, rules/ and agents/ can be empty on a fresh clone, and
-  # an unmatched glob would abort the deploy under set -e. setopt, not (N)
-  # qualifiers: shellcheck --shell=bash cannot parse them. Set before the
-  # arrays so their globs see it.
+  # so hosts/, hooks/, skills/, rules/ and agents/ can be empty on a fresh
+  # clone, and an unmatched glob would abort the deploy under set -e. setopt,
+  # not (N) qualifiers: shellcheck --shell=bash cannot parse them. Set before
+  # the arrays so their globs see it.
   setopt local_options null_glob
 
-  local -ar dot_dirs=(.ssh .extra .codex .codex/rules .config/git .config/uv .config/herdr .claude .claude/skills .claude/rules .claude/agents)
+  local -ar dot_dirs=(.ssh .extra .codex .codex/rules .config/git .config/uv .config/herdr .claude .claude/hooks .claude/skills .claude/rules .claude/agents)
   local -ar dot_files=(.zshrc .functions .completions .aliases)
   local -ar ssh_configs=(config .extra_ssh)
   local -ar git_configs=(config ignore allowed_signers)
@@ -538,20 +538,6 @@ function install_dotfiles {
     "claude/statusline-command:statusline-command"
     "claude/subagent-statusline:subagent-statusline"
     "claude/global-claude.md:CLAUDE.md"
-    "claude/lint-hook:lint-hook"
-    "claude/rm-redirect-hook:rm-redirect-hook"
-    "claude/ssh-redirect-hook:ssh-redirect-hook"
-    "claude/sudo-askpass-hook:sudo-askpass-hook"
-    "claude/git-sign-hook:git-sign-hook"
-    "claude/container-tmp-hook:container-tmp-hook"
-    "claude/md5-guard-hook:md5-guard-hook"
-    "claude/md5-write-hook:md5-write-hook"
-    "claude/tmp-guard-hook:tmp-guard-hook"
-    "claude/fetch-route-hook:fetch-route-hook"
-    "claude/muse-exec-hook:muse-exec-hook"
-    "claude/gh-publish-hook:gh-publish-hook"
-    "claude/git-bypass-hook:git-bypass-hook"
-    "claude/session-host-context:session-host-context"
     "claude/hosts:hosts"
     "claude/output-styles:output-styles"
   )
@@ -643,6 +629,15 @@ function install_dotfiles {
     src="${claude_file%%:*}"
     dest="${claude_file##*:}"
     _symlink "${SCRIPT_DIR}/${src}" "${HOME}/.claude/${dest}"
+  done
+
+  # Per-file into a real ~/.claude/hooks/, never a directory link: third-party
+  # integrations (herdr) install their own hooks there.
+  local hook_file hook_name
+  for hook_file in "${SCRIPT_DIR}"/claude/hooks/*; do
+    [[ -f "${hook_file}" ]] || continue
+    hook_name="${hook_file##*/}"
+    _symlink "${hook_file}" "${HOME}/.claude/hooks/${hook_name}"
   done
 
   local skill_dir skill_name

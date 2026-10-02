@@ -1,7 +1,7 @@
 #!/bin/zsh
 # dotfiles/tests/container-tmp
 #
-# Behavioural test for claude/container-tmp-hook — the PreToolUse hook that
+# Behavioural test for claude/hooks/container-tmp-hook — the PreToolUse hook that
 # denies Apple `container` builds/mounts rooted in tmp paths (home-scoped file
 # sharing silently shares them as empty).
 # Feeds commands plus a cwd as stdin JSON; asserts DENY for tmp-rooted build
@@ -18,7 +18,7 @@ function _container_tmp_run {
   # $1 = command, $2 = cwd (default $HOME).
   jq -n --arg c "$1" --arg d "${2:-${HOME}}" \
     '{tool_name:"Bash", tool_input:{command:$c}, cwd:$d}' \
-    | /bin/zsh "${SCRIPT_DIR}/claude/container-tmp-hook"
+    | /bin/zsh "${SCRIPT_DIR}/claude/hooks/container-tmp-hook"
 }
 
 function _container_tmp_expect {
@@ -36,8 +36,8 @@ function run_container_tmp {
   _section "container tmp-path hook"
 
   # claude/ is gitignored: an absent hook is a skip.
-  if [[ ! -f "${SCRIPT_DIR}/claude/container-tmp-hook" ]]; then
-    _skip "claude/container-tmp-hook absent — claude/ not yet synced to this machine"
+  if [[ ! -f "${SCRIPT_DIR}/claude/hooks/container-tmp-hook" ]]; then
+    _skip "claude/hooks/container-tmp-hook absent — claude/ not yet synced to this machine"
     return 0
   fi
 

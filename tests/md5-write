@@ -1,7 +1,7 @@
 #!/bin/zsh
 # dotfiles/tests/md5-write
 #
-# Behavioural test for claude/md5-write-hook — the PreToolUse hook that DENIES
+# Behavioural test for claude/hooks/md5-write-hook — the PreToolUse hook that DENIES
 # a write putting MD5 into a file. Feeds tool payloads as stdin JSON and
 # asserts the verdict: DENY for MD5 call sites in source; PASS for SHA-256,
 # MD5 in a comment, prose files, content naming the guard, and words that
@@ -21,14 +21,14 @@ function _md5_write_run {
   # Hook stdout for a Write of content $2 to path $1.
   jq -n --arg f "$1" --arg c "$2" \
     '{tool_name:"Write", tool_input:{file_path:$f, content:$c}}' \
-    | /bin/zsh "${SCRIPT_DIR}/claude/md5-write-hook"
+    | /bin/zsh "${SCRIPT_DIR}/claude/hooks/md5-write-hook"
 }
 
 function _md5_write_run_edit {
   # Same, as an Edit (new_string, not content).
   jq -n --arg f "$1" --arg c "$2" \
     '{tool_name:"Edit", tool_input:{file_path:$f, old_string:"x", new_string:$c}}' \
-    | /bin/zsh "${SCRIPT_DIR}/claude/md5-write-hook"
+    | /bin/zsh "${SCRIPT_DIR}/claude/hooks/md5-write-hook"
 }
 
 function _md5_write_expect {
@@ -49,8 +49,8 @@ function run_md5_write {
 
   # claude/ is gitignored and synced out of band: an absent hook is pending
   # sync, not a regression.
-  if [[ ! -f "${SCRIPT_DIR}/claude/md5-write-hook" ]]; then
-    _skip "claude/md5-write-hook absent — claude/ not yet synced to this machine"
+  if [[ ! -f "${SCRIPT_DIR}/claude/hooks/md5-write-hook" ]]; then
+    _skip "claude/hooks/md5-write-hook absent — claude/ not yet synced to this machine"
     return 0
   fi
 
@@ -169,12 +169,12 @@ h = hashlib.md5(d)' 'content naming the guard, in a comment'
   fi
 
   # Malformed and irrelevant payloads allow the write (fail-open).
-  if [[ -z "$(printf '%s' '{}' | /bin/zsh "${SCRIPT_DIR}/claude/md5-write-hook")" ]]; then
+  if [[ -z "$(printf '%s' '{}' | /bin/zsh "${SCRIPT_DIR}/claude/hooks/md5-write-hook")" ]]; then
     _pass "fail-open: payload with no content allows the write"
   else
     _fail "fail-open: payload with no content produced a verdict"
   fi
-  if [[ -z "$(printf '%s' 'not json' | /bin/zsh "${SCRIPT_DIR}/claude/md5-write-hook")" ]]; then
+  if [[ -z "$(printf '%s' 'not json' | /bin/zsh "${SCRIPT_DIR}/claude/hooks/md5-write-hook")" ]]; then
     _pass "fail-open: unparseable payload allows the write"
   else
     _fail "fail-open: unparseable payload produced a verdict"

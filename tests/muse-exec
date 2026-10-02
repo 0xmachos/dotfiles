@@ -1,7 +1,7 @@
 #!/bin/zsh
 # dotfiles/tests/muse-exec
 #
-# Behavioural test for claude/muse-exec-hook (PreToolUse guard on headless
+# Behavioural test for claude/hooks/muse-exec-hook (PreToolUse guard on headless
 # `muse exec`). Feeds commands as stdin JSON and asserts the verdict:
 #   - DENY: short timeout, open stdin, forbidden flags, a non-bare muse word
 #     without the verify-reminder env var (--provider echo exempts rules 2, 5)
@@ -22,7 +22,7 @@
 function _muse_exec_run {
   # Echo the hook's stdout for Bash command $1.
   jq -n --arg c "$1" '{tool_name:"Bash", tool_input:{command:$c}}' \
-    | /bin/zsh "${SCRIPT_DIR}/claude/muse-exec-hook"
+    | /bin/zsh "${SCRIPT_DIR}/claude/hooks/muse-exec-hook"
 }
 
 function _muse_exec_expect {
@@ -40,8 +40,8 @@ function run_muse_exec {
   _section "muse exec guard hook"
 
   # claude/ is gitignored: an absent hook is a skip, not a failure.
-  if [[ ! -f "${SCRIPT_DIR}/claude/muse-exec-hook" ]]; then
-    _skip "claude/muse-exec-hook absent — claude/ not yet synced to this machine"
+  if [[ ! -f "${SCRIPT_DIR}/claude/hooks/muse-exec-hook" ]]; then
+    _skip "claude/hooks/muse-exec-hook absent — claude/ not yet synced to this machine"
     return 0
   fi
 
@@ -204,7 +204,7 @@ function run_muse_exec {
     'unterminated heredoc, non-shell consumer, body treated as data'
 
   # --- Heredoc shell consumers (2026-09-25) ---------------------------------
-  # Shell consumers, as in claude/md5-guard-hook's _md5_guard_scan_heredocs:
+  # Shell consumers, as in claude/hooks/md5-guard-hook's _md5_guard_scan_heredocs:
   # ssh (any invocation), su (every form), sudo -s/-i/--shell/--login,
   # doas -s/-i, absolute/relative shell paths, and any word starting with $
   # (unresolvable). Each DENY has a same-shape PASS proving an exact-word
@@ -466,12 +466,12 @@ function run_muse_exec {
 
   # --- Malformed / non-Bash payloads must fail open, never block ----------
 
-  if [[ -z "$(printf '%s' '{}' | /bin/zsh "${SCRIPT_DIR}/claude/muse-exec-hook")" ]]; then
+  if [[ -z "$(printf '%s' '{}' | /bin/zsh "${SCRIPT_DIR}/claude/hooks/muse-exec-hook")" ]]; then
     _pass "fail-open: payload with no command allowed through"
   else
     _fail "fail-open: payload with no command produced a verdict"
   fi
-  if [[ -z "$(printf '%s' 'not json' | /bin/zsh "${SCRIPT_DIR}/claude/muse-exec-hook")" ]]; then
+  if [[ -z "$(printf '%s' 'not json' | /bin/zsh "${SCRIPT_DIR}/claude/hooks/muse-exec-hook")" ]]; then
     _pass "fail-open: unparseable payload allowed through"
   else
     _fail "fail-open: unparseable payload produced a verdict"

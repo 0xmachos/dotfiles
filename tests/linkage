@@ -233,28 +233,16 @@ function run_linkage {
     [op-homelab]=install_dotfiles
   )
 
-  # claude/ files → owning subcommand (rules/, skills/ and agents/ are dynamic)
+  # claude/ files → owning subcommand (hooks/, rules/, skills/ and agents/ are
+  # dynamic)
   local -A claude_items=(
     [settings.json]=install_dotfiles
     [global-claude.md]=install_dotfiles
     [statusline-command]=install_dotfiles
     [subagent-statusline]=install_dotfiles
-    [lint-hook]=install_dotfiles
-    [rm-redirect-hook]=install_dotfiles
-    [ssh-redirect-hook]=install_dotfiles
-    [sudo-askpass-hook]=install_dotfiles
-    [git-sign-hook]=install_dotfiles
-    [container-tmp-hook]=install_dotfiles
-    [md5-guard-hook]=install_dotfiles
-    [md5-write-hook]=install_dotfiles
-    [tmp-guard-hook]=install_dotfiles
-    [fetch-route-hook]=install_dotfiles
-    [muse-exec-hook]=install_dotfiles
-    [gh-publish-hook]=install_dotfiles
-    [git-bypass-hook]=install_dotfiles
-    [session-host-context]=install_dotfiles
     [hosts]=install_dotfiles                 # Dynamic (per-host context files)
     [output-styles]=install_dotfiles         # Dynamic (custom output styles)
+    [hooks]=install_dotfiles                 # Dynamic (individual hooks)
     [rules]=install_dotfiles                 # Dynamic (individual rules)
     [skills]=install_dotfiles                # Dynamic (individual skills)
     [agents]=install_dotfiles                # Dynamic (individual subagents)
@@ -337,6 +325,11 @@ function run_linkage {
     elif [[ "${name}" != skills && "${name}" != rules && "${name}" != agents ]]; then
       _linkage_check_deployed "${claude_items[${name}]}" "claude/${name}"
     fi
+  done
+  local hook_file
+  for hook_file in claude/hooks/*(N); do
+    [[ -f "${hook_file}" ]] || continue
+    _linkage_check_deployed install_dotfiles "${hook_file}"
   done
 
   if (( fail_count == before_fails )); then

@@ -1,7 +1,7 @@
 #!/bin/zsh
 # dotfiles/tests/session-host-context
 #
-# Pins claude/session-host-context, the SessionStart hook that prints one line
+# Pins claude/hooks/session-host-context, the SessionStart hook that prints one line
 # of host identity (hostname, macOS version+build, Claude Code version).
 # Feeds SessionStart JSON on stdin and asserts stdout and exit code directly;
 # the hook emits no hookSpecificOutput verdict, so _hook_verdict is not used.
@@ -22,7 +22,7 @@ function _shc_run {
   local payload="$1"
   shift
   printf '%s' "${payload}" \
-    | env "$@" /bin/zsh "${SCRIPT_DIR}/claude/session-host-context" || true
+    | env "$@" /bin/zsh "${SCRIPT_DIR}/claude/hooks/session-host-context" || true
 }
 
 function _shc_expect_exit0 {
@@ -30,7 +30,7 @@ function _shc_expect_exit0 {
   local payload="$1" label="$2" got=0
   shift 2
   printf '%s' "${payload}" \
-    | env "$@" /bin/zsh "${SCRIPT_DIR}/claude/session-host-context" >/dev/null \
+    | env "$@" /bin/zsh "${SCRIPT_DIR}/claude/hooks/session-host-context" >/dev/null \
     || got=$?
   if [[ "${got}" -eq 0 ]]; then
     _pass "${label}: exit 0"
@@ -43,8 +43,8 @@ function run_session_host_context {
   _section "Session host context hook"
 
   # Hook absent (clean clone, claude/ not synced): skip, not a regression.
-  if [[ ! -f "${SCRIPT_DIR}/claude/session-host-context" ]]; then
-    _skip "claude/session-host-context absent — claude/ not yet synced to this machine"
+  if [[ ! -f "${SCRIPT_DIR}/claude/hooks/session-host-context" ]]; then
+    _skip "claude/hooks/session-host-context absent — claude/ not yet synced to this machine"
     return 0
   fi
 

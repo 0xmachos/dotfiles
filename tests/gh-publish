@@ -1,7 +1,7 @@
 #!/bin/zsh
 # dotfiles/tests/gh-publish
 #
-# Behavioural test for claude/gh-publish-hook, the PreToolUse gate on public
+# Behavioural test for claude/hooks/gh-publish-hook, the PreToolUse gate on public
 # GitHub writes (gh issue/pr/release create|edit|comment, gh api writes).
 # Commands go in as stdin JSON; asserts DENY vs PASS across the five layers:
 # secrets (gitleaks), PII denylist + SSH aliases, hard-wrap, .reviewed
@@ -30,7 +30,7 @@ function _gp_test_run {
       GH_PUBLISH_NO_IDENTITY="${4-1}" \
       GH_PUBLISH_OS="7.7:99Z999z" \
       GH_CONFIG_DIR="${_gp_dir}/gh" \
-      /bin/zsh "${SCRIPT_DIR}/claude/gh-publish-hook"
+      /bin/zsh "${SCRIPT_DIR}/claude/hooks/gh-publish-hook"
 }
 
 function _gp_test_review {
@@ -91,8 +91,8 @@ function run_gh_publish {
   _section "gh publish gate hook"
 
   # claude/ is gitignored: an absent hook skips the suite, not a regression.
-  if [[ ! -f "${SCRIPT_DIR}/claude/gh-publish-hook" ]]; then
-    _skip "claude/gh-publish-hook absent — claude/ not yet synced to this machine"
+  if [[ ! -f "${SCRIPT_DIR}/claude/hooks/gh-publish-hook" ]]; then
+    _skip "claude/hooks/gh-publish-hook absent — claude/ not yet synced to this machine"
     return 0
   fi
 
@@ -407,7 +407,7 @@ function run_gh_publish {
       GH_PUBLISH_SSH_CONFIG="${_gp_dir}/sshcfg" \
       GH_PUBLISH_NO_GITLEAKS='' GH_PUBLISH_NO_IDENTITY=1 \
       GH_PUBLISH_OS="7.7:99Z999z" \
-      /bin/zsh "${SCRIPT_DIR}/claude/gh-publish-hook")"
+      /bin/zsh "${SCRIPT_DIR}/claude/hooks/gh-publish-hook")"
   if [[ "${out}" == *'gitleaks error'* ]]; then
     _pass "DENY: gitleaks error exit fails closed"
   else

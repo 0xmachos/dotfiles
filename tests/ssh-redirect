@@ -1,7 +1,7 @@
 #!/bin/zsh
 # dotfiles/tests/ssh-redirect
 #
-# Behavioural test for claude/ssh-redirect-hook (PreToolUse): denies
+# Behavioural test for claude/hooks/ssh-redirect-hook (PreToolUse): denies
 # ssh/scp/sftp/rsync/sshfs/mosh to the user's SSH alias (or its `tail-`
 # variant) and points at the `<host>-claude` twin. Feeds commands as stdin
 # JSON, asserts DENY vs PASS.
@@ -28,7 +28,7 @@ function _ssh_redirect_run {
   # STDOUT in zsh, and that must fail via _hook_verdict's INVALID.
   jq -n --arg c "$1" '{tool_name:"Bash", tool_input:{command:$c}}' \
     | SSH_REDIRECT_CONFIG="${SSHR_T_CONFIG}" HOME="${SSHR_T_HOME}" \
-      /bin/zsh "${SCRIPT_DIR}/claude/ssh-redirect-hook" 2>&1
+      /bin/zsh "${SCRIPT_DIR}/claude/hooks/ssh-redirect-hook" 2>&1
 }
 
 function _ssh_redirect_run_env {
@@ -37,7 +37,7 @@ function _ssh_redirect_run_env {
   local cfg="$1" home="$2" cmd="$3"
   jq -n --arg c "${cmd}" '{tool_name:"Bash", tool_input:{command:$c}}' \
     | SSH_REDIRECT_CONFIG="${cfg}" HOME="${home}" \
-      /bin/zsh "${SCRIPT_DIR}/claude/ssh-redirect-hook" 2>&1
+      /bin/zsh "${SCRIPT_DIR}/claude/hooks/ssh-redirect-hook" 2>&1
 }
 
 function _ssh_redirect_expect {
@@ -67,8 +67,8 @@ function run_ssh_redirect {
   _section "ssh → claude-alias redirect hook"
 
   # claude/ is gitignored: an absent hook skips the suite.
-  if [[ ! -f "${SCRIPT_DIR}/claude/ssh-redirect-hook" ]]; then
-    _skip "claude/ssh-redirect-hook absent — claude/ not yet synced to this machine"
+  if [[ ! -f "${SCRIPT_DIR}/claude/hooks/ssh-redirect-hook" ]]; then
+    _skip "claude/hooks/ssh-redirect-hook absent — claude/ not yet synced to this machine"
     return 0
   fi
 
@@ -209,7 +209,7 @@ function run_ssh_redirect {
   local skip_out skip_got
   skip_out="$(jq -n --arg c 'ssh hosta' '{tool_name:"Bash", tool_input:{command:$c}}' \
     | SSH_REDIRECT_CONFIG="${SSHR_T_CONFIG}" HOME="${SSHR_T_HOME}" SSH_REDIRECT_SKIP=1 \
-      /bin/zsh "${SCRIPT_DIR}/claude/ssh-redirect-hook" 2>&1)"
+      /bin/zsh "${SCRIPT_DIR}/claude/hooks/ssh-redirect-hook" 2>&1)"
   skip_got="$(_hook_verdict "${skip_out}")"
   if [[ "${skip_got}" == DENY ]]; then
     _pass "no bypass: SSH_REDIRECT_SKIP=1 in the hook's own environment still denies"

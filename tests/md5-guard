@@ -1,7 +1,7 @@
 #!/bin/zsh
 # dotfiles/tests/md5-guard
 #
-# Behavioural test for claude/md5-guard-hook (PreToolUse: denies MD5 tools,
+# Behavioural test for claude/hooks/md5-guard-hook (PreToolUse: denies MD5 tools,
 # points at `shasum -a 256`). Feeds commands as stdin JSON, asserts the verdict:
 # DENY for md5/md5sum/gmd5sum/md5deep and `openssl md5` at a command position
 # (through wrappers, subshells, command substitution); PASS for lookalikes
@@ -18,13 +18,13 @@
 
 function _md5_guard_run {
   jq -n --arg c "$1" '{tool_name:"Bash", tool_input:{command:$c}}' \
-    | /bin/zsh "${SCRIPT_DIR}/claude/md5-guard-hook"
+    | /bin/zsh "${SCRIPT_DIR}/claude/hooks/md5-guard-hook"
 }
 
 function _md5_guard_run_file {
   # The 1MB fixtures exceed ARG_MAX, so they go through a file, not argv.
   jq -Rs '{tool_name:"Bash", tool_input:{command:.}}' < "$1" \
-    | /bin/zsh "${SCRIPT_DIR}/claude/md5-guard-hook"
+    | /bin/zsh "${SCRIPT_DIR}/claude/hooks/md5-guard-hook"
 }
 
 function _md5_guard_expect_file {
@@ -53,8 +53,8 @@ function run_md5_guard {
   _section "md5 → sha256 guard hook"
 
   # claude/ syncs out of band: an absent hook is pending sync, so skip.
-  if [[ ! -f "${SCRIPT_DIR}/claude/md5-guard-hook" ]]; then
-    _skip "claude/md5-guard-hook absent — claude/ not yet synced to this machine"
+  if [[ ! -f "${SCRIPT_DIR}/claude/hooks/md5-guard-hook" ]]; then
+    _skip "claude/hooks/md5-guard-hook absent — claude/ not yet synced to this machine"
     return 0
   fi
 
@@ -463,12 +463,12 @@ EOF"
   _md5_guard_expect DENY "${hd}" 'cat <<EOF with two substitution lines — the deny stays valid JSON'
 
   # Malformed and non-Bash payloads fail open, never block.
-  if [[ -z "$(printf '%s' '{}' | /bin/zsh "${SCRIPT_DIR}/claude/md5-guard-hook")" ]]; then
+  if [[ -z "$(printf '%s' '{}' | /bin/zsh "${SCRIPT_DIR}/claude/hooks/md5-guard-hook")" ]]; then
     _pass "fail-open: payload with no command allowed through"
   else
     _fail "fail-open: payload with no command produced a verdict"
   fi
-  if [[ -z "$(printf '%s' 'not json' | /bin/zsh "${SCRIPT_DIR}/claude/md5-guard-hook")" ]]; then
+  if [[ -z "$(printf '%s' 'not json' | /bin/zsh "${SCRIPT_DIR}/claude/hooks/md5-guard-hook")" ]]; then
     _pass "fail-open: unparseable payload allowed through"
   else
     _fail "fail-open: unparseable payload produced a verdict"

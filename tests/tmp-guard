@@ -1,7 +1,7 @@
 #!/bin/zsh
 # dotfiles/tests/tmp-guard
 #
-# Behavioural test for claude/tmp-guard-hook, the PreToolUse hook that denies
+# Behavioural test for claude/hooks/tmp-guard-hook, the PreToolUse hook that denies
 # writes into /tmp, /private/tmp, /var/tmp, /private/var/tmp, /var/folders and
 # /private/var/folders and points at ~/Library/Caches/tint/<repo>-<job>/.
 # Feeds tool calls as stdin JSON and asserts the verdict:
@@ -24,27 +24,27 @@
 function _tmp_guard_run {
   # Echo the hook's stdout for Bash command $1.
   jq -n --arg c "$1" '{tool_name:"Bash", tool_input:{command:$c}}' \
-    | /bin/zsh "${SCRIPT_DIR}/claude/tmp-guard-hook"
+    | /bin/zsh "${SCRIPT_DIR}/claude/hooks/tmp-guard-hook"
 }
 
 function _tmp_guard_run_path {
   # Echo the hook's stdout for tool $1 with input key $2 set to path $3.
   jq -n --arg t "$1" --arg k "$2" --arg p "$3" \
     '{tool_name:$t, tool_input:({($k):$p, content:"x"})}' \
-    | /bin/zsh "${SCRIPT_DIR}/claude/tmp-guard-hook"
+    | /bin/zsh "${SCRIPT_DIR}/claude/hooks/tmp-guard-hook"
 }
 
 function _tmp_guard_run_file {
   # Feed a command string held in a file (too large for argv).
   jq -Rs '{tool_name:"Bash", tool_input:{command:.}}' < "$1" \
-    | /bin/zsh "${SCRIPT_DIR}/claude/tmp-guard-hook"
+    | /bin/zsh "${SCRIPT_DIR}/claude/hooks/tmp-guard-hook"
 }
 
 function _tmp_guard_run_env {
   # Echo the hook's stdout for Bash command $1 run by a zsh that reads the
   # startup file directory $2 (ZDOTDIR), stderr folded in.
   jq -n --arg c "$1" '{tool_name:"Bash", tool_input:{command:$c}}' \
-    | ZDOTDIR="$2" /bin/zsh "${SCRIPT_DIR}/claude/tmp-guard-hook" 2>&1 || true
+    | ZDOTDIR="$2" /bin/zsh "${SCRIPT_DIR}/claude/hooks/tmp-guard-hook" 2>&1 || true
 }
 
 function _tmp_guard_check {
@@ -76,8 +76,8 @@ function run_tmp_guard {
   _section "tmp scratch write guard hook"
 
   # claude/ is gitignored, so the hook is absent on a clean clone and in CI.
-  if [[ ! -f "${SCRIPT_DIR}/claude/tmp-guard-hook" ]]; then
-    _skip "claude/tmp-guard-hook absent - claude/ not yet synced to this machine"
+  if [[ ! -f "${SCRIPT_DIR}/claude/hooks/tmp-guard-hook" ]]; then
+    _skip "claude/hooks/tmp-guard-hook absent - claude/ not yet synced to this machine"
     return 0
   fi
 
@@ -721,12 +721,12 @@ function run_tmp_guard {
   _tmp_guard_expect DENY 'sudo -u root nice -n 5 timeout 9 cp a /tmp/b' 'several wrappers'
 
   # A `local` below function level is a regression even if no fixture hits it.
-  if /usr/bin/grep -nE '^ {3,}local ' "${SCRIPT_DIR}/claude/tmp-guard-hook" >/dev/null; then
+  if /usr/bin/grep -nE '^ {3,}local ' "${SCRIPT_DIR}/claude/hooks/tmp-guard-hook" >/dev/null; then
     _fail "hook source declares a local below function level"
   else
     _pass "hook source declares every local at function level"
   fi
-  if [[ "$(<"${SCRIPT_DIR}/claude/tmp-guard-hook")" == *_SKIP* ]]; then
+  if [[ "$(<"${SCRIPT_DIR}/claude/hooks/tmp-guard-hook")" == *_SKIP* ]]; then
     _fail "hook source mentions a skip variable"
   else
     _pass "hook source has no skip variable"
@@ -766,7 +766,7 @@ function run_tmp_guard {
     _pass "deny reason offers no bypass"
   fi
   printf '%s' '{"tool_name":"Bash","tool_input":{"command":"echo hi > /tmp/x"}}' \
-    | /bin/zsh "${SCRIPT_DIR}/claude/tmp-guard-hook" >/dev/null
+    | /bin/zsh "${SCRIPT_DIR}/claude/hooks/tmp-guard-hook" >/dev/null
   rc=$?
   if (( rc == 0 )); then
     _pass "exit status 0 on deny"
@@ -774,7 +774,7 @@ function run_tmp_guard {
     _fail "exit status ${rc} on deny"
   fi
   printf '%s' '{"tool_name":"Bash","tool_input":{"command":"ls"}}' \
-    | /bin/zsh "${SCRIPT_DIR}/claude/tmp-guard-hook" >/dev/null
+    | /bin/zsh "${SCRIPT_DIR}/claude/hooks/tmp-guard-hook" >/dev/null
   rc=$?
   if (( rc == 0 )); then
     _pass "exit status 0 on pass"
@@ -788,7 +788,7 @@ function run_tmp_guard {
       '{"tool_input":{"command":5}}' '{"tool_input":{"command":""}}' \
       '{"tool_input":{"command":null}}' '{"tool_input":{"file_path":5}}' \
       '{"tool_input":{"file_path":""}}' '{"tool_input":"x"}' '{"tool_name":"Bash"}'; do
-    if [[ -z "$(printf '%s' "${payload}" | /bin/zsh "${SCRIPT_DIR}/claude/tmp-guard-hook" 2>/dev/null)" ]]; then
+    if [[ -z "$(printf '%s' "${payload}" | /bin/zsh "${SCRIPT_DIR}/claude/hooks/tmp-guard-hook" 2>/dev/null)" ]]; then
       _pass "fail-open: payload ${payload:-<empty>} allowed through"
     else
       _fail "fail-open: payload ${payload:-<empty>} produced output"

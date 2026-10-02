@@ -1,7 +1,7 @@
 #!/bin/zsh
 # dotfiles/tests/git-sign
 #
-# Pins claude/git-sign-hook (refusal fallback, re-sign nudge; PreToolUse
+# Pins claude/hooks/git-sign-hook (refusal fallback, re-sign nudge; PreToolUse
 # push-gate leg removed 2026-09-25), bin/git-sign-unpushed and the pre-push
 # gate, the actual boundary. Sandbox repos under $TMPDIR with
 # GIT_CONFIG_GLOBAL/SYSTEM nulled and a throwaway ed25519 key: no Secretive.
@@ -59,7 +59,7 @@ function _gs_hook {
   jq -n --arg e "${event}" --arg c "$2" --arg d "${3:-${SCRIPT_DIR}}" --arg r "${4:-}" --arg f "${field}" \
     '{hook_event_name:$e, tool_name:"Bash", cwd:$d,
       tool_input:{command:$c, description:"t"}} + {($f): $r}' \
-    | env "${GS_ENV[@]}" /bin/zsh "${SCRIPT_DIR}/claude/git-sign-hook"
+    | env "${GS_ENV[@]}" /bin/zsh "${SCRIPT_DIR}/claude/hooks/git-sign-hook"
 }
 
 function _gs_expect {
@@ -319,8 +319,8 @@ function run_git_sign {
   # dynamic scoping keeps the claude cases' locals visible to the refusal
   # cases they call).
   _gs_build_templates
-  if [[ ! -f "${SCRIPT_DIR}/claude/git-sign-hook" ]]; then
-    _skip "claude/git-sign-hook absent — claude/ not yet synced (pre-push cases still run)"
+  if [[ ! -f "${SCRIPT_DIR}/claude/hooks/git-sign-hook" ]]; then
+    _skip "claude/hooks/git-sign-hook absent — claude/ not yet synced (pre-push cases still run)"
   elif ! [[ -x "$(command -v jq)" ]]; then
     _skip "jq not installed (brew install jq)"
   else
@@ -479,7 +479,7 @@ function _git_sign_resign_cases {
   else
     _fail "pushed base commit was rewritten"
   fi
-  if [[ -f "${SCRIPT_DIR}/claude/git-sign-hook" ]] && command -v jq >/dev/null; then
+  if [[ -f "${SCRIPT_DIR}/claude/hooks/git-sign-hook" ]] && command -v jq >/dev/null; then
     _gs_expect PASS PostToolUse 'git commit -m x' "${repo}" '' 'no nudge once the range is clean'
   fi
 

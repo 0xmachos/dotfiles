@@ -1,7 +1,7 @@
 #!/bin/zsh
 # dotfiles/tests/git-bypass
 #
-# Behavioural test for claude/git-bypass-hook, the PreToolUse hook that
+# Behavioural test for claude/hooks/git-bypass-hook, the PreToolUse hook that
 # denies, at a real git command position, the forms that switch git hooks or
 # signing off: `--no-verify` (abbreviations, `-n`, short-flag clusters),
 # hooks.* / core.hooksPath writes and -c overrides, config section edits,
@@ -24,7 +24,7 @@
 
 function _hbg_test_run {
   jq -n --arg c "$1" '{tool_name:"Bash", tool_input:{command:$c}}' \
-    | /bin/zsh "${SCRIPT_DIR}/claude/git-bypass-hook"
+    | /bin/zsh "${SCRIPT_DIR}/claude/hooks/git-bypass-hook"
 }
 
 function _hbg_test_expect {
@@ -62,8 +62,8 @@ function run_git_bypass {
   _section "git hook-escape guard"
 
   # claude/ is gitignored: the hook is absent on a clean clone. Skip, don't die.
-  if [[ ! -f "${SCRIPT_DIR}/claude/git-bypass-hook" ]]; then
-    _skip "claude/git-bypass-hook absent — claude/ not yet synced to this machine"
+  if [[ ! -f "${SCRIPT_DIR}/claude/hooks/git-bypass-hook" ]]; then
+    _skip "claude/hooks/git-bypass-hook absent — claude/ not yet synced to this machine"
     return 0
   fi
 
@@ -410,7 +410,7 @@ function run_git_bypass {
 
   # --- ordinary git stays quiet ---------------------------------------------
   _hbg_test_expect PASS 'git log --oneline | head -5' 'log piped to head'
-  _hbg_test_expect PASS 'git diff HEAD~1 -- claude/git-bypass-hook' 'diff with a path'
+  _hbg_test_expect PASS 'git diff HEAD~1 -- claude/hooks/git-bypass-hook' 'diff with a path'
   _hbg_test_expect PASS 'git commit -F /tmp/msg.txt' 'commit -F'
   _hbg_test_expect PASS 'git commit --amend -C HEAD' 'commit --amend -C'
   _hbg_test_expect PASS 'git fetch origin && git rebase origin/main' 'fetch then rebase'
@@ -539,14 +539,14 @@ function run_git_bypass {
   zd="$(mktemp -d "${TMPDIR:-/tmp}/git-bypass.XXXXXX")"
   printf 'setopt ksharrays errexit shwordsplit\n' > "${zd}/.zshenv"
   zout="$(jq -n --arg c 'git commit -n' '{tool_name:"Bash", tool_input:{command:$c}}' \
-    | ZDOTDIR="${zd}" /bin/zsh "${SCRIPT_DIR}/claude/git-bypass-hook" 2>/dev/null)"
+    | ZDOTDIR="${zd}" /bin/zsh "${SCRIPT_DIR}/claude/hooks/git-bypass-hook" 2>/dev/null)"
   if [[ "$(_hook_verdict "${zout}")" == DENY ]]; then
     _pass "DENY: git commit -n with ksharrays/errexit/shwordsplit set in .zshenv"
   else
     _fail "git commit -n with option-changing .zshenv — expected DENY, got: ${zout:0:120}"
   fi
   zout="$(jq -n --arg c 'git status' '{tool_name:"Bash", tool_input:{command:$c}}' \
-    | ZDOTDIR="${zd}" /bin/zsh "${SCRIPT_DIR}/claude/git-bypass-hook" 2>&1)"
+    | ZDOTDIR="${zd}" /bin/zsh "${SCRIPT_DIR}/claude/hooks/git-bypass-hook" 2>&1)"
   if [[ -z "${zout}" ]]; then
     _pass "PASS: git status with option-changing .zshenv prints nothing"
   else
@@ -555,12 +555,12 @@ function run_git_bypass {
   /bin/rm -rf "${zd}"
 
   # --- malformed / non-Bash payloads must fail open, never block -----------
-  if [[ -z "$(printf '%s' '{}' | /bin/zsh "${SCRIPT_DIR}/claude/git-bypass-hook")" ]]; then
+  if [[ -z "$(printf '%s' '{}' | /bin/zsh "${SCRIPT_DIR}/claude/hooks/git-bypass-hook")" ]]; then
     _pass "fail-open: payload with no command allowed through"
   else
     _fail "fail-open: payload with no command produced a verdict"
   fi
-  if [[ -z "$(printf '%s' 'not json' | /bin/zsh "${SCRIPT_DIR}/claude/git-bypass-hook")" ]]; then
+  if [[ -z "$(printf '%s' 'not json' | /bin/zsh "${SCRIPT_DIR}/claude/hooks/git-bypass-hook")" ]]; then
     _pass "fail-open: unparseable payload allowed through"
   else
     _fail "fail-open: unparseable payload produced a verdict"

@@ -5,7 +5,7 @@
 #
 # dotfiles/tests/lint-hook
 #
-# Pins claude/lint-hook, the PostToolUse (Edit|Write) hook that lints a
+# Pins claude/hooks/lint-hook, the PostToolUse (Edit|Write) hook that lints a
 # written file and reports findings as hookSpecificOutput.additionalContext.
 # It never denies: verdicts are PASS (no output: clean, unrecognised or
 # skipped) or CONTEXT (a findings report). Every case also asserts exit 0
@@ -59,7 +59,7 @@ function _lh_exec {
   payloadf="$(/usr/bin/mktemp "${TMPDIR:-/tmp}/lint-hook-test.XXXXXX")"
   printf '%s' "${payload}" > "${payloadf}"
 
-  if env LINT_HOOK_LOG= "$@" /bin/zsh "${SCRIPT_DIR}/claude/lint-hook" < "${payloadf}" > "${outf}" 2> "${errf}"; then
+  if env LINT_HOOK_LOG= "$@" /bin/zsh "${SCRIPT_DIR}/claude/hooks/lint-hook" < "${payloadf}" > "${outf}" 2> "${errf}"; then
     LH_LAST_RC=0
   else
     LH_LAST_RC=$?
@@ -151,8 +151,8 @@ function run_lint_hook {
   _section "Lint hook (PostToolUse Edit|Write)"
 
   # Absent on a clean clone or before claude/ syncs: not a regression.
-  if [[ ! -f "${SCRIPT_DIR}/claude/lint-hook" ]]; then
-    _skip "claude/lint-hook absent — claude/ not yet synced to this machine"
+  if [[ ! -f "${SCRIPT_DIR}/claude/hooks/lint-hook" ]]; then
+    _skip "claude/hooks/lint-hook absent — claude/ not yet synced to this machine"
     return 0
   fi
 
@@ -397,7 +397,7 @@ function run_lint_hook {
     _lh_run "${LH_BARE}/wide.sh"
     ctx4="$(printf '%s' "${LH_LAST_STDOUT}" | jq -r '.hookSpecificOutput.additionalContext')"
     # The "<tool> found issues in <file>:" line sits outside BYTE_CAP by design
-    # (see claude/lint-hook's own header); strip it before measuring.
+    # (see claude/hooks/lint-hook's own header); strip it before measuring.
     bytes4="$(printf '%s\n' "${ctx4}" | /usr/bin/sed '1d' | LC_ALL=C /usr/bin/wc -c | tr -d ' ')"
     bodylines4="$(printf '%s\n' "${ctx4}" | /usr/bin/grep -c '^[0-9][0-9]*:[0-9][0-9]*:' || true)"
     if (( bytes4 <= 4096 )); then

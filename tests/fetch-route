@@ -1,7 +1,7 @@
 #!/bin/zsh
 # dotfiles/tests/fetch-route
 #
-# Test for claude/fetch-route-hook (PreToolUse). The hook denies:
+# Test for claude/hooks/fetch-route-hook (PreToolUse). The hook denies:
 #   - a GitHub host fetch on every matched tool, naming the gh command for
 #     that URL's shape
 #   - an X status post via WebFetch/Exa, naming X's oEmbed endpoint (allowed
@@ -24,7 +24,7 @@ function _fr_run_url {
   # WebFetch-shaped single-url payload.
   local tool="$1" url="$2"
   jq -n --arg t "${tool}" --arg u "${url}" '{tool_name:$t, tool_input:{url:$u}}' \
-    | /bin/zsh "${SCRIPT_DIR}/claude/fetch-route-hook"
+    | /bin/zsh "${SCRIPT_DIR}/claude/hooks/fetch-route-hook"
 }
 
 function _fr_run_urls {
@@ -34,14 +34,14 @@ function _fr_run_urls {
   local urls_json
   urls_json="$(printf '%s\n' "$@" | jq -R . | jq -s .)"
   jq -n --arg t "${tool}" --argjson u "${urls_json}" '{tool_name:$t, tool_input:{urls:$u}}' \
-    | /bin/zsh "${SCRIPT_DIR}/claude/fetch-route-hook"
+    | /bin/zsh "${SCRIPT_DIR}/claude/hooks/fetch-route-hook"
 }
 
 function _fr_run_search {
   # Search-shaped payload; tool defaults to WebSearch.
   local query="$1" tool="${2:-WebSearch}"
   jq -n --arg q "${query}" --arg t "${tool}" '{tool_name:$t, tool_input:{query:$q}}' \
-    | /bin/zsh "${SCRIPT_DIR}/claude/fetch-route-hook"
+    | /bin/zsh "${SCRIPT_DIR}/claude/hooks/fetch-route-hook"
 }
 
 function _fr_reason {
@@ -82,8 +82,8 @@ function run_fetch_route {
   _section "fetch → gh/oEmbed routing hook"
 
   # claude/ is gitignored and synced out of band: absent hook = skip.
-  if [[ ! -f "${SCRIPT_DIR}/claude/fetch-route-hook" ]]; then
-    _skip "claude/fetch-route-hook absent — claude/ not yet synced to this machine"
+  if [[ ! -f "${SCRIPT_DIR}/claude/hooks/fetch-route-hook" ]]; then
+    _skip "claude/hooks/fetch-route-hook absent — claude/ not yet synced to this machine"
     return 0
   fi
 
@@ -364,21 +364,21 @@ function run_fetch_route {
 
   local fo_out fo_rc
 
-  fo_out="$(printf '%s' '{}' | /bin/zsh "${SCRIPT_DIR}/claude/fetch-route-hook")"; fo_rc=$?
+  fo_out="$(printf '%s' '{}' | /bin/zsh "${SCRIPT_DIR}/claude/hooks/fetch-route-hook")"; fo_rc=$?
   if [[ -z "${fo_out}" && "${fo_rc}" -eq 0 ]]; then
     _pass "fail-open: payload with no tool_name allows the fetch (status 0, empty stdout)"
   else
     _fail "fail-open: payload with no tool_name — status ${fo_rc}, stdout: ${fo_out}"
   fi
 
-  fo_out="$(printf '%s' 'not json' | /bin/zsh "${SCRIPT_DIR}/claude/fetch-route-hook")"; fo_rc=$?
+  fo_out="$(printf '%s' 'not json' | /bin/zsh "${SCRIPT_DIR}/claude/hooks/fetch-route-hook")"; fo_rc=$?
   if [[ -z "${fo_out}" && "${fo_rc}" -eq 0 ]]; then
     _pass "fail-open: unparseable payload allows the fetch (status 0, empty stdout)"
   else
     _fail "fail-open: unparseable payload — status ${fo_rc}, stdout: ${fo_out}"
   fi
 
-  fo_out="$(printf '%s' '' | /bin/zsh "${SCRIPT_DIR}/claude/fetch-route-hook")"; fo_rc=$?
+  fo_out="$(printf '%s' '' | /bin/zsh "${SCRIPT_DIR}/claude/hooks/fetch-route-hook")"; fo_rc=$?
   if [[ -z "${fo_out}" && "${fo_rc}" -eq 0 ]]; then
     _pass "fail-open: empty payload allows the fetch (status 0, empty stdout)"
   else
@@ -386,7 +386,7 @@ function run_fetch_route {
   fi
 
   # tool_name present, no url/urls.
-  fo_out="$(jq -n '{tool_name:"WebFetch", tool_input:{}}' | /bin/zsh "${SCRIPT_DIR}/claude/fetch-route-hook")"; fo_rc=$?
+  fo_out="$(jq -n '{tool_name:"WebFetch", tool_input:{}}' | /bin/zsh "${SCRIPT_DIR}/claude/hooks/fetch-route-hook")"; fo_rc=$?
   if [[ -z "${fo_out}" && "${fo_rc}" -eq 0 ]]; then
     _pass "fail-open: tool_input with no url/urls allows the fetch (status 0, empty stdout)"
   else
