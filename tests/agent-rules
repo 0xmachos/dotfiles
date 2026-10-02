@@ -1,0 +1,131 @@
+#!/bin/zsh
+# dotfiles/tests/agent-rules
+#
+# Guards the skills that carry the language rule files. Codex and Muse cannot
+# read claude/rules/*.md, and subagents are not handed path-gated rules, so
+# each rule N.md has a twin skill claude/skills/N-conventions/SKILL.md whose
+# body is the rule body, byte for byte. Nothing else keeps the two in step.
+#   * every skill's frontmatter parses (an unquoted ': ' in a description makes
+#     the skill load with no description) and its name matches its directory
+#   * each twin skill body equals its rule body
+#   * every name in bittersweet's shared_skills array exists under claude/skills
+# Line caps, paths: shape and size caps are tests/agents-md's job.
+#
+# Skips whole when claude/ is absent (gitignored, synced out of band).
+#
+# Run: ./test agent-rules
+#
+# ShellCheck: lint with `shellcheck --shell=bash tests/agent-rules`.
+# This file is sourced, not executed — chmod 644.
+#
+# shellcheck source=tests/lib
+
+readonly -a _AGENT_RULES_TWINS=(swift rust npm python objc ci)
+
+# Frontmatter lines of $1 (between the first two '---' fences).
+function _agent_rules_frontmatter {
+  /usr/bin/awk 'NR==1 { if ($0 != "---") exit; next } /^---[[:space:]]*$/ { exit } { print }' "$1"
+}
+
+# Everything after the closing '---' fence of $1, unchanged.
+function _agent_rules_body {
+  /usr/bin/awk 'NR==1 { next } f { print; next } /^---[[:space:]]*$/ { f = 1 }' "$1"
+}
+
+# Ruby parses the frontmatter and requires a non-empty string description.
+readonly _AGENT_RULES_RUBY='
+begin
+  d = YAML.safe_load(STDIN.read)
+  raise "frontmatter is not a mapping" unless d.is_a?(Hash)
+  desc = d["description"]
+  raise "description is missing or empty" unless desc.is_a?(String) && !desc.strip.empty?
+rescue Exception => e
+  warn e.message.lines.first.to_s.strip
+  exit 1
+end
+'
+
+function _agent_rules_check_skill {
+  local file="$1" dir fm err
+  dir="${file:h:t}"
+  if [[ "$(/usr/bin/head -n 1 "${file}")" != "---" ]]; then
+    _fail "skills/${dir}/SKILL.md: line 1 is not '---'"
+    return
+  fi
+  fm="$(_agent_rules_frontmatter "${file}")"
+  if /usr/bin/grep -qxF "name: ${dir}" <<< "${fm}"; then
+    _pass "skills/${dir}: name matches the directory"
+  else
+    _fail "skills/${dir}/SKILL.md: 'name:' is not '${dir}'"
+  fi
+  if [[ -x /usr/bin/ruby ]]; then
+    if err="$(/usr/bin/ruby -ryaml -e "${_AGENT_RULES_RUBY}" <<< "${fm}" 2>&1)"; then
+      _pass "skills/${dir}: frontmatter parses, description non-empty"
+    else
+      _fail "skills/${dir}/SKILL.md: frontmatter invalid: ${err}"
+    fi
+  else
+    _skip "skills/${dir}: /usr/bin/ruby missing — YAML parse skipped"
+    if /usr/bin/grep -qE '^description:[[:space:]]*[^[:space:]]' <<< "${fm}"; then
+      _pass "skills/${dir}: description present"
+    else
+      _fail "skills/${dir}/SKILL.md: no non-empty 'description:'"
+    fi
+  fi
+}
+
+function _agent_rules_check_twin {
+  local n="$1" rule skill
+  rule="${SCRIPT_DIR}/claude/rules/${n}.md"
+  skill="${SCRIPT_DIR}/claude/skills/${n}-conventions/SKILL.md"
+  if [[ ! -f "${rule}" || ! -f "${skill}" ]]; then
+    _fail "claude/rules/${n}.md and claude/skills/${n}-conventions/SKILL.md: one of the pair is missing"
+    return
+  fi
+  if [[ "$(_agent_rules_body "${rule}"; echo x)" == "$(_agent_rules_body "${skill}"; echo x)" ]]; then
+    _pass "${n}: skill body equals rule body"
+  else
+    _fail "claude/skills/${n}-conventions/SKILL.md body differs from claude/rules/${n}.md — the skill must carry the rule text byte for byte"
+  fi
+}
+
+function _agent_rules_check_shared {
+  local line name
+  line="$(/usr/bin/grep -m1 'shared_skills=(' "${SCRIPT_DIR}/bittersweet" || true)"
+  if [[ -z "${line}" ]]; then
+    _fail "bittersweet: no shared_skills array found"
+    return
+  fi
+  # Pattern in variables: a literal '(' in ${..#pat} is a zsh glob error.
+  local open='shared_skills=(' close=')'
+  line="${line#*"${open}"}"
+  line="${line%"${close}"*}"
+  while IFS= read -r name; do
+    [[ -n "${name}" ]] || continue
+    if [[ -f "${SCRIPT_DIR}/claude/skills/${name}/SKILL.md" ]]; then
+      _pass "shared_skills: ${name} exists under claude/skills"
+    else
+      _fail "bittersweet shared_skills lists '${name}' but claude/skills/${name}/SKILL.md is missing"
+    fi
+  done < <(/usr/bin/tr ' ' '\n' <<< "${line}")
+}
+
+function run_agent_rules {
+  # null_glob: an empty skills/ is a no-op, not a glob error.
+  setopt local_options null_glob
+  _section "Agent rules: skill frontmatter and rule twins"
+
+  if [[ ! -d "${SCRIPT_DIR}/claude" ]]; then
+    _skip "claude/ absent — pending out-of-band sync"
+    return
+  fi
+
+  local f n
+  for f in "${SCRIPT_DIR}"/claude/skills/*/SKILL.md; do
+    _agent_rules_check_skill "${f}"
+  done
+  for n in "${_AGENT_RULES_TWINS[@]}"; do
+    _agent_rules_check_twin "${n}"
+  done
+  _agent_rules_check_shared
+}

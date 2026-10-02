@@ -345,7 +345,7 @@ function run_linkage {
   # 7. ~/.agents/skills copies: only the shared allowlist, nothing else. The
   # manifest is hardcoded like the maps above: the forward check proves each
   # shared skill is copied, the reverse check proves nothing else is.
-  local -ar shared_skills=(git-history-repair zsh-style macos-security-footguns bao-admin)
+  local -ar shared_skills=(git-history-repair zsh-style macos-security-footguns bao-admin swift-conventions rust-conventions npm-conventions python-conventions objc-conventions ci-conventions)
   local shared_skill dest_line name
   if [[ -d claude/skills ]]; then
     for shared_skill in "${shared_skills[@]}"; do

@@ -312,7 +312,7 @@ function run_agents_md {
   else
     _fail "global: ~/.agents/skills must be a real directory of skill copies (run: bittersweet dotfiles)"
   fi
-  for shared in git-history-repair zsh-style macos-security-footguns bao-admin; do
+  for shared in git-history-repair zsh-style macos-security-footguns bao-admin swift-conventions rust-conventions npm-conventions python-conventions objc-conventions ci-conventions; do
     if [[ -L "${HOME}/.agents/skills/${shared}" ]]; then
       _fail "global: ~/.agents/skills/${shared} is a symlink; a copy is required (run: bittersweet dotfiles)"
     elif /usr/bin/diff -rq "${SCRIPT_DIR}/claude/skills/${shared}" "${HOME}/.agents/skills/${shared}" >/dev/null 2>&1; then
