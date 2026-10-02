@@ -120,12 +120,13 @@ function _agents_check_rule_file {
     _pass "rules/${name}: no globs:/alwaysApply: keys"
   fi
   # paths: must have nothing after the colon on its own line, followed by
-  # '  - item' lines (block list). A value on the same line is a scalar or an
-  # inline flow value.
+  # '- item' lines (block list, any indent). A value on the same line is a
+  # scalar or an inline flow value. Shape only; tests/agent-rules parses the
+  # YAML.
   if /usr/bin/grep -qE '^paths:[[:space:]]*[^[:space:]#]' <<< "${fm}"; then
     _fail "rules/${name}: paths: is not a block list"
   elif /usr/bin/grep -qE '^paths:[[:space:]]*$' <<< "${fm}" \
-      && ! /usr/bin/grep -qE '^[[:space:]]+-[[:space:]]+[^[:space:]]' <<< "${fm}"; then
+      && ! /usr/bin/grep -qE '^[[:space:]]*-[[:space:]]+[^[:space:]]' <<< "${fm}"; then
     _fail "rules/${name}: paths: has no list items"
   else
     _pass "rules/${name}: paths: absent or a block list"
@@ -181,15 +182,15 @@ function _agents_check_review {
   fi
 }
 
-# Codex review reads the nearest AGENTS.md "Code Review Rules"; the section sits
-# near the end, so assert it and its order against the closeout tail.
+# A review harness reads the nearest AGENTS.md "Code Review Rules"; the section
+# sits near the end, so assert it and its order against the closeout tail.
 function _agents_check_review_section {
   local label="$1" file="$2" cr stop
   # `|| true`: the suite runs under set -e/pipefail and a no-match grep is rc 1.
   cr="$(/usr/bin/grep -n '^## Code Review Rules' "${file}" | /usr/bin/head -1 || true)"
   stop="$(/usr/bin/grep -n '^## Before you stop' "${file}" | /usr/bin/head -1 || true)"
   if [[ -z "${cr}" ]]; then
-    _fail "${label}: '## Code Review Rules' missing — Codex review has no repo invariants"
+    _fail "${label}: '## Code Review Rules' missing — a review run has no repo invariants to read"
   elif [[ -n "${stop}" && "${cr%%:*}" -gt "${stop%%:*}" ]]; then
     _fail "${label}: '## Code Review Rules' sits after '## Before you stop' — the tail must stay last"
   elif ! /usr/bin/grep -q 'REVIEW\.md' "${file}"; then

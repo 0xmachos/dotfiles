@@ -1,15 +1,19 @@
 #!/bin/zsh
 # dotfiles/tests/agent-rules
 #
-# Guards the skills that carry the language rule files. Codex and Muse cannot
-# read claude/rules/*.md, and subagents are not handed path-gated rules, so
-# each rule N.md has a twin skill claude/skills/N-conventions/SKILL.md whose
-# body is the rule body, byte for byte. Nothing else keeps the two in step.
+# Guards the skills that carry the language rule files. Tools without a rules
+# directory cannot read claude/rules/*.md, and subagents are not handed
+# path-gated rules, so each rule N.md has a twin skill
+# claude/skills/N-conventions/SKILL.md whose body is the rule body, byte for
+# byte. Nothing else keeps the two in step.
 #   * every skill's frontmatter parses (an unquoted ': ' in a description makes
 #     the skill load with no description) and its name matches its directory
+#   * every rule's frontmatter parses as a mapping with a closed fence, and a
+#     paths: key is a non-empty list of strings (unparseable frontmatter loads
+#     as if the rule had no paths:, so a lazy rule silently turns eager)
 #   * each twin skill body equals its rule body
 #   * every name in bittersweet's shared_skills array exists under claude/skills
-# Line caps, paths: shape and size caps are tests/agents-md's job.
+# Line caps and size caps are tests/agents-md's job.
 #
 # Skips whole when claude/ is absent (gitignored, synced out of band).
 #
@@ -74,6 +78,52 @@ function _agent_rules_check_skill {
   fi
 }
 
+# Rules: frontmatter is optional (none = eager). When line 1 opens a fence it
+# must be exactly '---', the fence must close, and the YAML must be a mapping
+# whose paths: (if present) is a non-empty list of non-empty strings.
+readonly _AGENT_RULES_RULE_RUBY='
+begin
+  d = YAML.safe_load(STDIN.read)
+  raise "frontmatter is not a mapping" unless d.is_a?(Hash)
+  if d.key?("paths")
+    p = d["paths"]
+    raise "paths: is not a non-empty list" unless p.is_a?(Array) && !p.empty?
+    raise "paths: has a non-string or empty item" unless p.all? { |x| x.is_a?(String) && !x.strip.empty? }
+  end
+rescue Exception => e
+  warn e.message.lines.first.to_s.strip
+  exit 1
+end
+'
+
+function _agent_rules_check_rule {
+  local file="$1" name first fm err
+  name="${file:t}"
+  first="$(/usr/bin/head -n 1 "${file}")"
+  if [[ "${first}" != ---* ]]; then
+    _pass "rules/${name}: no frontmatter (eager)"
+    return
+  fi
+  if [[ "${first}" != "---" ]]; then
+    _fail "rules/${name}: line 1 is '${first}', not exactly '---' — the fence is not recognised and the rule loads eagerly"
+    return
+  fi
+  if ! /usr/bin/awk 'NR==1 { next } /^---[[:space:]]*$/ { found = 1; exit } END { exit !found }' "${file}"; then
+    _fail "rules/${name}: frontmatter fence never closes"
+    return
+  fi
+  if [[ ! -x /usr/bin/ruby ]]; then
+    _skip "rules/${name}: /usr/bin/ruby missing — YAML parse skipped"
+    return
+  fi
+  fm="$(_agent_rules_frontmatter "${file}")"
+  if err="$(/usr/bin/ruby -ryaml -e "${_AGENT_RULES_RULE_RUBY}" <<< "${fm}" 2>&1)"; then
+    _pass "rules/${name}: frontmatter parses; paths: is a list or absent"
+  else
+    _fail "rules/${name}: frontmatter invalid: ${err}"
+  fi
+}
+
 function _agent_rules_check_twin {
   local n="$1" rule skill
   rule="${SCRIPT_DIR}/claude/rules/${n}.md"
@@ -123,6 +173,9 @@ function run_agent_rules {
   local f n
   for f in "${SCRIPT_DIR}"/claude/skills/*/SKILL.md; do
     _agent_rules_check_skill "${f}"
+  done
+  for f in "${SCRIPT_DIR}"/claude/rules/*.md; do
+    _agent_rules_check_rule "${f}"
   done
   for n in "${_AGENT_RULES_TWINS[@]}"; do
     _agent_rules_check_twin "${n}"
