@@ -36,7 +36,16 @@ function _linkage_deployments {
     # shellcheck disable=SC2329
     _symlink() { _linkage_record "$1"; }
     # shellcheck disable=SC2329
-    cp() { _linkage_record "$1"; }
+    # Records the source (last-but-one argument, right for `cp SRC DEST` and
+    # `cp -R SRC DEST`). A ~/.agents/skills destination is also recorded, with
+    # the fixture HOME masked so step 7 can match it outside the subshell.
+    cp() {
+      local dest="${*: -1}"
+      _linkage_record "${@: -2:1}"
+      if [[ "${dest}" == "${HOME}/.agents/skills/"* ]]; then
+        _linkage_record "@HOME@${dest#"${HOME}"}"
+      fi
+    }
     # shellcheck disable=SC2329
     # install_launchagents runs `sed ... SRC > TMP`, `plutil -lint TMP`,
     # `mv TMP DEST`. The `> TMP` redirect cannot be mocked, so it makes a real
@@ -161,6 +170,7 @@ function run_linkage {
     [.ignore]=repo                           # ripgrep whitelist for gitignored docs (gitignored)
     [LICENSE]=repo
     [README.md]=repo
+    [REVIEW.md]=repo                         # Review rulebook for every reviewer (tracked)
     [SECURITY.md]=repo
     [TODOs.md]=repo
     [AGENTS.md]=repo                         # Repo agent guidance, all 3 harnesses (untracked: .extra_gitexclude)
@@ -331,6 +341,28 @@ function run_linkage {
     [[ -f "${hook_file}" ]] || continue
     _linkage_check_deployed install_dotfiles "${hook_file}"
   done
+
+  # 7. ~/.agents/skills copies: only the shared allowlist, nothing else. The
+  # manifest is hardcoded like the maps above: the forward check proves each
+  # shared skill is copied, the reverse check proves nothing else is.
+  local -ar shared_skills=(git-history-repair zsh-style macos-security-footguns bao-admin)
+  local shared_skill dest_line name
+  if [[ -d claude/skills ]]; then
+    for shared_skill in "${shared_skills[@]}"; do
+      [[ -d "claude/skills/${shared_skill}" ]] ||
+        _fail "claude/skills/${shared_skill}: listed as shared, but the skill is missing"
+      [[ $'\n'"${deployments}"$'\n' == *$'\n'"install_dotfiles"$'\t'"@HOME@/.agents/skills/${shared_skill}"$'\n'* ]] ||
+        _fail "${shared_skill}: shared skill, but install_dotfiles does not copy it into ~/.agents/skills"
+    done
+    while IFS= read -r dest_line; do
+      [[ "${dest_line}" == install_dotfiles$'\t'@HOME@/.agents/skills/* ]] || continue
+      name="${dest_line##*/}"
+      [[ " ${shared_skills[*]} " == *" ${name} "* ]] ||
+        _fail "${name}: copied into ~/.agents/skills but not in the shared-skill manifest"
+    done <<< "${deployments}"
+  else
+    _skip "claude/ absent — ~/.agents/skills manifest check skipped"
+  fi
 
   if (( fail_count == before_fails )); then
     _pass "All repo files accounted for"

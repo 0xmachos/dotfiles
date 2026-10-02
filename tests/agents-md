@@ -26,7 +26,10 @@
 # repo, so 32768 is the ceiling.
 #
 # Both files are gitignored: a fresh clone before out-of-band sync has neither,
-# and that skips rather than fails.
+# and that skips rather than fails. REVIEW.md checks run on a clean clone; the
+# rest skips. Regrowth caps fail when a guidance file grows back; they skip with
+# claude/ absent. The live check also diffs the ~/.agents/skills copies against
+# claude/skills, so a stale copy fails.
 #
 # Run: ./test agents-md
 #
@@ -74,6 +77,128 @@ function _agents_check_tail {
   fi
 }
 
+# Regrowth caps. Hard fails; the Codex 32768 B check above stays the outer
+# ceiling. Format "max_bytes max_lines"; 0 = not checked.
+readonly _CAP_GLOBAL="15500 200"
+readonly _CAP_AGENTS="12100 212"
+readonly _CAP_REVIEW="8000 140"
+readonly _CAP_RULE_LINES=60
+readonly _CAP_ORCH_LINES=70
+readonly _CAP_SKILL_LINES=500
+
+# $1 label, $2 file, $3 "max_bytes max_lines". Reuses _agents_size for bytes.
+function _agents_check_regrowth {
+  local label="$1" file="$2" max_b="${3%% *}" max_l="${3##* }" bytes lines bad=0
+  [[ -f "${file}" ]] || return 0
+  bytes="$(_agents_size "${file}")"
+  lines="$(wc -l < "${file}" | tr -d '[:space:]')"
+  if (( max_b > 0 && bytes > max_b )); then
+    _fail "${label}: ${bytes} B over the ${max_b} B regrowth cap"; bad=1
+  fi
+  if (( max_l > 0 && lines > max_l )); then
+    _fail "${label}: ${lines} lines over the ${max_l}-line regrowth cap"; bad=1
+  fi
+  (( bad )) || _pass "${label}: ${bytes} B / ${lines} lines, within the regrowth cap"
+}
+
+# Frontmatter lines of $1 (between the first two '---' fences), empty if none.
+function _agents_frontmatter {
+  /usr/bin/awk 'NR==1 { if ($0 != "---") exit; next } /^---[[:space:]]*$/ { exit } { print }' "$1"
+}
+
+function _agents_check_rule_file {
+  local file="$1" name fm cap
+  name="${file:t}"
+  fm="$(_agents_frontmatter "${file}")"
+  cap="${_CAP_RULE_LINES}"
+  [[ "${name}" == orchestration.md ]] && cap="${_CAP_ORCH_LINES}"
+  _agents_check_regrowth "rules/${name}" "${file}" "0 ${cap}"
+
+  if /usr/bin/grep -qE '^(globs|alwaysApply):' <<< "${fm}"; then
+    _fail "rules/${name}: carries a globs:/alwaysApply: key — not Claude Code frontmatter; use paths: as a list"
+  else
+    _pass "rules/${name}: no globs:/alwaysApply: keys"
+  fi
+  # paths: must have nothing after the colon on its own line, followed by
+  # '  - item' lines (block list). A value on the same line is a scalar or an
+  # inline flow value.
+  if /usr/bin/grep -qE '^paths:[[:space:]]*[^[:space:]#]' <<< "${fm}"; then
+    _fail "rules/${name}: paths: is not a block list"
+  elif /usr/bin/grep -qE '^paths:[[:space:]]*$' <<< "${fm}" \
+      && ! /usr/bin/grep -qE '^[[:space:]]+-[[:space:]]+[^[:space:]]' <<< "${fm}"; then
+    _fail "rules/${name}: paths: has no list items"
+  else
+    _pass "rules/${name}: paths: absent or a block list"
+  fi
+}
+
+function _agents_check_regrowth_all {
+  # null_glob: an empty rules/ or skills/ is a no-op, not a glob error. setopt,
+  # not (N) qualifiers, which shellcheck --shell=bash cannot parse.
+  setopt local_options null_glob
+  local f
+  [[ -d "${SCRIPT_DIR}/claude" ]] || {
+    _skip "regrowth caps: claude/ absent — pending out-of-band sync"
+    return
+  }
+  _agents_check_regrowth "global-claude.md" "${SCRIPT_DIR}/claude/global-claude.md" "${_CAP_GLOBAL}"
+  _agents_check_regrowth "repo AGENTS.md" "${SCRIPT_DIR}/AGENTS.md" "${_CAP_AGENTS}"
+  for f in "${SCRIPT_DIR}"/claude/rules/*.md; do
+    _agents_check_rule_file "${f}"
+  done
+  for f in "${SCRIPT_DIR}"/claude/skills/*/SKILL.md; do
+    _agents_check_regrowth "skills/${f:h:t}/SKILL.md" "${f}" "0 ${_CAP_SKILL_LINES}"
+  done
+}
+
+# Review rulebook: tracked and public, so it must stay public-safe and short
+# (a reviewer harness injects it whole).
+function _agents_check_review {
+  local review="${SCRIPT_DIR}/REVIEW.md" heading
+  if [[ ! -f "${review}" ]]; then
+    _fail "REVIEW.md missing — reviewers have no rulebook"
+    return
+  fi
+  if /usr/bin/git -C "${SCRIPT_DIR}" ls-files --error-unmatch REVIEW.md >/dev/null 2>&1; then
+    _pass "REVIEW.md is tracked"
+  else
+    _fail "REVIEW.md is not tracked — it is the public rulebook and must be in git"
+  fi
+  _agents_check_regrowth "REVIEW.md" "${review}" "${_CAP_REVIEW}"
+  for heading in 'What to flag' 'Evidence bar' 'Severity' 'Skip' 'Report shape'; do
+    if /usr/bin/grep -q "^## ${heading}\$" "${review}"; then
+      _pass "REVIEW.md: section '${heading}' present"
+    else
+      _fail "REVIEW.md: section '${heading}' missing"
+    fi
+  done
+  # Tracked file, public repo: no harness or model names. Private names (hosts,
+  # nicknames) are the pii-tree suite's job, not this one's.
+  if /usr/bin/grep -qiwE 'claude|codex|muse|fable|opus|sonnet|anthropic' "${review}"; then
+    _fail "REVIEW.md names a harness or model — it is published; phrase the check as a mechanism"
+  else
+    _pass "REVIEW.md: no harness or model names"
+  fi
+}
+
+# Codex review reads the nearest AGENTS.md "Code Review Rules"; the section sits
+# near the end, so assert it and its order against the closeout tail.
+function _agents_check_review_section {
+  local label="$1" file="$2" cr stop
+  # `|| true`: the suite runs under set -e/pipefail and a no-match grep is rc 1.
+  cr="$(/usr/bin/grep -n '^## Code Review Rules' "${file}" | /usr/bin/head -1 || true)"
+  stop="$(/usr/bin/grep -n '^## Before you stop' "${file}" | /usr/bin/head -1 || true)"
+  if [[ -z "${cr}" ]]; then
+    _fail "${label}: '## Code Review Rules' missing — Codex review has no repo invariants"
+  elif [[ -n "${stop}" && "${cr%%:*}" -gt "${stop%%:*}" ]]; then
+    _fail "${label}: '## Code Review Rules' sits after '## Before you stop' — the tail must stay last"
+  elif ! /usr/bin/grep -q 'REVIEW\.md' "${file}"; then
+    _fail "${label}: Code Review Rules does not point at REVIEW.md"
+  else
+    _pass "${label}: Code Review Rules present, before the tail, pointing at REVIEW.md"
+  fi
+}
+
 function run_agents_md {
   _section "Agent guidance: AGENTS.md / CLAUDE.md single-source"
 
@@ -90,6 +215,7 @@ function run_agents_md {
       _pass "repo: AGENTS.md is a regular file (the single source)"
       _agents_check_cap "repo AGENTS.md" "${repo_agents}"
       _agents_check_tail "repo AGENTS.md" "${repo_agents}" '^## Before you stop'
+      _agents_check_review_section "repo AGENTS.md" "${repo_agents}"
     elif [[ -L "${repo_agents}" ]]; then
       _fail "repo: AGENTS.md is a symlink — the direction is inverted; AGENTS.md must be the real file (Codex never reads CLAUDE.md)"
     else
@@ -153,6 +279,11 @@ function run_agents_md {
     _fail "bittersweet: claude/global-claude.md missing from sensitive_files — it names hosts and must be mode 600"
   fi
 
+  # 3b. Review rulebook and regrowth caps. Before the live gate below, which
+  #     returns early: REVIEW.md is tracked, so its checks run on a clean clone.
+  _agents_check_review
+  _agents_check_regrowth_all
+
   # 4. Live deployment: gated like tests/hook-links, meaningful only when this
   #    repo is the active deployment.
   if [[ "$(readlink "${HOME}/.claude/settings.json" 2>/dev/null)" != "${SCRIPT_DIR}/claude/settings.json" ]]; then
@@ -170,6 +301,24 @@ function run_agents_md {
       _fail "global: ${live} is a dangling symlink"
     else
       _pass "global: ${live} -> claude/global-claude.md"
+    fi
+  done
+  # ~/.agents/skills holds copies of the shared allowlist (a copy has no
+  # readlink to compare, so diff against the source; that also catches a stale
+  # copy).
+  local shared
+  if [[ -d "${HOME}/.agents/skills" && ! -L "${HOME}/.agents/skills" ]]; then
+    _pass "global: ~/.agents/skills is a real directory"
+  else
+    _fail "global: ~/.agents/skills must be a real directory of skill copies (run: bittersweet dotfiles)"
+  fi
+  for shared in git-history-repair zsh-style macos-security-footguns bao-admin; do
+    if [[ -L "${HOME}/.agents/skills/${shared}" ]]; then
+      _fail "global: ~/.agents/skills/${shared} is a symlink; a copy is required (run: bittersweet dotfiles)"
+    elif /usr/bin/diff -rq "${SCRIPT_DIR}/claude/skills/${shared}" "${HOME}/.agents/skills/${shared}" >/dev/null 2>&1; then
+      _pass "global: ~/.agents/skills/${shared} matches claude/skills/${shared}"
+    else
+      _fail "global: ~/.agents/skills/${shared} is missing or stale (run: bittersweet dotfiles)"
     fi
   done
 }

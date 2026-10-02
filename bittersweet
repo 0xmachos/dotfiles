@@ -529,7 +529,7 @@ function install_dotfiles {
   # the arrays so their globs see it.
   setopt local_options null_glob
 
-  local -ar dot_dirs=(.ssh .extra .codex .codex/rules .config/git .config/uv .config/herdr .claude .claude/hooks .claude/skills .claude/rules .claude/agents)
+  local -ar dot_dirs=(.ssh .extra .codex .codex/rules .config/git .config/uv .config/herdr .claude .claude/hooks .claude/skills .claude/rules .claude/agents .agents .agents/skills)
   local -ar dot_files=(.zshrc .functions .completions .aliases)
   local -ar ssh_configs=(config .extra_ssh)
   local -ar git_configs=(config ignore allowed_signers)
@@ -645,6 +645,20 @@ function install_dotfiles {
     skill_name="${skill_dir%/}"
     skill_name="${skill_name##*/}"
     _symlink "${skill_dir%/}" "${HOME}/.claude/skills/${skill_name}"
+  done
+
+  # Skills shared with tools that read ~/.agents/skills. An allowlist, not the
+  # whole directory: the other skills call one tool's own agent-dispatch and
+  # messaging functions and must not be offered to a tool that lacks them.
+  # Copies, not links: the reading tool mis-registers symlinked skill trees.
+  # Replaced on every run, so a repo edit is inert until this is re-run.
+  local -ar shared_skills=(git-history-repair zsh-style macos-security-footguns bao-admin)
+  local shared_skill
+  for shared_skill in "${shared_skills[@]}"; do
+    # claude/ is synced out of band; a sparse copy is pending sync, not an error.
+    [[ -d "${SCRIPT_DIR}/claude/skills/${shared_skill}" ]] || continue
+    /bin/rm -rf -- "${HOME}/.agents/skills/${shared_skill}"
+    cp -R "${SCRIPT_DIR}/claude/skills/${shared_skill}" "${HOME}/.agents/skills/${shared_skill}"
   done
 
   local rule_file rule_name
