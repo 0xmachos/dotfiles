@@ -240,7 +240,6 @@ function run_linkage {
     [statusline-command]=install_dotfiles
     [subagent-statusline]=install_dotfiles
     [lint-hook]=install_dotfiles
-    [exa-redirect-hook]=install_dotfiles
     [rm-redirect-hook]=install_dotfiles
     [ssh-redirect-hook]=install_dotfiles
     [sudo-askpass-hook]=install_dotfiles
