@@ -17,7 +17,7 @@ function _generate_zsh_sidebar_syntax {
           "${first_line}" == '#autoload'* ]]; then
       names+=("${basename}")
     fi
-  done < <(/usr/bin/find "${repo_dir}" -maxdepth 2 -type f -not -path '*/.git/*' -print0)
+  done < <(/usr/bin/find "${repo_dir}" -maxdepth 3 -type f -not -path '*/.git/*' -print0)
 
   {
     cat <<'EOF'
