@@ -39,7 +39,9 @@ function jump {
       # HOMEBREW_NO_ASK: Homebrew 6.0's default "ask" mode prompts before
       # upgrading dependents on an interactive TTY; suppressed because jump
       # runs unattended. launchd jump-user has no TTY and is unaffected.
-      HOMEBREW_NO_ASK=1 "${BREW_BINARY}" upgrade || rc=1
+      # brew_upgrade_selected: a bare `brew upgrade`, unless the gitignored
+      # .extra/jump-pre holds casks back (see .functions/brew_upgrade_selected).
+      HOMEBREW_NO_ASK=1 brew_upgrade_selected "${BREW_BINARY}" || rc=1
       "${BREW_BINARY}" cleanup || rc=1
       "${BREW_BINARY}" autoremove || rc=1
       "${BREW_BINARY}" doctor   # advisory — non-zero on benign warnings
@@ -96,6 +98,9 @@ function jump {
   ## Local extras (gitignored, sourced if present) ##
   # Per-host updaters live in dotfiles/.extra/jump (gitignored by the .extra*
   # rule). Sourced inside this function's scope; may use ${SUDO_BINARY}.
+  # A step that must tell a busy lock (exit 75) from a failure runs through
+  # `jump_step <description> <command...> || rc=1` (see .functions/jump_step):
+  # 75 is a logged skip, any other non-zero is [FAIL].
   local -r EXTRA_JUMP="${HOME}/dotfiles/.extra/jump"
   if [[ -r "${EXTRA_JUMP}" ]]; then
     # shellcheck disable=SC1090

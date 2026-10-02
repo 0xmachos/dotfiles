@@ -1,0 +1,102 @@
+#!/usr/bin/env zsh
+# dotfiles/.functions/brew_upgrade_selected
+#
+# Shared by `jump` (autoloaded) and `bin/jump-user` (which sources this file
+# by absolute path, because launchd runs it without .zshrc).
+#
+#   brew_upgrade_selected <brew-binary>
+#
+# Replaces a bare `brew upgrade` so a host can hold chosen casks back from the
+# generic upgrade and upgrade them through its own step instead. The optional,
+# gitignored ${HOME}/dotfiles/.extra/jump-pre is sourced here and sets the
+# array JUMP_BREW_SKIP_CASKS. No cask name is written in this repository.
+#
+#   jump-pre absent, or the array empty:
+#     bare `brew upgrade`, as before.
+#   non-empty array:
+#     `brew outdated --cask --quiet` minus the list, then
+#     `brew upgrade --formula`, then `brew upgrade --cask -- <names>`.
+#     An empty remainder skips the cask call: brew upgrade is never run with
+#     zero names, which would upgrade every cask.
+#
+# Pre-hook failure: the list must be an array whose elements are non-empty and
+# match ^[a-z0-9@._+-]+$. A jump-pre that fails to source, leaves the variable
+# a non-array (unset or scalar), or holds a bad element, and a failing
+# `brew outdated`, each print a [FAIL] line to stderr, skip the whole upgrade
+# and return 1. There is deliberately no fallback to an unrestricted upgrade.
+# `brew outdated` runs before any upgrade so its failure skips both calls.
+# The caller still runs cleanup and autoremove.
+#
+# No --greedy on either call: an auto-updating cask is assumed to be listed by
+# `brew outdated --cask` without it. Verified at the first real release.
+#
+# The `--` before the names stops a name that begins with a dash being read as
+# a flag.
+#
+# ShellCheck: lint with `shellcheck --shell=bash .functions/brew_upgrade_selected`;
+# zsh-only expansions are suppressed inline.
+
+function brew_upgrade_selected {
+  emulate -L zsh
+
+  local -r brew_binary="${1:-}"
+  local -r pre_file="${HOME}/dotfiles/.extra/jump-pre"
+  local -r name_re='^[a-z0-9@._+-]+$'
+
+  if [[ -z "${brew_binary}" || ! -x "${brew_binary}" ]]; then
+    print -u2 -- "[FAIL] brew upgrade skipped: brew binary '${brew_binary}' is not executable"
+    return 1
+  fi
+
+  # Declared plain (scalar) on purpose: jump-pre must turn it into an array,
+  # so a file that never sets it, or sets a scalar, is detectable.
+  local JUMP_BREW_SKIP_CASKS=""
+  local _bus_el
+
+  if [[ -e "${pre_file}" || -L "${pre_file}" ]]; then
+    # shellcheck disable=SC1090
+    if ! source "${pre_file}"; then
+      print -u2 -- "[FAIL] brew upgrade skipped: ${pre_file} failed"
+      return 1
+    fi
+    # shellcheck disable=SC2296  # zsh (t) parameter flag
+    if [[ "${(t)JUMP_BREW_SKIP_CASKS}" != array* ]]; then
+      print -u2 -- "[FAIL] brew upgrade skipped: JUMP_BREW_SKIP_CASKS is not an array after sourcing ${pre_file}"
+      return 1
+    fi
+    for _bus_el in "${JUMP_BREW_SKIP_CASKS[@]}"; do
+      if [[ -z "${_bus_el}" || ! "${_bus_el}" =~ ${name_re} ]]; then
+        # shellcheck disable=SC2296  # zsh (q) parameter flag
+        print -u2 -- "[FAIL] brew upgrade skipped: malformed JUMP_BREW_SKIP_CASKS element ${(q)_bus_el}"
+        return 1
+      fi
+    done
+  else
+    JUMP_BREW_SKIP_CASKS=()
+  fi
+
+  if (( ${#JUMP_BREW_SKIP_CASKS[@]} == 0 )); then
+    "${brew_binary}" upgrade
+    return
+  fi
+
+  local _bus_outdated
+  local -a _bus_names
+  if ! _bus_outdated=$("${brew_binary}" outdated --cask --quiet); then
+    print -u2 -- "[FAIL] brew upgrade skipped: 'brew outdated --cask --quiet' failed"
+    return 1
+  fi
+  # shellcheck disable=SC2296  # zsh (@f) split on newlines, :| array subtraction, :# pattern removal
+  _bus_names=("${(@f)_bus_outdated}")
+  # shellcheck disable=SC2296
+  _bus_names=("${(@)_bus_names:|JUMP_BREW_SKIP_CASKS}")
+  # shellcheck disable=SC2296
+  _bus_names=("${(@)_bus_names:#}")
+
+  local rc=0
+  "${brew_binary}" upgrade --formula || rc=1
+  if (( ${#_bus_names[@]} > 0 )); then
+    "${brew_binary}" upgrade --cask -- "${_bus_names[@]}" || rc=1
+  fi
+  return "${rc}"
+}

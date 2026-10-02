@@ -1,0 +1,70 @@
+#!/usr/bin/env zsh
+# dotfiles/.functions/jump_step
+#
+# Shared by `jump` (autoloaded) and `bin/jump-user` (sourced by absolute path).
+#
+#   jump_step <description> <command> [args...]
+#
+# For a per-host step in .extra/jump or .extra/jump-user that must tell a busy
+# lock apart from a failure, which `run_and_log` cannot: it folds every
+# non-zero exit into [FAIL]. The command runs outside run_and_log and its exit
+# status is mapped here:
+#
+#   0     ok: syslog [OK].
+#   75    (EX_TEMPFAIL) another run holds the lock: a logged [SKIP], with the
+#         command's own output (the holder) in the log. Returns 0, so the
+#         caller's rc stays clean.
+#   other [FAIL], output logged, returns 1: the caller folds it into its status
+#         (`jump_step ... || rc=1`).
+#
+# Output is shown as the command produces it. Log sinks match run_and_log:
+# syslog tag com.0xmachos.jump and ${LOG_FILE} (jump-user's), falling back to
+# ~/Library/Logs/jump.log when the caller sets none.
+#
+# ShellCheck: lint with `shellcheck --shell=bash .functions/jump_step`;
+# zsh-only syntax is suppressed inline.
+
+function jump_step {
+  emulate -L zsh
+
+  if (( $# < 2 )); then
+    print -u2 -- "jump_step: usage: jump_step <description> <command> [args...]"
+    return 2
+  fi
+
+  local -r description="$1"
+  shift
+  local -r log_file="${LOG_FILE:-${HOME}/Library/Logs/jump.log}"
+  local rc tag note capture
+  if ! capture="$(/usr/bin/mktemp "${TMPDIR:-/tmp}/jump-step.XXXXXX")"; then
+    print -u2 -- "[FAIL] ${description}: cannot create a capture file"
+    return 1
+  fi
+
+  "$@" 2>&1 | /usr/bin/tee -- "${capture}"
+  # shellcheck disable=SC2154,SC2296  # zsh pipestatus array
+  rc="${pipestatus[1]}"
+
+  case "${rc}" in
+    0)  tag="OK";   note="" ;;
+    75) tag="SKIP"; note=" (exit 75, another run holds the lock)" ;;
+    *)  tag="FAIL"; note=" (exit ${rc})" ;;
+  esac
+
+  logger -t "com.0xmachos.jump" "[${tag}] ${description}${note}"
+  if [[ "${tag}" != OK ]]; then
+    # Same silent-redirect hazard as run_and_log: report a failed log write to
+    # syslog, the sink that cannot fail.
+    if ! {
+      echo "[$(date '+%Y-%m-%d %H:%M:%S')] [${tag}] ${description}${note}"
+      /bin/cat -- "${capture}"
+      echo ""
+    } >> "${log_file}" 2>/dev/null; then
+      logger -t "com.0xmachos.jump" "[FAIL] cannot write ${log_file} — detail for '${description}' lost"
+    fi
+  fi
+  /bin/rm -f "${capture}"
+
+  [[ "${tag}" == FAIL ]] && return 1
+  return 0
+}

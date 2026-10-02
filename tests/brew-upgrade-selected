@@ -1,0 +1,385 @@
+#!/bin/zsh
+# dotfiles/tests/brew-upgrade-selected
+#
+# Pins .functions/brew_upgrade_selected (the skip-list upgrade shared by `jump`
+# and `jump-user`), .functions/jump_step (exit-code mapping for per-host steps)
+# and how both entry points call them. Everything runs against a fake brew that
+# records its argv, in a sandbox HOME under $TMPDIR, through `env -i` with a
+# launchd-minimal environment (HOME, PATH, TMPDIR and the fake's own knobs).
+# No real brew, network or log is touched.
+#
+# jump-user's `main` is not driven (it hardcodes the real brew and runs a real
+# connectivity probe): its upgrade step is the function run_brew_upgrade,
+# sourced the way tests/jump sources run_and_log.
+#
+# ShellCheck: lint with `shellcheck --shell=bash tests/brew-upgrade-selected`.
+# This file is sourced, not executed — chmod 644.
+#
+# shellcheck source=tests/lib
+# SC2016: the zsh -c scripts are single-quoted on purpose, the child shell
+# expands them. SC2296: zsh parameter-expansion flags.
+# shellcheck disable=SC2016,SC2296
+
+# Sandbox: $sb/dotfiles/.functions is a symlink to this repo's .functions (the
+# only thing shared with the repo); .extra/ and everything written is real and
+# private to the sandbox.
+function _bus_make_sandbox {
+  local sb="$1"
+  mkdir -p "${sb}/dotfiles/.extra" "${sb}/Library/Logs" "${sb}/tmp"
+  ln -s "${SCRIPT_DIR}/.functions" "${sb}/dotfiles/.functions"
+
+  cat > "${sb}/brew" <<'FAKE'
+#!/bin/sh
+# Fake brew: one argv line per call, behaviour from FAKE_* variables.
+: "${FAKE_CALLS:?}"
+echo "$*" >> "${FAKE_CALLS}"
+echo "ask=${HOMEBREW_NO_ASK-unset}" >> "${FAKE_CALLS}.env"
+case "$1" in
+  outdated)
+    printf '%s' "${FAKE_OUTDATED-}"
+    echo "Warning: tap noise on stderr" >&2
+    exit "${FAKE_OUTDATED_RC:-0}" ;;
+  upgrade)
+    if [ "$2" = "--formula" ]; then exit "${FAKE_FORMULA_RC:-0}"; fi
+    exit "${FAKE_UPGRADE_RC:-0}" ;;
+esac
+exit 0
+FAKE
+  chmod 700 "${sb}/brew"
+
+  # Per-host step stand-ins for the jump_step cases.
+  printf '#!/bin/sh\necho "step finished"\nexit 0\n' > "${sb}/step-ok"
+  printf '#!/bin/sh\necho "held by pid 4242 (a-holder --run)"\nexit 75\n' > "${sb}/step-busy"
+  printf '#!/bin/sh\necho "step blew up"\nexit 3\n' > "${sb}/step-fail"
+  printf '#!/bin/sh\necho "state directory unusable"\nexit 1\n' > "${sb}/step-exit1"
+  chmod 700 "${sb}/step-ok" "${sb}/step-busy" "${sb}/step-fail" "${sb}/step-exit1"
+}
+
+# _bus_run <mode> <jump-pre content | "<absent>"> <outdated stdout> [outdated rc] [formula rc] [upgrade rc]
+#   mode fn:        brew_upgrade_selected called directly.
+#   mode user:      jump-user's run_brew_upgrade (run_and_log around it).
+#   mode user-nofn: as user, but the function files are unreachable.
+# Sets: bus_rc, bus_calls (argv lines joined by |), bus_err, bus_log.
+function _bus_run {
+  local mode="$1" pre="$2" outdated="$3" orc="${4:-0}" frc="${5:-0}" urc="${6:-0}"
+  local sb="${_bus_sb}" script
+  bus_rc=0
+  : > "${sb}/calls"; : > "${sb}/calls.env"; : > "${sb}/err"; : > "${sb}/Library/Logs/jump.log"
+  /bin/rm -f "${sb}/dotfiles/.extra/jump-pre"
+  if [[ "${pre}" != "<absent>" ]]; then
+    printf '%s\n' "${pre}" > "${sb}/dotfiles/.extra/jump-pre"
+  fi
+  [[ "${mode}" == user-nofn ]] && /bin/rm -f "${sb}/dotfiles/.functions"
+  [[ "${mode}" != user-nofn && ! -e "${sb}/dotfiles/.functions" ]] \
+    && ln -s "${SCRIPT_DIR}/.functions" "${sb}/dotfiles/.functions"
+
+  case "${mode}" in
+    fn)
+      script='set -uo pipefail; source "${HOME}/dotfiles/.functions/brew_upgrade_selected"; HOMEBREW_NO_ASK=1 brew_upgrade_selected "$1"' ;;
+    *)
+      # logger is shimmed so no test line reaches the real syslog.
+      script='set -uo pipefail; source <(/usr/bin/grep -v "^main " "$2"); logger() { :; }; run_brew_upgrade "$1"' ;;
+  esac
+
+  /usr/bin/env -i HOME="${sb}" PATH=/usr/bin:/bin TMPDIR="${sb}/tmp/" \
+    FAKE_CALLS="${sb}/calls" FAKE_OUTDATED="${outdated}" FAKE_OUTDATED_RC="${orc}" \
+    FAKE_FORMULA_RC="${frc}" FAKE_UPGRADE_RC="${urc}" \
+    /bin/zsh -c "${script}" _ "${sb}/brew" "${SCRIPT_DIR}/bin/jump-user" \
+    > "${sb}/out" 2> "${sb}/err" || bus_rc=$?
+  bus_calls="${(j:|:)${(f)"$(<"${sb}/calls")"}}"
+  bus_err="$(<"${sb}/err")"
+  bus_log="$(<"${sb}/Library/Logs/jump.log")"
+}
+
+# _bus_check <label> <expect: ok|fail|brewfail> <expected calls, | joined> <mode>
+# ok: rc 0. brewfail: rc non-zero because a brew call failed. fail: rc non-zero
+# with a [FAIL] line in stderr (fn) or jump.log (user modes).
+function _bus_check {
+  local label="$1" want="$2" calls="$3" mode="$4" ok=1 sink
+  if [[ "${want}" == ok ]]; then
+    (( bus_rc == 0 )) || ok=0
+  else
+    (( bus_rc != 0 )) || ok=0
+  fi
+  [[ "${bus_calls}" == "${calls}" ]] || ok=0
+  if [[ "${want}" == fail ]]; then
+    sink="${bus_err}"
+    [[ "${mode}" != fn ]] && sink="${bus_log}"
+    [[ "${sink}" == *'[FAIL]'* ]] || ok=0
+  fi
+  if (( ok )); then
+    _pass "${mode}: ${label}"
+  else
+    _fail "${mode}: ${label} (rc=${bus_rc}, calls='${bus_calls}', expected '${calls}', err='${bus_err}', log='${bus_log}')"
+  fi
+}
+
+# Every selection case runs through the function directly and through
+# jump-user's wrapper; the expectations are identical.
+function _bus_test_selection {
+  _section "brew_upgrade_selected: selection (fn and jump-user wrapper)"
+
+  local mode
+  local -r no_cask_call='outdated --cask --quiet|upgrade --formula'
+  for mode in fn user; do
+    _bus_run "${mode}" '<absent>' ''
+    _bus_check "no jump-pre: bare brew upgrade, nothing else" ok 'upgrade' "${mode}"
+
+    _bus_run "${mode}" 'JUMP_BREW_SKIP_CASKS=()' ''
+    _bus_check "empty list: bare brew upgrade (today's behaviour)" ok 'upgrade' "${mode}"
+
+    _bus_run "${mode}" 'JUMP_BREW_SKIP_CASKS=()' '' 0 0 1
+    _bus_check "empty list: a failing bare upgrade stays a failure" brewfail 'upgrade' "${mode}"
+
+    _bus_run "${mode}" 'JUMP_BREW_SKIP_CASKS=(skipped-cask)' $'skipped-cask\n'
+    _bus_check "only the skipped cask outdated: no cask call" ok "${no_cask_call}" "${mode}"
+
+    _bus_run "${mode}" 'JUMP_BREW_SKIP_CASKS=(skipped-cask)' ''
+    _bus_check "empty brew outdated: no cask call, never a zero-name upgrade" ok "${no_cask_call}" "${mode}"
+
+    _bus_run "${mode}" 'JUMP_BREW_SKIP_CASKS=(skipped-cask)' $'skipped-cask\nother-cask\n\nthird.cask@2\n'
+    _bus_check "skip list removed, rest upgraded after --" ok \
+      'outdated --cask --quiet|upgrade --formula|upgrade --cask -- other-cask third.cask@2' "${mode}"
+
+    _bus_run "${mode}" 'JUMP_BREW_SKIP_CASKS=(skipped-cask)' $'-n\nother-cask\n'
+    _bus_check "a flag-shaped name sits after -- (cannot become a flag)" ok \
+      'outdated --cask --quiet|upgrade --formula|upgrade --cask -- -n other-cask' "${mode}"
+
+    _bus_run "${mode}" 'JUMP_BREW_SKIP_CASKS=(skipped-cask)' $'other-cask\n' 1
+    _bus_check "failing brew outdated: skip the whole upgrade" fail 'outdated --cask --quiet' "${mode}"
+
+    _bus_run "${mode}" 'JUMP_BREW_SKIP_CASKS=(skipped-cask)' $'partial-cask\n' 1
+    _bus_check "failing brew outdated with partial output: still no upgrade" fail 'outdated --cask --quiet' "${mode}"
+
+    _bus_run "${mode}" 'JUMP_BREW_SKIP_CASKS=(skipped-cask)' $'other-cask\n' 0 1
+    _bus_check "failing formula upgrade: failure reported, cask call still made" brewfail \
+      'outdated --cask --quiet|upgrade --formula|upgrade --cask -- other-cask' "${mode}"
+  done
+}
+
+function _bus_test_validation {
+  _section "brew_upgrade_selected: pre-hook validation (each [FAIL], no brew call)"
+
+  local mode label pre
+  local -a cases=(
+    'failing pre-hook (last command fails)|false'
+    'pre-hook with a syntax error|if then'
+    'pre-hook that leaves the variable unset|SOMETHING_ELSE=(skipped-cask)'
+    'scalar instead of an array|JUMP_BREW_SKIP_CASKS=skipped-cask'
+    'empty scalar|JUMP_BREW_SKIP_CASKS='
+    'empty element|JUMP_BREW_SKIP_CASKS=(skipped-cask "")'
+    'space in an element|JUMP_BREW_SKIP_CASKS=("bad name")'
+    'metacharacter in an element|JUMP_BREW_SKIP_CASKS=("a;b")'
+    'uppercase element|JUMP_BREW_SKIP_CASKS=(Skipped)'
+    'slash in an element|JUMP_BREW_SKIP_CASKS=(a/b)'
+    'newline in an element|JUMP_BREW_SKIP_CASKS=($'"'"'a\nb'"'"')'
+    'trailing newline in an element|JUMP_BREW_SKIP_CASKS=($'"'"'a\n'"'"')'
+  )
+  for mode in fn user; do
+    for entry in "${cases[@]}"; do
+      label="${entry%%|*}"
+      pre="${entry#*|}"
+      # A reachable outdated list proves the unrestricted path is not taken.
+      _bus_run "${mode}" "${pre}" $'skipped-cask\nother-cask\n'
+      _bus_check "${label}" fail '' "${mode}"
+    done
+  done
+
+  # Valid but unusual names pass.
+  for mode in fn user; do
+    _bus_run "${mode}" 'JUMP_BREW_SKIP_CASKS=(a-b a.b a_b a+b a@2 0)' $'a-b\nz\n'
+    _bus_check "every allowed character class is accepted" ok \
+      'outdated --cask --quiet|upgrade --formula|upgrade --cask -- z' "${mode}"
+  done
+
+  # An unusable brew path never reaches the unrestricted upgrade either.
+  if /usr/bin/env -i HOME="${_bus_sb}" PATH=/usr/bin:/bin /bin/zsh -c \
+      'source "${HOME}/dotfiles/.functions/brew_upgrade_selected"; brew_upgrade_selected "$1"' \
+      _ "${_bus_sb}/no-such-brew" > /dev/null 2>&1; then
+    _fail "fn: a non-executable brew path returned 0"
+  else
+    _pass "fn: a non-executable brew path fails"
+  fi
+}
+
+function _bus_test_environment {
+  _section "brew_upgrade_selected: launchd-minimal environment and wiring"
+
+  # HOMEBREW_NO_ASK set as a prefix on the call (as jump does) reaches brew.
+  _bus_run fn 'JUMP_BREW_SKIP_CASKS=(skipped-cask)' $'other-cask\n'
+  if [[ "$(<"${_bus_sb}/calls.env")" == *'ask=1'* ]]; then
+    _pass "HOMEBREW_NO_ASK=1 prefix reaches brew through the function"
+  else
+    _fail "HOMEBREW_NO_ASK did not reach brew: $(<"${_bus_sb}/calls.env")"
+  fi
+
+  # jump-user: functions unreachable -> [FAIL], and brew is never called.
+  _bus_run user-nofn '<absent>' ''
+  if (( bus_rc != 0 )) && [[ -z "${bus_calls}" && "${bus_log}" == *'[FAIL]'* ]]; then
+    _pass "jump-user: function not loaded -> [FAIL], no unrestricted fallback"
+  else
+    _fail "jump-user without the function: rc=${bus_rc} calls='${bus_calls}' log='${bus_log}'"
+  fi
+
+  # jump-user: a failing pre-hook is logged to jump.log via run_and_log.
+  _bus_run user 'false' ''
+  if (( bus_rc != 0 )) && [[ -z "${bus_calls}" && "${bus_log}" == *'[FAIL] brew upgrade'* && "${bus_log}" == *'jump-pre'* ]]; then
+    _pass "jump-user: failing pre-hook logs '[FAIL] brew upgrade' with the reason"
+  else
+    _fail "jump-user failing pre-hook: rc=${bus_rc} calls='${bus_calls}' log='${bus_log}'"
+  fi
+
+  # Both files autoload as the .functions convention requires (jump path).
+  local out
+  /bin/rm -f "${_bus_sb}/dotfiles/.extra/jump-pre"
+  : > "${_bus_sb}/calls"
+  out="$(/usr/bin/env -i HOME="${_bus_sb}" PATH=/usr/bin:/bin FAKE_CALLS="${_bus_sb}/calls" /bin/zsh -fc '
+    fpath=("$HOME/dotfiles/.functions" $fpath)
+    autoload -Uz brew_upgrade_selected jump_step
+    brew_upgrade_selected "$1"; print -r -- "rc=$?"' _ "${_bus_sb}/brew" 2>&1)"
+  if [[ "${out}" == *rc=0* && "$(<"${_bus_sb}/calls")" == 'upgrade' ]]; then
+    _pass "autoload from fpath works (the jump path)"
+  else
+    _fail "autoload from fpath failed: ${out}"
+  fi
+
+  # Structure: both entry points call the function, and neither keeps a bare
+  # upgrade (brew cleanup/autoremove are untouched).
+  local f
+  for f in .functions/jump bin/jump-user; do
+    if /usr/bin/grep -Eq '"\$\{(BREW_BINARY|brew_binary)\}"[[:space:]]+upgrade' "${f}"; then
+      _fail "${f}: still calls a bare brew upgrade"
+    else
+      _pass "${f}: no bare brew upgrade left"
+    fi
+    if /usr/bin/grep -q 'brew_upgrade_selected "\${BREW_BINARY}"\|brew_upgrade_selected "\${brew_binary}"' "${f}"; then
+      _pass "${f}: calls brew_upgrade_selected"
+    else
+      _fail "${f}: does not call brew_upgrade_selected"
+    fi
+  done
+  if /usr/bin/grep -q 'run_and_log "brew upgrade" brew_upgrade_selected' bin/jump-user; then
+    _pass "bin/jump-user: the selection runs inside run_and_log"
+  else
+    _fail "bin/jump-user: selection is not wrapped in run_and_log"
+  fi
+  if /usr/bin/grep -q '"${BREW_BINARY}" cleanup' bin/jump-user && /usr/bin/grep -q '"${BREW_BINARY}" autoremove' bin/jump-user \
+      && /usr/bin/grep -q '"${BREW_BINARY}" cleanup' .functions/jump && /usr/bin/grep -q '"${BREW_BINARY}" autoremove' .functions/jump; then
+    _pass "cleanup and autoremove still run in both entry points"
+  else
+    _fail "cleanup or autoremove missing from an entry point"
+  fi
+  if /usr/bin/grep -q 'dotfiles/.functions/\${_jump_fn}' bin/jump-user; then
+    _pass "bin/jump-user sources the functions by absolute path under \${HOME}/dotfiles/.functions"
+  else
+    _fail "bin/jump-user does not source the functions by absolute path"
+  fi
+
+  # zsh syntax (the shellcheck suite lints in bash mode and misses zsh-only errors).
+  for f in .functions/brew_upgrade_selected .functions/jump_step; do
+    if /bin/zsh -n "${f}" 2>/dev/null; then
+      _pass "${f} parses (zsh -n)"
+    else
+      _fail "${f} has zsh syntax errors"
+    fi
+  done
+}
+
+# _bus_step <mode> <step script> -> bus_rc, bus_out, bus_log, bus_sys
+#   mode fn:   jump_step alone, default LOG_FILE (sandbox ~/Library/Logs/jump.log).
+#   mode user: after sourcing jump-user (its LOG_FILE and functions), the step
+#              called as an extras file would: jump_step ... || rc=1.
+function _bus_step {
+  local mode="$1" step="$2" script
+  local sb="${_bus_sb}"
+  : > "${sb}/Library/Logs/jump.log"; : > "${sb}/syslog"
+  case "${mode}" in
+    fn)
+      script='set -uo pipefail; source "${HOME}/dotfiles/.functions/jump_step"; logger() { print -r -- "$*" >> "${SYSLOG}"; }; jump_step "test step" "$1"; print -r -- "rc=$?"' ;;
+    user)
+      script='set -uo pipefail; source <(/usr/bin/grep -v "^main " "$2"); logger() { print -r -- "$*" >> "${SYSLOG}"; }; rc=0; jump_step "test step" "$1" || rc=1; print -r -- "rc=${rc}"' ;;
+    contrast)
+      script='set -uo pipefail; source <(/usr/bin/grep -v "^main " "$2"); logger() { print -r -- "$*" >> "${SYSLOG}"; }; rc=0; run_and_log "test step" "$1" || rc=1; print -r -- "rc=${rc}"' ;;
+  esac
+  bus_out="$(/usr/bin/env -i HOME="${sb}" PATH=/usr/bin:/bin TMPDIR="${sb}/tmp/" SYSLOG="${sb}/syslog" \
+    /bin/zsh -c "${script}" _ "${sb}/${step}" "${SCRIPT_DIR}/bin/jump-user" 2>&1)"
+  bus_log="$(<"${sb}/Library/Logs/jump.log")"
+  bus_sys="$(<"${sb}/syslog")"
+}
+
+function _bus_test_jump_step {
+  _section "jump_step: post-brew step exit mapping (outside run_and_log)"
+
+  local mode
+  for mode in fn user; do
+    _bus_step "${mode}" step-ok
+    if [[ "${bus_out}" == *'step finished'* && "${bus_out}" == *'rc=0'* && "${bus_sys}" == *'[OK] test step'* && -z "${bus_log}" ]]; then
+      _pass "${mode}: exit 0 -> ok, syslog [OK], nothing added to jump.log"
+    else
+      _fail "${mode}: exit 0: out='${bus_out}' sys='${bus_sys}' log='${bus_log}'"
+    fi
+
+    _bus_step "${mode}" step-busy
+    if [[ "${bus_out}" == *'rc=0'* && "${bus_log}" == *'[SKIP] test step'* \
+          && "${bus_log}" == *'held by pid 4242 (a-holder --run)'* \
+          && "${bus_sys}" == *'[SKIP] test step'* && "${bus_log}" != *'[FAIL]'* && "${bus_sys}" != *'[FAIL]'* ]]; then
+      _pass "${mode}: exit 75 -> logged skip with the holder, returns 0, not [FAIL]"
+    else
+      _fail "${mode}: exit 75: out='${bus_out}' sys='${bus_sys}' log='${bus_log}'"
+    fi
+
+    _bus_step "${mode}" step-fail
+    if [[ "${bus_out}" == *'rc=1'* && "${bus_log}" == *'[FAIL] test step (exit 3)'* \
+          && "${bus_log}" == *'step blew up'* && "${bus_sys}" == *'[FAIL] test step'* ]]; then
+      _pass "${mode}: exit 3 -> [FAIL] logged with output, folded into the caller's rc"
+    else
+      _fail "${mode}: exit 3: out='${bus_out}' sys='${bus_sys}' log='${bus_log}'"
+    fi
+
+    _bus_step "${mode}" step-exit1
+    if [[ "${bus_out}" == *'rc=1'* && "${bus_log}" == *'[FAIL] test step (exit 1)'* && "${bus_log}" != *'[SKIP]'* ]]; then
+      _pass "${mode}: exit 1 (unusable state) is [FAIL], never a skip"
+    else
+      _fail "${mode}: exit 1: out='${bus_out}' sys='${bus_sys}' log='${bus_log}'"
+    fi
+  done
+
+  # Why the step is outside run_and_log: it would fold the same 75 into [FAIL].
+  _bus_step contrast step-busy
+  if [[ "${bus_out}" == *'rc=1'* && "${bus_log}" == *'[FAIL] test step'* ]]; then
+    _pass "run_and_log folds exit 75 into [FAIL] (the reason jump_step exists)"
+  else
+    _fail "run_and_log contrast case: out='${bus_out}' log='${bus_log}'"
+  fi
+  if /usr/bin/grep -q 'run_and_log' .functions/jump_step; then
+    # The header comment names it; a call would be a line starting with it.
+    if /usr/bin/grep -Eq '^[[:space:]]*run_and_log ' .functions/jump_step; then
+      _fail ".functions/jump_step calls run_and_log"
+    else
+      _pass ".functions/jump_step never calls run_and_log"
+    fi
+  else
+    _pass ".functions/jump_step never calls run_and_log"
+  fi
+
+  # A usage error is not a silent success.
+  if /usr/bin/env -i HOME="${_bus_sb}" PATH=/usr/bin:/bin /bin/zsh -c \
+      'source "${HOME}/dotfiles/.functions/jump_step"; jump_step only-a-description' > /dev/null 2>&1; then
+    _fail "jump_step with no command returned 0"
+  else
+    _pass "jump_step with no command fails"
+  fi
+}
+
+function run_brew_upgrade_selected {
+  typeset -g _bus_sb
+  _bus_sb="$(mktemp -d "${TMPDIR:-/tmp}/test-bus.XXXXXX")"
+  _bus_make_sandbox "${_bus_sb}"
+
+  _bus_test_selection
+  _bus_test_validation
+  _bus_test_environment
+  _bus_test_jump_step
+
+  /bin/rm -rf "${_bus_sb}"
+}

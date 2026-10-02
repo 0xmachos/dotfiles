@@ -11,6 +11,18 @@ set -uo pipefail
 
 LOG_FILE="${HOME}/Library/Logs/jump.log"
 
+# Shared functions, sourced by absolute path: launchd runs this script without
+# .zshrc, so nothing under .functions/ is autoloaded. A missing or broken file
+# leaves the function undefined; run_brew_upgrade then fails rather than
+# running an unrestricted upgrade.
+for _jump_fn in brew_upgrade_selected jump_step; do
+  if [[ -r "${HOME}/dotfiles/.functions/${_jump_fn}" ]]; then
+    # shellcheck disable=SC1090
+    source "${HOME}/dotfiles/.functions/${_jump_fn}" || true
+  fi
+done
+unset _jump_fn
+
 function run_and_log {
   local description="$1"
   shift
@@ -64,6 +76,17 @@ function run_vulns_scan {
   return "${rc}"
 }
 
+# The upgrade step: brew_upgrade_selected (sourced above) under run_and_log.
+# An undefined function is a [FAIL], never a fallback to a bare `brew upgrade`.
+function run_brew_upgrade {
+  local brew_binary="$1"
+  if ! typeset -f brew_upgrade_selected > /dev/null; then
+    run_and_log "brew upgrade (brew_upgrade_selected not loaded)" /usr/bin/false
+    return 1
+  fi
+  run_and_log "brew upgrade" brew_upgrade_selected "${brew_binary}"
+}
+
 function check_internet_connection {
   local -a domains=("captive.apple.com" "google.com" "flightywifi.com")
   local domain reachability
@@ -110,7 +133,7 @@ function main {
 
   local rc=0
   run_and_log "brew update"     "${BREW_BINARY}" update     || rc=1
-  run_and_log "brew upgrade"    "${BREW_BINARY}" upgrade    || rc=1
+  run_brew_upgrade "${BREW_BINARY}"                         || rc=1
   run_and_log "brew cleanup"    "${BREW_BINARY}" cleanup    || rc=1
   run_and_log "brew autoremove" "${BREW_BINARY}" autoremove || rc=1
   # brew doctor exits non-zero on benign warnings: logged, not folded into rc.
@@ -166,6 +189,10 @@ function main {
   ## Local extras (gitignored, sourced if present) ##
   # Per-host updaters live in dotfiles/.extra/jump-user (.gitignore's .extra*
   # rule keeps it local). Runs as the user in main's scope; may use run_and_log.
+  # A step that must tell a busy lock (exit 75) from a failure runs through
+  # `jump_step <description> <command...> || rc=1` (see .functions/jump_step),
+  # not run_and_log, which folds every non-zero exit into [FAIL]: 75 is a
+  # logged skip, any other non-zero is [FAIL].
   local -r EXTRA_JUMP_USER="${HOME}/dotfiles/.extra/jump-user"
   if [[ -r "${EXTRA_JUMP_USER}" ]]; then
     # shellcheck disable=SC1090
