@@ -353,6 +353,15 @@ fatal: failed to write commit object'
     'signing refusal -> fallback context'
   _gs_expect PASS PostToolUseFailure 'git commit -m x' "${repo}" 'error: pathspec did not match' \
     'unrelated commit failure is left alone'
+  # The hook's raw `*git*` probe on the JSON cannot see a \u escape that
+  # spells one of those letters; such a payload must still be parsed.
+  out="$(printf '%s' '{"hook_event_name":"PostToolUseFailure","tool_name":"Bash","cwd":"'"${repo}"'","tool_input":{"command":"\u0067it commit -m x","description":"t"},"error":"agent refused operation"}' \
+    | env "${GS_ENV[@]}" /bin/zsh "${SCRIPT_DIR}/claude/hooks/git-sign-hook")"
+  if [[ "${out}" == *additionalContext* ]]; then
+    _pass "CONTEXT(PostToolUseFailure): a \\u-escaped 'git' in the raw JSON still reaches the parser"
+  else
+    _fail "a \\u-escaped 'git' in the raw JSON still reaches the parser — got $(printf '%q' "${out}")"
+  fi
   _gs_expect PASS PostToolUseFailure 'git status' "${repo}" "${refusal}" \
     'refusal text on a non-commit command'
   # Legacy shape: a pre-2.1.282 build carried the failure text under

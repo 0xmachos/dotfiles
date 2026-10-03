@@ -962,9 +962,18 @@ function _sl_guards {
   _sl_expect_lacks "guards: no session id → hidden" "${_SL_OUT}" "GUARDS OFF"
   printf 'pretool-prefilter\n' > "${marker}"
   _sl_run 140 "$(_sl_json "${sess} | .cost.total_duration_ms = 20000")"
-  _sl_expect_lacks "guards: marker present → hidden (full)" "${_SL_OUT}" "GUARDS OFF"
+  _sl_expect_lacks "guards: fresh marker → hidden (full)" "${_SL_OUT}" "GUARDS OFF"
   _sl_run 50 "$(_sl_json "${sess} | .cost.total_duration_ms = 20000")"
-  _sl_expect_lacks "guards: marker present → hidden (compact)" "${_SL_OUT}" "GUARDS OFF"
+  _sl_expect_lacks "guards: fresh marker → hidden (compact)" "${_SL_OUT}" "GUARDS OFF"
+  # The mod rewrites the marker every 30 s: one older than 120 s is a
+  # marker from a dead process (same session id resumed, or a crash), not
+  # proof of a live load.
+  _sl_touch_old "${marker}" 121
+  _sl_run 140 "$(_sl_json "${sess} | .cost.total_duration_ms = 20000")"
+  _sl_expect_has "guards: marker older than 120 s → GUARDS OFF" "$(_sl_line 1)" "${off}"
+  _sl_touch_old "${marker}" 119
+  _sl_run 140 "$(_sl_json "${sess} | .cost.total_duration_ms = 20000")"
+  _sl_expect_lacks "guards: marker 119 s old → hidden" "${_SL_OUT}" "GUARDS OFF"
   /bin/rm -f "${marker}"
 }
 

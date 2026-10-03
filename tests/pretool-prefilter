@@ -50,7 +50,10 @@ function _pf_load_tokens {
 function _pf_needs_dispatch {
   # Mirrors needsDispatch() in register.ts. $1 = command. 0 = dispatch.
   local cmd="$1" lower stripped tok
-  # Non-ASCII: dispatch (lower-casing differs between zsh and JS).
+  # Outside printable ASCII (+ tab, newline, CR): dispatch (lower-casing
+  # differs between zsh and JS; controls are rare). Same class as SYNTAX;
+  # a NUL is tested first because zsh's =~ stops at one.
+  [[ "${cmd}" == *$'\0'* ]] && return 0
   [[ "${cmd}" =~ $'[^\t\n\r\x20-\x7e]' ]] && return 0
   # shellcheck disable=SC2296  # zsh (L) lower-cases
   lower="${(L)cmd}"
@@ -79,10 +82,16 @@ function _pf_bash {
 
 function _pf_dispatch {
   # $1 = payload; remaining args = VAR=value pairs. Prints the verdict word.
-  local payload="$1" out
+  local payload="$1" out rc=0
   shift
   out="$(printf '%s' "${payload}" \
-    | /usr/bin/env "$@" /bin/zsh "${SCRIPT_DIR}/claude/hooks/pretool-dispatch" 2>/dev/null)" || true
+    | /usr/bin/env "$@" /bin/zsh "${SCRIPT_DIR}/claude/hooks/pretool-dispatch" 2>/dev/null)" || rc=$?
+  # The dispatcher's PASS is exit 0 and empty stdout; any other exit status
+  # (2 = could not judge) is INVALID here even when stdout is empty.
+  if (( rc != 0 )); then
+    printf 'INVALID\n'
+    return 0
+  fi
   _hook_verdict "${out}"
 }
 
@@ -155,7 +164,7 @@ function _pf_shape {
   done
   _pf_source_has "on('tool.call', { tool: 'Bash' }, prefilterBash).catch(denyOnFailure)" "Bash is prefiltered, with a .catch"
   _pf_source_has "on('session.start', announceLoaded)" "a session.start hook announces the load (toast proof)"
-  _pf_source_has 'const SYNTAX = /[^\x00-\x7f]/' 'SYNTAX is exactly non-ASCII (the mirror assumes it)'
+  _pf_source_has 'const SYNTAX = /[^\t\n\r\x20-\x7e]/' 'SYNTAX is exactly non-printable-ASCII (the mirror assumes it)'
   _pf_source_has "const DECORATION = /[\\\\'\"\$()\`\\n]/g" 'DECORATION deletes quotes, backslashes, $ ( ) backtick and newline (the mirror assumes it)'
   _pf_source_has "const PUBLISH = /(^|[\\s'\"(;|&{}\`])(pr([\\s'\"-]|create|edit|comment|review|close|reopen|merge|upload|new|revert|transfer)|api([\\s'\"-]|graphql))/" 'PUBLISH shape matches the mirror'
   _pf_source_has "const TIMEOUT_MS = 60_000" "dispatcher timeout matches the 60 s registration"
@@ -259,6 +268,13 @@ function _pf_cases {
 
   _pf_innocent_case 'rm inside FORMAT' 'cat FORMAT.txt'
   _pf_innocent_case 'tmp inside a word' "ls ${HOME}/MyTmpDir"
+  # zsh's =~ stops at a NUL byte, so the mirror tests for one first; the
+  # mod's regex sees it as outside printable ASCII and dispatches.
+  if _pf_needs_dispatch $'echo \0'; then
+    _pass "mirror: a NUL byte in the command dispatches"
+  else
+    _fail "mirror: a NUL byte in the command dispatches"
+  fi
 }
 
 function _pf_plugin_tests {

@@ -247,6 +247,29 @@ function run_gh_publish {
     'over 128 KiB' 'over-cap body file names the cap'
   _gp_test_expect DENY "gh issue create -t t --body-file ${_gp_dir}/overcap.md" \
     'over-cap body file denies for issue create too'
+  # The cap is bytes on disk: a byte of text padded with newlines (which a
+  # `$(<file)` read would drop) and a multibyte body (which a character
+  # count would halve) both deny; a multibyte body of exactly 128 KiB passes.
+  { printf 'x'; head -c 200000 /dev/zero | tr '\0' '\n'; } > "${_gp_dir}/newlinepad.md"
+  _gp_test_review "${_gp_dir}/newlinepad.md"
+  _gp_test_expect DENY "gh pr create -t t --body-file ${_gp_dir}/newlinepad.md" \
+    'body file padded past the cap with trailing newlines'
+  { for i in {1..70000}; do printf '\xc3\xa9'; done; } > "${_gp_dir}/multibyte-over.md"
+  _gp_test_review "${_gp_dir}/multibyte-over.md"
+  _gp_test_expect DENY "gh pr create -t t --body-file ${_gp_dir}/multibyte-over.md" \
+    'multibyte body over the cap in bytes (70000 chars, 140000 bytes)'
+  { for i in {1..65536}; do printf '\xc3\xa9'; done; } > "${_gp_dir}/multibyte-atcap.md"
+  _gp_test_review "${_gp_dir}/multibyte-atcap.md"
+  _gp_test_expect PASS "gh pr create -t t --body-file ${_gp_dir}/multibyte-atcap.md" \
+    'multibyte body at exactly 128 KiB in bytes is scanned'
+  # Only a regular file is read (one open, one bounded read, scans on the
+  # snapshot): a FIFO or a directory as the body denies instead of blocking.
+  /usr/bin/mkfifo "${_gp_dir}/fifo.md"
+  _gp_test_expect DENY "gh pr create -t t --body-file ${_gp_dir}/fifo.md" \
+    'a FIFO body file denies (not a regular file)'
+  mkdir -p "${_gp_dir}/dir.md"
+  _gp_test_expect DENY "gh pr create -t t --body-file ${_gp_dir}/dir.md" \
+    'a directory as the body file denies'
 
   if [[ -n "${USER:-}" && "${USER}" != *[^[:alnum:]_-]* ]]; then
     printf 'Log at /Users/%s/Library/Logs/x.log\n\n## Environment\n\n- b\n' \

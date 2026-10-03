@@ -325,6 +325,14 @@ function _ptd_fault_injection {
   else
     _fail "a NUL inside a field exits 2 (it would shift the fields) — ""rc=${PTD_RC}"
   fi
+  # A literal NUL (not the \u0000 escape) ends `read -d ''` early: the part
+  # before it must not be judged on its own.
+  _ptd_run $'{"tool_name":"Bash","tool_input":{"command":"ls"}}\0{"tool_name":"Bash","tool_input":{"command":"md5 x"}}'
+  if [[ ${PTD_RC} -eq 2 && ! -s "${PTD_BOX}/marker" ]]; then
+    _pass "a literal NUL in the payload exits 2 (nothing after it is judged)"
+  else
+    _fail "a literal NUL in the payload exits 2 (nothing after it is judged) — ""rc=${PTD_RC}"
+  fi
   _ptd_run '{"tool_name":"Bash","tool_input":{"command":["a"]}}'
   if [[ ${PTD_RC} -eq 2 && ! -s "${PTD_BOX}/marker" ]]; then
     _pass "a non-string command exits 2"
