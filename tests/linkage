@@ -168,6 +168,7 @@ function run_linkage {
     # Repo metadata
     [.mcp.json]=repo                         # Host-local MCP config (gitignored)
     [.ignore]=repo                           # ripgrep whitelist for gitignored docs (gitignored)
+    [.worktreeinclude]=repo                  # Claude Code worktree copy list (gitignored: .extra_gitexclude)
     [LICENSE]=repo
     [README.md]=repo
     [REVIEW.md]=repo                         # Review rulebook for every reviewer (tracked)
