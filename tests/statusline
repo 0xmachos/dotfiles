@@ -173,6 +173,14 @@ function _sl_context {
   _sl_ctx_case 200000 "${YELLOW}" 200K
   _sl_ctx_case 399999 "${YELLOW}" 399K
   _sl_ctx_case 400000 "${RED}" 400K
+  # Millions truncate to hundredths before rounding to tenths: 1,150,001 is
+  # 1.1M, 1,260,000 is 1.3M, 1,050,000 is 1.1M
+  _sl_ctx_case 1000000 "${RED}" 1.0M
+  _sl_ctx_case 1049999 "${RED}" 1.0M
+  _sl_ctx_case 1050000 "${RED}" 1.1M
+  _sl_ctx_case 1150001 "${RED}" 1.1M
+  _sl_ctx_case 1260000 "${RED}" 1.3M
+  _sl_ctx_case 9999999 "${RED}" 10.0M
 
   local p250k
   p250k="$(_sl_json '.context_window.current_usage.cache_read_input_tokens = 250000')"
@@ -313,11 +321,36 @@ function _sl_identity {
   _sl_expect_eq "Fable 5.1 (1M context) → Fable" "$(_sl_plain "$(_sl_line 1)")" "work Fable"
 }
 
+# Directory name is the last path component: basename semantics, including a
+# trailing slash, and "/" for a path of slashes only
+function _sl_cwd_case {
+  # <current_dir> <expected row 1>
+  _sl_run 140 "$(jq -cn --arg cwd "$1" '{workspace: {current_dir: $cwd}, model: {id: "claude-opus-5-5[1m]", display_name: "Opus 5.5 (1M context)"}}')"
+  _sl_expect_eq "directory name of $(printf '%q' "$1")" "$(_sl_plain "$(_sl_line 1)")" "$2"
+}
+
+function _sl_cwd {
+  _sl_cwd_case "${_SL_SB}/work" "work Opus"
+  _sl_cwd_case "${_SL_SB}/work/" "work Opus"
+  _sl_cwd_case "/" "/ Opus"
+  _sl_cwd_case "//" "/ Opus"
+  _sl_cwd_case "///" "/ Opus"
+  _sl_cwd_case "." ". Opus"
+  _sl_cwd_case "${_SL_SB}/work dir" "work dir Opus"
+}
+
 # ── (7, 8) cost and cache-hit bands ────────────────────────────────────────
 function _sl_cost_case {
   # <usd> <colour> — the sandbox FX rate is 1, so £ equals USD
   _sl_run 140 "$(_sl_json ".cost.total_cost_usd = $1")"
   _sl_expect_has "cost \$$1 at rate 1 → band" "$(_sl_line 2)" "$2£$(printf '%.2f' "$1")${RESET}"
+}
+
+function _sl_fx_case {
+  # <fx rate> <usd> <expected £> — row 2 is the bar, tokens and the £ cost
+  printf '%s' "$1" > "${_SL_SB}/Library/Caches/statusline/usd-gbp"
+  _sl_run 140 "$(_sl_json ".cost.total_cost_usd = $2")"
+  _sl_expect_eq "cost \$$2 at FX $1 → £$3" "$(_sl_plain "$(_sl_line 2)")" "░░░░░░░░░░ 0K · £$3"
 }
 
 function _sl_hit_case {
@@ -337,11 +370,35 @@ function _sl_economics {
   _sl_cost_case 19.99 "${YELLOW}"
   _sl_cost_case 20 "${RED}"
 
-  # Avoid .5 ratios: printf %.0f rounds half to even
   _sl_hit_case 0.9 90 "${GREEN}"
   _sl_hit_case 0.89 89 "${YELLOW}"
   _sl_hit_case 0.7 70 "${YELLOW}"
   _sl_hit_case 0.69 69 "${RED}"
+  # The ratio is scaled as exact decimal digits, then %.0f rounds half to even:
+  # .125 → 12.5 → 12, .545 → 54.5 → 54 and .575 → 57.5 → 58 (a float multiply
+  # gives 55 and 57)
+  _sl_hit_case 0.8765 88 "${YELLOW}"
+  _sl_hit_case 0.125 12 "${RED}"
+  _sl_hit_case 0.5 50 "${RED}"
+  _sl_hit_case 0.165 16 "${RED}"
+  _sl_hit_case 0.145 14 "${RED}"
+  _sl_hit_case 0.155 16 "${RED}"
+  _sl_hit_case 0.545 54 "${RED}"
+  _sl_hit_case 0.575 58 "${RED}"
+  _sl_hit_case 0.995 100 "${GREEN}"
+  _sl_hit_case 0.005 0 "${RED}"
+
+  # Fractional FX: the product truncates to four decimals before %.2f rounds,
+  # so 1.2345 × 0.8141 = 1.0050 shows £1.00, not the £1.01 float maths gives
+  _sl_fx_case 0.8141 1.2345 1.00
+  _sl_fx_case 0.67 1.5 1.00
+  _sl_fx_case 0.402 2.5 1.00
+  _sl_fx_case 1 1.0051 1.01
+  _sl_fx_case 0.79 123.456 97.53
+  _sl_fx_case 0.7432 0.1234 0.09
+  # Long mantissa, as a JSON number from a float sum arrives
+  _sl_fx_case 0.8141 3.4156250000000003 2.78
+  printf '1' > "${_SL_SB}/Library/Caches/statusline/usd-gbp"
 
   local warm="♻️${GREEN}95%${RESET}"
   local expired="${_SL_DIM}·${RESET} ${RED}Cache Expired${RESET}"
@@ -371,6 +428,15 @@ _SL_EXPIRED='.effort.level = "medium"
   | .prompt_cache = {warm: false, caching_observed: true, ttl: "1h",
                      expires_at: ($now - 10), recache_tokens_if_cold: 142000}'
 
+# _sl_expired_case <tokens> <fx> <expected row 2> [5h used percentage]
+function _sl_expired_case {
+  local extra=""
+  [[ -n "${4:-}" ]] && extra=" | .rate_limits.five_hour.used_percentage = ${4}"
+  printf '%s' "$2" > "${_SL_SB}/Library/Caches/statusline/usd-gbp"
+  _sl_run 140 "$(_sl_json "${_SL_EXPIRED} | .prompt_cache.recache_tokens_if_cold = $1${extra}")"
+  _sl_expect_eq "expired: $1 tokens at FX $2" "$(_sl_plain "$(_sl_line 2)")" "$3"
+}
+
 function _sl_usage_reset {
   /bin/rm -rf "${_SL_SB}/Library/Caches/statusline/usage"
 }
@@ -387,6 +453,18 @@ function _sl_expired {
   _sl_run 140 "$(_sl_json "${_SL_EXPIRED} | .prompt_cache.ttl = \"5m\"")"
   _sl_expect_eq "expired: 5m TTL writes at 1.25×" "$(_sl_plain "$(_sl_line 2)")" \
     "142K tokens to Opus Med is £0.71"
+  # Token label: t / 1e6 rounds straight to a tenth (1,150,001 is 1.2M here, 1.1M
+  # in the context bar); half-even on exact halves (1.25M is 1.2M)
+  _sl_expired_case 1150000 1 "1.1M tokens to Opus Med is £9.20"
+  _sl_expired_case 1150001 1 "1.2M tokens to Opus Med is £9.20"
+  _sl_expired_case 1250000 1 "1.2M tokens to Opus Med is £10.00"
+  _sl_expired_case 1260000 1 "1.3M tokens to Opus Med is £10.08"
+  _sl_expired_case 1000000 1 "1.0M tokens to Opus Med is £8.00"
+  _sl_expired_case 999999 1 "999K tokens to Opus Med is £8.00"
+  # Fractional FX: 10.00 × 0.8145 = 8.145 rounds down (binary), 9.20 × 0.8145 = 7.49
+  _sl_expired_case 1250000 0.8145 "1.2M tokens to Opus Med is £8.14"
+  _sl_expired_case 1150000 0.8145 "1.1M tokens to Opus Med is £7.49"
+  printf "1" > "${_SL_SB}/Library/Caches/statusline/usd-gbp"
   _sl_run 140 "$(_sl_json "${_SL_EXPIRED} | .model = {id: \"claude-fable-5-1\", display_name: \"Fable 5.1\"}
     | .effort.level = \"xhigh\"")"
   _sl_expect_eq "expired: Fable price and effort label" "$(_sl_plain "$(_sl_line 2)")" \
@@ -413,6 +491,10 @@ function _sl_expired {
   _sl_run 140 "$(_sl_json "${_SL_EXPIRED} | .rate_limits.five_hour.used_percentage = 10.5")"
   _sl_expect_eq "expired: under a point of signal → no %" "$(_sl_plain "$(_sl_line 2)")" \
     "142K tokens to Opus Med is £1.14"
+  # Percent of 5h: 1.125 × 20 = 22.5 rounds half to even (22); 0.04 × 20 is under 1
+  _sl_expired_case 140625 1 "140K tokens to Opus Med is £1.12 (~22% of 5h)" 30
+  _sl_expired_case 156250 1 "156K tokens to Opus Med is £1.25 (~25% of 5h)" 30
+  _sl_expired_case 5000 1 "5K tokens to Opus Med is £0.04 (<1% of 5h)" 30
 
   # A session's first render only sets its baseline; the next appends the delta
   _sl_usage_reset
@@ -428,6 +510,27 @@ function _sl_expired {
   _sl_run 140 "$(_sl_json '.session_id = "rec" | .cost.total_cost_usd = 0.25
     | .rate_limits.five_hour.used_percentage = 41')"
   _sl_expect_eq "ledger: restarted counter counts in full" "$(tail -1 "${u}/spend")" "${_SL_NOW} 0.250000"
+  # The 5h sample is taken at most once a minute: the renders above fall in it
+  _sl_expect_eq "ledger: a fresh 5h file takes no second sample" \
+    "$(wc -l < "${u}/five" | tr -d ' ')" "1"
+
+  # Deltas print to six places
+  _sl_run 140 "$(_sl_json '.session_id = "rec" | .cost.total_cost_usd = 0.3734567
+    | .rate_limits.five_hour.used_percentage = 41')"
+  _sl_expect_eq "ledger: delta rounds to six places" "$(tail -1 "${u}/spend")" "${_SL_NOW} 0.123457"
+  # Costs in exponent notation (jq prints 1.5E-7), and a delta that rounds to
+  # 0.000000 is not appended
+  local before after
+  _sl_run 140 "$(_sl_json '.session_id = "exp" | .cost.total_cost_usd = 1.5e-7
+    | .rate_limits.five_hour.used_percentage = 41')"
+  _sl_run 140 "$(_sl_json '.session_id = "exp" | .cost.total_cost_usd = 0.0000035
+    | .rate_limits.five_hour.used_percentage = 41')"
+  _sl_expect_eq "ledger: exponent-notation baseline, delta 3.35e-6" "$(tail -1 "${u}/spend")" "${_SL_NOW} 0.000003"
+  before="$(wc -l < "${u}/spend" | tr -d ' ')"
+  _sl_run 140 "$(_sl_json '.session_id = "exp" | .cost.total_cost_usd = 0.00000365
+    | .rate_limits.five_hour.used_percentage = 41')"
+  after="$(wc -l < "${u}/spend" | tr -d ' ')"
+  _sl_expect_eq "ledger: a delta that prints 0.000000 is not appended" "${after}" "${before}"
 
   _sl_ledger_prune
   _sl_ledger_concurrent
@@ -649,6 +752,121 @@ function _sl_subagent {
   done
 }
 
+# ── (11) no per-render spawns for text and arithmetic ─────────────────────
+# Every render used to start cat, basename, stat, cut, bc, awk, date and mkdir
+# processes; builtins do that work now. Shims for those names on PATH log any
+# call, then run the real tool, so a regression shows up as a logged name. No
+# STATUSLINE_NOW: the clock must come from the shell, not from `date`. The
+# script must load zsh/stat and zsh/files by feature name only: a bare
+# `zmodload zsh/stat` shadows the external stat (and `zsh/files` mkdir, mv, rm)
+# for everything that runs after it.
+function _sl_run_spawn {
+  # <payload> — HOME sandbox, shims first on PATH, real clock
+  printf '%s' "$1" | _run_no_tty env -u CLAUDE_CODE_AUTO_COMPACT_WINDOW \
+    -u GIT_DIR -u GIT_WORK_TREE -u STATUSLINE_NOW GIT_CEILING_DIRECTORIES="${_SL_SB}" \
+    HOME="${_SL_SB}" COLUMNS=140 PATH="${_SL_SB}/shims:${PATH}" \
+    STATUSLINE_OSASCRIPT="${_SL_SB}/osascript-stub" \
+    /bin/zsh "${SCRIPT_DIR}/claude/statusline-command" >/dev/null 2>"${_SL_SB}/stderr" || \
+    _fail "spawn test: statusline-command exited non-zero: $(head -3 "${_SL_SB}/stderr")"
+}
+
+function _sl_spawns {
+  local shims="${_SL_SB}/shims" log="${_SL_SB}/shims.log" name real line base=""
+  local _SL_NOW
+  _SL_NOW="$(date +%s)"
+  mkdir -p "${shims}"
+  : > "${log}"
+  for name in cat basename date stat cut bc awk mkdir; do
+    real="$(command -v "${name}")"
+    printf '#!/bin/zsh\nprint -r -- "%s $*" >> %q\nexec %q "$@"\n' "${name}" "${log}" "${real}" \
+      > "${shims}/${name}"
+    chmod 755 "${shims}/${name}"
+  done
+  _sl_usage_reset
+  printf '1' > "${_SL_SB}/Library/Caches/statusline/usd-gbp"
+  # A fresh 5h sample file keeps the once-a-minute prune (find, mv, awk filter,
+  # rm) out of the run: those stay external by design
+  mkdir -p "${_SL_SB}/Library/Caches/statusline/usage"
+  printf '%s 55\n' "${_SL_NOW}" > "${_SL_SB}/Library/Caches/statusline/usage/five"
+  # shellcheck disable=SC2016  # $now is a jq variable
+  base='.session_id = "sp" | .effort.level = "high"
+    | .rate_limits = {five_hour: {used_percentage: 55.4, resets_at: ($now + 7200)},
+                      seven_day: {used_percentage: 80, resets_at: ($now + 200000)}}
+    | .prompt_cache = {warm: true, caching_observed: true, expires_at: ($now + 1800), hit_ratio: 0.8765}'
+  # First render sets the ledger baseline, the second records a delta; the
+  # long-mantissa cost keeps the pound conversion off its bc fallback window
+  _sl_run_spawn "$(_sl_json "${base} | .cost.total_cost_usd = 3.4156250000000003")"
+  _sl_run_spawn "$(_sl_json "${base} | .cost.total_cost_usd = 3.5156250000000003")"
+  # Over a million tokens (context label), and the root directory (basename)
+  _sl_run_spawn "$(_sl_json "${base} | .context_window.current_usage.cache_read_input_tokens = 1260000")"
+  _sl_run_spawn "$(jq -cn '{workspace: {current_dir: "/"}, model: {id: "claude-opus-5-5[1m]", display_name: "Opus 5.5"}}')"
+  # Expired-cache rows: label, dollars, pounds (no spend ledger, so the
+  # sort-and-awk rate lookup, which stays external, does not run)
+  /bin/rm -f "${_SL_SB}/Library/Caches/statusline/usage/spend"
+  _sl_run_spawn "$(_sl_json "${_SL_EXPIRED} | .prompt_cache.recache_tokens_if_cold = 1260000 | .prompt_cache.ttl = \"5m\"")"
+  # Cache alert: marker claim and message
+  _sl_run_spawn "$(_sl_json ".session_id = \"spa\" | .prompt_cache = {warm: true, caching_observed: true,
+    expires_at: (\$now + 240), hit_ratio: 0.5, recache_tokens_if_cold: 60000}")"
+  line="$(tr '\n' ',' < "${log}")"
+  _sl_expect_eq "no cat/basename/date/stat/cut/bc/awk/mkdir spawned by a render" "${line}" ""
+  _sl_usage_reset
+
+  # Static: modules load by feature name, and no BSD stat call is left
+  local bad="" l
+  while IFS= read -r l; do
+    [[ "${l}" == \#* ]] && continue
+    [[ "${l}" == *zmodload*zsh/stat* || "${l}" == *zmodload*zsh/files* ]] || continue
+    [[ "${l}" == *"zmodload -F zsh/stat b:zstat"* || "${l}" == *"zmodload -F zsh/files b:zf_mkdir"* ]] || bad+="${l}; "
+  done < "${SCRIPT_DIR}/claude/statusline-command"
+  _sl_expect_eq "zsh/stat and zsh/files are loaded by feature name only" "${bad}" ""
+  _sl_expect_eq "no 'stat -f' in the script but the fallback path" \
+    "$(/usr/bin/grep -c 'stat -f' "${SCRIPT_DIR}/claude/statusline-command")" "1"
+}
+
+# ── (12) module-load failure falls back to the external commands ──────────
+# STATUSLINE_NO_MODULES empties zsh's module path, so every zmodload in the
+# script fails. The lines, the ledger and the cache-alert claim must come out the
+# same as with the builtins.
+function _sl_no_modules {
+  local u="${_SL_SB}/Library/Caches/statusline/usage" a p p1 p2
+  _sl_usage_reset
+  printf '0.8141' > "${_SL_SB}/Library/Caches/statusline/usd-gbp"
+  # shellcheck disable=SC2016  # $now is a jq variable
+  p1="$(_sl_json '.effort.level = "high" | .cost.total_cost_usd = 1.2345
+      | .context_window.current_usage.cache_read_input_tokens = 1260000
+      | .rate_limits.five_hour = {used_percentage: 55.4, resets_at: ($now + 7200)}
+      | .prompt_cache = {hit_ratio: 0.545, warm: true, caching_observed: true, expires_at: ($now + 1800)}')"
+  p2="$(_sl_json "${_SL_EXPIRED} | .prompt_cache.recache_tokens_if_cold = 1260000")"
+  for p in "${p1}" "${p2}"; do
+    _sl_run 140 "${p}"
+    a="${_SL_OUT}"
+    _sl_run 140 "${p}" STATUSLINE_NO_MODULES=1
+    _sl_expect_eq "no modules: same output as with them ($(_sl_plain "$(_sl_line 1)"))" "${_SL_OUT}" "${a}"
+  done
+
+  # The seam really disables the modules: the clock falls back to `date`
+  : > "${_SL_SB}/shims.log"
+  STATUSLINE_NO_MODULES=1 _sl_run_spawn "$(_sl_json '.')"
+  _sl_expect_has "no modules: the clock comes from date" "$(cat "${_SL_SB}/shims.log")" "date +%s"
+
+  # Ledger: baseline, then a delta, then a fresh 5h file takes no second sample
+  _sl_run 140 "$(_sl_json '.session_id = "nm" | .cost.total_cost_usd = 1 | .rate_limits.five_hour.used_percentage = 40')" STATUSLINE_NO_MODULES=1
+  _sl_run 140 "$(_sl_json '.session_id = "nm" | .cost.total_cost_usd = 1.5 | .rate_limits.five_hour.used_percentage = 41')" STATUSLINE_NO_MODULES=1
+  _sl_expect_eq "no modules: ledger delta recorded" "$(cat "${u}/spend" 2>/dev/null)" "${_SL_NOW} 0.500000"
+  _sl_run 140 "$(_sl_json '.session_id = "nm" | .cost.total_cost_usd = 1.75 | .rate_limits.five_hour.used_percentage = 41')" STATUSLINE_NO_MODULES=1
+  _sl_expect_eq "no modules: one 5h sample a minute" "$(wc -l < "${u}/five" | tr -d ' ')" "1"
+
+  # Cache alert claims its marker through the fallback mkdir
+  /usr/bin/find "${_SL_SB}/Library/Caches/statusline" -maxdepth 1 -name 'cache-alert-*' \
+    -exec /bin/rm -rf {} +
+  _sl_run 140 "$(_sl_alert_payload '"nm1"' true 240 60000)" STATUSLINE_NO_MODULES=1
+  _sl_expect_eq "no modules: cache_alert claims its marker" "$(_sl_alert_markers)" "1"
+  _sl_run 140 "$(_sl_alert_payload '"nm1"' true 240 60000)" STATUSLINE_NO_MODULES=1
+  _sl_expect_eq "no modules: the claim is still once only" "$(_sl_alert_markers)" "1"
+  printf '1' > "${_SL_SB}/Library/Caches/statusline/usd-gbp"
+  _sl_usage_reset
+}
+
 function run_statusline {
   _section "Claude Code status lines"
 
@@ -674,10 +892,13 @@ function run_statusline {
   _sl_usage
   _sl_countdowns
   _sl_identity
+  _sl_cwd
   _sl_economics
   _sl_expired
   _sl_cache_alert
   _sl_subagent
+  _sl_spawns
+  _sl_no_modules
   /bin/rm -rf "${_SL_SB}"
   trap - EXIT
 }
