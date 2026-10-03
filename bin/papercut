@@ -1,0 +1,341 @@
+#!/bin/zsh
+# papercut — log a small, fixable friction in one line; drain the log later.
+#
+# Usage:
+#   papercut [--repo <name>] [--agent <label>] [--] <message...>   append
+#   papercut [--repo <name>] list                                  numbered open entries
+#   papercut [--repo <name>] count                                 "<total> <repo> <oldest>"
+#   papercut resolve <n> <note...>                                 close entry n
+# A message that begins with list, count or resolve needs `--` before it.
+#
+# Store: ~/Library/Application Support/papercuts/PAPERCUTS.md, derived from
+# $HOME only (no path override), directory 0700, file 0600, umask 077. One
+# markdown file keeps the log greppable and editable by hand; entries are one
+# line each:
+#   - [ ] 2026-10-03T14:07:59Z · <agent> · <repo> · <message ... Fix: <change>>
+# New entries land at the end of "## Open", with exactly one blank line before
+# "## Resolved". Resolving moves the line to the end of "## Resolved" as
+# "- [x] <entry> → resolved <date> : <note>". Every write rewrites the whole
+# file from parsed sections, so the layout is normalised each time and a new
+# file is created from the same code path (no separate skeleton).
+#
+# Fix: is mandatory. A complaint with no proposed remedy is noise; forcing the
+# smallest concrete change (or an honest `Fix: unknown`) makes each entry
+# actionable and cheap to triage.
+#
+# Locking: every read-modify-write runs under /usr/bin/lockf -t 5 on
+# <file>.lock (kept between runs, so waiters queue in order). The locked body
+# is a hidden `__locked <op> ...` subcommand of this script, re-executed under
+# lockf; the outer call validates input first, so a usage error never waits
+# for the lock. Writes go to a temp file in the same directory and are renamed
+# into place, so list and count read without the lock and never see a partial
+# file. A lock not obtained in 5 s, or any lockf failure, exits 1 with nothing
+# written. The writer stamps the time while holding the lock, so timestamps
+# follow file order.
+#
+# Agent label: --agent, else $PAPERCUT_AGENT, else "claude" when $CLAUDECODE is
+# set (a session of that tool exports it), else "shell". Repo: basename of the
+# git toplevel (characters outside [A-Za-z0-9._-] become "_", cut to 32), else
+# "none"; --repo overrides. Both are validated against [A-Za-z0-9._-]{1,32}
+# when supplied. `list` numbers entries by file order across all repos, so the
+# number is what `resolve` takes whether or not --repo filtered the listing.
+#
+# `count` is the fast path for status lines: no lock, no network, and the one
+# git call only when the file holds open entries and --repo is absent.
+#
+# Exit codes: 0 success; 64 usage error (nothing written); 1 failure (lock,
+# unreadable or malformed file, no such entry).
+
+# shellcheck disable=SC2016  # backticks in messages and usage text are literal
+
+set -euo pipefail
+umask 077
+
+# shellcheck disable=SC2296  # zsh-only expansion: absolute path of this script
+readonly SELF="${0:A}"
+readonly LOG_DIR="${HOME}/Library/Application Support/papercuts"
+readonly LOG_FILE="${LOG_DIR}/PAPERCUTS.md"
+readonly LOCK_FILE="${LOG_FILE}.lock"
+readonly OPEN_PREFIX='- [ ] '
+readonly SEP=' · '
+readonly LABEL_RE='^[A-Za-z0-9._-]{1,32}$'
+readonly DATE_RE='^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+
+typeset -g REPO_NAME=''
+typeset -g AGENT_NAME=''
+typeset -ga HEAD_LINES=() OPEN_LINES=() RESOLVED_LINES=()
+
+function usage {
+  /bin/cat >&2 <<'USAGE'
+usage: papercut [--repo <name>] [--agent <label>] [--] <message...>
+       papercut [--repo <name>] list
+       papercut [--repo <name>] count
+       papercut resolve <n> <note...>
+
+The message must end with `Fix: <smallest change>`; `Fix: unknown` is allowed.
+Label and repo values match [A-Za-z0-9._-]{1,32}. A message that starts with
+list, count or resolve needs `--` first.
+USAGE
+}
+
+function usage_fail {
+  if [[ $# -gt 0 ]]; then printf 'papercut: %s\n' "$*" >&2; fi
+  usage
+  exit 64
+}
+
+function die {
+  printf 'papercut: %s\n' "$*" >&2
+  exit 1
+}
+
+# Newlines, tabs and runs of whitespace become single spaces; ends trimmed.
+function squash {
+  local text="$1"
+  text="${text//[[:space:]]/ }"
+  while [[ "${text}" == *'  '* ]]; do text="${text//  / }"; done
+  text="${text## }"
+  text="${text%% }"
+  REPLY="${text}"
+}
+
+function check_label {
+  [[ "$2" =~ ${LABEL_RE} ]] || usage_fail "invalid $1 '$2' (use [A-Za-z0-9._-], 1-32 characters)"
+}
+
+function detect_repo {
+  local top name
+  top="$(git rev-parse --show-toplevel 2>/dev/null)" || top=''
+  name="${top##*/}"
+  name="${name//[^A-Za-z0-9._-]/_}"
+  name="${name:0:32}"
+  REPO_NAME="${name:-none}"
+}
+
+function resolve_agent {
+  if [[ -n "${AGENT_NAME}" ]]; then
+    :
+  elif [[ -n "${PAPERCUT_AGENT:-}" ]]; then
+    AGENT_NAME="${PAPERCUT_AGENT}"
+  elif [[ -n "${CLAUDECODE:-}" ]]; then
+    AGENT_NAME='claude'
+  else
+    AGENT_NAME='shell'
+  fi
+  check_label agent "${AGENT_NAME}"
+}
+
+function init_state {
+  HEAD_LINES=('# Papercuts' ''
+    'Small frictions this estate can fix, logged in the moment by `papercut`.'
+    'Open entries are drained by the `papercuts` skill; resolved ones move below.'
+    '')
+  OPEN_LINES=()
+  RESOLVED_LINES=()
+}
+
+# Parses the log into HEAD_LINES (everything before "## Open"), OPEN_LINES and
+# RESOLVED_LINES (non-blank lines of each section). Absent or blank file means
+# the empty skeleton; a non-blank file lacking either heading is refused
+# (return 1 after a message, so callers choose between exiting and failing open).
+function load_log {
+  local line section=head seen_open=0 seen_resolved=0 nonblank=0
+  init_state
+  [[ -f "${LOG_FILE}" ]] || return 0
+  HEAD_LINES=()
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ -n "${line//[[:space:]]/}" ]] && nonblank=1
+    case "${line}" in
+      '## Open') section=open; seen_open=1; continue ;;
+      '## Resolved') section=resolved; seen_resolved=1; continue ;;
+    esac
+    case "${section}" in
+      head) HEAD_LINES+=("${line}") ;;
+      open) [[ -n "${line//[[:space:]]/}" ]] && OPEN_LINES+=("${line}") ;;
+      resolved) [[ -n "${line//[[:space:]]/}" ]] && RESOLVED_LINES+=("${line}") ;;
+    esac
+  done < "${LOG_FILE}"
+  if (( seen_open == 0 || seen_resolved == 0 )); then
+    if (( nonblank != 0 )); then
+      printf "papercut: %s lacks '## Open' or '## Resolved'; fix it by hand\n" "${LOG_FILE}" >&2
+      return 1
+    fi
+    init_state
+  fi
+  return 0
+}
+
+function save_log {
+  local tmp line
+  tmp="$(/usr/bin/mktemp "${LOG_FILE}.XXXXXX")"
+  {
+    for line in "${HEAD_LINES[@]}"; do printf '%s\n' "${line}"; done
+    printf '## Open\n\n'
+    if (( ${#OPEN_LINES[@]} > 0 )); then
+      for line in "${OPEN_LINES[@]}"; do printf '%s\n' "${line}"; done
+      printf '\n'
+    fi
+    printf '## Resolved\n'
+    if (( ${#RESOLVED_LINES[@]} > 0 )); then
+      printf '\n'
+      for line in "${RESOLVED_LINES[@]}"; do printf '%s\n' "${line}"; done
+    fi
+  } > "${tmp}"
+  /bin/mv -f "${tmp}" "${LOG_FILE}"
+}
+
+# Splits an entry (prefix already stripped) into LINE_TS and LINE_REPO; the
+# agent field between them is skipped.
+function split_entry {
+  local rest="$1"
+  LINE_TS="${rest%%"${SEP}"*}"
+  rest="${rest#*"${SEP}"}"
+  rest="${rest#*"${SEP}"}"
+  LINE_REPO="${rest%%"${SEP}"*}"
+}
+
+# --- locked bodies (run by the hidden __locked subcommand) -------------------
+
+function locked_append {
+  local agent="$1" repo="$2" message="$3" ts
+  check_label agent "${agent}"
+  check_label repo "${repo}"
+  ts="$(/bin/date -u +%Y-%m-%dT%H:%M:%SZ)"
+  load_log || exit 1
+  OPEN_LINES+=("${OPEN_PREFIX}${ts}${SEP}${agent}${SEP}${repo}${SEP}${message}")
+  save_log
+}
+
+function locked_resolve {
+  local n="$1" note="$2" line count=0 found='' day
+  local -a kept=()
+  load_log || exit 1
+  for line in "${OPEN_LINES[@]}"; do
+    if [[ "${line}" == "${OPEN_PREFIX}"* ]]; then
+      count=$(( count + 1 ))
+      if (( count == n )); then found="${line}"; continue; fi
+    fi
+    kept+=("${line}")
+  done
+  [[ -n "${found}" ]] || die "no open papercut numbered ${n}"
+  day="$(/bin/date -u +%Y-%m-%d)"
+  OPEN_LINES=("${kept[@]}")
+  RESOLVED_LINES+=("- [x] ${found#"${OPEN_PREFIX}"} → resolved ${day} : ${note}")
+  save_log
+}
+
+function run_locked {
+  local rc=0
+  /bin/mkdir -p "${LOG_DIR}"
+  /usr/bin/lockf -k -t 5 "${LOCK_FILE}" /bin/zsh "${SELF}" __locked "$@" || rc=$?
+  case "${rc}" in
+    0) ;;
+    1) exit 1 ;;
+    75) die "could not take the lock within 5 seconds; nothing written" ;;
+    *) die "lockf failed (status ${rc}); nothing written" ;;
+  esac
+}
+
+# --- subcommands -------------------------------------------------------------
+
+function cmd_append {
+  local repo_opt="$1"
+  shift
+  local message
+  squash "$*"
+  message="${REPLY}"
+  [[ -n "${message}" ]] || usage_fail 'the message is blank'
+  [[ "${message:l}" == *'fix:'* ]] || usage_fail 'the message must end with `Fix: <smallest change>` (`Fix: unknown` is allowed)'
+  resolve_agent
+  if [[ -n "${repo_opt}" ]]; then REPO_NAME="${repo_opt}"; else detect_repo; fi
+  run_locked append "${AGENT_NAME}" "${REPO_NAME}" "${message}"
+  printf 'Logged papercut (%s) to %s\n' "${REPO_NAME}" "${LOG_FILE}"
+}
+
+function cmd_list {
+  local repo_opt="$1" line n=0
+  load_log || exit 1
+  for line in "${OPEN_LINES[@]}"; do
+    [[ "${line}" == "${OPEN_PREFIX}"* ]] || continue
+    n=$(( n + 1 ))
+    split_entry "${line#"${OPEN_PREFIX}"}"
+    if [[ -n "${repo_opt}" && "${LINE_REPO}" != "${repo_opt}" ]]; then continue; fi
+    printf '%d. %s\n' "${n}" "${line#"${OPEN_PREFIX}"}"
+  done
+}
+
+# Always exits 0: a status line must never fail because the log is unreadable.
+function cmd_count {
+  local repo_opt="$1" line total=0 mine=0 oldest='' day
+  local -a repos=()
+  load_log 2>/dev/null || { printf '0 0 -\n'; return 0; }
+  for line in "${OPEN_LINES[@]}"; do
+    [[ "${line}" == "${OPEN_PREFIX}"* ]] || continue
+    total=$(( total + 1 ))
+    split_entry "${line#"${OPEN_PREFIX}"}"
+    repos+=("${LINE_REPO}")
+    day="${LINE_TS:0:10}"
+    if [[ "${day}" =~ ${DATE_RE} ]] && [[ -z "${oldest}" || "${day}" < "${oldest}" ]]; then
+      oldest="${day}"
+    fi
+  done
+  if (( total == 0 )); then printf '0 0 -\n'; return 0; fi
+  if [[ -n "${repo_opt}" ]]; then REPO_NAME="${repo_opt}"; else detect_repo; fi
+  for line in "${repos[@]}"; do
+    if [[ "${line}" == "${REPO_NAME}" ]]; then mine=$(( mine + 1 )); fi
+  done
+  printf '%d %d %s\n' "${total}" "${mine}" "${oldest:--}"
+}
+
+function cmd_resolve {
+  local n="${1:-}" note
+  [[ "${n}" =~ ^[1-9][0-9]*$ ]] || usage_fail 'resolve needs an entry number from `papercut list`'
+  shift
+  squash "$*"
+  note="${REPLY}"
+  [[ -n "${note}" ]] || usage_fail 'resolve needs a note'
+  run_locked resolve "${n}" "${note}"
+  printf 'Resolved papercut %s\n' "${n}"
+}
+
+function main {
+  local repo_opt='' forced=0
+  (( $# > 0 )) || usage_fail
+  while (( $# > 0 )); do
+    case "$1" in
+      -h|--help) usage; exit 64 ;;
+      --repo|--agent)
+        (( $# >= 2 )) || usage_fail "$1 needs a value"
+        if [[ "$1" == --repo ]]; then
+          check_label repo "$2"
+          repo_opt="$2"
+        else
+          check_label agent "$2"
+          AGENT_NAME="$2"
+        fi
+        shift 2 ;;
+      --) forced=1; shift; break ;;
+      -*) usage_fail "unknown option '$1'" ;;
+      *) break ;;
+    esac
+  done
+  (( $# > 0 )) || usage_fail
+  if (( forced == 0 )); then
+    case "$1" in
+      list) shift; (( $# == 0 )) || usage_fail 'list takes no arguments'; cmd_list "${repo_opt}"; return ;;
+      count) cmd_count "${repo_opt}"; return ;;
+      resolve) shift; cmd_resolve "$@"; return ;;
+      __locked)
+        shift
+        case "${1:-}" in
+          append) (( $# == 4 )) || usage_fail; locked_append "$2" "$3" "$4" ;;
+          resolve) (( $# == 3 )) || usage_fail; locked_resolve "$2" "$3" ;;
+          *) usage_fail ;;
+        esac
+        return ;;
+    esac
+  fi
+  cmd_append "${repo_opt}" "$@"
+}
+
+main "$@"

@@ -8,8 +8,11 @@
 #
 # The hook calls scutil/sw_vers/readlink by absolute path, so PATH-prefix
 # stubs (tests/git-sign) cannot intercept them; the suite uses the hook's
-# SESSION_HOST_CONTEXT_SCUTIL/_SW_VERS/_READLINK seams (as GH_PUBLISH_*,
-# PII_HOOK_*).
+# SESSION_HOST_CONTEXT_SCUTIL/_SW_VERS/_READLINK/_PAPERCUT seams (as
+# GH_PUBLISH_*, PII_HOOK_*). Every run points _PAPERCUT at a missing path by
+# default, so a papercut CLI installed on the host never changes the exact-line
+# assertions; the papercuts cases override it. They pin each omit condition, the
+# full and "-"-oldest segments, and that the CLI runs in the payload's cwd.
 #
 # Run: ./test session-host-context
 # ShellCheck: lint with `shellcheck --shell=bash tests/session-host-context`.
@@ -22,7 +25,7 @@ function _shc_run {
   local payload="$1"
   shift
   printf '%s' "${payload}" \
-    | env "$@" /bin/zsh "${SCRIPT_DIR}/claude/hooks/session-host-context" || true
+    | SESSION_HOST_CONTEXT_PAPERCUT=/nonexistent/papercut env "$@" /bin/zsh "${SCRIPT_DIR}/claude/hooks/session-host-context" || true
 }
 
 function _shc_expect_exit0 {
@@ -30,7 +33,7 @@ function _shc_expect_exit0 {
   local payload="$1" label="$2" got=0
   shift 2
   printf '%s' "${payload}" \
-    | env "$@" /bin/zsh "${SCRIPT_DIR}/claude/hooks/session-host-context" >/dev/null \
+    | SESSION_HOST_CONTEXT_PAPERCUT=/nonexistent/papercut env "$@" /bin/zsh "${SCRIPT_DIR}/claude/hooks/session-host-context" >/dev/null \
     || got=$?
   if [[ "${got}" -eq 0 ]]; then
     _pass "${label}: exit 0"
@@ -357,6 +360,106 @@ function run_session_host_context {
   else
     _fail "a newline in CLAUDE_CODE_EXECPATH was not truncated, got: ${out}"
   fi
+
+  # --- Papercuts segment: stubbed `papercut count` -----------------------
+  # Every case runs with the other probes cleared of noise by only asserting
+  # on the " · Papercuts:" tail or its absence.
+  local pc_rec="${stub_dir}/pc-cwd.txt" pc_dir="${stub_dir}/proj dir" pc_seg pc_got
+  mkdir -p "${pc_dir}"
+  function _shc_mkstub {
+    # $1 = file name under stub_dir, $2... = script lines (shebang added).
+    local f="${stub_dir}/$1"
+    shift
+    { print -r -- '#!/bin/sh'; local l; for l in "$@"; do print -r -- "${l}"; done; } > "${f}"
+    chmod 755 "${f}"
+  }
+  _shc_mkstub pc-full 'echo "3 1 2026-09-20"'
+  _shc_mkstub pc-dash 'echo "2 0 -"'
+  _shc_mkstub pc-zero 'echo "0 0 -"'
+  _shc_mkstub pc-fail 'echo "3 1 2026-09-20"' 'exit 1'
+  _shc_mkstub pc-bad 'echo "three 1 2026-09-20"'
+  _shc_mkstub pc-baddate 'echo "3 1 2026-9-20"'
+  _shc_mkstub pc-extra 'echo "3 1 2026-09-20 extra"'
+  _shc_mkstub pc-two 'echo "3 1 2026-09-20"' 'echo "4 2 2026-09-21"'
+  _shc_mkstub pc-record "pwd -P > '${pc_rec}'" 'echo "3 1 2026-09-20"'
+  # Present but not executable.
+  _shc_mkstub pc-noexec 'echo "3 1 2026-09-20"'
+  chmod 644 "${stub_dir}/pc-noexec"
+
+  local -a pc_clear=(-u HERDR_ENV -u TERM_PROGRAM -u TERM_PROGRAM_VERSION)
+  out="$(_shc_run '{"source":"startup"}' "${pc_clear[@]}" "SESSION_HOST_CONTEXT_PAPERCUT=${stub_dir}/pc-full")"
+  if [[ "${out}" == *' · Papercuts: 3 open (1 for this repo, oldest 2026-09-20)' && "${out}" != *$'\n'* ]]; then
+    _pass "papercuts: full segment appended to the single line"
+  else
+    _fail "papercuts: full segment wrong, got: ${out}"
+  fi
+
+  out="$(_shc_run '{"source":"startup"}' "${pc_clear[@]}" "SESSION_HOST_CONTEXT_PAPERCUT=${stub_dir}/pc-dash")"
+  if [[ "${out}" == *' · Papercuts: 2 open (0 for this repo)' && "${out}" != *$'\n'* ]]; then
+    _pass "papercuts: oldest '-' prints without a date"
+  else
+    _fail "papercuts: oldest '-' form wrong, got: ${out}"
+  fi
+
+  local -a pc_omit=(
+    'binary absent|/nonexistent/papercut'
+    'binary not executable|'"${stub_dir}"'/pc-noexec'
+    'binary is a directory|'"${pc_dir}"
+    'total 0 (0 0 -)|'"${stub_dir}"'/pc-zero'
+    'non-zero exit|'"${stub_dir}"'/pc-fail'
+    'malformed output (non-numeric total)|'"${stub_dir}"'/pc-bad'
+    'malformed output (short date)|'"${stub_dir}"'/pc-baddate'
+    'malformed output (extra field)|'"${stub_dir}"'/pc-extra'
+    'two-line output|'"${stub_dir}"'/pc-two'
+  )
+  for pc_seg in "${pc_omit[@]}"; do
+    out="$(_shc_run '{"source":"startup"}' "${pc_clear[@]}" "SESSION_HOST_CONTEXT_PAPERCUT=${pc_seg#*|}")"
+    if [[ "${out}" == 'Host: '* && "${out}" != *'Papercuts'* && "${out}" != *$'\n'* ]]; then
+      _pass "papercuts: segment omitted, ${pc_seg%%|*}"
+    else
+      _fail "papercuts: segment should be omitted, ${pc_seg%%|*}, got: ${out}"
+    fi
+    _shc_expect_exit0 '{"source":"startup"}' "papercuts omitted, ${pc_seg%%|*}" \
+      "SESSION_HOST_CONTEXT_PAPERCUT=${pc_seg#*|}"
+  done
+
+  # resume must not run the CLI at all.
+  /bin/rm -f "${pc_rec}"
+  out="$(_shc_run '{"source":"resume","cwd":"'"${pc_dir}"'"}' "SESSION_HOST_CONTEXT_PAPERCUT=${stub_dir}/pc-record")"
+  if [[ -z "${out}" && ! -e "${pc_rec}" ]]; then
+    _pass "papercuts: resume skips before the CLI runs"
+  else
+    _fail "papercuts: resume ran the CLI or printed, got: ${out}"
+  fi
+
+  # cwd handling: the stub records `pwd -P`; compare against the physical path.
+  local -a pc_cwd_cases=(
+    'compact JSON|{"source":"startup","cwd":"'"${pc_dir}"'"}|'"${pc_dir:A}"
+    'spaced JSON, path with a space|{ "source": "startup", "cwd" : "'"${pc_dir}"'" }|'"${pc_dir:A}"
+    'relative cwd falls back to the hook cwd|{"source":"startup","cwd":"proj"}|'"${stub_dir:A}"
+    'missing directory falls back|{"source":"startup","cwd":"'"${stub_dir}"'/nope"}|'"${stub_dir:A}"
+    'file, not a directory, falls back|{"source":"startup","cwd":"'"${stub_dir}"'/pc-full"}|'"${stub_dir:A}"
+    'escaped value falls back|{"source":"startup","cwd":"'"${pc_dir}"'\\u0041"}|'"${stub_dir:A}"
+    'no cwd field falls back|{"source":"startup"}|'"${stub_dir:A}"
+  )
+  local pc_case pc_label pc_payload pc_want
+  for pc_case in "${pc_cwd_cases[@]}"; do
+    pc_label="${pc_case%%|*}"
+    pc_want="${pc_case##*|}"
+    pc_payload="${pc_case#*|}"
+    pc_payload="${pc_payload%|*}"
+    /bin/rm -f "${pc_rec}"
+    out="$(cd "${stub_dir}" && printf '%s' "${pc_payload}" \
+      | env "${pc_clear[@]}" "SESSION_HOST_CONTEXT_PAPERCUT=${stub_dir}/pc-record" \
+        /bin/zsh "${SCRIPT_DIR}/claude/hooks/session-host-context")" || true
+    pc_got=""
+    [[ -f "${pc_rec}" ]] && pc_got="$(<"${pc_rec}")"
+    if [[ "${pc_got}" == "${pc_want}" && "${out}" == *' · Papercuts: 3 open (1 for this repo, oldest 2026-09-20)' ]]; then
+      _pass "papercuts cwd: ${pc_label}"
+    else
+      _fail "papercuts cwd: ${pc_label}: stub ran in '${pc_got}', want '${pc_want}'; out: ${out}"
+    fi
+  done
 
   /bin/rm -rf "${stub_dir}"
 }

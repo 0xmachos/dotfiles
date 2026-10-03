@@ -652,7 +652,7 @@ function install_dotfiles {
   # messaging functions and must not be offered to a tool that lacks them.
   # Copies, not links: the reading tool mis-registers symlinked skill trees.
   # Replaced on every run, so a repo edit is inert until this is re-run.
-  local -ar shared_skills=(git-history-repair zsh-style macos-security-footguns bao-admin swift-conventions rust-conventions npm-conventions python-conventions objc-conventions ci-conventions)
+  local -ar shared_skills=(git-history-repair zsh-style macos-security-footguns bao-admin swift-conventions rust-conventions npm-conventions python-conventions objc-conventions ci-conventions papercuts)
   local shared_skill
   for shared_skill in "${shared_skills[@]}"; do
     # claude/ is synced out of band; a sparse copy is pending sync, not an error.
@@ -726,7 +726,7 @@ function install_scripts {
   # scripts (jump-system, jump-user, scratch-sweep) are COPIED, not symlinked:
   # see the comment at each.
 
-  local -ar bin_files=(dns mdview npm-audit-check claude-session-audit git-sign-unpushed bao-mcp-env)
+  local -ar bin_files=(dns mdview npm-audit-check claude-session-audit git-sign-unpushed bao-mcp-env papercut)
   local -ar macos_script_bin_files=(c0design)
   
   if ! [[ -d "/usr/local/bin/" ]]; then 

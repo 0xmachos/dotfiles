@@ -1,0 +1,712 @@
+#!/bin/zsh
+# dotfiles/tests/papercut
+#
+# Hermetic suite for bin/papercut: no network, no real $HOME. Every case runs
+# the tool with /bin/zsh and HOME pointed at a fresh per-test sandbox, so the
+# tool's own path construction runs unmodified against a fake
+# ~/Library/Application Support/papercuts/ (space included). Git discovery is
+# fenced with GIT_CEILING_DIRECTORIES and the inherited GIT_* variables are
+# removed, so a surrounding repo or a hook environment cannot change the result.
+#
+# Pins:
+#   - first use creates the directory 0700 and the file 0600 with the skeleton;
+#   - the entry format (regex below), appended last in "## Open" with exactly
+#     one blank line before "## Resolved", after 1 and after 3 appends;
+#   - every usage error exits 64 and writes nothing: no args, a blank message,
+#     a missing "Fix:", a bad --repo or --agent value, bad resolve arguments;
+#   - agent precedence (--agent, PAPERCUT_AGENT, CLAUDECODE, shell), the repo
+#     override and git detection (and "none" outside a repository);
+#   - newline and tab collapse; list numbering and its --repo filter; count on
+#     an absent, empty, malformed and populated file; resolve's rewrite,
+#     renumbering and failure modes;
+#   - the lock: a held lock fails an append and a resolve with exit 1 after
+#     about 5 s and leaves the file byte-identical; concurrent appends all land.
+#
+# Run: ./test papercut
+# ShellCheck: lint with `shellcheck --shell=bash tests/papercut`.
+# This file is sourced, not executed — chmod 644.
+#
+# shellcheck source=tests/lib
+# shellcheck disable=SC2016,SC2034,SC2154,SC2329
+# shellcheck disable=SC2296,SC2051,SC2015,SC2079  # zsh-only syntax: (@f) flags, {1..$n}, float (( )), A && B || C reporting
+
+zmodload zsh/datetime 2>/dev/null
+
+typeset -g PC_T='' PC_HOME='' PC_CWD='' PC_BIN='' PC_LOG='' PC_LOCK=''
+typeset -gi PC_RC=0
+typeset -ga PC_EXTRA=() PC_LINES=()
+
+readonly PC_ENTRY_RE='^- \[ \] [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z · [A-Za-z0-9._-]+ · [A-Za-z0-9._-]+ · .*Fix:.*$'
+readonly PC_LIST1_RE='^1\. [0-9T:Z-]+ · shell · a · one Fix: x$'
+readonly PC_LIST2_RE='^2\. [0-9T:Z-]+ · shell · b · two Fix: y$'
+readonly PC_LIST3_RE='^3\. [0-9T:Z-]+ · shell · a · three Fix: z$'
+readonly PC_RESOLVED_RE='^- \[x\] [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z · shell · b · two Fix: y → resolved [0-9]{4}-[0-9]{2}-[0-9]{2} : fixed it$'
+readonly PC_FIELDS_RE='^- \[ \] ([^ ]+) · ([^ ]+) · ([^ ]+) · (.*)$'
+
+function _pc_setup {
+  PC_T="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/papercut-test.XXXXXX")"
+  PC_BIN="${SCRIPT_DIR}/bin/papercut"
+}
+
+function _pc_teardown {
+  [[ -n "${PC_T}" && -d "${PC_T}" ]] && /bin/rm -rf "${PC_T:?}"
+}
+
+# A fresh HOME and working directory for each test; the space in "Application
+# Support" is the point.
+function _pc_fresh {
+  /bin/rm -rf "${PC_T:?}/home" "${PC_T:?}/work"
+  PC_HOME="${PC_T}/home"
+  PC_CWD="${PC_T}/work"
+  PC_LOG="${PC_HOME}/Library/Application Support/papercuts/PAPERCUTS.md"
+  PC_LOCK="${PC_LOG}.lock"
+  /bin/mkdir -p "${PC_HOME}" "${PC_CWD}"
+}
+
+# The tool's own environment: no agent hints unless the case adds them through
+# PC_EXTRA (cleared after each run).
+function _pc_env {
+  /usr/bin/env -u CLAUDECODE -u PAPERCUT_AGENT -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE \
+    HOME="${PC_HOME}" GIT_CEILING_DIRECTORIES="${PC_T}" "${PC_EXTRA[@]}" "$@"
+}
+
+function _pc_run {
+  PC_RC=0
+  ( cd "${PC_CWD}" && _pc_env /bin/zsh "${PC_BIN}" "$@" ) > "${PC_T}/out" 2> "${PC_T}/err" || PC_RC=$?
+  PC_EXTRA=()
+}
+
+function _pc_expect_rc {
+  local want="$1" label="$2"
+  if (( PC_RC == want )); then
+    _pass "rc ${want}: ${label}"
+  else
+    _fail "${label} — expected rc ${want}, got ${PC_RC}; stderr: $(/usr/bin/head -c 200 "${PC_T}/err")"
+  fi
+}
+
+function _pc_expect_err {
+  local pattern="$1" label="$2"
+  if /usr/bin/grep -q -- "${pattern}" "${PC_T}/err"; then
+    _pass "stderr has '${pattern}': ${label}"
+  else
+    _fail "${label} — stderr lacks '${pattern}': $(/usr/bin/head -c 300 "${PC_T}/err")"
+  fi
+}
+
+function _pc_expect_out_eq {
+  local want="$1" label="$2" got
+  got="$(<"${PC_T}/out")"
+  if [[ "${got}" == "${want}" ]]; then
+    _pass "${label}"
+  else
+    _fail "${label} — expected '${want}', got '${got}'"
+  fi
+}
+
+function _pc_expect_nolog {
+  if [[ -e "${PC_LOG}" ]]; then
+    _fail "$1 — a log file was created"
+  else
+    _pass "$1: nothing written"
+  fi
+}
+
+function _pc_sha {
+  /usr/bin/shasum -a 256 "${PC_LOG}"
+}
+
+# Loads the log into PC_LINES (1-based; blank lines kept).
+function _pc_load {
+  PC_LINES=("${(@f)"$(<"${PC_LOG}")"}")
+}
+
+function _pc_append {
+  _pc_run "$@"
+  if (( PC_RC != 0 )); then _fail "setup append failed (rc ${PC_RC}): $*"; fi
+}
+
+# Index of the first line equal to $1, or 0.
+function _pc_index {
+  local i
+  for i in {1..${#PC_LINES[@]}}; do
+    if [[ "${PC_LINES[i]}" == "$1" ]]; then print -r -- "${i}"; return; fi
+  done
+  print 0
+}
+
+function _pc_count_entries {
+  local line n=0
+  for line in "${PC_LINES[@]}"; do
+    [[ "${line}" == '- [ ] '* ]] && n=$(( n + 1 ))
+  done
+  print "${n}"
+}
+
+# The last Open entry line in the log file.
+function _pc_last_entry {
+  local line last=''
+  while IFS= read -r line; do
+    [[ "${line}" == '- [ ] '* ]] && last="${line}"
+  done < "${PC_LOG}"
+  print -r -- "${last}"
+}
+
+function _pc_field {
+  local line="$1" idx="$2"
+  [[ "${line}" =~ ${PC_FIELDS_RE} ]] && print -r -- "${match[idx]}"
+}
+
+# Writes a log holding the given entry lines (full "- [ ] ..." text) under Open.
+function _pc_seed {
+  local line
+  /bin/mkdir -p "${PC_LOG:h}"
+  {
+    printf '# Papercuts\n\nSmall frictions this estate can fix, logged in the moment by `papercut`.\n'
+    printf 'Open entries are drained by the `papercuts` skill; resolved ones move below.\n\n## Open\n\n'
+    for line in "$@"; do printf '%s\n' "${line}"; done
+    printf '\n## Resolved\n'
+  } > "${PC_LOG}"
+}
+
+# --- test groups -------------------------------------------------------------
+
+function _pc_test_first_use {
+  _section "papercut: first use and entry format"
+  _pc_fresh
+
+  _pc_run 'First cut. Fix: do the thing'
+  _pc_expect_rc 0 "first append"
+  if [[ "$(/usr/bin/stat -f %Lp "${PC_LOG:h}")" == 700 ]]; then
+    _pass "directory created 0700"
+  else
+    _fail "directory mode is $(/usr/bin/stat -f %Lp "${PC_LOG:h}"), expected 700"
+  fi
+  if [[ "$(/usr/bin/stat -f %Lp "${PC_LOG}")" == 600 ]]; then
+    _pass "file created 0600"
+  else
+    _fail "file mode is $(/usr/bin/stat -f %Lp "${PC_LOG}"), expected 600"
+  fi
+  if /usr/bin/grep -qF "Logged papercut (none) to ${PC_LOG}" "${PC_T}/out"; then
+    _pass "stdout confirms repo and file"
+  else
+    _fail "stdout wrong: $(<"${PC_T}/out")"
+  fi
+
+  _pc_load
+  if (( ${#PC_LINES[@]} == 10 )) \
+      && [[ "${PC_LINES[1]}" == '# Papercuts' && -z "${PC_LINES[2]}" \
+      && "${PC_LINES[3]}" == 'Small frictions this estate can fix, logged in the moment by `papercut`.' \
+      && "${PC_LINES[4]}" == 'Open entries are drained by the `papercuts` skill; resolved ones move below.' \
+      && -z "${PC_LINES[5]}" && "${PC_LINES[6]}" == '## Open' && -z "${PC_LINES[7]}" \
+      && -z "${PC_LINES[9]}" && "${PC_LINES[10]}" == '## Resolved' ]]; then
+    _pass "skeleton: title, blurb, Open, one entry, one blank, Resolved (10 lines)"
+  else
+    _fail "skeleton wrong (${#PC_LINES[@]} lines): ${PC_LINES[*]}"
+  fi
+  if [[ "${PC_LINES[8]}" =~ ${PC_ENTRY_RE} ]]; then
+    _pass "entry line matches the pinned format"
+  else
+    _fail "entry line does not match the pinned format: ${PC_LINES[8]}"
+  fi
+  if [[ "${PC_LINES[8]}" == *' · shell · none · First cut. Fix: do the thing' ]]; then
+    _pass "entry carries default agent, repo and the message verbatim"
+  else
+    _fail "entry fields wrong: ${PC_LINES[8]}"
+  fi
+}
+
+function _pc_test_position {
+  local i
+  _section "papercut: entries land at the end of Open"
+  _pc_fresh
+
+  _pc_append 'one Fix: a'
+  _pc_load
+  i="$(_pc_index '## Resolved')"
+  if (( i > 4 )) && [[ -z "${PC_LINES[i-1]}" && "${PC_LINES[i-2]}" == *'one Fix: a' \
+      && -z "${PC_LINES[i-3]}" && "${PC_LINES[i-4]}" == '## Open' ]]; then
+    _pass "after 1 append: entry, exactly one blank, then Resolved"
+  else
+    _fail "after 1 append layout wrong: ${PC_LINES[*]}"
+  fi
+
+  _pc_append 'two Fix: b'
+  _pc_append 'three Fix: c'
+  _pc_load
+  i="$(_pc_index '## Resolved')"
+  if (( i > 6 )) && [[ -z "${PC_LINES[i-1]}" && "${PC_LINES[i-2]}" == *'three Fix: c' \
+      && "${PC_LINES[i-3]}" == *'two Fix: b' && "${PC_LINES[i-4]}" == *'one Fix: a' \
+      && -z "${PC_LINES[i-5]}" && "${PC_LINES[i-6]}" == '## Open' ]]; then
+    _pass "after 3 appends: in order, exactly one blank before Resolved"
+  else
+    _fail "after 3 appends layout wrong: ${PC_LINES[*]}"
+  fi
+  if (( ${#PC_LINES[@]} == i )); then
+    _pass "nothing follows the Resolved heading"
+  else
+    _fail "unexpected lines after Resolved: ${PC_LINES[*]}"
+  fi
+}
+
+function _pc_test_usage {
+  local before
+  _section "papercut: usage errors write nothing"
+  _pc_fresh
+
+  _pc_run
+  _pc_expect_rc 64 "no args"
+  _pc_expect_err 'usage: papercut' "no args: usage printed"
+  _pc_expect_nolog "no args"
+
+  _pc_run -h
+  _pc_expect_rc 64 "-h"
+  _pc_run --help
+  _pc_expect_rc 64 "--help"
+
+  _pc_run 'no remedy here'
+  _pc_expect_rc 64 "missing Fix:"
+  _pc_expect_err 'Fix: <smallest change>' "missing Fix: names the required clause"
+  _pc_expect_err 'Fix: unknown' "missing Fix: says unknown is allowed"
+  _pc_expect_nolog "missing Fix:"
+
+  _pc_run '   '
+  _pc_expect_rc 64 "blank message"
+  _pc_expect_nolog "blank message"
+  _pc_run $'\n\t '
+  _pc_expect_rc 64 "whitespace-only message"
+
+  _pc_run --repo 'bad repo!' 'x Fix: y'
+  _pc_expect_rc 64 "bad --repo value"
+  _pc_run --repo '' 'x Fix: y'
+  _pc_expect_rc 64 "empty --repo value"
+  _pc_run --repo abcdefghijklmnopqrstuvwxyz0123456 'x Fix: y'
+  _pc_expect_rc 64 "33-character --repo value"
+  _pc_run --agent 'bad/agent' 'x Fix: y'
+  _pc_expect_rc 64 "bad --agent value"
+  _pc_run --repo
+  _pc_expect_rc 64 "--repo without a value"
+  _pc_run --nonsense 'x Fix: y'
+  _pc_expect_rc 64 "unknown option"
+  PC_EXTRA=(PAPERCUT_AGENT='bad agent')
+  _pc_run 'x Fix: y'
+  _pc_expect_rc 64 "bad PAPERCUT_AGENT value"
+  _pc_expect_nolog "bad labels"
+
+  _pc_append 'seed Fix: x'
+  before="$(_pc_sha)"
+  _pc_run 'still no remedy'
+  _pc_expect_rc 64 "missing Fix: against an existing log"
+  if [[ "$(_pc_sha)" == "${before}" ]]; then
+    _pass "existing log byte-identical after a refused append"
+  else
+    _fail "existing log changed after a refused append"
+  fi
+
+  _pc_run resolve
+  _pc_expect_rc 64 "resolve without n"
+  _pc_run resolve abc 'note'
+  _pc_expect_rc 64 "resolve with a non-numeric n"
+  _pc_run resolve 0 'note'
+  _pc_expect_rc 64 "resolve 0"
+  _pc_run resolve 1
+  _pc_expect_rc 64 "resolve without a note"
+  _pc_run resolve 1 '   '
+  _pc_expect_rc 64 "resolve with a blank note"
+  _pc_run list extra
+  _pc_expect_rc 64 "list with a stray argument"
+  if [[ "$(_pc_sha)" == "${before}" ]]; then
+    _pass "log byte-identical after every refused resolve"
+  else
+    _fail "log changed after a refused resolve"
+  fi
+
+  _pc_run 'Fix: unknown'
+  _pc_expect_rc 0 "'Fix: unknown' is accepted"
+  _pc_run 'uppercase FIX: caps'
+  _pc_expect_rc 0 "Fix: matched case-insensitively"
+  _pc_run -- list the things Fix: x
+  _pc_expect_rc 0 "-- lets a message start with a subcommand word"
+  if /usr/bin/grep -q ' · list the things Fix: x$' "${PC_LOG}"; then
+    _pass "-- message stored verbatim"
+  else
+    _fail "-- message missing from the log"
+  fi
+}
+
+function _pc_test_overrides {
+  local line
+  _section "papercut: agent and repo resolution"
+  _pc_fresh
+
+  _pc_run --repo myrepo --agent bot 'a Fix: b'
+  _pc_expect_rc 0 "--repo and --agent"
+  line="$(_pc_last_entry)"
+  if [[ "$(_pc_field "${line}" 2)" == bot && "$(_pc_field "${line}" 3)" == myrepo ]]; then
+    _pass "--agent and --repo land in the entry"
+  else
+    _fail "overrides wrong: ${line}"
+  fi
+  if /usr/bin/grep -q '^Logged papercut (myrepo) to ' "${PC_T}/out"; then
+    _pass "stdout names the overridden repo"
+  else
+    _fail "stdout wrong: $(<"${PC_T}/out")"
+  fi
+
+  PC_EXTRA=(PAPERCUT_AGENT=envbot)
+  _pc_run 'b Fix: c'
+  line="$(_pc_last_entry)"
+  [[ "$(_pc_field "${line}" 2)" == envbot ]] && _pass "PAPERCUT_AGENT used" || _fail "PAPERCUT_AGENT ignored: ${line}"
+
+  PC_EXTRA=(PAPERCUT_AGENT=envbot)
+  _pc_run --agent flagbot 'c Fix: d'
+  line="$(_pc_last_entry)"
+  [[ "$(_pc_field "${line}" 2)" == flagbot ]] && _pass "--agent beats PAPERCUT_AGENT" || _fail "precedence wrong: ${line}"
+
+  PC_EXTRA=(CLAUDECODE=1)
+  _pc_run 'd Fix: e'
+  line="$(_pc_last_entry)"
+  [[ "$(_pc_field "${line}" 2)" == claude ]] && _pass "CLAUDECODE gives agent claude" || _fail "CLAUDECODE ignored: ${line}"
+
+  PC_EXTRA=(CLAUDECODE=1 PAPERCUT_AGENT=envbot)
+  _pc_run 'e Fix: f'
+  line="$(_pc_last_entry)"
+  [[ "$(_pc_field "${line}" 2)" == envbot ]] && _pass "PAPERCUT_AGENT beats CLAUDECODE" || _fail "precedence wrong: ${line}"
+
+  _pc_run 'f Fix: g'
+  line="$(_pc_last_entry)"
+  [[ "$(_pc_field "${line}" 2)" == shell ]] && _pass "no hints gives agent shell" || _fail "default agent wrong: ${line}"
+}
+
+function _pc_test_repo_detection {
+  local line
+  _section "papercut: repo detection"
+  _pc_fresh
+
+  # HOME is the sandbox, so git reads no real config or global hooks.
+  /bin/mkdir -p "${PC_T}/work/myrepo/sub dir" "${PC_T}/work/my repo+x"
+  _pc_env /usr/bin/git init -q "${PC_T}/work/myrepo" >/dev/null 2>&1
+  _pc_env /usr/bin/git init -q "${PC_T}/work/my repo+x" >/dev/null 2>&1
+
+  PC_CWD="${PC_T}/work/myrepo"
+  _pc_run 'in repo Fix: x'
+  line="$(_pc_last_entry)"
+  [[ "$(_pc_field "${line}" 3)" == myrepo ]] && _pass "repo = basename of the git toplevel" || _fail "repo wrong: ${line}"
+
+  PC_CWD="${PC_T}/work/myrepo/sub dir"
+  _pc_run 'in subdir Fix: x'
+  line="$(_pc_last_entry)"
+  [[ "$(_pc_field "${line}" 3)" == myrepo ]] && _pass "subdirectory still resolves to the toplevel" || _fail "repo wrong: ${line}"
+
+  PC_CWD="${PC_T}/work/myrepo"
+  _pc_run --repo other 'override Fix: x'
+  line="$(_pc_last_entry)"
+  [[ "$(_pc_field "${line}" 3)" == other ]] && _pass "--repo beats git detection" || _fail "override wrong: ${line}"
+
+  PC_CWD="${PC_T}/work/my repo+x"
+  _pc_run 'odd name Fix: x'
+  line="$(_pc_last_entry)"
+  [[ "$(_pc_field "${line}" 3)" == my_repo_x ]] && _pass "unsafe characters in the repo name become underscores" || _fail "sanitising wrong: ${line}"
+
+  PC_CWD="${PC_T}/work"
+  _pc_run 'outside Fix: x'
+  line="$(_pc_last_entry)"
+  [[ "$(_pc_field "${line}" 3)" == none ]] && _pass "outside a repository the repo is none" || _fail "repo wrong: ${line}"
+}
+
+function _pc_test_collapse {
+  local line
+  _section "papercut: whitespace collapse"
+  _pc_fresh
+
+  _pc_run $'one\ntwo\tthree Fix: four'
+  _pc_expect_rc 0 "newline and tab in a message"
+  _pc_load
+  line="$(_pc_last_entry)"
+  if [[ "${line}" == *' · one two three Fix: four' && "$(_pc_count_entries)" == 1 ]]; then
+    _pass "newline and tab become spaces; still one entry line"
+  else
+    _fail "collapse wrong: ${line}"
+  fi
+
+  _pc_run 'alpha' 'beta Fix:' 'gamma'
+  line="$(_pc_last_entry)"
+  [[ "${line}" == *' · alpha beta Fix: gamma' ]] && _pass "arguments joined by single spaces" || _fail "join wrong: ${line}"
+
+  _pc_run $'padded   \n  runs Fix: x  '
+  line="$(_pc_last_entry)"
+  [[ "${line}" == *' · padded runs Fix: x' ]] && _pass "runs of whitespace squeezed, ends trimmed" || _fail "squeeze wrong: ${line}"
+}
+
+function _pc_test_list {
+  local -a out=()
+  _section "papercut: list"
+  _pc_fresh
+
+  _pc_run list
+  _pc_expect_rc 0 "list on an absent file"
+  [[ ! -s "${PC_T}/out" ]] && _pass "list on an absent file prints nothing" || _fail "list printed: $(<"${PC_T}/out")"
+
+  _pc_append --repo a 'one Fix: x'
+  _pc_append --repo b 'two Fix: y'
+  _pc_append --repo a 'three Fix: z'
+  _pc_run list
+  _pc_expect_rc 0 "list"
+  out=("${(@f)"$(<"${PC_T}/out")"}")
+  if (( ${#out[@]} == 3 )) \
+      && [[ "${out[1]}" =~ ${PC_LIST1_RE} && "${out[2]}" =~ ${PC_LIST2_RE} \
+      && "${out[3]}" =~ ${PC_LIST3_RE} ]]; then
+    _pass "list numbers entries 1..3 in file order, without the checkbox"
+  else
+    _fail "list output wrong: ${out[*]}"
+  fi
+
+  _pc_run --repo a list
+  out=("${(@f)"$(<"${PC_T}/out")"}")
+  if (( ${#out[@]} == 2 )) && [[ "${out[1]}" == 1.\ * && "${out[2]}" == 3.\ * ]] \
+      && [[ "${out[1]}" == *' · a · one'* && "${out[2]}" == *' · a · three'* ]]; then
+    _pass "--repo filter keeps only that repo and the numbers resolve takes"
+  else
+    _fail "filtered list wrong: ${out[*]}"
+  fi
+
+  _pc_run --repo nomatch list
+  _pc_expect_rc 0 "--repo filter with no match"
+  [[ ! -s "${PC_T}/out" ]] && _pass "no match prints nothing" || _fail "printed: $(<"${PC_T}/out")"
+}
+
+function _pc_test_count {
+  local before
+  _section "papercut: count"
+  _pc_fresh
+
+  _pc_run count
+  _pc_expect_rc 0 "count on an absent file"
+  _pc_expect_out_eq '0 0 -' "count on an absent file prints '0 0 -'"
+  _pc_expect_nolog "count"
+
+  /bin/mkdir -p "${PC_LOG:h}"
+  : > "${PC_LOG}"
+  _pc_run count
+  _pc_expect_rc 0 "count on an empty file"
+  _pc_expect_out_eq '0 0 -' "count on an empty file prints '0 0 -'"
+
+  _pc_seed '- [ ] 2026-09-25T10:00:00Z · bot · b · middle Fix: x' \
+           '- [ ] 2026-09-20T09:00:00Z · bot · a · oldest Fix: y' \
+           '- [ ] 2026-10-01T08:00:00Z · bot · a · newest Fix: z'
+  /bin/mkdir -p "${PC_T}/work/a"
+  _pc_env /usr/bin/git init -q "${PC_T}/work/a" >/dev/null 2>&1
+  PC_CWD="${PC_T}/work/a"
+  _pc_run count
+  _pc_expect_rc 0 "count with entries"
+  _pc_expect_out_eq '3 2 2026-09-20' "total 3, 2 for this repo, oldest picked by date not position"
+  PC_CWD="${PC_T}/work"
+  _pc_run count
+  _pc_expect_out_eq '3 0 2026-09-20' "outside a repository: none of the entries are for this repo"
+  _pc_run --repo b count
+  _pc_expect_out_eq '3 1 2026-09-20' "--repo overrides the current repo"
+
+  _pc_run resolve 2 'done'
+  _pc_run count
+  _pc_expect_out_eq '2 0 2026-09-25' "count after resolving the oldest: total and oldest move"
+  _pc_run resolve 1 'done'
+  _pc_run resolve 1 'done'
+  _pc_run count
+  _pc_expect_rc 0 "count with everything resolved"
+  _pc_expect_out_eq '0 0 -' "all resolved prints '0 0 -'"
+
+  printf 'not a papercut log\n' > "${PC_LOG}"
+  before="$(_pc_sha)"
+  _pc_run count
+  _pc_expect_rc 0 "count on a malformed file still exits 0"
+  _pc_expect_out_eq '0 0 -' "malformed file prints '0 0 -'"
+  _pc_run 'x Fix: y'
+  _pc_expect_rc 1 "append to a malformed file"
+  _pc_expect_err "lacks '## Open'" "malformed file: message"
+  _pc_run resolve 1 'note'
+  _pc_expect_rc 1 "resolve in a malformed file"
+  if [[ "$(_pc_sha)" == "${before}" ]]; then
+    _pass "malformed file left byte-identical"
+  else
+    _fail "malformed file was modified"
+  fi
+}
+
+function _pc_test_resolve {
+  local i before
+  local -a out=()
+  _section "papercut: resolve"
+  _pc_fresh
+
+  _pc_run resolve 1 'nothing here'
+  _pc_expect_rc 1 "resolve with no log at all"
+
+  _pc_append --repo a 'one Fix: x'
+  _pc_append --repo b 'two Fix: y'
+  _pc_append --repo c 'three Fix: z'
+  before="$(_pc_sha)"
+  _pc_run resolve 7 'no such entry'
+  _pc_expect_rc 1 "resolve a missing number"
+  _pc_expect_err 'no open papercut numbered 7' "missing number: message"
+  if [[ "$(_pc_sha)" == "${before}" ]]; then
+    _pass "missing number leaves the file byte-identical"
+  else
+    _fail "file changed on a missing number"
+  fi
+
+  _pc_run resolve 2 $'fixed\tit'
+  _pc_expect_rc 0 "resolve 2"
+  _pc_load
+  i="$(_pc_index '## Resolved')"
+  if (( i > 0 )) && [[ "${PC_LINES[i+2]}" =~ ${PC_RESOLVED_RE} ]] \
+      && [[ -z "${PC_LINES[i+1]}" && ${#PC_LINES[@]} == $(( i + 2 )) ]]; then
+    _pass "resolved line is rewritten and sits under Resolved"
+  else
+    _fail "resolved layout wrong: ${PC_LINES[*]}"
+  fi
+  if (( $(_pc_count_entries) == 2 )) && ! /usr/bin/grep -q '^- \[ \].* · two Fix' "${PC_LOG}"; then
+    _pass "entry removed from Open"
+  else
+    _fail "Open still holds the resolved entry: ${PC_LINES[*]}"
+  fi
+  if [[ -z "${PC_LINES[i-1]}" && -n "${PC_LINES[i-2]}" ]]; then
+    _pass "exactly one blank line before Resolved"
+  else
+    _fail "blank line before Resolved wrong: ${PC_LINES[*]}"
+  fi
+
+  _pc_run list
+  out=("${(@f)"$(<"${PC_T}/out")"}")
+  if (( ${#out[@]} == 2 )) && [[ "${out[1]}" == '1. '*' · a · one Fix: x' && "${out[2]}" == '2. '*' · c · three Fix: z' ]]; then
+    _pass "remaining entries renumbered 1 and 2"
+  else
+    _fail "renumbering wrong: ${out[*]}"
+  fi
+
+  _pc_run resolve 1 'second note'
+  _pc_load
+  i="$(_pc_index '## Resolved')"
+  if [[ "${PC_LINES[i+2]}" == *' · b · two Fix: y → resolved '* && "${PC_LINES[i+3]}" == *' · a · one Fix: x → resolved '*' : second note' ]]; then
+    _pass "a later resolve goes to the end of Resolved"
+  else
+    _fail "resolved order wrong: ${PC_LINES[*]}"
+  fi
+}
+
+# Waits up to 5 s for the holder to report it has the lock.
+function _pc_wait_held {
+  local i
+  for i in {1..50}; do
+    [[ -e "${PC_T}/held" ]] && return 0
+    /bin/sleep 0.1
+  done
+  return 1
+}
+
+function _pc_test_lock {
+  local before t0 elapsed holder rc_a=0 rc_r=0 pid_a pid_r
+  _section "papercut: lock contention"
+  _pc_fresh
+
+  _pc_append 'seed Fix: x'
+  before="$(_pc_sha)"
+  /bin/rm -f "${PC_T:?}/held"
+  /usr/bin/lockf -k -t 10 "${PC_LOCK}" /bin/sh -c ': > "$1"; /bin/sleep 8' sh "${PC_T}/held" &
+  holder=$!
+  if ! _pc_wait_held; then
+    _fail "lock holder never acquired the lock"
+    wait "${holder}" 2>/dev/null
+    return
+  fi
+
+  # Append and resolve contend at once so one 5 s wait covers both.
+  t0="${EPOCHREALTIME}"
+  ( cd "${PC_CWD}" && _pc_env /bin/zsh "${PC_BIN}" 'blocked Fix: x' ) > "${PC_T}/out.a" 2> "${PC_T}/err.a" &
+  pid_a=$!
+  ( cd "${PC_CWD}" && _pc_env /bin/zsh "${PC_BIN}" resolve 1 'blocked' ) > "${PC_T}/out.r" 2> "${PC_T}/err.r" &
+  pid_r=$!
+  wait "${pid_a}" || rc_a=$?
+  wait "${pid_r}" || rc_r=$?
+  elapsed=$(( EPOCHREALTIME - t0 ))
+
+  if (( rc_a == 1 )); then _pass "rc 1: append while the lock is held"; else _fail "append under a held lock exited ${rc_a}"; fi
+  if (( rc_r == 1 )); then _pass "rc 1: resolve while the lock is held"; else _fail "resolve under a held lock exited ${rc_r}"; fi
+  if (( elapsed >= 4.5 && elapsed < 7.5 )); then
+    _pass "gave up after the 5 s timeout (${elapsed} s)"
+  else
+    _fail "timeout took ${elapsed} s, expected about 5"
+  fi
+  if /usr/bin/grep -q 'lock' "${PC_T}/err.a" && /usr/bin/grep -q 'lock' "${PC_T}/err.r"; then
+    _pass "both failures say the lock was the problem"
+  else
+    _fail "lock message missing: $(<"${PC_T}/err.a") / $(<"${PC_T}/err.r")"
+  fi
+  if [[ "$(_pc_sha)" == "${before}" ]]; then
+    _pass "file byte-identical after the failed writes"
+  else
+    _fail "file changed while the lock was held elsewhere"
+  fi
+
+  wait "${holder}" 2>/dev/null
+  _pc_run 'after release Fix: x'
+  _pc_expect_rc 0 "append succeeds once the lock is released"
+}
+
+function _pc_test_concurrent {
+  local n i
+  local -a pids=()
+  _section "papercut: concurrent appends"
+  _pc_fresh
+
+  _pc_append 'seed Fix: x'
+  for i in {1..6}; do
+    ( cd "${PC_CWD}" && _pc_env /bin/zsh "${PC_BIN}" "concurrent ${i} Fix: x" ) > "${PC_T}/out.${i}" 2> "${PC_T}/err.${i}" &
+    pids+=($!)
+  done
+  n=0
+  for i in {1..6}; do
+    wait "${pids[i]}" || n=$(( n + 1 ))
+  done
+  if (( n == 0 )); then _pass "all 6 concurrent appends exited 0"; else _fail "${n} of 6 concurrent appends failed"; fi
+  _pc_load
+  n=0
+  for i in {1..6}; do
+    /usr/bin/grep -q " · concurrent ${i} Fix: x\$" "${PC_LOG}" && n=$(( n + 1 ))
+  done
+  if (( n == 6 && $(_pc_count_entries) == 7 )); then
+    _pass "no lost entry: seed plus 6 concurrent entries all present"
+  else
+    _fail "lost update: ${n} of 6 concurrent entries found, $(_pc_count_entries) total"
+  fi
+  i="$(_pc_index '## Resolved')"
+  if [[ -z "${PC_LINES[i-1]}" && -n "${PC_LINES[i-2]}" ]]; then
+    _pass "layout intact after concurrent writes"
+  else
+    _fail "layout damaged: ${PC_LINES[*]}"
+  fi
+}
+
+function run_papercut {
+  if [[ ! -x "${SCRIPT_DIR}/bin/papercut" ]]; then
+    _skip "papercut: bin/papercut is missing"
+    return
+  fi
+  if [[ ! -x /usr/bin/lockf || ! -x /usr/bin/git ]]; then
+    _skip "papercut: /usr/bin/lockf or /usr/bin/git is missing"
+    return
+  fi
+
+  _pc_setup
+  _pc_test_first_use
+  _pc_test_position
+  _pc_test_usage
+  _pc_test_overrides
+  _pc_test_repo_detection
+  _pc_test_collapse
+  _pc_test_list
+  _pc_test_count
+  _pc_test_resolve
+  _pc_test_lock
+  _pc_test_concurrent
+  _pc_teardown
+}
