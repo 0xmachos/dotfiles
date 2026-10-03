@@ -233,6 +233,21 @@ function run_gh_publish {
   _gp_test_expect PASS "gh issue create -t t --body-file ${_gp_dir}/biglogok.md" \
     'oversized fence collapsed in <details>'
 
+  # Body-file size cap (fail closed before the linear scans): one byte over
+  # 128 KiB denies on size alone; exactly 128 KiB is scanned as usual.
+  head -c 131072 /dev/zero | tr '\0' a > "${_gp_dir}/atcap.md"
+  _gp_test_review "${_gp_dir}/atcap.md"
+  _gp_test_expect PASS "gh pr create -t t --body-file ${_gp_dir}/atcap.md" \
+    'body file at the 128 KiB cap is scanned'
+  head -c 131073 /dev/zero | tr '\0' a > "${_gp_dir}/overcap.md"
+  _gp_test_review "${_gp_dir}/overcap.md"
+  _gp_test_expect DENY "gh pr create -t t --body-file ${_gp_dir}/overcap.md" \
+    'body file over the 128 KiB cap'
+  _gp_test_reason_has "gh pr create -t t --body-file ${_gp_dir}/overcap.md" \
+    'over 128 KiB' 'over-cap body file names the cap'
+  _gp_test_expect DENY "gh issue create -t t --body-file ${_gp_dir}/overcap.md" \
+    'over-cap body file denies for issue create too'
+
   if [[ -n "${USER:-}" && "${USER}" != *[^[:alnum:]_-]* ]]; then
     printf 'Log at /Users/%s/Library/Logs/x.log\n\n## Environment\n\n- b\n' \
       "${USER}" > "${_gp_dir}/ident.md"
