@@ -283,6 +283,7 @@ function run_linkage {
     [rules]=install_dotfiles                 # Dynamic (individual rules)
     [skills]=install_dotfiles                # Dynamic (individual skills)
     [agents]=install_dotfiles                # Dynamic (individual subagents)
+    [mods]=install_dotfiles                  # Dynamic (function-hook plugins)
   )
 
   local name

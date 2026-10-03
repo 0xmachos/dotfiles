@@ -1,0 +1,290 @@
+#!/bin/zsh
+# dotfiles/tests/pretool-prefilter
+#
+# Checks the prefilter mod (claude/mods/pretool-prefilter, a Claude Code
+# function hook) against the zsh guards it fronts. The mod lets a Bash command
+# through with no process start when it contains none of its TOKENS and none
+# of its SYNTAX characters; anything else, and every Write/Edit/NotebookEdit,
+# runs claude/hooks/pretool-dispatch. The risk is a token list too small: a
+# command a guard would deny slips past unguarded. So this suite
+#   1. parses TOKENS and SYNTAX out of hooks/register.ts and mirrors the
+#      check in zsh (_pf_needs_dispatch);
+#   2. asserts the list covers every guard's own early-exit probe;
+#   3. runs each guard's canonical deny through the real dispatcher (must
+#      DENY) and through the mirror (must dispatch), and token-free commands
+#      through both (must PASS, must not dispatch);
+#   4. pins the module's shape: four registrations, each with a .catch, the
+#      write tools unconditional, an absolute dispatcher path that exists;
+#   5. runs the mod's own TypeScript tests via `claude plugin test`.
+# Fixture tokens are assembled at run time (same convention as the hook
+# suites). Skips when claude/ is not synced to this machine.
+#
+# Run: ./test pretool-prefilter
+# ShellCheck: lint with `shellcheck --shell=bash tests/pretool-prefilter`.
+# This file is sourced, not executed: chmod 644.
+#
+# shellcheck source=tests/lib
+# shellcheck disable=SC2154  # SCRIPT_DIR is set by the sourcing dispatcher
+
+typeset -g PF_MOD='' PF_SRC='' PF_SB=''
+typeset -ga PF_TOKENS=()
+
+function _pf_load_tokens {
+  # Fills PF_TOKENS from the `const TOKENS` array literal in register.ts: one
+  # quoted string per line until the closing bracket.
+  local line in=0
+  local re="^[[:space:]]*'([^']+)',?[[:space:]]*$"
+  PF_TOKENS=()
+  while IFS= read -r line; do
+    if (( in == 0 )); then
+      [[ "${line}" == "const TOKENS"* ]] && in=1
+      continue
+    fi
+    [[ "${line}" == ']'* ]] && break
+    [[ "${line}" =~ ${re} ]] || continue
+    # shellcheck disable=SC2154  # zsh fills match[] on =~
+    PF_TOKENS+=("${match[1]}")
+  done < "${PF_SRC}"
+}
+
+function _pf_needs_dispatch {
+  # Mirrors needsDispatch() in register.ts. $1 = command. 0 = dispatch.
+  local cmd="$1" lower stripped tok
+  # Non-ASCII: dispatch (lower-casing differs between zsh and JS).
+  [[ "${cmd}" =~ $'[^\t\n\r\x20-\x7e]' ]] && return 0
+  # shellcheck disable=SC2296  # zsh (L) lower-cases
+  lower="${(L)cmd}"
+  # gh-publish's publish-shape backstop, bounded as the guard bounds it.
+  local start=$'(^|[[:space:]\'"(;|&{}`])'
+  local publish="${start}(pr([[:space:]'\"-]|create|edit|comment|review|close|reopen|merge|upload|new|revert|transfer)|api([[:space:]'\"-]|graphql))"
+  [[ "${lower}" =~ ${publish} ]] && return 0
+  # Decoration deleted (quotes, backslashes, $ ( ) backtick, newline), as the
+  # mod's DECORATION regex does, then the substring check.
+  stripped="${lower//[\\\'\"\$()\`$'\n']/}"
+  for tok in "${PF_TOKENS[@]}"; do
+    # shellcheck disable=SC2296
+    [[ "${stripped}" == *"${(L)tok}"* ]] && return 0
+  done
+  return 1
+}
+
+function _pf_bash {
+  jq -cn --arg c "$1" '{tool_name:"Bash", tool_input:{command:$c}, cwd:"/work"}'
+}
+
+function _pf_dispatch {
+  # $1 = payload; remaining args = VAR=value pairs. Prints the verdict word.
+  local payload="$1" out
+  shift
+  out="$(printf '%s' "${payload}" \
+    | /usr/bin/env "$@" /bin/zsh "${SCRIPT_DIR}/claude/hooks/pretool-dispatch" 2>/dev/null)" || true
+  _hook_verdict "${out}"
+}
+
+function _pf_deny_case {
+  # $1 = label, $2 = Bash command; remaining args = env pairs. The dispatcher
+  # must DENY it and the mirror must dispatch it (else the mod skips a deny).
+  local label="$1" cmd="$2" verdict
+  shift 2
+  verdict="$(_pf_dispatch "$(_pf_bash "${cmd}")" "$@")"
+  if [[ "${verdict}" == DENY ]]; then
+    _pass "dispatcher denies: ${label}"
+  else
+    _fail "dispatcher does not deny ${label} (got ${verdict}); fixture is stale"
+  fi
+  if _pf_needs_dispatch "${cmd}"; then
+    _pass "prefilter dispatches: ${label}"
+  else
+    _fail "prefilter would SKIP a denied command: ${label} — add a token to TOKENS in register.ts"
+  fi
+}
+
+function _pf_pass_case {
+  # $1 = label, $2 = Bash command. The dispatcher must PASS it and the mirror
+  # must not dispatch it (the zero-exec path).
+  local label="$1" cmd="$2" verdict
+  verdict="$(_pf_dispatch "$(_pf_bash "${cmd}")")"
+  if [[ "${verdict}" == PASS ]]; then
+    _pass "dispatcher passes: ${label}"
+  else
+    _fail "dispatcher does not pass ${label} (got ${verdict})"
+  fi
+  if _pf_needs_dispatch "${cmd}"; then
+    _fail "prefilter dispatches a token-free command: ${label}"
+  else
+    _pass "prefilter skips the dispatcher: ${label}"
+  fi
+}
+
+function _pf_innocent_case {
+  # $1 = label, $2 = command that carries a token inside an innocent word. The
+  # dispatcher passes it; the prefilter still dispatches (a cost, never a gap).
+  local label="$1" cmd="$2" verdict
+  verdict="$(_pf_dispatch "$(_pf_bash "${cmd}")")"
+  if [[ "${verdict}" == PASS ]]; then
+    _pass "dispatcher passes: ${label}"
+  else
+    _fail "dispatcher does not pass ${label} (got ${verdict})"
+  fi
+  if _pf_needs_dispatch "${cmd}"; then
+    _pass "prefilter dispatches (token inside a word): ${label}"
+  else
+    _fail "prefilter skipped ${label}: substring match broken"
+  fi
+}
+
+function _pf_source_has {
+  local needle="$1" label="$2"
+  if /usr/bin/grep -qF -- "${needle}" "${PF_SRC}"; then
+    _pass "register.ts: ${label}"
+  else
+    _fail "register.ts lacks '${needle}': ${label}"
+  fi
+}
+
+function _pf_shape {
+  _section "pretool-prefilter: module shape"
+  local tool
+  for tool in Write Edit NotebookEdit; do
+    _pf_source_has "on('tool.call', { tool: '${tool}' }, dispatchAlways).catch(denyOnFailure)" "${tool} always dispatches, with a .catch"
+  done
+  _pf_source_has "on('tool.call', { tool: 'Bash' }, prefilterBash).catch(denyOnFailure)" "Bash is prefiltered, with a .catch"
+  _pf_source_has "on('session.start', announceLoaded)" "a session.start hook announces the load (status-line proof)"
+  _pf_source_has 'const SYNTAX = /[^\x00-\x7f]/' 'SYNTAX is exactly non-ASCII (the mirror assumes it)'
+  _pf_source_has "const DECORATION = /[\\\\'\"\$()\`\\n]/g" 'DECORATION deletes quotes, backslashes, $ ( ) backtick and newline (the mirror assumes it)'
+  _pf_source_has "const PUBLISH = /(^|[\\s'\"(;|&{}\`])(pr([\\s'\"-]|create|edit|comment|review|close|reopen|merge|upload|new|revert|transfer)|api([\\s'\"-]|graphql))/" 'PUBLISH shape matches the mirror'
+  _pf_source_has "const TIMEOUT_MS = 60_000" "dispatcher timeout matches the 60 s registration"
+  _pf_source_has "const DISPATCHER = '${HOME}/.claude/hooks/pretool-dispatch'" "dispatcher path is absolute (exec form: no ~ expansion)"
+  if [[ -x "${HOME}/.claude/hooks/pretool-dispatch" ]]; then
+    _pass "deployed dispatcher exists and is executable"
+  else
+    _fail "\$HOME/.claude/hooks/pretool-dispatch missing or not executable: run ./bittersweet dotfiles"
+  fi
+  if (( ${#PF_TOKENS} >= 10 )); then
+    _pass "TOKENS parsed from register.ts (${#PF_TOKENS} entries)"
+  else
+    _fail "TOKENS parse found only ${#PF_TOKENS} entries: the array literal changed shape"
+  fi
+}
+
+function _pf_minimums {
+  # Every guard's own early-exit probe, as a substring the list must carry.
+  # A guard with no early exit is covered by the deny cases below.
+  _section "pretool-prefilter: token list covers each guard's own probe"
+  local want tok found
+  for want in md5 gh issue release gist discussion git muse rm unlink shred find clean ssh scp sftp rsync mosh sudo container tmp folders; do
+    found=0
+    # shellcheck disable=SC2034  # read through the (L) expansion below
+    for tok in "${PF_TOKENS[@]}"; do
+      # shellcheck disable=SC2296
+      [[ "${(L)tok}" == "${want}" ]] && found=1
+    done
+    if (( found )); then
+      _pass "token present: ${want}"
+    else
+      _fail "token missing: ${want}"
+    fi
+  done
+}
+
+function _pf_cases {
+  local fx="${SCRIPT_DIR}/tests/fixtures/ssh-redirect/home" gpdir="${PF_SB}/gp"
+  local -a gh_env ssh_env sudo_env
+  local gh_word='g'
+  gh_word+='h'
+
+  _section "pretool-prefilter: denied commands are dispatched, token-free ones are not"
+
+  mkdir -p "${gpdir}/gh"
+  print -r -- 'FIXTURE_TOKEN' > "${gpdir}/patterns"
+  print -r -- 'Host testalias99' > "${gpdir}/sshcfg"
+  : > "${gpdir}/gh/config.yml"
+  gh_env=("GH_PUBLISH_PATTERNS=${gpdir}/patterns" "GH_PUBLISH_SSH_CONFIG=${gpdir}/sshcfg" GH_PUBLISH_NO_GITLEAKS=1 GH_PUBLISH_NO_IDENTITY=1 "GH_PUBLISH_OS=7.7:99Z999z" "GH_CONFIG_DIR=${gpdir}/gh")
+  ssh_env=("SSH_REDIRECT_CONFIG=${fx}/.ssh/config" "HOME=${fx}")
+  sudo_env=("SUDO_ASKPASS_HOSTS=box-claude other-claude" "SSH_REDIRECT_CONFIG=${fx}/.ssh/config")
+
+  _pf_deny_case 'md5-guard: md5 file.txt' 'md5 file.txt'
+  _pf_deny_case 'md5-guard: openssl dgst -md5' 'openssl dgst -md5 file.txt'
+  _pf_deny_case 'gh-publish: inline --body' "${gh_word} issue create -t t --body \"inline body\"" "${gh_env[@]}"
+  _pf_deny_case 'gh-publish: editor flow' "${gh_word} pr create -t t" "${gh_env[@]}"
+  _pf_deny_case 'git-bypass: git commit -n' 'git commit -n'
+  _pf_deny_case 'git-bypass: --no-verify' 'git commit --no-verify -m x'
+  # shellcheck disable=SC2016  # literal command text
+  _pf_deny_case 'muse-exec: timeout under 120s' 'timeout 90 muse exec --workspace "$PWD" < /dev/null'
+  _pf_deny_case 'rm-redirect: backslash rm' '\rm foo.txt'
+  _pf_deny_case 'rm-redirect: command rm' 'command rm foo'
+  _pf_deny_case 'rm-redirect: backslash unlink' '\unlink foo.txt'
+  _pf_deny_case 'rm-redirect: quoted rm' '"rm" foo.txt'
+  _pf_deny_case 'rm-redirect: mid-word quote decoration' 'r"m" foo'
+  _pf_deny_case 'rm-redirect: quoted shred' '"shred" foo.txt'
+  _pf_deny_case 'ssh-redirect: ssh hosta' 'ssh hosta' "${ssh_env[@]}"
+  _pf_deny_case 'sudo-askpass: sudo -n over an askpass host' "ssh box-claude 'sudo -n launchctl list'" "${sudo_env[@]}"
+  _pf_deny_case 'container-tmp: build context in tmp' 'container build -t x /tmp/ctx'
+  _pf_deny_case 'tmp-guard: redirect into /tmp' 'echo hi > /tmp/x'
+  _pf_deny_case 'tmp-guard: mktemp under /tmp' 'mktemp -d /tmp/foo.XXXX'
+  _pf_deny_case 'tmp-guard: cp into /var/folders' 'cp a /var/folders/x/b'
+
+  # Decoration cannot split a token (the guards delete it before probing).
+  # shellcheck disable=SC2016  # literal command text
+  _pf_deny_case 'git-bypass: $() inside git' 'gi$()t commit -n'
+  _pf_deny_case 'md5-guard: quotes inside md5' 'm"d"5 file.txt'
+  _pf_deny_case 'rm-redirect: backslash inside rm' 'r\m foo'
+  # gh-publish's publish-shape backstop, no literal gh anywhere.
+  # shellcheck disable=SC2016  # literal command text
+  _pf_deny_case 'gh-publish: variable command word, pr create' 'eval "$G pr create -t x --body y"' "${gh_env[@]}"
+  _pf_deny_case 'gh-publish: sh -c with api -f' 'sh -c "x api repos/o/r/issues -f title=x"' "${gh_env[@]}"
+
+  _pf_pass_case 'ls -la' 'ls -la'
+  _pf_pass_case 'cat a file' "cat ${SCRIPT_DIR}/README.md"
+  _pf_pass_case 'jq over a file' 'jq . settings.json'
+  _pf_pass_case 'grep -n' 'grep -n "needle" file.txt'
+  # shellcheck disable=SC2016  # literal command text
+  _pf_pass_case 'command substitution without a token' 'echo $(printf x) ${HOME}'
+  _pf_pass_case 'printf is not a publish shape' 'printf "%s\n" hello'
+  _pf_pass_case 'api inside a hostname' 'curl -s api.example.com/v1/status'
+
+  _pf_innocent_case 'rm inside FORMAT' 'cat FORMAT.txt'
+  _pf_innocent_case 'tmp inside a word' "ls ${HOME}/MyTmpDir"
+}
+
+function _pf_plugin_tests {
+  _section "pretool-prefilter: the mod's own tests"
+  local out rc=0
+  if ! command -v claude >/dev/null 2>&1; then
+    _skip "claude CLI not on PATH: cannot run claude plugin test"
+    return 0
+  fi
+  out="$(cd "${PF_MOD}" && claude plugin test . 2>&1)" || rc=$?
+  local summary
+  summary="$(print -r -- "${out}" | /usr/bin/grep -E '^ *[0-9]+ (pass|fail)$' | tr '\n' ' ')"
+  if (( rc == 0 )) && [[ "${out}" == *" 0 fail"* ]]; then
+    _pass "claude plugin test: ${summary}"
+  else
+    _fail "claude plugin test failed (rc ${rc}): ${summary:-$(print -r -- "${out}" | tail -n 3)}"
+  fi
+}
+
+function run_pretool_prefilter {
+  PF_MOD="${SCRIPT_DIR}/claude/mods/pretool-prefilter"
+  PF_SRC="${PF_MOD}/hooks/register.ts"
+
+  _section "pretool-prefilter mod"
+  if [[ ! -f "${PF_SRC}" || ! -f "${SCRIPT_DIR}/claude/hooks/pretool-dispatch" ]]; then
+    _skip "claude/mods/pretool-prefilter or claude/hooks/pretool-dispatch absent — claude/ not yet synced to this machine"
+    return 0
+  fi
+  if ! command -v jq >/dev/null 2>&1; then
+    _skip "jq not installed (brew install jq)"
+    return 0
+  fi
+
+  PF_SB="$(mktemp -d "${TMPDIR:-/tmp}/pretool-prefilter.XXXXXX")"
+  trap 'rm -rf -- "${PF_SB}"' EXIT
+
+  _pf_load_tokens
+  _pf_shape
+  _pf_minimums
+  _pf_cases
+  _pf_plugin_tests
+  return 0
+}

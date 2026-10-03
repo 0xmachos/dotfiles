@@ -43,7 +43,7 @@ cd "${SCRIPT_DIR}"
 # shellcheck source=tests/lib disable=SC1091
 source "${SCRIPT_DIR}/tests/lib"
 
-readonly -a SUITES=(shellcheck test-helpers sha sidebar extensions plutil linkage completions okf agents-md agent-rules jump brew-upgrade-selected rm-redirect ssh-redirect git-sign gh-auth container-tmp container-sandbox md5-guard md5-write gh-publish hook-links pii-hook agent-reset bao-mcp-env papercut pii-tree message-policy statusline fetch-route muse-exec session-host-context lint-hook git-bypass tmp-guard scratch-sweep sudo-askpass pretool-dispatch)
+readonly -a SUITES=(shellcheck test-helpers sha sidebar extensions plutil linkage completions okf agents-md agent-rules jump brew-upgrade-selected rm-redirect ssh-redirect git-sign gh-auth container-tmp container-sandbox md5-guard md5-write gh-publish hook-links pii-hook agent-reset bao-mcp-env papercut pii-tree message-policy statusline fetch-route muse-exec session-host-context lint-hook git-bypass tmp-guard scratch-sweep sudo-askpass pretool-dispatch pretool-prefilter)
 
 # Per-clone suites: one name per line in .extra_test_suites (gitignored via
 # .extra*), for private tools that must not be named in the tracked SUITES.
