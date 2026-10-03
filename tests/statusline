@@ -241,23 +241,23 @@ function _sl_usage {
   _sl_expect_eq "7d 75% carries its countdown, no pace" "$(_sl_plain "$(_sl_line 3)")" "7d 75% · 1d"
 
   # 5h turns red at 80, not 79; 75% elapsed (1h 15m left), so both run out.
-  # Out-in = (100 - used) x elapsed / used; slow-by is rounded up.
+  # Out-in = (100 - used) x elapsed / used; the cut rounds up to the next 10%.
   _sl_run 140 "$(_sl_json '.rate_limits.five_hour = {used_percentage: 79, resets_at: ($now + 4500)}')"
   _sl_expect_has "5h 79% yellow" "$(_sl_line 3)" "${YELLOW}${BOLD}79%"
-  _sl_expect_eq "5h 79%: out in, resets in, slow by" "$(_sl_plain "$(_sl_line 3)")" \
-    "5h 79% · out in 59m · resets in 1h 15m · slow by 21%"
+  _sl_expect_eq "5h 79%: out in, resets in, fewer tokens" "$(_sl_plain "$(_sl_line 3)")" \
+    "5h 79% · out in 59m · resets in 1h 15m · use 30% fewer tokens"
   _sl_run 140 "$(_sl_json '.rate_limits.five_hour = {used_percentage: 80, resets_at: ($now + 4500)}')"
   _sl_expect_has "5h 80% red" "$(_sl_line 3)" "${RED}${BOLD}80%"
-  _sl_expect_eq "5h 80%: out in, resets in, slow by" "$(_sl_plain "$(_sl_line 3)")" \
-    "5h 80% · out in 56m · resets in 1h 15m · slow by 25%"
+  _sl_expect_eq "5h 80%: out in, resets in, fewer tokens" "$(_sl_plain "$(_sl_line 3)")" \
+    "5h 80% · out in 56m · resets in 1h 15m · use 30% fewer tokens"
   _sl_run 80 "$(_sl_json '.rate_limits.five_hour = {used_percentage: 80, resets_at: ($now + 4500)}')"
   _sl_expect_has "medium tier: 5h detail in brackets" "$(_sl_plain "$(_sl_line 2)")" \
-    "5h 80% (out in 56m, resets in 1h 15m, slow by 25%)"
+    "5h 80% (out in 56m, resets in 1h 15m, use 30% fewer tokens)"
 
   # Run-out rule: usage share must exceed elapsed share (5h = 18000s)
   _sl_run 140 "$(_sl_json '.rate_limits.five_hour = {used_percentage: 60, resets_at: ($now + 7201)}')"
   _sl_expect_eq "5h 60% at 59.99% elapsed: shown" "$(_sl_plain "$(_sl_line 3)")" \
-    "5h 60% · out in 1h 59m · resets in 2h 0m · slow by 1%"
+    "5h 60% · out in 1h 59m · resets in 2h 0m · use 10% fewer tokens"
   _sl_run 140 "$(_sl_json '.rate_limits.five_hour = {used_percentage: 60, resets_at: ($now + 7200)}')"
   _sl_expect_hidden "5h 60% at exactly 60% elapsed: lasts to the reset, hidden"
   _sl_run 140 "$(_sl_json '.rate_limits.five_hour = {used_percentage: 90, resets_at: ($now + 600)}')"
@@ -268,7 +268,12 @@ function _sl_usage {
   # 50% used in the first 30 minutes: no grace period, it shows
   _sl_run 140 "$(_sl_json '.rate_limits.five_hour = {used_percentage: 50, resets_at: ($now + 16200)}')"
   _sl_expect_eq "5h 50% early" "$(_sl_plain "$(_sl_line 3)")" \
-    "5h 50% · out in 30m · resets in 4h 30m · slow by 89%"
+    "5h 50% · out in 30m · resets in 4h 30m · use 90% fewer tokens"
+  # A cut already on a multiple of 10 stays put: 50% used, 8000s elapsed, 10000s
+  # left → exactly 20%
+  _sl_run 140 "$(_sl_json '.rate_limits.five_hour = {used_percentage: 50, resets_at: ($now + 10000)}')"
+  _sl_expect_eq "5h cut of exactly 20% stays 20" "$(_sl_plain "$(_sl_line 3)")" \
+    "5h 50% · out in 2h 13m · resets in 2h 46m · use 20% fewer tokens"
 
   # 7d pace boundary at exactly 25% elapsed: 10 ahead shows yellow, 9 hides
   _sl_run 140 "$(_sl_json '.rate_limits.seven_day = {used_percentage: 35, resets_at: ($now + 453600)}')"
