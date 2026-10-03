@@ -286,8 +286,9 @@ function _sl_usage {
   _sl_expect_hidden "7d 9 points ahead stays hidden"
 }
 
-# 5h recent rate: the oldest ledger sample in the last 30 minutes (and in this
-# window), at least 10 minutes old, replaces the window average
+# 5h recent rate: a least-squares fit through the ledger samples in the last
+# 30 minutes (and in this window) plus the live value, once the oldest is at
+# least 10 minutes old, replaces the window average
 # shellcheck disable=SC2016  # $now in these filters is a jq variable
 function _sl_recent_rate {
   local u="${_SL_SB}/Library/Caches/statusline/usage"
@@ -299,6 +300,13 @@ function _sl_recent_rate {
   _sl_run 140 "$(_sl_json '.rate_limits.five_hour = {used_percentage: 55, resets_at: ($now + 7200)}')"
   _sl_expect_eq "recent rate: late burst shows" "$(_sl_plain "$(_sl_line 3)")" \
     "5h 55% · out in 45m · resets in 2h 0m · use 70% fewer tokens"
+  # Fit, not end points: 30, 45, 50, 55 then 60 live, 5 minutes apart, is
+  # 1.4%/min (the ends alone say 1.5%/min, out in 26m): 40 points last 28m
+  printf '%s 30\n%s 45\n%s 50\n%s 55\n' $(( _SL_NOW - 1200 )) $(( _SL_NOW - 900 )) \
+    $(( _SL_NOW - 600 )) $(( _SL_NOW - 300 )) > "${u}/five"
+  _sl_run 140 "$(_sl_json '.rate_limits.five_hour = {used_percentage: 60, resets_at: ($now + 7200)}')"
+  _sl_expect_eq "recent rate: fitted through every sample" "$(_sl_plain "$(_sl_line 3)")" \
+    "5h 60% · out in 28m · resets in 2h 0m · use 80% fewer tokens"
   # Eased off: the average runs out (80% at 40% elapsed) but nothing was used
   # in the last 20 minutes
   printf '%s 80\n' $(( _SL_NOW - 1200 )) > "${u}/five"
