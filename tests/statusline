@@ -227,6 +227,8 @@ function _sl_barmax_case {
 # shellcheck disable=SC2016  # $now in these filters is a jq variable
 function _sl_usage {
   local plain
+  # Average-rate cases: an empty ledger, so no recent rate stands in
+  _sl_usage_reset
   # No resets_at: pace cannot compute, so visibility is threshold-only
   _sl_run 140 "$(_sl_json '.rate_limits.five_hour = {used_percentage: 49}')"
   _sl_expect_hidden "5h 49% hidden"
@@ -284,6 +286,37 @@ function _sl_usage {
   _sl_expect_hidden "7d 9 points ahead stays hidden"
 }
 
+# 5h recent rate: the oldest ledger sample in the last 30 minutes (and in this
+# window), at least 10 minutes old, replaces the window average
+# shellcheck disable=SC2016  # $now in these filters is a jq variable
+function _sl_recent_rate {
+  local u="${_SL_SB}/Library/Caches/statusline/usage"
+  _sl_usage_reset
+  mkdir -p "${u}"
+  # Late burst: 55% at 60% elapsed hides on the average, but 35 → 55 in the
+  # last 20 minutes is 1%/min: 45 points left last 45m, cut 62.5% → 70
+  printf '%s 35\n' $(( _SL_NOW - 1200 )) > "${u}/five"
+  _sl_run 140 "$(_sl_json '.rate_limits.five_hour = {used_percentage: 55, resets_at: ($now + 7200)}')"
+  _sl_expect_eq "recent rate: late burst shows" "$(_sl_plain "$(_sl_line 3)")" \
+    "5h 55% · out in 45m · resets in 2h 0m · use 70% fewer tokens"
+  # Eased off: the average runs out (80% at 40% elapsed) but nothing was used
+  # in the last 20 minutes
+  printf '%s 80\n' $(( _SL_NOW - 1200 )) > "${u}/five"
+  _sl_run 140 "$(_sl_json '.rate_limits.five_hour = {used_percentage: 80, resets_at: ($now + 10800)}')"
+  _sl_expect_hidden "recent rate: eased off hides"
+  # Under 10 minutes of history: the average decides (55% at 60% elapsed)
+  printf '%s 40\n' $(( _SL_NOW - 300 )) > "${u}/five"
+  _sl_run 140 "$(_sl_json '.rate_limits.five_hour = {used_percentage: 55, resets_at: ($now + 7200)}')"
+  _sl_expect_hidden "recent rate: under 10 minutes falls back to the average"
+  # A sample from before this window began (95% last window) is ignored, so
+  # the average decides: 60% in the first 1000s
+  printf '%s 95\n' $(( _SL_NOW - 1500 )) > "${u}/five"
+  _sl_run 140 "$(_sl_json '.rate_limits.five_hour = {used_percentage: 60, resets_at: ($now + 17000)}')"
+  _sl_expect_eq "recent rate: last window's samples ignored" "$(_sl_plain "$(_sl_line 3)")" \
+    "5h 60% · out in 11m · resets in 4h 43m · use 100% fewer tokens"
+  _sl_usage_reset
+}
+
 # ── (4) countdown units ────────────────────────────────────────────────────
 function _sl_countdown_case {
   # <window key> <label> <used> <seconds to reset> <expected> — the countdown
@@ -300,6 +333,7 @@ function _sl_countdown_case {
 
 # shellcheck disable=SC2016  # $now in these filters is a jq variable
 function _sl_countdowns {
+  _sl_usage_reset
   # 5h at 100%: already out, so only the reset remains; once the reset has
   # passed there is no forecast, so the row is the bare percentage
   _sl_run 140 "$(_sl_json '.rate_limits.five_hour = {used_percentage: 100, resets_at: ($now + 7260)}')"
@@ -908,6 +942,7 @@ function run_statusline {
   _sl_exit_codes
   _sl_context
   _sl_usage
+  _sl_recent_rate
   _sl_countdowns
   _sl_identity
   _sl_cwd
