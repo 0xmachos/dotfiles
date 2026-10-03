@@ -581,12 +581,17 @@ function _sl_subagent {
     {id: "d", name: "Explore", status: "running"},
     {id: "e", name: "Explore", status: "running", tokenCount: 399999},
     {id: "f", name: "Explore", effort: "max"},
-    {id: "g", name: "Explore", status: "failed"}]}')"
+    {id: "g", name: "Explore", status: "failed"},
+    {id: "h", name: "Explore", tokenCount: 1150001},
+    {id: "i", name: "Explore", tokenCount: 1260000},
+    {id: "j", name: "Explore", description: "tab\there \"q\" back\\slash é\nnext", tokenCount: "junk"}]}')"
   rc=0
   out="$(printf '%s' "${payload}" | /bin/zsh "${script}" 2>/dev/null)" || rc=$?
   _sl_expect_eq "subagent: exit 0 with tasks" "${rc}" "0"
   _sl_expect_eq "subagent: exactly one row per task id" \
-    "$(jq -r .id <<< "${out}" 2>/dev/null | sort | tr '\n' ' ')" "a b c d e f g "
+    "$(jq -r .id <<< "${out}" 2>/dev/null | sort | tr '\n' ' ')" "a b c d e f g h i j "
+  _sl_expect_eq "subagent: one JSON object per output line" \
+    "$(jq -c . <<< "${out}" 2>/dev/null | wc -l | tr -d ' ')" "10"
   while IFS= read -r line; do
     if ! jq -e 'has("id") and has("content")' <<< "${line}" >/dev/null 2>&1; then
       _fail "subagent: row is not JSON with id + content: $(printf '%q' "${line}")"
@@ -607,6 +612,16 @@ function _sl_subagent {
       g) _sl_expect_has "subagent: failed status red" "${content}" "${RED}failed${RESET}" ;;
       d) _sl_expect_eq "subagent: no tokenCount → no token segment" \
            "$(_sl_plain "${content}")" "Explore · running" ;;
+      # Millions truncate to hundredths before rounding to tenths (the bc
+      # scale=2 figure): 1,150,001 is 1.1M, not 1.2M; 1,260,000 is 1.3M
+      h) _sl_expect_has "subagent: 1,150,001 tokens → 1.1M" "${content}" "${RED}1.1M${RESET}" ;;
+      i) _sl_expect_has "subagent: 1,260,000 tokens → 1.3M" "${content}" "${RED}1.3M${RESET}" ;;
+      # Field transport is lossless for tabs, quotes, backslashes and
+      # non-ASCII; a newline inside a description is flattened to a space
+      # (a status row is one line); a non-numeric tokenCount drops the segment
+      j) _sl_expect_eq "subagent: tab, quote, backslash, é and newline in description" \
+           "${content}" \
+           "${_SL_CYAN}Explore${RESET} ${_SL_DIM}·${RESET} ${_SL_DIM}tab"$'\t'"here \"q\" back\\slash é next${RESET}" ;;
       *) _fail "subagent: unexpected id ${id}" ;;
     esac
   done <<< "${out}"
