@@ -1,7 +1,11 @@
 #!/bin/zsh
 # dotfiles/bin/vt
-# Wrapper for virustotal-cli that injects API key from 1Password
+# Wrapper for virustotal-cli that injects API key from 1Password.
+# The key goes in VTCLI_APIKEY (vt-cli's env override for --apikey), never in
+# argv, which any local process can read.
 
 set -euo pipefail
 
-exec /opt/homebrew/bin/vt --apikey "$(op read 'op://homelab/VirusTotal/credential')" "$@"
+VTCLI_APIKEY="$(op read 'op://homelab/VirusTotal/credential')"
+export VTCLI_APIKEY
+exec /opt/homebrew/bin/vt "$@"
