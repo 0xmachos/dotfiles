@@ -240,22 +240,29 @@ function _sl_usage {
   _sl_expect_has "7d 75% shown red" "$(_sl_line 3)" "${RED}${BOLD}75%"
   _sl_expect_eq "7d 75% carries its countdown, no pace" "$(_sl_plain "$(_sl_line 3)")" "7d 75% · 1d"
 
-  # 5h red and countdown start at 80, not 79; elapsed share exceeds usage, so
-  # pace stays hidden
-  _sl_run 140 "$(_sl_json '.rate_limits.five_hour = {used_percentage: 79, resets_at: ($now + 600)}')"
+  # 5h red and countdown start at 80, not 79; 75% elapsed, so both run out
+  # before the reset and pace stays under its 10-point warning
+  _sl_run 140 "$(_sl_json '.rate_limits.five_hour = {used_percentage: 79, resets_at: ($now + 4500)}')"
   _sl_expect_eq "5h 79%: yellow, no countdown" "$(_sl_line 3)" \
     "${_SL_DIM}5h${RESET} ${YELLOW}${BOLD}79%${RESET}"
-  _sl_run 140 "$(_sl_json '.rate_limits.five_hour = {used_percentage: 80, resets_at: ($now + 600)}')"
+  _sl_run 140 "$(_sl_json '.rate_limits.five_hour = {used_percentage: 80, resets_at: ($now + 4500)}')"
   _sl_expect_eq "5h 80%: red with countdown" "$(_sl_line 3)" \
-    "${_SL_DIM}5h${RESET} ${RED}${BOLD}80%${RESET} ${_SL_DIM}·${RESET} ${_SL_DIM}10m${RESET}"
+    "${_SL_DIM}5h${RESET} ${RED}${BOLD}80%${RESET} ${_SL_DIM}·${RESET} ${_SL_DIM}1h${RESET}"
 
-  # Pace override: 30% used, 10% elapsed (exactly the 30-minute grace) → ⇡20 red
+  # Run-out rule: usage share must exceed elapsed share (5h = 18000s)
+  _sl_run 140 "$(_sl_json '.rate_limits.five_hour = {used_percentage: 60, resets_at: ($now + 7201)}')"
+  _sl_expect_eq "5h 60% at 59.99% elapsed: shown" "$(_sl_plain "$(_sl_line 3)")" "5h 60%"
+  _sl_run 140 "$(_sl_json '.rate_limits.five_hour = {used_percentage: 60, resets_at: ($now + 7200)}')"
+  _sl_expect_hidden "5h 60% at exactly 60% elapsed: lasts to the reset, hidden"
+  _sl_run 140 "$(_sl_json '.rate_limits.five_hour = {used_percentage: 90, resets_at: ($now + 600)}')"
+  _sl_expect_hidden "5h 90% with 10m left: hidden, it lasts"
+  # Below 50% stays hidden even when pace warns (30% used, 10% elapsed)
   _sl_run 140 "$(_sl_json '.rate_limits.five_hour = {used_percentage: 30, resets_at: ($now + 16200)}')"
-  _sl_expect_eq "5h below threshold shown while pace warns" "$(_sl_plain "$(_sl_line 3)")" "5h 30% ⇡20"
-  _sl_expect_has "5h pace 20 ahead is red" "$(_sl_line 3)" "${RED}⇡20${RESET}"
-  # One second short of the grace period → no pace, so hidden
-  _sl_run 140 "$(_sl_json '.rate_limits.five_hour = {used_percentage: 30, resets_at: ($now + 16201)}')"
-  _sl_expect_hidden "5h pace suppressed in first 30 min"
+  _sl_expect_hidden "5h under 50% hidden despite pace"
+  # From 50% the pace segment still rides along: 50% used, 10% elapsed → ⇡40
+  _sl_run 140 "$(_sl_json '.rate_limits.five_hour = {used_percentage: 50, resets_at: ($now + 16200)}')"
+  _sl_expect_eq "5h 50% early carries pace" "$(_sl_plain "$(_sl_line 3)")" "5h 50% ⇡40"
+  _sl_expect_has "5h pace 40 ahead is red" "$(_sl_line 3)" "${RED}⇡40${RESET}"
 
   # 7d pace boundary at exactly 25% elapsed: 10 ahead shows yellow, 9 hides
   _sl_run 140 "$(_sl_json '.rate_limits.seven_day = {used_percentage: 35, resets_at: ($now + 453600)}')"
@@ -281,13 +288,13 @@ function _sl_countdown_case {
 }
 
 function _sl_countdowns {
-  _sl_countdown_case five_hour 5h 85 7260 2h
-  _sl_countdown_case five_hour 5h 85 3600 1h
-  _sl_countdown_case five_hour 5h 85 3599 59m
-  _sl_countdown_case five_hour 5h 85 2520 42m
-  _sl_countdown_case five_hour 5h 85 60 1m
-  _sl_countdown_case five_hour 5h 85 59 1m
-  _sl_countdown_case five_hour 5h 85 0 now
+  _sl_countdown_case five_hour 5h 100 7260 2h
+  _sl_countdown_case five_hour 5h 100 3600 1h
+  _sl_countdown_case five_hour 5h 100 3599 59m
+  _sl_countdown_case five_hour 5h 100 2520 42m
+  _sl_countdown_case five_hour 5h 100 60 1m
+  _sl_countdown_case five_hour 5h 100 59 1m
+  _sl_countdown_case five_hour 5h 100 0 now
   _sl_countdown_case seven_day 7d 80 259260 3d
   _sl_countdown_case seven_day 7d 80 86400 1d
   _sl_countdown_case seven_day 7d 80 86399 23h
