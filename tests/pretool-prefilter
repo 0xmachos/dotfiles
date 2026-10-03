@@ -58,6 +58,11 @@ function _pf_needs_dispatch {
   local start=$'(^|[[:space:]\'"(;|&{}`])'
   local publish="${start}(pr([[:space:]'\"-]|create|edit|comment|review|close|reopen|merge|upload|new|revert|transfer)|api([[:space:]'\"-]|graphql))"
   [[ "${lower}" =~ ${publish} ]] && return 0
+  # ... and on the guard's own probe text: backslash-newline joined, then
+  # quotes and backslashes deleted (gh-publish-hook _gp_joined/_gp_probe).
+  local probe="${lower//\\$'\n'/}"
+  probe="${probe//[\\\'\"]/}"
+  [[ "${probe}" =~ ${publish} ]] && return 0
   # Decoration deleted (quotes, backslashes, $ ( ) backtick, newline), as the
   # mod's DECORATION regex does, then the substring check.
   stripped="${lower//[\\\'\"\$()\`$'\n']/}"
@@ -233,6 +238,12 @@ function _pf_cases {
   # shellcheck disable=SC2016  # literal command text
   _pf_deny_case 'gh-publish: variable command word, pr create' 'eval "$G pr create -t x --body y"' "${gh_env[@]}"
   _pf_deny_case 'gh-publish: sh -c with api -f' 'sh -c "x api repos/o/r/issues -f title=x"' "${gh_env[@]}"
+  # The guard's backstop runs on quote/backslash-stripped text, so decoration
+  # inside the noun must not hide the publish shape.
+  # shellcheck disable=SC2016  # literal command text
+  _pf_deny_case 'gh-publish: quote inside pr' '$G p"r" create -t x --body y' "${gh_env[@]}"
+  # shellcheck disable=SC2016  # literal command text
+  _pf_deny_case 'gh-publish: backslash inside pr' '$G p\r create -t x --body y' "${gh_env[@]}"
 
   _pf_pass_case 'ls -la' 'ls -la'
   _pf_pass_case 'cat a file' "cat ${SCRIPT_DIR}/README.md"
