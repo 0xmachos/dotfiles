@@ -1,0 +1,348 @@
+#!/bin/zsh
+# shellcheck disable=SC2296,SC2299,SC2206,SC2066,SC2079,SC2016,SC2086 # zsh-only syntax: parameter flags, nested expansions, float $(( )), PS4 text that must stay unexpanded
+set -euo pipefail
+umask 077
+setopt extended_glob
+
+# spawnprof — profile the process-spawn cost of a zsh script run as a child.
+#
+# Usage: spawnprof [-n RUNS] [-i STDIN_FILE] [-e KEY=VAL]... -- <command> [args]
+#   <command> is /bin/zsh <script> [args], or the path of an executable script
+#   whose shebang names zsh. Anything else is refused.
+#   -n  timed runs for the wall section (default 30; 5 warm-up runs discarded)
+#   -i  file given on stdin to every run, reopened per run (default /dev/null)
+#   -e  extra environment for every run of the child (repeatable)
+#
+# Sections, in order, separated by one blank line:
+#   execs     external-command executions from one timestamped xtrace
+#   forks     distinct child pids seen in that same trace
+#   wall      min/p50/p95/max over timed runs, plus the interpreter floor
+#   counters  one /usr/bin/time -l run: instructions, cycles, switches, RSS
+#
+# Design notes (2026-10-03):
+# - One traced run feeds execs and forks. It is
+#     /bin/zsh -c 'zmodload zsh/system; setopt prompt_subst; ...; set -x;
+#                  source <script> args'
+#   because ${sysparams[pid]} in PS4 needs zsh/system and prompt_subst set
+#   INSIDE the traced shell, which a plain `zsh -x` cannot arrange. Costs: the
+#   script runs via `source`, so $0 inside it is the wrapper's name (%N in the
+#   trace still shows the script), a top-level `exit` ends the wrapper (fine),
+#   and a `#!/usr/bin/env zsh` shebang hop is not in the trace (wall and
+#   counters run the exact command, so they do include it). This zsh has no
+#   XTRACEFD, so the trace is the wrapper's stderr and the script's own stderr
+#   is interleaved with it; the record parser tolerates that, because stray
+#   text only ever lands after a record's command, never before its first word.
+# - PS4 carries a %D{%s.%6.} timestamp (zsh 5.9 fractional seconds). Records
+#   are split on the PS4 marker rather than on newlines, because a command
+#   substitution prints its outer record's prefix (`x=`) before the nested
+#   record, on the same line. Records are sorted by timestamp. Time is the
+#   delta to the next record: approximate, interleaved by subshells, and the
+#   last record has none.
+# - External means `whence -w` says "command" in a fresh `/bin/zsh -f`, so a
+#   function defined by the script is not counted. One batched shell classifies
+#   every distinct first word (that is the cache).
+# - xtrace never shows descendants of an external program, and a fork appears
+#   only as a pid change. A fork whose child ran no traced command is missed,
+#   so the fork count is a lower bound.
+# - -e values are exported into spawnprof's own environment, so the floor run
+#   sees them as well. SC2296: zsh parameter flags are not bash syntax.
+# ShellCheck: shellcheck --shell=bash (zsh script, ~95% overlap)
+
+
+readonly SP_WARMUP=5
+
+typeset -g RUNS=30 STDIN_FILE=/dev/null
+typeset -ga TARGET=()
+typeset -g WORKDIR=""
+typeset -g ROOT_PID=""
+
+usage() {
+  print -u2 'Usage: spawnprof [-n RUNS] [-i STDIN_FILE] [-e KEY=VAL]... -- <command and args>'
+  print -u2 '  <command> is /bin/zsh <script> [args] or an executable zsh script path'
+  exit 2
+}
+
+die() {
+  print -u2 -- "spawnprof: $1"
+  exit "${2:-1}"
+}
+
+cleanup() {
+  [[ -n "${WORKDIR}" && -d "${WORKDIR}" ]] && /bin/rm -rf -- "${WORKDIR}"
+  return 0
+}
+
+parse_args() {
+  local opt kv
+  while (( $# )); do
+    case "$1" in
+      -n)
+        (( $# >= 2 )) || usage
+        [[ "$2" =~ ^[1-9][0-9]*$ ]] || die "-n needs a positive integer" 2
+        RUNS="$2"; shift 2 ;;
+      -i)
+        (( $# >= 2 )) || usage
+        [[ -r "$2" && -f "$2" ]] || die "-i: cannot read '$2'" 2
+        STDIN_FILE="$2"; shift 2 ;;
+      -e)
+        (( $# >= 2 )) || usage
+        kv="$2"
+        [[ "${kv}" == [A-Za-z_][A-Za-z0-9_]#=* ]] || die "-e needs KEY=VAL, got '${kv}'" 2
+        typeset -gx -- "${kv%%=*}=${kv#*=}"
+        shift 2 ;;
+      --) shift; break ;;
+      -*) opt="$1"; die "unknown option '${opt}'" 2 ;;
+      *) break ;;
+    esac
+  done
+  (( $# )) || usage
+  TARGET=("$@")
+}
+
+# Accept /bin/zsh <script> [args] or <zsh script path> [args]; leaves the script
+# path in SCRIPT and its arguments in SCRIPT_ARGS.
+typeset -g SCRIPT=""
+typeset -ga SCRIPT_ARGS=()
+validate_target() {
+  local first="${TARGET[1]}" shebang=""
+  if [[ "${first}" == /bin/zsh ]]; then
+    (( ${#TARGET} >= 2 )) || die "target is /bin/zsh with no script" 2
+    [[ "${TARGET[2]}" != -* ]] || die "target must be /bin/zsh <script>; flags are not supported" 2
+    SCRIPT="${TARGET[2]}"
+    SCRIPT_ARGS=("${(@)TARGET[3,-1]}")
+  else
+    [[ "${first}" == */* ]] || die "target must be /bin/zsh or a zsh script path" 2
+    [[ -x "${first}" && -f "${first}" ]] || die "target '${first}' is not an executable file" 2
+    IFS= read -r shebang < "${first}" || true
+    [[ "${shebang}" == '#!'*zsh* ]] || die "target '${first}' is not a zsh script" 2
+    SCRIPT="${first}"
+    SCRIPT_ARGS=("${(@)TARGET[2,-1]}")
+  fi
+  [[ -r "${SCRIPT}" && -f "${SCRIPT}" ]] || die "cannot read script '${SCRIPT}'" 2
+}
+
+# ---- execs and forks --------------------------------------------------------
+
+# Split the trace into "ts<TAB>pid<TAB>command" records on the PS4 marker.
+normalise_trace() {
+  local raw="$1" out="$2"
+  /usr/bin/awk '
+    function flush() {
+      if (have) { gsub(/[\t\n]/, " ", cmd); printf "%s\t%s\t%s\n", ts, pid, cmd }
+      have = 0; cmd = ""
+    }
+    {
+      line = $0
+      while (match(line, /\+[0-9]+\.[0-9][0-9][0-9][0-9][0-9][0-9] [0-9]+ [^>]*> /)) {
+        cmd = cmd substr(line, 1, RSTART - 1)
+        flush()
+        split(substr(line, RSTART + 1, RLENGTH - 1), f, " ")
+        ts = f[1]; pid = f[2]; have = 1
+        line = substr(line, RSTART + RLENGTH)
+      }
+      cmd = cmd line " "
+    }
+    END { flush() }
+  ' "${raw}" | /usr/bin/sort -s -t$'\t' -k1,1 > "${out}"
+}
+
+# One traced run. Sets TRACE_RC to the script's exit status.
+typeset -g TRACE_RC=0
+run_traced() {
+  local raw="$1" wrapper
+  wrapper='zmodload zsh/system; setopt prompt_subst; PS4='\''+%D{%s.%6.} ${sysparams[pid]} %N:%i> '\''; set -x; source "$@"'
+  TRACE_RC=0
+  /bin/zsh -c "${wrapper}" spawnprof "${SCRIPT}" "${SCRIPT_ARGS[@]}" \
+    < "${STDIN_FILE}" > /dev/null 2> "${raw}" || TRACE_RC=$?
+}
+
+# Prints the execs and forks sections from the normalised records in $1.
+report_trace() {
+  local norm="$1" rec ts pid cmd word i n
+  local -a recs=() words=() ts_arr=() pid_arr=() word_arr=()
+  local -A seen_word=() kind=() path_of=() calls=() total=() pids=()
+  recs=("${(@f)$(<"${norm}")}")
+  [[ -n "${recs[1]:-}" ]] || { print 'execs: n/a (no trace records)'; print; print 'forks: n/a (no trace records)'; return 0; }
+
+  n=0
+  for rec in "${recs[@]}"; do
+    ts="${${rec%%$'\t'*}/./}"
+    pid="${${rec#*$'\t'}%%$'\t'*}"
+    cmd="${rec#*$'\t'*$'\t'}"
+    if [[ -z "${ROOT_PID}" ]]; then
+      ROOT_PID="${pid}"
+      [[ "${cmd}" == source\ * ]] && continue
+    fi
+    (( n++ )) || true
+    ts_arr+=("${ts}"); pid_arr+=("${pid}")
+    # first word, skipping leading NAME=value assignments
+    local -a w=( ${(z)cmd} )
+    i=1
+    while (( i <= ${#w} )) && [[ "${w[i]}" == [A-Za-z_][A-Za-z0-9_]#=* ]]; do (( i++ )); done
+    word="${w[i]:-}"
+    word_arr+=("${word}")
+    [[ -n "${word}" && -z "${seen_word[${word}]:-}" ]] && { seen_word[${word}]=1; words+=("${word}"); }
+  done
+
+  classify_words "${words[@]}"
+
+  local -i execs=0 delta
+  for (( i = 1; i <= n; i++ )); do
+    word="${word_arr[i]}"
+    [[ -n "${word}" && "${kind[${word}]:-}" == command ]] || continue
+    (( ++execs ))
+    delta=0
+    (( i < n )) && delta=$(( ts_arr[i+1] - ts_arr[i] ))
+    (( delta < 0 )) && delta=0
+    calls[${path_of[${word}]}]=$(( ${calls[${path_of[${word}]}]:-0} + 1 ))
+    total[${path_of[${word}]}]=$(( ${total[${path_of[${word}]}]:-0} + delta ))
+  done
+
+  for (( i = 1; i <= n; i++ )); do
+    [[ "${pid_arr[i]}" != "${ROOT_PID}" ]] && pids[${pid_arr[i]}]=1
+  done
+
+  print "execs: ${execs} external command executions (time = delta to next trace record, approximate)"
+  if (( execs )); then
+    local -a keyed=() order=()
+    local c width=7 line
+    for c in "${(@k)calls}"; do
+      (( ${#c} > width )) && width=${#c}
+      keyed+=("$(printf '%016d' "${total[${c}]}") ${c}")
+    done
+    order=("${(@On)keyed}")
+    printf "  %-${width}s %6s %10s %9s\n" command calls total_ms mean_ms
+    for line in "${order[@]}"; do
+      c="${line#* }"
+      printf "  %-${width}s %6d %10.2f %9.2f\n" "${c}" "${calls[${c}]}" \
+        "$(( total[${c}] / 1000.0 ))" "$(( total[${c}] / 1000.0 / calls[${c}] ))"
+    done
+  fi
+  print '  note: xtrace misses descendants of external programs and shows forks only as pid changes;'
+  print '        the last record has no delta; the target ran under `source`, so shebang hops are not counted.'
+  print
+  print "forks: ${#pids} (distinct child pids that ran a traced command; lower bound)"
+}
+
+# Batch-classify words in one fresh `/bin/zsh -f`; fills kind[] and path_of[]
+# in the caller's scope (zsh dynamic scoping).
+classify_words() {
+  (( $# )) || return 0
+  local -a out=()
+  local w k p i=1
+  out=("${(@f)$(/bin/zsh -f -c '
+    for w; do
+      k=$(whence -w -- "$w" 2>/dev/null); k=${k##*: }
+      p=$(whence -p -- "$w" 2>/dev/null)
+      print -r -- "${k}"$'\''\t'\''"${p:-$w}"
+    done' spawnprof_classify "$@")}")
+  for w in "$@"; do
+    k="${out[i]%%$'\t'*}"
+    p="${out[i]#*$'\t'}"
+    kind[${w}]="${k}"
+    path_of[${w}]="${p}"
+    (( i++ ))
+  done
+}
+
+# ---- wall -------------------------------------------------------------------
+
+# time_runs <n> <command...>: sets DUR to the sorted microsecond durations
+# after discarding warm-up runs. A fresh stdin open per run.
+typeset -ga DUR=()
+time_runs() {
+  local n="$1"; shift
+  local -i i t0 t1
+  DUR=()
+  for (( i = 1; i <= SP_WARMUP + n; i++ )); do
+    t0=$(( EPOCHREALTIME * 1000000 ))
+    "$@" < "${STDIN_FILE}" > /dev/null 2>&1 || true
+    t1=$(( EPOCHREALTIME * 1000000 ))
+    (( i > SP_WARMUP )) && DUR+=("$(( t1 - t0 ))")
+  done
+  DUR=("${(@on)DUR}")
+}
+
+# stats_of_dur <array name>: sets the named array to min p50 p95 max (µs,
+# nearest rank) of DUR
+stats_of_dur() {
+  local -i n=${#DUR} i50 i95
+  i50=$(( (50 * n + 99) / 100 )); (( i50 < 1 )) && i50=1
+  i95=$(( (95 * n + 99) / 100 )); (( i95 < 1 )) && i95=1
+  set -A "$1" "${DUR[1]}" "${DUR[i50]}" "${DUR[i95]}" "${DUR[n]}"
+}
+
+fmt_ms() { printf '%.2f' "$(( $1 / 1000.0 ))"; }
+
+report_wall() {
+  local -a t_stats f_stats
+  time_runs "${RUNS}" "${TARGET[@]}"
+  stats_of_dur t_stats
+  time_runs "${RUNS}" /bin/zsh -c :
+  stats_of_dur f_stats
+  print "wall: ${RUNS} timed runs, ${SP_WARMUP} warm-up runs discarded (ms, nearest-rank percentiles)"
+  printf "  %-26s %9s %9s %9s %9s\n" run min p50 p95 max
+  printf "  %-26s %9s %9s %9s %9s\n" target \
+    "$(fmt_ms "${t_stats[1]}")" "$(fmt_ms "${t_stats[2]}")" "$(fmt_ms "${t_stats[3]}")" "$(fmt_ms "${t_stats[4]}")"
+  printf "  %-26s %9s %9s %9s %9s\n" "floor (/bin/zsh -c :)" \
+    "$(fmt_ms "${f_stats[1]}")" "$(fmt_ms "${f_stats[2]}")" "$(fmt_ms "${f_stats[3]}")" "$(fmt_ms "${f_stats[4]}")"
+  printf "  savable ≈ p50 − floor: %s ms\n" "$(fmt_ms "$(( t_stats[2] - f_stats[2] ))")"
+}
+
+# ---- counters ---------------------------------------------------------------
+
+typeset -g COUNTER_RC=0
+report_counters() {
+  local tfile="$1" key line val
+  COUNTER_RC=0
+  /usr/bin/time -l -o "${tfile}" "${TARGET[@]}" < "${STDIN_FILE}" > /dev/null 2>&1 || COUNTER_RC=$?
+  print "counters: one run under /usr/bin/time -l (include waited-for children)"
+  for key in "instructions retired" "cycles elapsed" "voluntary context switches" \
+             "involuntary context switches" "maximum resident set size"; do
+    val=""
+    while IFS= read -r line; do
+      # time -l prints "<number>  <label>"; the voluntary label is a suffix of
+      # the involuntary one, so match the whole label after the number
+      line="${line##[[:space:]]#}"
+      if [[ "${line}" == [0-9]##\ ##"${key}" ]]; then val="${line%% *}"; break; fi
+    done < "${tfile}"
+    printf "  %-30s %s\n" "${key}" "${val:-n/a}"
+  done
+  print "  exit status of the profiled command: ${COUNTER_RC}"
+}
+
+# ---- main -------------------------------------------------------------------
+
+main() {
+  zmodload zsh/datetime
+  parse_args "$@"
+  validate_target
+
+  local scratch_root="${TMPDIR:-${HOME}/Library/Caches/tint}"
+  scratch_root="${scratch_root%/}"
+  [[ -d "${scratch_root}" ]] || scratch_root="${HOME}/Library/Caches/tint"
+  /bin/mkdir -p "${scratch_root}"
+  WORKDIR="$(/usr/bin/mktemp -d "${scratch_root}/spawnprof.XXXXXX")"
+  trap cleanup EXIT
+
+  print "spawnprof: ${TARGET[*]}  (stdin: ${STDIN_FILE})"
+  print
+
+  run_traced "${WORKDIR}/trace.raw"
+  [[ -s "${WORKDIR}/trace.raw" ]] || die "target produced no trace; it failed to run (exit ${TRACE_RC})"
+  normalise_trace "${WORKDIR}/trace.raw" "${WORKDIR}/trace.norm"
+  report_trace "${WORKDIR}/trace.norm"
+  print "  traced run exit status: ${TRACE_RC}"
+  print
+
+  report_wall
+  print
+
+  report_counters "${WORKDIR}/time.out"
+  if (( COUNTER_RC == 126 || COUNTER_RC == 127 )); then
+    die "target failed to run (exit ${COUNTER_RC})"
+  fi
+  return 0
+}
+
+main "$@"

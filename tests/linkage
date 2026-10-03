@@ -261,6 +261,7 @@ function run_linkage {
     [git-sign-unpushed]=install_scripts
     [bao-mcp-env]=install_scripts               # moved from ~/.local/bin 2026-09-18, internals/linux-path-audit.md
     [papercut]=install_scripts                  # status-line and log CLI
+    [spawnprof]=install_scripts                 # spawn-cost profiler for zsh scripts
     [agent-reset]=repo                          # backup/verify/wipe ritual; run from the repo, installed nowhere
 
     # install_dotfiles → ~/.local/bin/ (op wrappers)
