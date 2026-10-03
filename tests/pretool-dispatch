@@ -17,6 +17,9 @@
 #   3. Coverage invariant: the guards reachable per tool from the settings
 #      file's PreToolUse entries, expanding the dispatcher through
 #      --print-routes. It holds before and after the registration switch.
+#   4. Registration shape: the dispatcher's settings entry is the exec form
+#      (absolute path, `args: []`, 60 s) on the four tools, the prefilter
+#      mod's dir is in env, and no standalone guard entry remains.
 # Verdicts go through _hook_verdict (PASS, DENY, INVALID).
 #
 # Run: ./test pretool-dispatch
@@ -766,6 +769,88 @@ function _ptd_coverage {
   done
 }
 
+function _ptd_settings_shape {
+  # $1 = settings file (default: the repo copy). Pins the registration shape
+  # the 2026-10-03 switch landed: one exec-form dispatcher entry (absolute
+  # path, `args: []`, 60 s) on the four tools, the mod's plugin dir in env,
+  # and no standalone guard entry left behind. _ptd_coverage cannot tell a
+  # switched file from the old block (both route the same guards), so this
+  # does. When the dispatcher registration is removed in favour of the mod
+  # alone (TODOs.md "Spawn volume", item 2), this function and _ptd_reach
+  # change in the same commit: reach would read no routes from settings.
+  local settings="${1:-${SCRIPT_DIR}/claude/settings.json}"
+  local dispatcher="${HOME}/.claude/hooks/pretool-dispatch"
+  local moddir="${HOME}/.claude/mods/pretool-prefilter"
+  _section "pretool-dispatch: settings registration shape"
+
+  if [[ ! -f "${settings}" ]]; then
+    _skip "claude/settings.json absent: claude/ not yet synced to this machine"
+    return 0
+  fi
+
+  local n
+  n="$(jq -r '[.hooks.PreToolUse[]? | select(any(.hooks[]?; (.command | tostring | endswith("/pretool-dispatch"))))] | length' "${settings}")"
+  if [[ "${n}" == 1 ]]; then
+    _pass "shape: exactly one PreToolUse entry registers the dispatcher"
+  else
+    _fail "shape: ${n} PreToolUse entries register the dispatcher, expected 1"
+  fi
+
+  local matcher type cmd args timeout
+  IFS=$'\t' read -r matcher type cmd args timeout < <(jq -r '
+    [ .hooks.PreToolUse[]? | .matcher as $m | .hooks[]?
+      | select(.command | tostring | endswith("/pretool-dispatch"))
+      | [ ($m // ""), (.type // ""), (.command // ""),
+          (if has("args") then (.args | tojson) else "ABSENT" end),
+          (.timeout | tostring) ] ]
+    | first // empty | @tsv' "${settings}")
+  if [[ "${matcher}" == 'Bash|Write|Edit|NotebookEdit' ]]; then
+    _pass "shape: dispatcher matcher is the four dispatched tools"
+  else
+    _fail "shape: dispatcher matcher is '${matcher}', expected 'Bash|Write|Edit|NotebookEdit'"
+  fi
+  if [[ "${type}" == command ]]; then
+    _pass "shape: dispatcher hook type is command"
+  else
+    _fail "shape: dispatcher hook type is '${type}', expected command"
+  fi
+  if [[ "${cmd}" == "${dispatcher}" ]]; then
+    _pass "shape: dispatcher command is the absolute deployed path"
+  else
+    _fail "shape: dispatcher command is '${cmd}', expected '${dispatcher}' (exec form: absolute, no ~)"
+  fi
+  if [[ "${args}" == '[]' ]]; then
+    _pass "shape: dispatcher has an empty args array (exec form, no shell)"
+  else
+    _fail "shape: dispatcher args is ${args}, expected [] (shell form costs sh+bash+zsh per call)"
+  fi
+  if [[ "${timeout}" == 60 ]]; then
+    _pass "shape: dispatcher timeout is 60 s"
+  else
+    _fail "shape: dispatcher timeout is '${timeout}', expected 60"
+  fi
+
+  local dirs
+  dirs="$(jq -r '.env.CLAUDE_CODE_PLUGIN_DIRS // "ABSENT"' "${settings}")"
+  if [[ "${dirs}" == "${moddir}" ]]; then
+    _pass "shape: env.CLAUDE_CODE_PLUGIN_DIRS loads the prefilter mod"
+  else
+    _fail "shape: env.CLAUDE_CODE_PLUGIN_DIRS is '${dirs}', expected '${moddir}'"
+  fi
+
+  local base stray=()
+  while IFS= read -r base; do
+    [[ -n "${base}" ]] || continue
+    # shellcheck disable=SC2076  # literal substring match against the joined list
+    [[ " ${PTD_ALL[*]} " == *" ${base} "* ]] && stray+=("${base}")
+  done < <(jq -r '.hooks.PreToolUse[]? | .hooks[]? | .command | tostring | split("/") | last' "${settings}")
+  if (( ${#stray} == 0 )); then
+    _pass "shape: no standalone guard entry remains in PreToolUse"
+  else
+    _fail "shape: standalone guard entries remain in PreToolUse: ${stray[*]} (the old block)"
+  fi
+}
+
 function run_pretool_dispatch {
   # claude/ is gitignored and synced out of band: an absent dispatcher is
   # pending sync, not a regression.
@@ -797,4 +882,5 @@ function run_pretool_dispatch {
   fi
 
   _ptd_coverage
+  _ptd_settings_shape
 }
