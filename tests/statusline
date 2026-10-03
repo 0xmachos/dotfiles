@@ -298,8 +298,10 @@ function _sl_countdown_case {
   fi
 }
 
+# shellcheck disable=SC2016  # $now in these filters is a jq variable
 function _sl_countdowns {
-  # 5h at 100%: already out, so only the reset remains; no resets_at → bare %
+  # 5h at 100%: already out, so only the reset remains; once the reset has
+  # passed there is no forecast, so the row is the bare percentage
   _sl_run 140 "$(_sl_json '.rate_limits.five_hour = {used_percentage: 100, resets_at: ($now + 7260)}')"
   _sl_expect_eq "5h 100%: out, resets in" "$(_sl_plain "$(_sl_line 3)")" "5h 100% · out · resets in 2h 1m"
   _sl_run 140 "$(_sl_json '.rate_limits.five_hour = {used_percentage: 100, resets_at: ($now + 0)}')"
