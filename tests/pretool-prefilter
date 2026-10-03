@@ -160,6 +160,9 @@ function _pf_shape {
   _pf_source_has "const PUBLISH = /(^|[\\s'\"(;|&{}\`])(pr([\\s'\"-]|create|edit|comment|review|close|reopen|merge|upload|new|revert|transfer)|api([\\s'\"-]|graphql))/" 'PUBLISH shape matches the mirror'
   _pf_source_has "const TIMEOUT_MS = 60_000" "dispatcher timeout matches the 60 s registration"
   _pf_source_has "const DISPATCHER = '${HOME}/.claude/hooks/pretool-dispatch'" "dispatcher path is absolute (exec form: no ~ expansion)"
+  _pf_source_has "const MARKER_DIR = '${HOME}/Library/Caches/statusline'" "liveness marker dir is the status line's cache dir"
+  # shellcheck disable=SC2016  # literal source text: the template string stays unexpanded
+  _pf_source_has '$.fs.write(`${MARKER_DIR}/guards-${id}`' 'liveness marker is guards-<session id> (statusline-command reads it)'
   if [[ -x "${HOME}/.claude/hooks/pretool-dispatch" ]]; then
     _pass "deployed dispatcher exists and is executable"
   else

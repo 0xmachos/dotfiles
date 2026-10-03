@@ -927,6 +927,47 @@ function _sl_no_modules {
   _sl_usage_reset
 }
 
+# ── guard liveness marker ───────────────────────────────────────────────────
+# The pretool-prefilter mod writes Caches/statusline/guards-<session_id>;
+# a missing marker after the 15 s grace is GUARDS OFF in red on every width.
+function _sl_expect_lacks {
+  local label="$1" haystack="$2" needle="$3"
+  if [[ "${haystack}" != *"${needle}"* ]]; then
+    _pass "${label}"
+  else
+    _fail "${label} — did not want $(printf '%q' "${needle}") in $(printf '%q' "${haystack}")"
+  fi
+}
+
+function _sl_guards {
+  local marker="${_SL_SB}/Library/Caches/statusline/guards-sess-1"
+  local sess='.session_id = "sess-1"'
+  local off="${RED}${BOLD}GUARDS OFF${RESET}"
+  /bin/rm -f "${marker}"
+  _sl_run 140 "$(_sl_json "${sess} | .cost.total_duration_ms = 20000")"
+  _sl_expect_has "guards: no marker after the grace → GUARDS OFF (full)" "$(_sl_line 1)" "${off}"
+  _sl_run 80 "$(_sl_json "${sess} | .cost.total_duration_ms = 20000")"
+  _sl_expect_has "guards: GUARDS OFF (medium)" "$(_sl_line 1)" "${off}"
+  _sl_run 50 "$(_sl_json "${sess} | .cost.total_duration_ms = 20000")"
+  _sl_expect_has "guards: GUARDS OFF (compact)" "$(_sl_line 1)" "${off}"
+  _sl_run 30 "$(_sl_json "${sess} | .cost.total_duration_ms = 20000")"
+  _sl_expect_has "guards: GUARDS OFF (tiny)" "$(_sl_line 1)" "${off}"
+  _sl_run 140 "$(_sl_json "${sess} | .cost.total_duration_ms = 15000")"
+  _sl_expect_has "guards: exactly at the grace → shown" "$(_sl_line 1)" "${off}"
+  _sl_run 140 "$(_sl_json "${sess} | .cost.total_duration_ms = 14999")"
+  _sl_expect_lacks "guards: inside the grace → hidden" "${_SL_OUT}" "GUARDS OFF"
+  _sl_run 140 "$(_sl_json "${sess} | .cost.total_duration_ms = 20000.5")"
+  _sl_expect_has "guards: a fractional duration is truncated, not an error" "$(_sl_line 1)" "${off}"
+  _sl_run 140 "$(_sl_json ".cost.total_duration_ms = 20000")"
+  _sl_expect_lacks "guards: no session id → hidden" "${_SL_OUT}" "GUARDS OFF"
+  printf 'pretool-prefilter\n' > "${marker}"
+  _sl_run 140 "$(_sl_json "${sess} | .cost.total_duration_ms = 20000")"
+  _sl_expect_lacks "guards: marker present → hidden (full)" "${_SL_OUT}" "GUARDS OFF"
+  _sl_run 50 "$(_sl_json "${sess} | .cost.total_duration_ms = 20000")"
+  _sl_expect_lacks "guards: marker present → hidden (compact)" "${_SL_OUT}" "GUARDS OFF"
+  /bin/rm -f "${marker}"
+}
+
 function run_statusline {
   _section "Claude Code status lines"
 
@@ -957,6 +998,7 @@ function run_statusline {
   _sl_economics
   _sl_expired
   _sl_cache_alert
+  _sl_guards
   _sl_subagent
   _sl_spawns
   _sl_no_modules
