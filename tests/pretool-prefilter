@@ -154,7 +154,7 @@ function _pf_shape {
     _pf_source_has "on('tool.call', { tool: '${tool}' }, dispatchAlways).catch(denyOnFailure)" "${tool} always dispatches, with a .catch"
   done
   _pf_source_has "on('tool.call', { tool: 'Bash' }, prefilterBash).catch(denyOnFailure)" "Bash is prefiltered, with a .catch"
-  _pf_source_has "on('session.start', announceLoaded)" "a session.start hook announces the load (status-line proof)"
+  _pf_source_has "on('session.start', announceLoaded)" "a session.start hook announces the load (toast proof)"
   _pf_source_has 'const SYNTAX = /[^\x00-\x7f]/' 'SYNTAX is exactly non-ASCII (the mirror assumes it)'
   _pf_source_has "const DECORATION = /[\\\\'\"\$()\`\\n]/g" 'DECORATION deletes quotes, backslashes, $ ( ) backtick and newline (the mirror assumes it)'
   _pf_source_has "const PUBLISH = /(^|[\\s'\"(;|&{}\`])(pr([\\s'\"-]|create|edit|comment|review|close|reopen|merge|upload|new|revert|transfer)|api([\\s'\"-]|graphql))/" 'PUBLISH shape matches the mirror'
