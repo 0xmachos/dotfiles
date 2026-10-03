@@ -698,8 +698,15 @@ function install_dotfiles {
   _ensure_dir "${HOME}/Library/Developer/Xcode/UserData"
   _symlink "${SCRIPT_DIR}/IDETemplateMacros.plist" "${HOME}/Library/Developer/Xcode/UserData/IDETemplateMacros.plist"
 
-  # Enable pre-commit secret scanning via gitleaks
-  if git -C "${SCRIPT_DIR}" config --local core.hooksPath .githooks; then
+  # Enable pre-commit secret scanning via gitleaks. The value must stay the
+  # RELATIVE .githooks (git resolves it against each worktree's own root).
+  # When it is already in effect, leave the config alone: since 2026-10-03 it
+  # may live in .git/hooks.gitconfig behind include.path, kept out of the
+  # literal .git/config because an agent harness's worktree step rewrites a
+  # relative value found there to an absolute path (tests/linkage guards it).
+  if [[ "$(git -C "${SCRIPT_DIR}" config --get core.hooksPath 2>/dev/null)" == .githooks ]]; then
+    echo "[✅] .githooks already active as core.hooksPath (gitleaks secret scanning)"
+  elif git -C "${SCRIPT_DIR}" config --local core.hooksPath .githooks; then
     echo "[✅] Enabled .githooks/pre-commit (gitleaks secret scanning)"
   else
     echo "[❌] Failed to set core.hooksPath"

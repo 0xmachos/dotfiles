@@ -107,6 +107,30 @@ function _linkage_check_deployed {
   fi
 }
 
+# core.hooksPath must stay the RELATIVE .githooks (git resolves it against each
+# worktree's own root) and resolve to the tracked hook set. An absolute value
+# breaks silently on a repo move, and git runs no hooks and says nothing when
+# the directory is missing. Pure: takes the effective value and the resolved
+# directory, so the failure branches can be driven without a config write.
+function _linkage_hooks_path {
+  local value="$1" dir="$2" hook
+  if [[ "${value}" == /* ]]; then
+    _fail "core.hooksPath is absolute (${value}); keep the relative .githooks (internals/worktrees.md)"
+    return
+  fi
+  if [[ "${value}" != .githooks ]]; then
+    _fail "core.hooksPath is '${value}', not .githooks"
+    return
+  fi
+  for hook in pre-commit commit-msg post-commit pre-push; do
+    if [[ ! -x "${dir}/${hook}" ]]; then
+      _fail "hooks path ${dir} lacks an executable ${hook}"
+      return
+    fi
+  done
+  _pass "core.hooksPath .githooks resolves to ${dir} with all four hooks"
+}
+
 function _linkage_bao_migration {
   (
     local fixture_home replacement legacy
@@ -364,6 +388,16 @@ function run_linkage {
     done <<< "${deployments}"
   else
     _skip "claude/ absent — ~/.agents/skills manifest check skipped"
+  fi
+
+  # Live hooks path of this clone; a clean clone (CI) has none set: skip.
+  local hooks_value hooks_dir
+  hooks_value="$(git config --get core.hooksPath 2>/dev/null || true)"
+  if [[ -z "${hooks_value}" ]]; then
+    _skip "core.hooksPath unset on this clone — hooks path check skipped"
+  else
+    hooks_dir="$(git rev-parse --git-path hooks)"
+    _linkage_hooks_path "${hooks_value}" "${hooks_dir}"
   fi
 
   if (( fail_count == before_fails )); then
