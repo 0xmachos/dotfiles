@@ -229,7 +229,17 @@ setopt HIST_IGNORE_SPACE
 
 ### Change into Initial Directory ###
 
-if [[ -d "${INITIAL_DIR}" ]]; then
+# In a herdr pane, new_cwd = "follow" starts the shell in the source pane's
+# directory. Keep that for a new tab or split; a new space (its only pane)
+# still starts in INITIAL_DIR.
+_initial_dir_cd=1
+if [[ -n "${HERDR_ENV:-}" && -n "${HERDR_WORKSPACE_ID:-}" ]]; then
+  _herdr_ws="$("${HERDR_BIN_PATH:-herdr}" workspace get "${HERDR_WORKSPACE_ID}" 2>/dev/null)" || _herdr_ws=''
+  [[ "${_herdr_ws}" == *'"pane_count":1,'* ]] || _initial_dir_cd=0
+  unset _herdr_ws
+fi
+if [[ -d "${INITIAL_DIR}" && ${_initial_dir_cd} -eq 1 ]]; then
   # shellcheck disable=SC2164
   cd "${INITIAL_DIR}"
 fi
+unset _initial_dir_cd
