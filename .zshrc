@@ -234,7 +234,8 @@ setopt HIST_IGNORE_SPACE
 # still starts in INITIAL_DIR.
 _initial_dir_cd=1
 if [[ -n "${HERDR_ENV:-}" && -n "${HERDR_WORKSPACE_ID:-}" ]]; then
-  _herdr_ws="$("${HERDR_BIN_PATH:-herdr}" workspace get "${HERDR_WORKSPACE_ID}" 2>/dev/null)" || _herdr_ws=''
+  # alarm caps the call at 1 s so a hung herdr server cannot stall the shell.
+  _herdr_ws="$(/usr/bin/perl -e 'alarm 1; exec @ARGV' "${HERDR_BIN_PATH:-herdr}" workspace get "${HERDR_WORKSPACE_ID}" 2>/dev/null)" || _herdr_ws=''
   [[ "${_herdr_ws}" == *'"pane_count":1,'* ]] || _initial_dir_cd=0
   unset _herdr_ws
 fi
