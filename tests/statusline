@@ -694,9 +694,9 @@ function _sl_cache_alert {
   local log="${_SL_SB}/osascript.log" i marker
   marker="${_SL_SB}/Library/Caches/statusline/cache-alert-s1-$(( _SL_NOW + 240 ))"
 
-  _sl_run 140 "$(_sl_alert_payload '"s1"' true 240 60000)"
+  _sl_run 140 "$(_sl_alert_payload '"s1"' true 240 160000)"
   if [[ -d "${marker}" ]]; then
-    _pass "cache_alert claims its marker (4m left, 60K tokens)"
+    _pass "cache_alert claims its marker (4m left, 160K tokens)"
   else
     _fail "cache_alert marker ${marker} not created"
   fi
@@ -706,20 +706,20 @@ function _sl_cache_alert {
     sleep 0.1
   done
   _sl_expect_has "cache_alert posts the message" "$(cat "${log}" 2>/dev/null)" \
-    "work · Opus — cache goes cold in 4m (60K tokens to re-cache)"
+    "work · Opus — cache goes cold in 4m (160K tokens to re-cache)"
 
-  _sl_run 140 "$(_sl_alert_payload '"s1"' true 240 60000)"
+  _sl_run 140 "$(_sl_alert_payload '"s1"' true 240 160000)"
   sleep 0.5
   _sl_expect_eq "cache_alert fires once per session+expires_at" \
     "$(/usr/bin/grep -c 'cache goes cold' "${log}" 2>/dev/null)" "1"
 
-  _sl_alert_silent "more than 5 min left" '"s2"' true 301 60000
-  _sl_alert_silent "under 50K re-cache tokens" '"s3"' true 240 49999
-  _sl_alert_silent "cache not warm" '"s4"' false 240 60000
-  _sl_alert_silent "already expired" '"s5"' true 0 60000
-  _sl_alert_silent "no session_id" null true 240 60000
-  _sl_run 140 "$(_sl_alert_payload '"s6"' true 300 50000)"
-  _sl_expect_eq "cache_alert claims at exactly 5 min / 50K" "$(_sl_alert_markers)" "1"
+  _sl_alert_silent "more than 5 min left" '"s2"' true 301 160000
+  _sl_alert_silent "under 150K re-cache tokens" '"s3"' true 240 149999
+  _sl_alert_silent "cache not warm" '"s4"' false 240 160000
+  _sl_alert_silent "already expired" '"s5"' true 0 160000
+  _sl_alert_silent "no session_id" null true 240 160000
+  _sl_run 140 "$(_sl_alert_payload '"s6"' true 300 150000)"
+  _sl_expect_eq "cache_alert claims at exactly 5 min / 150K" "$(_sl_alert_markers)" "1"
 
   # Delivery is backgrounded, so settle first. Expected: the s1 and s6
   # boundary alerts only. Timing can only hide an extra notification (a false
@@ -919,9 +919,9 @@ function _sl_no_modules {
   # Cache alert claims its marker through the fallback mkdir
   /usr/bin/find "${_SL_SB}/Library/Caches/statusline" -maxdepth 1 -name 'cache-alert-*' \
     -exec /bin/rm -rf {} +
-  _sl_run 140 "$(_sl_alert_payload '"nm1"' true 240 60000)" STATUSLINE_NO_MODULES=1
+  _sl_run 140 "$(_sl_alert_payload '"nm1"' true 240 160000)" STATUSLINE_NO_MODULES=1
   _sl_expect_eq "no modules: cache_alert claims its marker" "$(_sl_alert_markers)" "1"
-  _sl_run 140 "$(_sl_alert_payload '"nm1"' true 240 60000)" STATUSLINE_NO_MODULES=1
+  _sl_run 140 "$(_sl_alert_payload '"nm1"' true 240 160000)" STATUSLINE_NO_MODULES=1
   _sl_expect_eq "no modules: the claim is still once only" "$(_sl_alert_markers)" "1"
   printf '1' > "${_SL_SB}/Library/Caches/statusline/usd-gbp"
   _sl_usage_reset
