@@ -14,4 +14,4 @@
 
 set -euo pipefail
 
-exec "$(git rev-parse --show-toplevel)/.config/git/hooks/pre-push" "$@"
+exec "${0:A:h:h}/.config/git/hooks/pre-push" "$@"

@@ -47,7 +47,17 @@ hook_type="${0:t}"
 
 # Re-entry guard, same as the sibling hooks: scoped to hook name AND repo (a
 # repo-A hook committing in repo B must not skip B's scan).
-sentinel="${hook_type}@$(git rev-parse --absolute-git-dir)"
+# One rev-parse answers both questions, one line each: [1] the absolute git
+# dir (sentinel), [2] the common dir (repo-hook chain). A path holding a
+# newline would misalign the lines, so such a repo falls back to one call per
+# answer.
+typeset -a git_dirs
+# shellcheck disable=SC2296  # (@f) line-split flag is zsh syntax --shell=bash cannot parse
+git_dirs=("${(@f)$(git rev-parse --absolute-git-dir --git-common-dir)}")
+if (( ${#git_dirs} != 2 )); then
+  git_dirs=("$(git rev-parse --absolute-git-dir)" "$(git rev-parse --git-common-dir)")
+fi
+sentinel="${hook_type}@${git_dirs[1]}"
 sentinel="${sentinel// /_}"
 case " ${GIT_GLOBAL_HOOKS_SEEN:-} " in
   (*" ${sentinel} "*) exit 0 ;;
@@ -59,7 +69,7 @@ export GIT_GLOBAL_HOOKS_SEEN="${GIT_GLOBAL_HOOKS_SEEN:-} ${sentinel}"
 # Runs BEFORE scanning: a repo hook may rewrite the message, and the final
 # text is what must be scanned. Common git dir for linked worktrees; not
 # --git-path, which resolves core.hooksPath and re-enters this hook.
-repo_hook="$(git rev-parse --git-common-dir)/hooks/${hook_type}"
+repo_hook="${git_dirs[2]}/hooks/${hook_type}"
 if [[ -x "${repo_hook}" && "${repo_hook:A}" != "${0:A}" ]]; then
   "${repo_hook}" "$@" || exit $?
 fi
@@ -67,8 +77,7 @@ fi
 # --- Normalise to what git will store ---------------------------------------
 
 scan_tmp="$(mktemp "${TMPDIR:-/tmp}/pii-msg.XXXXXX")"
-raw_tmp="$(mktemp "${TMPDIR:-/tmp}/pii-msg-raw.XXXXXX")"
-trap '/bin/rm -f "${scan_tmp}" "${raw_tmp}"' EXIT
+trap '/bin/rm -f "${scan_tmp}"' EXIT
 
 cchar="$(git config --get core.commentString 2>/dev/null \
            || git config --get core.commentChar 2>/dev/null \
@@ -76,14 +85,22 @@ cchar="$(git config --get core.commentString 2>/dev/null \
 [[ "${cchar}" == "auto" ]] && cchar='#'
 
 # Scissors truncation by hand: no pipeline; the read loop keeps a final
-# unterminated line via `|| [[ -n ]]`.
+# unterminated line via `|| [[ -n ]]`. The kept lines collect in a variable
+# and reach stripspace by here-string (a file, not a pipe: no SIGPIPE path);
+# the extra trailing newline it adds is trailing blank space, which
+# stripspace removes.
 scissors="${cchar} ------------------------ >8 ------------------------"
+raw=""
 while IFS= read -r line || [[ -n "${line}" ]]; do
   [[ "${line}" == "${scissors}" ]] && break
-  print -r -- "${line}"
-done < "${msgfile}" > "${raw_tmp}"
+  raw+="${line}"$'\n'
+done < "${msgfile}"
 
-git stripspace --strip-comments < "${raw_tmp}" > "${scan_tmp}"
+# zsh writes a here-string to a file under TMPPREFIX (default /tmp/zsh):
+# keep the raw message beside scan_tmp instead.
+# shellcheck disable=SC2034  # read by zsh itself, not by this script
+TMPPREFIX="${TMPDIR:-/tmp}/zsh"
+git stripspace --strip-comments <<< "${raw}" > "${scan_tmp}"
 
 # --- Layers 2+3: shared PII scanner -----------------------------------------
 
@@ -115,8 +132,8 @@ if [[ "${visibility}" != private ]]; then
   n="$(wc -w <<< "${body}")"
   n="${n// /}"
   (( n > max_words )) && policy_hits+=("body is ${n} words (limit ${max_words})")
-  git_dir="$(git rev-parse --git-dir 2>/dev/null || true)"
   if (( ${#policy_hits} )); then
+    git_dir="$(git rev-parse --git-dir 2>/dev/null || true)"
     echo "[❌] commit-msg: this repository is ${visibility}; the message breaks the public-repo policy:" >&2
     typeset h
     for h in "${policy_hits[@]}"; do echo "       ${h}" >&2; done

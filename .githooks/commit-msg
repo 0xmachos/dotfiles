@@ -6,4 +6,4 @@
 
 set -euo pipefail
 
-"$(git rev-parse --show-toplevel)/.config/git/hooks/commit-msg" "$@"
+"${0:A:h:h}/.config/git/hooks/commit-msg" "$@"

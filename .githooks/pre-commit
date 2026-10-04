@@ -35,4 +35,4 @@ fi
 # global hook. This repo's core.hooksPath shadows it, so run it by
 # repo-relative path (fresh clone, no configuration). LAST, so content this
 # hook auto-stages is scanned too.
-"$(git rev-parse --show-toplevel)/.config/git/hooks/pre-commit"
+"${0:A:h:h}/.config/git/hooks/pre-commit"

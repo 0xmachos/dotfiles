@@ -117,6 +117,225 @@ function _pii_msg_run_notty {
         "$@" "${hook}" "${pii_msgfile}" 2>&1)" || hook_rc=$?
 }
 
+function _pii_forward_cases {
+  # hook-forward bookkeeping: one `git rev-parse` answers both the sentinel
+  # (absolute git dir) and the repo-hook path (common dir). Pins: the
+  # re-entry sentinel (scoped to hook name AND repo, spaces folded to `_`),
+  # the common dir from a linked worktree, a repo path holding a newline
+  # (the two answers fall back to separate calls), and git's own failure
+  # status outside a repository.
+  local fwd="$1" work repo gd marker rc
+  work="$(mktemp -d "${TMPDIR:-/tmp}/pii-fwd-cases.XXXXXX")"
+  repo="${work}/repo"
+  git init -q "${repo}"
+  marker="${repo}/fwd-marker"
+  printf '#!/bin/zsh\ntouch fwd-marker\nexit 3\n' > "${repo}/.git/hooks/commit-msg"
+  chmod 755 "${repo}/.git/hooks/commit-msg"
+  gd="$(git -C "${repo}" rev-parse --absolute-git-dir)"
+
+  rc=0
+  (cd "${repo}" && env GIT_GLOBAL_HOOKS_SEEN="commit-msg@${gd}" "${fwd}/commit-msg" >/dev/null 2>&1) || rc=$?
+  if (( rc == 0 )) && [[ ! -e "${marker}" ]]; then
+    _pass "hook-forward: a sentinel for this hook and repo exits 0 without running the repo hook"
+  else
+    _fail "hook-forward: seen sentinel — rc=${rc} marker=$([[ -e ${marker} ]] && echo yes || echo no)"
+  fi
+  /bin/rm -f "${marker}"
+
+  rc=0
+  (cd "${repo}" && env GIT_GLOBAL_HOOKS_SEEN="commit-msg@/elsewhere/.git pre-push@${gd}" "${fwd}/commit-msg" >/dev/null 2>&1) || rc=$?
+  if (( rc == 3 )) && [[ -e "${marker}" ]]; then
+    _pass "hook-forward: a sentinel for another repo or another hook does not skip this one"
+  else
+    _fail "hook-forward: foreign sentinel — rc=${rc} marker=$([[ -e ${marker} ]] && echo yes || echo no)"
+  fi
+  /bin/rm -f "${marker}"
+
+  # Linked worktree: the hook lives in the COMMON dir.
+  local wt="${work}/wt-fwd"
+  git -C "${repo}" worktree add -q "${wt}" -b fwd-wt 2>/dev/null
+  rc=0
+  (cd "${wt}" && "${fwd}/commit-msg" >/dev/null 2>&1) || rc=$?
+  if (( rc == 3 )) && [[ -e "${wt}/fwd-marker" ]]; then
+    _pass "hook-forward: a linked worktree reaches the common-dir hook"
+  else
+    _fail "hook-forward: worktree — rc=${rc} marker=$([[ -e ${wt}/fwd-marker ]] && echo yes || echo no)"
+  fi
+  # ...and its sentinel is the worktree's own git dir, not the main one.
+  gd="$(git -C "${wt}" rev-parse --absolute-git-dir)"
+  /bin/rm -f "${wt}/fwd-marker"
+  rc=0
+  (cd "${wt}" && env GIT_GLOBAL_HOOKS_SEEN="commit-msg@${gd}" "${fwd}/commit-msg" >/dev/null 2>&1) || rc=$?
+  if (( rc == 0 )) && [[ ! -e "${wt}/fwd-marker" ]]; then
+    _pass "hook-forward: the worktree's sentinel skips the worktree"
+  else
+    _fail "hook-forward: worktree sentinel — rc=${rc}"
+  fi
+
+  # The real commit-msg gate chains to the same common-dir hook from a linked
+  # worktree; the chained hook's status (3) aborts before any scan.
+  local cmsg="${work}/msgfile"
+  print 'clean subject' > "${cmsg}"
+  rc=0
+  (cd "${wt}" && "${SCRIPT_DIR}/.config/git/hooks/commit-msg" "${cmsg}" >/dev/null 2>&1) || rc=$?
+  if (( rc == 3 )) && [[ -e "${wt}/fwd-marker" ]]; then
+    _pass "commit-msg: a linked worktree reaches the common-dir repo hook"
+  else
+    _fail "commit-msg: worktree chain — rc=${rc} marker=$([[ -e ${wt}/fwd-marker ]] && echo yes || echo no)"
+  fi
+
+  # Spaces in the git dir fold to `_` in the sentinel.
+  local sp="${work}/with space"
+  git init -q "${sp}"
+  printf '#!/bin/zsh\ntouch fwd-marker\nexit 3\n' > "${sp}/.git/hooks/commit-msg"
+  chmod 755 "${sp}/.git/hooks/commit-msg"
+  gd="$(git -C "${sp}" rev-parse --absolute-git-dir)"
+  rc=0
+  (cd "${sp}" && env GIT_GLOBAL_HOOKS_SEEN="commit-msg@${gd// /_}" "${fwd}/commit-msg" >/dev/null 2>&1) || rc=$?
+  if (( rc == 0 )) && [[ ! -e "${sp}/fwd-marker" ]]; then
+    _pass "hook-forward: a git dir with a space matches its underscore-folded sentinel"
+  else
+    _fail "hook-forward: spaced path sentinel — rc=${rc}"
+  fi
+  rc=0
+  (cd "${sp}" && "${fwd}/commit-msg" >/dev/null 2>&1) || rc=$?
+  if (( rc == 3 )) && [[ -e "${sp}/fwd-marker" ]]; then
+    _pass "hook-forward: a repo path with a space runs the repo hook"
+  else
+    _fail "hook-forward: spaced path — rc=${rc}"
+  fi
+
+  # A newline in the path misaligns the one-call answer: separate calls.
+  local nl="${work}/new"$'\n'"line"
+  git init -q "${nl}"
+  printf '#!/bin/zsh\ntouch fwd-marker\nexit 3\n' > "${nl}/.git/hooks/commit-msg"
+  chmod 755 "${nl}/.git/hooks/commit-msg"
+  rc=0
+  (cd "${nl}" && "${fwd}/commit-msg" >/dev/null 2>&1) || rc=$?
+  if (( rc == 3 )) && [[ -e "${nl}/fwd-marker" ]]; then
+    _pass "hook-forward: a repo path with a newline still runs the repo hook"
+  else
+    _fail "hook-forward: newline path — rc=${rc}"
+  fi
+
+  # Outside a repository git's own status (128) propagates; nothing runs.
+  local nogit="${work}/nogit"
+  mkdir -p "${nogit}"
+  rc=0
+  (cd "${nogit}" && env GIT_CEILING_DIRECTORIES="${nogit:h}" "${fwd}/commit-msg" >/dev/null 2>&1) || rc=$?
+  if (( rc == 128 )); then
+    _pass "hook-forward: outside a repository exits with git's status"
+  else
+    _fail "hook-forward: outside a repository — expected 128, got ${rc}"
+  fi
+  /bin/rm -rf "${work}"
+}
+
+function _pii_scan_sentinel_cases {
+  # The re-entry sentinel in the real scanners: a sentinel for this hook and
+  # repo exits 0 BEFORE scanning (pre-commit, commit-msg); one for another
+  # repo or hook does not.
+  local gd
+  gd="$(git -C "${pii_sandbox}" rev-parse --absolute-git-dir)"
+  _pii_reset   # drops the linked worktree an earlier case left inside the sandbox
+  echo "zorblefrobnicate" > "${pii_sandbox}/notes.md"
+  _pii_hook_run GIT_GLOBAL_HOOKS_SEEN="pre-commit@${gd}"
+  _pii_expect_pass "pre-commit: a sentinel for this repo exits 0 before scanning"
+  _pii_hook_run GIT_GLOBAL_HOOKS_SEEN="pre-commit@/elsewhere/.git commit-msg@${gd}"
+  _pii_expect_block "pre-commit: a sentinel for another repo or hook does not skip the scan" "PII pattern"
+  _pii_reset
+
+  printf 'deployed to zorblefrobnicate\n' > "${pii_msgfile}"
+  _pii_msg_run "${SCRIPT_DIR}/.config/git/hooks/commit-msg" GIT_GLOBAL_HOOKS_SEEN="commit-msg@${gd}"
+  _pii_expect_pass "commit-msg: a sentinel for this repo exits 0 before scanning"
+  _pii_msg_run "${SCRIPT_DIR}/.config/git/hooks/commit-msg" GIT_GLOBAL_HOOKS_SEEN="pre-commit@${gd}"
+  _pii_expect_block "commit-msg: a sentinel for another hook does not skip the scan" "PII pattern"
+
+  # Message normalisation without a scratch copy of the raw text: an
+  # unterminated last line is still scanned, an empty file passes, and the
+  # scissors cut keeps what precedes it.
+  printf 'subject\n\nbody then zorblefrobnicate' > "${pii_msgfile}"
+  _pii_msg_run "${SCRIPT_DIR}/.config/git/hooks/commit-msg"
+  _pii_expect_block "commit-msg: a final line with no newline is scanned" "PII pattern"
+  : > "${pii_msgfile}"
+  _pii_msg_run "${SCRIPT_DIR}/.config/git/hooks/commit-msg"
+  _pii_expect_pass "commit-msg: an empty message file passes"
+  printf 'zorblefrobnicate subject\n# ------------------------ >8 ------------------------\nrest' > "${pii_msgfile}"
+  _pii_msg_run "${SCRIPT_DIR}/.config/git/hooks/commit-msg"
+  _pii_expect_block "commit-msg: text before the scissors line is scanned" "PII pattern"
+  printf 'clean\n\n\n\nstill clean   \n\n\n' > "${pii_msgfile}"
+  _pii_msg_run "${SCRIPT_DIR}/.config/git/hooks/commit-msg"
+  _pii_expect_pass "commit-msg: blank-line runs and trailing blanks pass"
+}
+
+function _pii_stub_chain_cases {
+  # The .githooks stubs find the repo root from their own path, not from git,
+  # and hand arguments, stdin and exit status to the global hook there. The
+  # fixture global hooks print the root they sit under, their argv and stdin.
+  local root="$1" kind wt out want rc
+  local -a stubs=(commit-msg pre-commit pre-push)
+  mkdir -p "${root}/.githooks" "${root}/.config/git/hooks" "${root}/lib" "${root}/sub/dir"
+  for kind in "${stubs[@]}"; do
+    cp "${SCRIPT_DIR}/.githooks/${kind}" "${root}/.githooks/${kind}"
+    # SC2016: single quotes deliberate; expands when the fixture runs.
+    # shellcheck disable=SC2016
+    printf '#!/bin/zsh\nprint -r -- "root=${0:A:h:h:h:h} args=$* stdin=$(cat)"\nexit 5\n' \
+      > "${root}/.config/git/hooks/${kind}"
+    chmod 755 "${root}/.githooks/${kind}" "${root}/.config/git/hooks/${kind}"
+  done
+  cp "${SCRIPT_DIR}/.githooks/post-commit" "${root}/.githooks/post-commit"
+  chmod 755 "${root}/.githooks/post-commit"
+  # SC2016: single quotes deliberate; written verbatim into the fixture.
+  # shellcheck disable=SC2016
+  printf '_generate_zsh_sidebar_syntax() { print -r -- "root=$1" > "$2"; }\n' > "${root}/lib/zsh-sidebar"
+  : > "${root}/sub/dir/.keep"
+  git -C "${root}" add -A
+  git -C "${root}" -c core.hooksPath=/dev/null -c commit.gpgsign=false \
+    -c user.name=t -c user.email=t@example.invalid commit -q -m fixtures
+  wt="${root:h}/wt-stubs"
+  git -C "${root}" worktree add -q "${wt}" -b stub-wt 2>/dev/null
+
+  local where
+  for where in "${root}" "${wt}"; do
+    for kind in commit-msg pre-commit pre-push; do
+      # The pre-commit stub passes no arguments (git gives pre-commit none).
+      want="root=${where:A} args=one two stdin=quad line"
+      [[ "${kind}" == pre-commit ]] && want="root=${where:A} args= stdin=quad line"
+      rc=0
+      # Absolute stub path from a subdirectory, as a hook run from a deep cwd.
+      out="$(cd "${where}/sub/dir" && print 'quad line' | "${where}/.githooks/${kind}" one two 2>&1)" || rc=$?
+      if (( rc == 5 )) && [[ "${out}" == "${want}" ]]; then
+        _pass ".githooks/${kind} chains to its own tree's global hook ($([[ ${where} == "${root}" ]] && echo main || echo worktree), from a subdirectory)"
+      else
+        _fail ".githooks/${kind} chain — rc=${rc} out='${out}' want='${want}'"
+      fi
+      rc=0
+      # Relative stub path from the root, as git runs core.hooksPath=.githooks.
+      out="$(cd "${where}" && print 'quad line' | ./.githooks/${kind} one two 2>&1)" || rc=$?
+      if (( rc == 5 )) && [[ "${out}" == "${want}" ]]; then
+        _pass ".githooks/${kind} chains from a relative invocation too"
+      else
+        _fail ".githooks/${kind} relative chain — rc=${rc} out='${out}' want='${want}'"
+      fi
+    done
+  done
+
+  # post-commit: repo_dir comes from the stub's own path.
+  local home="${root:h}/home" f
+  mkdir -p "${home}/Library/Application Support/Sublime Text/Packages/User"
+  f="${home}/Library/Application Support/Sublime Text/Packages/User/Zsh (Dotfiles).sublime-syntax"
+  for where in "${root}" "${wt}"; do
+    /bin/rm -f "${f}"
+    rc=0
+    (cd "${where}/sub/dir" && env HOME="${home}" "${where}/.githooks/post-commit" >/dev/null 2>&1) || rc=$?
+    if (( rc == 0 )) && [[ "$(<"${f}")" == "root=${where:A}" ]]; then
+      _pass ".githooks/post-commit regenerates from its own tree ($([[ ${where} == "${root}" ]] && echo main || echo worktree))"
+    else
+      _fail ".githooks/post-commit — rc=${rc} wrote '$(<"${f}" 2>/dev/null)' want 'root=${where:A}'"
+    fi
+  done
+}
+
 function run_pii_hook {
   _section "Global PII Hook"
 
@@ -527,6 +746,15 @@ function run_pii_hook {
     _fail "--no-verify bypasses commit-msg — unexpectedly blocked"
   fi
 
-  /bin/rm -rf "${pii_sandbox}" "${fwd_dir}"
+  # --- bookkeeping pins: sentinel, common dir, stub path maths ---
+
+  _pii_forward_cases "${fwd_dir}"
+  _pii_scan_sentinel_cases
+  local stub_root
+  stub_root="$(mktemp -d "${TMPDIR:-/tmp}/pii-stubs.XXXXXX")/repo"
+  git init -q "${stub_root}"
+  _pii_stub_chain_cases "${stub_root}"
+
+  /bin/rm -rf "${pii_sandbox}" "${fwd_dir}" "${stub_root:h}"
   /bin/rm -f "${pii_seam_patterns}" "${pii_msgfile}"
 }

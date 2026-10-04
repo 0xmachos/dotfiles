@@ -54,7 +54,17 @@ IFS=$'\n\t'
 # CHAINING ONLY, never the scan (2026-08-08): an `exit 0` here let a repo hook
 # that pushed the same repo publish unsigned commits unexamined. The scan is
 # read-only and runs no hooks, so repeating it cannot recurse.
-sentinel="pre-push@$(git rev-parse --absolute-git-dir)"
+# One rev-parse answers both questions, one line each: [1] the absolute git
+# dir (sentinel), [2] the common dir (repo-hook chain). A path holding a
+# newline would misalign the lines, so such a repo falls back to one call per
+# answer.
+typeset -a git_dirs
+# shellcheck disable=SC2296  # (@f) line-split flag is zsh syntax --shell=bash cannot parse
+git_dirs=("${(@f)$(git rev-parse --absolute-git-dir --git-common-dir)}")
+if (( ${#git_dirs} != 2 )); then
+  git_dirs=("$(git rev-parse --absolute-git-dir)" "$(git rev-parse --git-common-dir)")
+fi
+sentinel="pre-push@${git_dirs[1]}"
 sentinel="${sentinel// /_}"
 typeset -i reentered=0
 case " ${GIT_GLOBAL_HOOKS_SEEN:-} " in
@@ -66,7 +76,7 @@ UPDATES="$(cat)"
 
 # --- Layer 0: chain to the repo's own default-location hook -----------------
 
-repo_hook="$(git rev-parse --git-common-dir)/hooks/pre-push"
+repo_hook="${git_dirs[2]}/hooks/pre-push"
 if (( ! reentered )) && [[ -x "${repo_hook}" && "${repo_hook:A}" != "${0:A}" ]]; then
   # Here-string, never a pipeline: under `pipefail` a chained hook that exits
   # without draining a large ref stream SIGPIPEs the producer, the pipeline

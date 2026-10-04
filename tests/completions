@@ -106,7 +106,7 @@ function _completions_check_large_commit {
     cd "${fixture}" || exit 1
     git init -q
     git config core.hooksPath /dev/null
-    mkdir -p .completions .config/git/hooks
+    mkdir -p .completions .config/git/hooks .githooks
     cat > bittersweet <<'EOF'
 #!/bin/zsh
 print generated > .completions/_bittersweet
@@ -130,7 +130,11 @@ EOF
     done > index-info
     git update-index --index-info < index-info
     git add bittersweet .completions/_bittersweet
-    /bin/zsh "${SCRIPT_DIR}/.githooks/pre-commit" >/dev/null
+    # The stub finds the global hook from its own path, so it runs from a
+    # copy inside the fixture, as it does in a real checkout.
+    cp "${SCRIPT_DIR}/.githooks/pre-commit" .githooks/pre-commit
+    chmod 755 .githooks/pre-commit
+    /bin/zsh .githooks/pre-commit >/dev/null
     [[ "$(<calls)" == $'generated\ntested\nscanned' ]] || exit 1
     [[ "$(git show :.completions/_bittersweet)" == generated ]] || exit 1
   ); then

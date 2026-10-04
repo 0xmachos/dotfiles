@@ -38,7 +38,17 @@ set -euo pipefail
 # must not skip B's scan. Spaces in the git-dir path fold to `_` so the token
 # stays one word in the space-delimited list (a split token would break the
 # guard and allow a loop; a collision only over-skips).
-sentinel="pre-commit@$(git rev-parse --absolute-git-dir)"
+# One rev-parse answers both questions, one line each: [1] the absolute git
+# dir (sentinel), [2] the common dir (repo-hook chain). A path holding a
+# newline would misalign the lines, so such a repo falls back to one call per
+# answer.
+typeset -a git_dirs
+# shellcheck disable=SC2296  # (@f) line-split flag is zsh syntax --shell=bash cannot parse
+git_dirs=("${(@f)$(git rev-parse --absolute-git-dir --git-common-dir)}")
+if (( ${#git_dirs} != 2 )); then
+  git_dirs=("$(git rev-parse --absolute-git-dir)" "$(git rev-parse --git-common-dir)")
+fi
+sentinel="pre-commit@${git_dirs[1]}"
 sentinel="${sentinel// /_}"
 case " ${GIT_GLOBAL_HOOKS_SEEN:-} " in
   (*" ${sentinel} "*) exit 0 ;;
@@ -51,7 +61,7 @@ export GIT_GLOBAL_HOOKS_SEEN="${GIT_GLOBAL_HOOKS_SEEN:-} ${sentinel}"
 # --git-common-dir: linked worktrees share the main repo's .git/hooks. Not
 # `git rev-parse --git-path hooks`: that resolves core.hooksPath and would
 # re-enter this script forever; the sentinel above is the second guard.
-repo_hook="$(git rev-parse --git-common-dir)/hooks/pre-commit"
+repo_hook="${git_dirs[2]}/hooks/pre-commit"
 if [[ -x "${repo_hook}" && "${repo_hook:A}" != "${0:A}" ]]; then
   # In `cmd || exit $?`, $? on the right of || is cmd's own status.
   "${repo_hook}" || exit $?

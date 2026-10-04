@@ -1113,6 +1113,23 @@ function _git_sign_prepush_cases {
   _gs_quad_expect BLOCKED "a chained hook's non-zero status still propagates" \
     "${replay}" "${stream}"
 
+  # The sentinel names hook AND repo: this repo's skips the chained hook (the
+  # scan still ran above it), another repo's does not.
+  _gs_quad_expect ALLOWED "a sentinel for this repo skips the chained repo hook" \
+    "${replay}" "${stream}" "GIT_GLOBAL_HOOKS_SEEN=pre-push@${replaydir}"
+  _gs_quad_expect BLOCKED "a sentinel for another repo does not skip the chained repo hook" \
+    "${replay}" "${stream}" "GIT_GLOBAL_HOOKS_SEEN=pre-push@/elsewhere/.git"
+
+  # A linked worktree chains to the COMMON dir's repo hook, not to a hooks/
+  # under its own git dir (which does not exist). The hook there still exits 7.
+  local replaywt="${replay:h}/replay-wt"
+  env "${GS_ENV[@]}" git -C "${replay}" worktree add -q "${replaywt}" -b replay-wt 2>/dev/null
+  _gs_quad_expect BLOCKED "a linked worktree reaches the common-dir repo hook (non-zero status propagates)" \
+    "${replaywt}" "${stream}"
+  printf '#!/bin/zsh\nexit 0\n' > "${replaydir}/hooks/pre-push"
+  _gs_quad_expect ALLOWED "a linked worktree whose common-dir repo hook exits 0 is allowed" \
+    "${replaywt}" "${stream}"
+
   # --- The declared global hooksPath must actually resolve ----------------
   # A core.hooksPath pointing at a missing directory disables EVERY hook (the
   # signature gate and the PII/gitleaks scanner) and git says nothing: the

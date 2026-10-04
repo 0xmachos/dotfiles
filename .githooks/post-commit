@@ -14,7 +14,7 @@ for candidate in "Sublime Text 3" "Sublime Text"; do
 done
 [[ -z "${live_st_dir}" ]] && exit 0
 
-repo_dir="$(git rev-parse --show-toplevel)"
+repo_dir="${0:A:h:h}"
 output="${live_st_dir}/Packages/User/Zsh (Dotfiles).sublime-syntax"
 # shellcheck source=lib/zsh-sidebar disable=SC1091
 source "${repo_dir}/lib/zsh-sidebar"
