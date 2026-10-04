@@ -856,6 +856,142 @@ PLIST
     _fail "unparseable payload did not fail open cleanly (out=${LH_LAST_STDOUT} rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR})"
   fi
 
+  # Stdin shapes the in-shell read must treat as `$(cat)` did.
+  _lh_exec ''
+  if [[ -z "${LH_LAST_STDOUT}" && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
+    _pass "fail-open, exit 0, empty stderr: empty stdin"
+  else
+    _fail "empty stdin did not fail open cleanly (out=${LH_LAST_STDOUT} rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR})"
+  fi
+  _lh_exec $'\n\n'
+  if [[ -z "${LH_LAST_STDOUT}" && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
+    _pass "fail-open, exit 0, empty stderr: stdin of newlines only"
+  else
+    _fail "newline-only stdin did not fail open cleanly (out=${LH_LAST_STDOUT} rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR})"
+  fi
+
+  # Raw stdin built with printf %b: a NUL byte must not cut the payload, and a
+  # JSON \u0000 escape in file_path must not shift or truncate it.
+  printf '{"a": 1,}\n' > "${LH_NOREPO}/nul.json"
+  local lh_raw lh_want lh_got
+  # shellcheck disable=SC2034  # read by the zsh (l) expansion below
+  local lh_empty=''
+  # shellcheck disable=SC2296  # zsh (l) pads the empty parameter to 200000 bytes
+  lh_pad="${(l:200000::x:)lh_empty}"
+  local lh_label lh_fmt lh_payloadf lh_out lh_err lh_rc
+  local -a lh_raw_cases=(
+    "CONTEXT|{\"pad\":\"${lh_pad}\",\"tool_input\":{\"file_path\":\"${LH_NOREPO}/nul.json\"}}|200 KB payload (several sysread chunks), file_path after the padding"
+    "FAIL-OPEN|{\"pad\":\"${lh_pad}\",\"tool_input\":{\"file_path\":\"${LH_NOREPO}/nul.json\"}}\0|200 KB payload then a raw NUL byte"
+    "FAIL-OPEN|{\"tool_input\":{\"file_path\":\"${LH_NOREPO}/nul.json\"}}\0|raw NUL byte after a valid payload"
+    "FAIL-OPEN|{\"tool_input\":{\"file_path\":\"${LH_NOREPO}/nul.json\"}}\0garbage|raw NUL byte then garbage"
+    "FAIL-OPEN|\0|raw NUL byte alone"
+    "CONTEXT|{\"tool_input\":{\"file_path\":\"${LH_NOREPO}/nul.json\\\\n\"}}|trailing newline in file_path is trimmed"
+    "FAIL-OPEN|{\"tool_input\":{\"file_path\":\"${LH_NOREPO}/nul.json\\\\u0000junk\"}}|JSON NUL escape in file_path"
+    "FAIL-OPEN|{\"tool_input\":{\"file_path\":\"${LH_NOREPO}/nul.json\"}}{\"tool_input\":{\"file_path\":\"${LH_NOREPO}/nul.json\"}}|two JSON values on stdin"
+  )
+  for lh_raw in "${lh_raw_cases[@]}"; do
+    lh_want="${lh_raw%%|*}"
+    lh_raw="${lh_raw#*|}"
+    lh_label="${lh_raw##*|}" lh_fmt="${lh_raw%|*}"
+    lh_payloadf="$(/usr/bin/mktemp "${TMPDIR:-/tmp}/lint-hook-test.XXXXXX")"
+    printf '%b' "${lh_fmt}" > "${lh_payloadf}"
+    lh_out="$(env LINT_HOOK_LOG= /bin/zsh "${SCRIPT_DIR}/claude/hooks/lint-hook" < "${lh_payloadf}" 2>"${lh_payloadf}.err")"; lh_rc=$?
+    lh_err="$(< "${lh_payloadf}.err")"
+    /bin/rm -f "${lh_payloadf}" "${lh_payloadf}.err"
+    if [[ "${lh_want}" == FAIL-OPEN ]]; then
+      lh_got="$(_lint_hook_verdict "${lh_out}")"
+      [[ "${lh_got}" == PASS ]] || lh_got=BAD
+    else
+      lh_got="$(_lint_hook_verdict "${lh_out}")"
+    fi
+    if [[ ( "${lh_want}" == FAIL-OPEN && "${lh_got}" == PASS || "${lh_want}" == CONTEXT && "${lh_got}" == CONTEXT ) && "${lh_rc}" == 0 && -z "${lh_err}" ]]; then
+      _pass "${lh_want}, exit 0, empty stderr: ${lh_label}"
+    else
+      _fail "${lh_label} — expected ${lh_want}, got verdict=${lh_got} rc=${lh_rc} stderr=${lh_err}"
+    fi
+  done
+
+  # The .github/workflows convention scan is a zsh glob loop standing in for
+  # `grep -rilq shellcheck`: case-insensitive, dotfiles and nested directories
+  # included, symlinks and unreadable files not matched. A stub linter makes the
+  # opt-in visible without shellcheck installed.
+  local lh_wfstub="${lh_priv}/wfscan-stub" lh_wfrepo lh_wfname
+  printf '#!/bin/sh\necho "x:1:1: note: stub [SC1]"\nexit 1\n' > "${lh_wfstub}"
+  /bin/chmod +x "${lh_wfstub}"
+  for lh_wfname in mixedcase nesteddot symlinkonly nomatch unreadable; do
+    lh_wfrepo="${lh_priv}/wfscan-${lh_wfname}"
+    /bin/mkdir -p "${lh_wfrepo}/.github/workflows/sub"
+    /usr/bin/git -C "${lh_wfrepo}" init -q
+    printf '#!/bin/zsh\necho $x\n' > "${lh_wfrepo}/s"
+  done
+  echo 'runs ShellCheck in CI' > "${lh_priv}/wfscan-mixedcase/.github/workflows/ci.yml"
+  echo 'SHELLCHECK' > "${lh_priv}/wfscan-nesteddot/.github/workflows/sub/.hidden.yml"
+  echo 'shellcheck' > "${lh_priv}/wfscan-symlinkonly/target"
+  /bin/ln -s ../../target "${lh_priv}/wfscan-symlinkonly/.github/workflows/link.yml"
+  echo 'no linter named here' > "${lh_priv}/wfscan-nomatch/.github/workflows/ci.yml"
+  echo 'shellcheck' > "${lh_priv}/wfscan-unreadable/.github/workflows/ci.yml"
+  /bin/chmod 000 "${lh_priv}/wfscan-unreadable/.github/workflows/ci.yml"
+  for lh_wfname in mixedcase nesteddot symlinkonly nomatch unreadable; do
+    _lh_exec "$(jq -n --arg f "${lh_priv}/wfscan-${lh_wfname}/s" '{tool_input:{file_path:$f}}')" LINT_HOOK_SHELLCHECK="${lh_wfstub}"
+    lh_got="$(_lint_hook_verdict "${LH_LAST_STDOUT}")"
+    case "${lh_wfname}" in
+      mixedcase|nesteddot) lh_want=CONTEXT ;;
+      *) lh_want=PASS ;;
+    esac
+    if [[ "${lh_got}" == "${lh_want}" && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
+      _pass "${lh_want}, exit 0, empty stderr: workflow scan (${lh_wfname})"
+    else
+      _fail "workflow scan (${lh_wfname}) — expected ${lh_want}, got ${lh_got} rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR}"
+    fi
+  done
+  /bin/chmod 600 "${lh_priv}/wfscan-unreadable/.github/workflows/ci.yml"
+
+  # A .github/workflows that is itself a symlink to a directory is not
+  # followed (grep -r does not follow a command-line symlink).
+  lh_wfrepo="${lh_priv}/wfscan-symdir"
+  /bin/mkdir -p "${lh_wfrepo}/.github" "${lh_wfrepo}/real"
+  /usr/bin/git -C "${lh_wfrepo}" init -q
+  printf '#!/bin/zsh\necho $x\n' > "${lh_wfrepo}/s"
+  echo 'shellcheck' > "${lh_wfrepo}/real/ci.yml"
+  /bin/ln -s ../real "${lh_wfrepo}/.github/workflows"
+  _lh_exec "$(jq -n --arg f "${lh_wfrepo}/s" '{tool_input:{file_path:$f}}')" LINT_HOOK_SHELLCHECK="${lh_wfstub}"
+  lh_got="$(_lint_hook_verdict "${LH_LAST_STDOUT}")"
+  if [[ "${lh_got}" == PASS && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
+    _pass "PASS, exit 0, empty stderr: workflows directory that is a symlink is not scanned"
+  else
+    _fail "symlinked workflows directory — expected PASS, got ${lh_got} rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR}"
+  fi
+
+  # Linter output is held in memory, not a temp file: trailing blank lines
+  # still count towards the line cap, then are trimmed from the report.
+  local lh_stub="${LH_NOREPO}/stub-linter"
+  cat > "${lh_stub}" <<'LH_STUB'
+#!/bin/sh
+f=""; for a in "$@"; do f=$a; done
+case "$STUB_MODE" in
+  blank_tail) printf '%s:1:1: note: a [SC1]\n\n\n\n'  "$f" ;;
+  capped_blank_tail) i=0; while [ $i -lt 38 ]; do i=$((i+1)); printf '%s:%d:1: note: n [SC1]\n' "$f" $i; done; printf '\n\n\n\n\n' ;;
+esac
+exit 1
+LH_STUB
+  /bin/chmod +x "${lh_stub}"
+  printf '#!/bin/bash\necho $x\n' > "${LH_NOREPO}/stubbed.sh"
+  local lh_ctx
+  _lh_exec "$(jq -n --arg f "${LH_NOREPO}/stubbed.sh" '{tool_input:{file_path:$f}}')" LINT_HOOK_SHELLCHECK="${lh_stub}" STUB_MODE=blank_tail
+  lh_ctx="$(printf '%s' "${LH_LAST_STDOUT}" | jq -r '.hookSpecificOutput.additionalContext')"
+  if [[ "${lh_ctx}" == "shellcheck found issues in ${LH_NOREPO}/stubbed.sh:"$'\n''1:1: note: a [SC1]' && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
+    _pass "linter output with trailing blank lines: the report ends at the last non-blank line"
+  else
+    _fail "trailing blank lines were not trimmed from the report: ${lh_ctx}"
+  fi
+  _lh_exec "$(jq -n --arg f "${LH_NOREPO}/stubbed.sh" '{tool_input:{file_path:$f}}')" LINT_HOOK_SHELLCHECK="${lh_stub}" STUB_MODE=capped_blank_tail
+  lh_ctx="$(printf '%s' "${LH_LAST_STDOUT}" | jq -r '.hookSpecificOutput.additionalContext')"
+  if [[ "${lh_ctx}" == *$'\n\n\n''...3 more' && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
+    _pass "linter output with blank lines past the line cap: blank lines count towards the cap, marker says 3 more"
+  else
+    _fail "blank lines past the line cap were miscounted: ${lh_ctx}"
+  fi
+
   _lh_teardown_repos
   /bin/rm -rf "${lh_priv}"
 }

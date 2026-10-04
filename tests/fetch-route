@@ -78,6 +78,28 @@ function _fr_expect_reason_has {
   fi
 }
 
+function _fr_raw_case {
+  # Raw stdin built by printf %b from $4. $1 label, $2 wanted verdict (PASS or
+  # DENY), $3 a substring wanted in stderr ('' = stderr must be empty). Also
+  # asserts exit status 0 (a nonzero status with empty stdout is a hook error).
+  # One run per case: stdout and exit status come from the same run as stderr.
+  # Stdin is a file, not a pipe: a hook that stops reading early must fail the
+  # case, not hang the writer.
+  local label="$1" want="$2" errsub="$3" fmt="$4" out err rc got errf inf
+  errf="$(/usr/bin/mktemp "${TMPDIR:-/tmp}/fetch-route-test.XXXXXX")"
+  inf="$(/usr/bin/mktemp "${TMPDIR:-/tmp}/fetch-route-test.XXXXXX")"
+  printf '%b' "${fmt}" > "${inf}"
+  out="$(/bin/zsh "${SCRIPT_DIR}/claude/hooks/fetch-route-hook" < "${inf}" 2>"${errf}")"; rc=$?
+  err="$(< "${errf}")"
+  /bin/rm -f "${errf}" "${inf}"
+  got="$(_hook_verdict "${out}")"
+  if [[ "${rc}" -eq 0 && "${got}" == "${want}" && ( ( -z "${errsub}" && -z "${err}" ) || ( -n "${errsub}" && "${err}" == *"${errsub}"* ) ) ]]; then
+    _pass "${want}, status 0, stderr as expected: ${label}"
+  else
+    _fail "${label} — want ${want} with stderr '${errsub}', got verdict=${got} status=${rc} stderr=${err}"
+  fi
+}
+
 function run_fetch_route {
   _section "fetch → gh/oEmbed routing hook"
 
@@ -392,4 +414,35 @@ function run_fetch_route {
   else
     _fail "fail-open: tool_input with no url/urls — status ${fo_rc}, stdout: ${fo_out}"
   fi
+
+  # --- payload shapes the single-parse path must treat as before -------------
+  # (stdin built with printf %b; \u0000 is a JSON NUL escape, \0 a raw NUL byte)
+
+  local fr_gh='https://github.com/example-org/example-repo/blob/main/a.py'
+  _fr_raw_case 'stdin of newlines only' PASS '' '\n\n'
+  _fr_raw_case 'tool_name null' PASS '' '{"tool_name":null}'
+  _fr_raw_case 'payload is an array' PASS 'could not parse tool_name' '[1]'
+  _fr_raw_case 'tool_name WebSearch with a trailing newline is still a search' DENY '' '{"tool_name":"WebSearch\\n"}'
+  _fr_raw_case 'trailing garbage after a search payload' PASS 'could not parse tool_name' '{"tool_name":"WebSearch"} garbage'
+  _fr_raw_case 'search with a non-object tool_input is still denied' DENY '' '{"tool_name":"WebSearch","tool_input":"x"}'
+  _fr_raw_case 'fetch with a non-object tool_input' PASS 'could not parse tool_input' '{"tool_name":"WebFetch","tool_input":"x"}'
+  _fr_raw_case 'two JSON values on stdin, the second routed' DENY '' '{}{"tool_name":"WebFetch","tool_input":{"url":"'"${fr_gh}"'"}}'
+  _fr_raw_case 'two search values are not one search name' PASS '' '{"tool_name":"WebSearch"}{"tool_name":"WebSearch"}'
+  _fr_raw_case 'URL holding a newline hides a second URL' DENY '' '{"tool_name":"WebFetch","tool_input":{"url":"https://example.com/\\nhttps://github.com/example-org/example-repo"}}'
+  _fr_raw_case 'NUL (JSON escape) in tool_name, routed URL' DENY '' '{"tool_name":"WebFetch\\u0000","tool_input":{"url":"'"${fr_gh}"'"}}'
+  _fr_raw_case 'NUL (JSON escape) in tool_name is not WebSearch' PASS '' '{"tool_name":"WebSearch\\u0000"}'
+  _fr_raw_case 'NUL (JSON escape) in one URL does not hide the routed URL after it' DENY '' '{"tool_name":"WebFetch","tool_input":{"urls":["https://example.com/\\u0000a","'"${fr_gh}"'"]}}'
+  _fr_raw_case 'NUL (JSON escape) in a routed URL' DENY '' '{"tool_name":"WebFetch","tool_input":{"url":"https://github.com/example-org/example-repo\\u0000/x"}}'
+  _fr_raw_case 'raw NUL byte after a search payload' PASS 'could not parse tool_name' '{"tool_name":"WebSearch"}\0'
+  _fr_raw_case 'raw NUL byte then garbage after a search payload' PASS 'could not parse tool_name' '{"tool_name":"WebSearch"}\0garbage'
+  _fr_raw_case 'raw NUL byte alone' PASS 'could not parse tool_name' '\0'
+
+  # Payloads past one sysread chunk (64 KiB): read whole, NULs still kept.
+  # shellcheck disable=SC2034  # read by the zsh (l) expansion below
+  local fr_empty='' fr_pad
+  # shellcheck disable=SC2296  # zsh (l) pads the empty parameter to 200000 bytes
+  fr_pad="${(l:200000::x:)fr_empty}"
+  _fr_raw_case '200 KB payload, routed URL after the padding' DENY '' '{"pad":"'"${fr_pad}"'","tool_name":"WebFetch","tool_input":{"url":"'"${fr_gh}"'"}}'
+  _fr_raw_case '200 KB payload, WebSearch' DENY '' '{"pad":"'"${fr_pad}"'","tool_name":"WebSearch"}'
+  _fr_raw_case '200 KB payload then a raw NUL byte' PASS 'could not parse tool_name' '{"pad":"'"${fr_pad}"'","tool_name":"WebSearch"}\0'
 }
