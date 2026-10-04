@@ -52,7 +52,10 @@ function _pf_needs_dispatch {
   local cmd="$1" lower stripped tok
   # Outside printable ASCII (+ tab, newline, CR): dispatch (lower-casing
   # differs between zsh and JS; controls are rare). Same class as SYNTAX;
-  # a NUL is tested first because zsh's =~ stops at one.
+  # a NUL is tested first because zsh's =~ stops at one. The C locale makes
+  # the class byte-wise: under UTF-8 a lone high byte is a regex error, which
+  # fell through where the mod dispatches.
+  local LC_ALL=C
   [[ "${cmd}" == *$'\0'* ]] && return 0
   [[ "${cmd}" =~ $'[^\t\n\r\x20-\x7e]' ]] && return 0
   # shellcheck disable=SC2296  # zsh (L) lower-cases
@@ -167,7 +170,7 @@ function _pf_shape {
   _pf_source_has 'const SYNTAX = /[^\t\n\r\x20-\x7e]/' 'SYNTAX is exactly non-printable-ASCII (the mirror assumes it)'
   _pf_source_has "const DECORATION = /[\\\\'\"\$()\`\\n]/g" 'DECORATION deletes quotes, backslashes, $ ( ) backtick and newline (the mirror assumes it)'
   _pf_source_has "const PUBLISH = /(^|[\\s'\"(;|&{}\`])(pr([\\s'\"-]|create|edit|comment|review|close|reopen|merge|upload|new|revert|transfer)|api([\\s'\"-]|graphql))/" 'PUBLISH shape matches the mirror'
-  _pf_source_has "const TIMEOUT_MS = 60_000" "dispatcher timeout matches the 60 s registration"
+  _pf_source_has "const TIMEOUT_MS = 60_000" "dispatcher timeout is 60 s"
   _pf_source_has "const DISPATCHER = '${HOME}/.claude/hooks/pretool-dispatch'" "dispatcher path is absolute (exec form: no ~ expansion)"
   _pf_source_has "const MARKER_DIR = '${HOME}/Library/Caches/statusline'" "liveness marker dir is the status line's cache dir"
   # shellcheck disable=SC2016  # literal source text: the template string stays unexpanded
@@ -274,6 +277,21 @@ function _pf_cases {
     _pass "mirror: a NUL byte in the command dispatches"
   else
     _fail "mirror: a NUL byte in the command dispatches"
+  fi
+  # Every other byte outside printable ASCII dispatches, under a UTF-8 caller
+  # locale too (a lone high byte is not valid UTF-8).
+  local b oct ch bad=()
+  for b in {1..255}; do
+    (( b == 9 || b == 10 || b == 13 || (b >= 32 && b <= 126) )) && continue
+    printf -v oct '%o' "${b}"
+    # shellcheck disable=SC2059  # the format is the byte escape on purpose
+    printf -v ch "\\${oct}"
+    LC_ALL=en_US.UTF-8 _pf_needs_dispatch "echo ${ch}x" || bad+=("${b}")
+  done
+  if (( ${#bad} == 0 )); then
+    _pass "mirror: all 157 non-NUL bytes outside printable ASCII dispatch under a UTF-8 locale"
+  else
+    _fail "mirror: bytes that do not dispatch under a UTF-8 locale: ${bad[*]}"
   fi
 }
 

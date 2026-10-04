@@ -33,6 +33,26 @@ function _gp_test_run {
       /bin/zsh "${SCRIPT_DIR}/claude/hooks/gh-publish-hook"
 }
 
+function _gp_test_inject_expect {
+  # $1 = verdict, $2 = Bash command, $3 = zsh function definition run before
+  # the hook is sourced (it shadows a builtin), $4 = label. Fault injection
+  # for reads the suite cannot provoke from a real file.
+  local want="$1" cmd="$2" inject="$3" label="$4" out got
+  out="$(jq -n --arg c "${cmd}" '{tool_name:"Bash", tool_input:{command:$c}}' \
+    | GH_PUBLISH_PATTERNS="${_gp_dir}/patterns" \
+      GH_PUBLISH_SSH_CONFIG="${_gp_dir}/sshcfg" \
+      GH_PUBLISH_NO_GITLEAKS=1 GH_PUBLISH_NO_IDENTITY=1 \
+      GH_PUBLISH_OS="7.7:99Z999z" \
+      GH_CONFIG_DIR="${_gp_dir}/gh" \
+      /bin/zsh -c "${inject}"$'\n''source "$1"' gp-inject "${SCRIPT_DIR}/claude/hooks/gh-publish-hook")"
+  got="$(_hook_verdict "${out}")"
+  if [[ "${got}" == "${want}" ]]; then
+    _pass "${want}: ${label}"
+  else
+    _fail "${label} — expected ${want}, got ${got}"
+  fi
+}
+
 function _gp_test_review {
   # Write a hash-bound review sidecar for body file $1.
   printf 'reviewed-by: test 2026-08-03 sha256:%s\n' \
@@ -270,6 +290,24 @@ function run_gh_publish {
   mkdir -p "${_gp_dir}/dir.md"
   _gp_test_expect DENY "gh pr create -t t --body-file ${_gp_dir}/dir.md" \
     'a directory as the body file denies'
+  # Injected faults: sysread may return short, so the body is read until EOF
+  # (a short first read is not the whole body, and the cap still counts every
+  # byte); a failed read denies; the sidecar hash is of the bytes scanned.
+  # shellcheck disable=SC2016  # literal zsh source for the wrapper shell
+  local gp_short='function sysread { builtin sysread -s 16 "${@:3}"; }'
+  _gp_test_inject_expect PASS "gh pr create -t t --body-file ${_gp_dir}/atcap.md" \
+    "${gp_short}" 'body at the cap read in 16-byte short reads is scanned whole'
+  _gp_test_inject_expect DENY "gh pr create -t t --body-file ${_gp_dir}/overcap.md" \
+    "${gp_short}" 'body over the cap read in 16-byte short reads denies'
+  _gp_test_inject_expect DENY "gh pr create -t t --body-file ${_gp_dir}/atcap.md" \
+    'function sysread { return 2; }' 'a failed body read denies'
+  # shellcheck disable=SC2016  # literal zsh source for the wrapper shell
+  _gp_test_inject_expect DENY "gh pr create -t t --body-file ${_gp_dir}/atcap.md" \
+    'typeset -gi gp_calls=0; function sysread { (( ++gp_calls > 1 )) && return 2; builtin sysread -s 16 "${@:3}"; }' \
+    'a read that fails after a short first read denies'
+  _gp_test_inject_expect DENY "gh pr create -t t --body-file ${_gp_dir}/atcap.md" \
+    'function sysread { builtin sysread "$@"; local r=$?; (( r == 0 )) && gp_chunk+=X; return r; }' \
+    'a sidecar that matches the file but not the bytes read denies'
 
   if [[ -n "${USER:-}" && "${USER}" != *[^[:alnum:]_-]* ]]; then
     printf 'Log at /Users/%s/Library/Logs/x.log\n\n## Environment\n\n- b\n' \
