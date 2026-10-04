@@ -16,6 +16,8 @@
 #     (measured on v2.1.224): drive the two legs independently
 #   * re-sign costs one tap per commit from the deepest unsigned commit to the
 #     tip; a single unsigned tip takes the amend fast path
+#   * the claude/mods/git-sign-post mod that runs the hook in place of the
+#     settings entries: module shape and its own `claude plugin test`
 #   * quoted-string false positives ('git commit -m "about git push"'), wrapper
 #     see-through (sudo/timeout git push), committer-date preservation,
 #     gpgsig-presence (not %G?) detection
@@ -326,11 +328,81 @@ function run_git_sign {
   else
     _git_sign_claude_cases
   fi
+  if [[ ! -f "${SCRIPT_DIR}/claude/mods/git-sign-post/hooks/register.ts" ]]; then
+    _skip "claude/mods/git-sign-post absent — claude/ not yet synced"
+  elif [[ -x "$(command -v jq)" ]]; then
+    _gs_mod_shape
+    _gs_mod_tests
+  fi
 
   _git_sign_resign_cases
   _git_sign_batch_cases
   _git_sign_prepush_cases
   /bin/rm -rf "${_GS_TEMPLATES}"
+}
+
+function _gs_mod_has {
+  # $1 = literal source text, $2 = label.
+  local needle="$1" label="$2"
+  if /usr/bin/grep -qF -- "${needle}" "${SCRIPT_DIR}/claude/mods/git-sign-post/hooks/register.ts"; then
+    _pass "git-sign-post: ${label}"
+  else
+    _fail "git-sign-post register.ts lacks '${needle}': ${label}"
+  fi
+}
+
+function _gs_mod_shape {
+  # The mod (claude/mods/git-sign-post) runs git-sign-hook after a Bash call
+  # whose command holds `git`, in place of the settings entries. Pins what
+  # the suite cannot drive through the engine: the one registration, the
+  # probe matching the script's own first test, the absolute hook path, and
+  # the fail-open shape (no .catch, which could only answer with a deny).
+  _section "git-sign-post mod: module shape"
+  local mod="${SCRIPT_DIR}/claude/mods/git-sign-post"
+  _gs_mod_has "on('tool.call', { tool: 'Bash' }, signPost)" "one Bash registration, wrapping the call"
+  if /usr/bin/grep -qF -- 'signPost).catch' "${mod}/hooks/register.ts"; then
+    _fail "git-sign-post: signPost has a .catch (a deny for a command that already ran)"
+  else
+    _pass "git-sign-post: no .catch on the registration (fail-open)"
+  fi
+  _gs_mod_has "const r = await next(e)" "acts after the command ran"
+  _gs_mod_has "if (!command.includes('git')) return r" "probe is the script's own case-sensitive git substring"
+  _gs_mod_has "if (r?.deny !== undefined) return r" "a denied call runs no check"
+  _gs_mod_has "const HOOK = '${HOME}/.claude/hooks/git-sign-hook'" "hook path is absolute (argv, no ~ expansion)"
+  _gs_mod_has "const TIMEOUT_MS = 60_000" "timeout is the 60 s command-hook default"
+  _gs_mod_has "hook_event_name: failed ? 'PostToolUseFailure' : 'PostToolUse'" "payload names the leg the script branches on"
+  if [[ -r "${mod}/.claude-plugin/plugin.json" ]] \
+     && [[ "$(jq -r '.name' "${mod}/.claude-plugin/plugin.json")" == git-sign-post ]]; then
+    _pass "git-sign-post: plugin.json names the mod"
+  else
+    _fail "git-sign-post: .claude-plugin/plugin.json missing or misnamed"
+  fi
+  if [[ "$(jq -c '.modules' "${mod}/hooks/hooks.json" 2>/dev/null)" == '["./register.ts"]' ]]; then
+    _pass "git-sign-post: hooks.json loads register.ts"
+  else
+    _fail "git-sign-post: hooks/hooks.json does not load ./register.ts"
+  fi
+  if [[ -x "${HOME}/.claude/hooks/git-sign-hook" ]]; then
+    _pass "git-sign-post: deployed git-sign-hook exists and is executable"
+  else
+    _fail "\$HOME/.claude/hooks/git-sign-hook missing or not executable: run ./bittersweet dotfiles"
+  fi
+}
+
+function _gs_mod_tests {
+  _section "git-sign-post mod: the mod's own tests"
+  local out rc=0 summary
+  if ! command -v claude >/dev/null 2>&1; then
+    _skip "claude CLI not on PATH: cannot run claude plugin test"
+    return 0
+  fi
+  out="$(cd "${SCRIPT_DIR}/claude/mods/git-sign-post" && claude plugin test . 2>&1)" || rc=$?
+  summary="$(print -r -- "${out}" | /usr/bin/grep -E '^ *[0-9]+ (pass|fail)$' | tr '\n' ' ')"
+  if (( rc == 0 )) && [[ "${out}" == *" 0 fail"* ]]; then
+    _pass "claude plugin test: ${summary}"
+  else
+    _fail "claude plugin test failed (rc ${rc}): ${summary:-$(print -r -- "${out}" | tail -n 3)}"
+  fi
 }
 
 function _git_sign_claude_cases {

@@ -15,11 +15,11 @@
 #      and the exec count of one pass and one deny run (xtrace, counted in a
 #      sandbox copy whose guard stderr is left on the trace).
 #   3. Coverage invariant: the guards reachable per tool from the settings
-#      file's PreToolUse entries, expanding the dispatcher through
-#      --print-routes. It holds before and after the registration switch.
-#   4. Registration shape: the dispatcher's settings entry is the exec form
-#      (absolute path, `args: []`, 60 s) on the four tools, the prefilter
-#      mod's dir is in env, and no standalone guard entry remains.
+#      file's PreToolUse entries and the prefilter mod in env, expanding the
+#      dispatcher through --print-routes.
+#   4. Registration shape: env loads the prefilter and git-sign-post mods,
+#      and no settings entry registers the dispatcher, a standalone guard or
+#      git-sign-hook.
 # Verdicts go through _hook_verdict (PASS, DENY, INVALID).
 #
 # Run: ./test pretool-dispatch
@@ -187,9 +187,23 @@ function _ptd_count_execs {
 # --- coverage invariant ------------------------------------------------------
 
 function _ptd_reach {
-  # $1 = tool. Prints the guards reachable from the settings file's PreToolUse
-  # entries for that tool, one per line.
+  # $1 = tool. Prints the guards reachable for that tool, one per line: the
+  # settings file's PreToolUse entries, plus the dispatcher's routes when
+  # env.CLAUDE_CODE_PLUGIN_DIRS loads the prefilter mod (which dispatches
+  # every Bash, Write, Edit and NotebookEdit call it does not prefilter).
   local tool="$1" settings="${SCRIPT_DIR}/claude/settings.json" m cmd base route
+  local dir dirs
+  dirs="$(jq -r '.env.CLAUDE_CODE_PLUGIN_DIRS // ""' "${settings}")"
+  # shellcheck disable=SC2066,SC2296  # zsh (@s.:.) splits the path list inside the quotes
+  for dir in "${(@s.:.)dirs}"; do
+    [[ "${dir:t}" == pretool-prefilter ]] || continue
+    while IFS= read -r route; do
+      if [[ "${route%%:*}" == "${tool}" ]]; then
+        # shellcheck disable=SC2086,SC2296  # zsh ${=} splits the route on purpose
+        print -rl -- ${=route#*: }
+      fi
+    done < <("${SCRIPT_DIR}/claude/hooks/pretool-dispatch" --print-routes)
+  done
   while IFS=$'\t' read -r m cmd; do
     [[ -n "${cmd}" ]] || continue
     if [[ -n "${m}" && "${m}" != '*' ]] && ! [[ "${tool}" =~ ^\(${m}\)\$ ]]; then
@@ -779,16 +793,13 @@ function _ptd_coverage {
 
 function _ptd_settings_shape {
   # $1 = settings file (default: the repo copy). Pins the registration shape
-  # the 2026-10-03 switch landed: one exec-form dispatcher entry (absolute
-  # path, `args: []`, 60 s) on the four tools, the mod's plugin dir in env,
-  # and no standalone guard entry left behind. _ptd_coverage cannot tell a
-  # switched file from the old block (both route the same guards), so this
-  # does. When the dispatcher registration is removed in favour of the mod
-  # alone (TODOs.md "Spawn volume", item 2), this function and _ptd_reach
-  # change in the same commit: reach would read no routes from settings.
+  # after the 2026-10-03 switch: the mods carry the guards, so env loads the
+  # prefilter and git-sign-post mods and no settings entry registers the
+  # dispatcher, a standalone guard or git-sign-hook (a leftover entry runs
+  # the same work twice per call). _ptd_coverage cannot tell the shapes
+  # apart (each routes the same guards), so this does.
   local settings="${1:-${SCRIPT_DIR}/claude/settings.json}"
-  local dispatcher="${HOME}/.claude/hooks/pretool-dispatch"
-  local moddir="${HOME}/.claude/mods/pretool-prefilter"
+  local moddirs="${HOME}/.claude/mods/pretool-prefilter:${HOME}/.claude/mods/git-sign-post"
   _section "pretool-dispatch: settings registration shape"
 
   if [[ ! -f "${settings}" ]]; then
@@ -798,52 +809,25 @@ function _ptd_settings_shape {
 
   local n
   n="$(jq -r '[.hooks.PreToolUse[]? | select(any(.hooks[]?; (.command | tostring | endswith("/pretool-dispatch"))))] | length' "${settings}")"
-  if [[ "${n}" == 1 ]]; then
-    _pass "shape: exactly one PreToolUse entry registers the dispatcher"
+  if [[ "${n}" == 0 ]]; then
+    _pass "shape: no PreToolUse entry registers the dispatcher (the prefilter mod runs it)"
   else
-    _fail "shape: ${n} PreToolUse entries register the dispatcher, expected 1"
+    _fail "shape: ${n} PreToolUse entries register the dispatcher, expected 0 (the mod runs it too: every guard twice)"
   fi
 
-  local matcher type cmd args timeout
-  IFS=$'\t' read -r matcher type cmd args timeout < <(jq -r '
-    [ .hooks.PreToolUse[]? | .matcher as $m | .hooks[]?
-      | select(.command | tostring | endswith("/pretool-dispatch"))
-      | [ ($m // ""), (.type // ""), (.command // ""),
-          (if has("args") then (.args | tojson) else "ABSENT" end),
-          (.timeout | tostring) ] ]
-    | first // empty | @tsv' "${settings}")
-  if [[ "${matcher}" == 'Bash|Write|Edit|NotebookEdit' ]]; then
-    _pass "shape: dispatcher matcher is the four dispatched tools"
+  n="$(jq -r '[.hooks[]?[]? | .hooks[]? | select(.command | tostring | endswith("/git-sign-hook"))] | length' "${settings}")"
+  if [[ "${n}" == 0 ]]; then
+    _pass "shape: no settings entry registers git-sign-hook (the git-sign-post mod runs it)"
   else
-    _fail "shape: dispatcher matcher is '${matcher}', expected 'Bash|Write|Edit|NotebookEdit'"
-  fi
-  if [[ "${type}" == command ]]; then
-    _pass "shape: dispatcher hook type is command"
-  else
-    _fail "shape: dispatcher hook type is '${type}', expected command"
-  fi
-  if [[ "${cmd}" == "${dispatcher}" ]]; then
-    _pass "shape: dispatcher command is the absolute deployed path"
-  else
-    _fail "shape: dispatcher command is '${cmd}', expected '${dispatcher}' (exec form: absolute, no ~)"
-  fi
-  if [[ "${args}" == '[]' ]]; then
-    _pass "shape: dispatcher has an empty args array (exec form, no shell)"
-  else
-    _fail "shape: dispatcher args is ${args}, expected [] (shell form costs sh+bash+zsh per call)"
-  fi
-  if [[ "${timeout}" == 60 ]]; then
-    _pass "shape: dispatcher timeout is 60 s"
-  else
-    _fail "shape: dispatcher timeout is '${timeout}', expected 60"
+    _fail "shape: ${n} settings entries register git-sign-hook, expected 0 (the mod runs it too: every nudge twice)"
   fi
 
   local dirs
   dirs="$(jq -r '.env.CLAUDE_CODE_PLUGIN_DIRS // "ABSENT"' "${settings}")"
-  if [[ "${dirs}" == "${moddir}" ]]; then
-    _pass "shape: env.CLAUDE_CODE_PLUGIN_DIRS loads the prefilter mod"
+  if [[ "${dirs}" == "${moddirs}" ]]; then
+    _pass "shape: env.CLAUDE_CODE_PLUGIN_DIRS loads the prefilter and git-sign-post mods"
   else
-    _fail "shape: env.CLAUDE_CODE_PLUGIN_DIRS is '${dirs}', expected '${moddir}'"
+    _fail "shape: env.CLAUDE_CODE_PLUGIN_DIRS is '${dirs}', expected '${moddirs}'"
   fi
 
   local base stray=()
