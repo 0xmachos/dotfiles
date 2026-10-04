@@ -692,7 +692,7 @@ function _sl_alert_silent {
 
 function _sl_cache_alert {
   local log="${_SL_SB}/osascript.log" i marker
-  marker="${_SL_SB}/Library/Caches/statusline/cache-alert-s1-$(( _SL_NOW + 240 ))"
+  marker="${_SL_SB}/Library/Caches/statusline/cache-alert-s1-$(( _SL_NOW + 240 ))-300"
 
   _sl_run 140 "$(_sl_alert_payload '"s1"' true 240 160000)"
   if [[ -d "${marker}" ]]; then
@@ -713,24 +713,34 @@ function _sl_cache_alert {
   _sl_expect_eq "cache_alert fires once per session+expires_at" \
     "$(/usr/bin/grep -c 'cache goes cold' "${log}" 2>/dev/null)" "1"
 
-  _sl_alert_silent "more than 5 min left" '"s2"' true 301 160000
+  _sl_expect_eq "cache_state hands off expiry, tokens and label" \
+    "$(cat "${_SL_SB}/Library/Caches/statusline/cache-state-s1" 2>/dev/null)" \
+    "$(( _SL_NOW + 240 )) 160000 work · Opus"
+
+  _sl_alert_silent "more than 15 min left" '"s2"' true 901 160000
   _sl_alert_silent "under 150K re-cache tokens" '"s3"' true 240 149999
   _sl_alert_silent "cache not warm" '"s4"' false 240 160000
   _sl_alert_silent "already expired" '"s5"' true 0 160000
   _sl_alert_silent "no session_id" null true 240 160000
   _sl_run 140 "$(_sl_alert_payload '"s6"' true 300 150000)"
   _sl_expect_eq "cache_alert claims at exactly 5 min / 150K" "$(_sl_alert_markers)" "1"
+  _sl_run 140 "$(_sl_alert_payload '"s7"' true 900 160000)"
+  _sl_expect_eq "cache_alert claims the 15 min mark at exactly 15 min" \
+    "$(/usr/bin/find "${_SL_SB}/Library/Caches/statusline" -maxdepth 1 -name 'cache-alert-s7-*-900' | wc -l | tr -d ' ')" "1"
+  _sl_run 140 "$(_sl_alert_payload '"s8"' true 301 160000)"
+  _sl_expect_eq "cache_alert at 301 s claims the 15 min mark, not 5" \
+    "$(/usr/bin/find "${_SL_SB}/Library/Caches/statusline" -maxdepth 1 -name 'cache-alert-s8-*' | /usr/bin/sed 's/.*-//')" "900"
 
-  # Delivery is backgrounded, so settle first. Expected: the s1 and s6
-  # boundary alerts only. Timing can only hide an extra notification (a false
-  # pass under load), never invent one.
+  # Delivery is backgrounded, so settle first. Expected: s1, s6, s7 and s8
+  # only. Timing can only hide an extra notification (a false pass under
+  # load), never invent one.
   for (( i = 0; i < 20; i++ )); do
-    [[ -f "${log}" ]] && (( $(/usr/bin/grep -c 'cache goes cold' "${log}") >= 2 )) && break
+    [[ -f "${log}" ]] && (( $(/usr/bin/grep -c 'cache goes cold' "${log}") >= 4 )) && break
     sleep 0.1
   done
   sleep 1
-  _sl_expect_eq "cache_alert delivered exactly twice (s1 once, s6 boundary)" \
-    "$(/usr/bin/grep -c 'cache goes cold' "${log}" 2>/dev/null)" "2"
+  _sl_expect_eq "cache_alert delivered exactly four times (s1 once, s6, s7, s8)" \
+    "$(/usr/bin/grep -c 'cache goes cold' "${log}" 2>/dev/null)" "4"
 }
 
 # ── (10) subagent-statusline ───────────────────────────────────────────────
