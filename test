@@ -21,8 +21,10 @@
 
 set -euo pipefail
 
-# $EPOCHREALTIME is 0 until this module is loaded.
+# $EPOCHREALTIME is 0 until this module is loaded. zselect is the poll-loop
+# sleep, with no process start.
 zmodload zsh/datetime
+zmodload zsh/zselect
 
 # Only with a tty: over non-tty SSH TERM is unset, tput exits 2, and -e would
 # abort before the first suite.
@@ -35,6 +37,11 @@ fi
 if [[ -d /opt/homebrew/bin && ":${PATH}:" != *:/opt/homebrew/bin:* ]]; then
   export PATH="/opt/homebrew/bin:${PATH}"
 fi
+
+# Parallel children run the PATH zsh, resolved after the prepend above (the one
+# `env zsh` would find). /bin/zsh if not found.
+ZSH_BIN="${commands[zsh]:-/bin/zsh}"
+readonly ZSH_BIN
 
 readonly SCRIPT_DIR="${0:A:h}"
 cd "${SCRIPT_DIR}"
@@ -120,8 +127,10 @@ function _run_all_serial {
 # <work>/<suite>.out, exit code to .rc, counters to .counts. An absent extra
 # suite is skipped inline at its position, where the serial run reports it.
 function _run_all_parallel {
-  local jobs="$1" work s rc p f k secs
+  local jobs="$1" work s rc p f k secs out
   local -a runnable=()
+  # mapfile reads a suite's output file below without a process start.
+  zmodload zsh/mapfile
   work="$(mktemp -d "${TMPDIR:-/tmp}/dotfiles-test.XXXXXX")"
   # EXIT covers normal return (a trap set in a function fires when it returns);
   # INT/TERM cover Ctrl-C in the poll loop, else the work dir stays in $TMPDIR.
@@ -135,12 +144,12 @@ function _run_all_parallel {
   done
 
   # -I{} runs one child per line; passing work dir and script path as argv
-  # keeps the child command free of quoting. stderr joins .out too.
-  # shellcheck disable=SC2016  # the child shell expands $1..$3, not this one
+  # keeps the child command free of quoting ($4 = zsh to run the child with). stderr joins .out too.
+  # shellcheck disable=SC2016  # the child shell expands $1..$4, not this one
   printf '%s\n' "${runnable[@]}" \
     | /usr/bin/xargs -P "${jobs}" -I{} /bin/zsh -c \
-        'DOTFILES_TEST_CHILD="$1" "$2" "$3" > "$1/$3.out" 2>&1; echo $? > "$1/$3.rc"' \
-        _ "${work}" "${SCRIPT_DIR}/test" {} &
+        'DOTFILES_TEST_CHILD="$1" "$4" "$2" "$3" > "$1/$3.out" 2>&1; echo $? > "$1/$3.rc"' \
+        _ "${work}" "${SCRIPT_DIR}/test" {} "${ZSH_BIN}" &
   local xargs_pid=$!
 
   for s in "${SUITES[@]}" "${EXTRA_SUITES[@]}"; do
@@ -153,10 +162,16 @@ function _run_all_parallel {
       if ! kill -0 "${xargs_pid}" 2>/dev/null && [[ ! -f "${work}/${s}.rc" ]]; then
         break
       fi
-      sleep 0.1
+      # Builtin 100 ms sleep; it returns 1 on timeout, which -e would abort on.
+      zselect -t 10 || :
     done
-    [[ -f "${work}/${s}.out" ]] && cat "${work}/${s}.out"
-    rc="$(cat "${work}/${s}.rc" 2>/dev/null || echo none)"
+    # print -rn of the mapfile entry is byte-for-byte cat, trailing newlines kept.
+    # The `-` default: an empty .out file leaves the entry unset, which -u would
+    # abort on; the run must go on to the aborted-suite FAIL.
+    out="${work}/${s}.out"
+    # shellcheck disable=SC2154  # mapfile is the zsh/mapfile special parameter
+    [[ -f "${out}" ]] && print -rn -- "${mapfile[${out}]-}"
+    { rc="$(<"${work}/${s}.rc")"; } 2>/dev/null || rc=none
     if [[ -f "${work}/${s}.counts" ]]; then
       read -r p f k secs < "${work}/${s}.counts"
       # `: $(( ))`, not `(( ))`: a zero result would read as failure under -e.
