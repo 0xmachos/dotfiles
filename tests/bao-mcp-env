@@ -54,13 +54,17 @@ function _bme_write_creds {
   /bin/chmod 600 "${BME_CRED_DIR}/role_id" "${BME_CRED_DIR}/secret_id" "${BME_CRED_DIR}/addr"
 }
 
-# Real jq is used (pure filter). Extra env pairs come from BME_EXTRA, cleared
+# Real jq is used (pure filter). The child starts from an empty environment
+# (env -i) plus fixture values, so a case that prints the child's env (the
+# /usr/bin/env child below) can never echo the caller's variables into test
+# output or a CI log. Extra env pairs come from BME_EXTRA, cleared
 # afterwards.
 function _bme_run {
   BME_RC=0
   /bin/rm -rf "${BME_REC}"
   /bin/mkdir -p "${BME_REC}"
-  /usr/bin/env \
+  /usr/bin/env -i \
+    PATH="/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin" TMPDIR="${TMPDIR:-/tmp}" \
     HOME="${BME_HOME}" \
     BAO_MCP_ENV_BAO="${BME_FX}/fake-bao" FAKE_BAO_DIR="${BME_REC}" \
     "${BME_EXTRA[@]}" \
@@ -156,6 +160,66 @@ function _bme_test_missing_addr {
   _bme_run mcp/example-service /usr/bin/env
   _bme_expect_rc 1 "address not https"
   _bme_expect_err 'must hold one https:// URL' "address not https: message"
+
+  # Only the first line counts, with or without a final newline; an empty file
+  # or a blank first line is refused; blanks around the URL are kept verbatim
+  # (a leading one fails the https:// test, as `head -n 1` did).
+  : > "${BME_CRED_DIR}/addr"
+  _bme_run mcp/example-service /usr/bin/env
+  _bme_expect_rc 1 "address file empty"
+  _bme_expect_err 'must hold one https:// URL' "address file empty: message"
+  if [[ "$(_bme_calls)" == 0 ]]; then
+    _pass "address file empty: bao never invoked"
+  else
+    _fail "address file empty: bao was invoked"
+  fi
+
+  printf '\nhttps://fake-bao.invalid:8200\n' > "${BME_CRED_DIR}/addr"
+  _bme_run mcp/example-service /usr/bin/env
+  _bme_expect_rc 1 "address file with a blank first line"
+
+  printf ' https://fake-bao.invalid:8200\n' > "${BME_CRED_DIR}/addr"
+  _bme_run mcp/example-service /usr/bin/env
+  _bme_expect_rc 1 "address with a leading blank"
+
+  printf 'https://fake-bao.invalid:8200' > "${BME_CRED_DIR}/addr"
+  _bme_run mcp/example-service /usr/bin/env
+  _bme_expect_rc 0 "address file with no trailing newline"
+  _bme_expect_out '^BAO_ADDR=https://fake-bao.invalid:8200$' "no trailing newline: address reaches the child whole"
+
+  printf 'https://first.invalid:1\nhttps://second.invalid:2\n' > "${BME_CRED_DIR}/addr"
+  _bme_run mcp/example-service /usr/bin/env
+  _bme_expect_rc 0 "address file with two lines"
+  _bme_expect_out '^BAO_ADDR=https://first.invalid:1$' "two lines: only the first reaches the child"
+  _bme_expect_not_out 'second.invalid' "two lines: the second never reaches the child"
+
+  # The caller's environment never reaches the child (or this test's output).
+  printf 'https://fake-bao.invalid:8200\n' > "${BME_CRED_DIR}/addr"
+  ( export BME_LEAK_CANARY=caller-env-canary; _bme_run mcp/example-service /usr/bin/env )
+  _bme_expect_not_out 'caller-env-canary' "a variable in the caller's environment does not reach the child"
+
+  printf 'http://first.invalid\nhttps://second.invalid\n' > "${BME_CRED_DIR}/addr"
+  _bme_run mcp/example-service /usr/bin/env
+  _bme_expect_rc 1 "non-https first line is not rescued by an https second line"
+
+  # An address that is a directory is refused, bao never invoked.
+  /bin/rm -f "${BME_CRED_DIR}/addr"
+  /bin/mkdir "${BME_CRED_DIR}/addr"
+  _bme_run mcp/example-service /usr/bin/env
+  _bme_expect_rc 1 "address path is a directory"
+  _bme_expect_err 'must hold one https:// URL' "address is a directory: message"
+  if [[ "$(_bme_calls)" == 0 ]]; then
+    _pass "address is a directory: bao never invoked"
+  else
+    _fail "address is a directory: bao was invoked"
+  fi
+  /bin/rmdir "${BME_CRED_DIR}/addr"
+
+  # An inherited BAO_ADDR never stands in for a bad address file.
+  : > "${BME_CRED_DIR}/addr"
+  BME_EXTRA=(BAO_ADDR=https://inherited.invalid)
+  _bme_run mcp/example-service /usr/bin/env
+  _bme_expect_rc 1 "empty address file with an inherited BAO_ADDR"
 }
 
 function _bme_test_login_failure {

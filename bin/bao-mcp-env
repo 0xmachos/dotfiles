@@ -45,7 +45,13 @@ if [ ! -r "$CRED_DIR/addr" ]; then
     echo "bao-mcp-env: server address file missing or unreadable: $CRED_DIR/addr" >&2
     exit 1
 fi
-BAO_ADDR="$(head -n 1 "$CRED_DIR/addr")"
+# First line only: IFS= and -r keep leading/trailing
+# blanks and backslashes verbatim; `|| :` because read returns 1 at EOF (an
+# empty file, or a last line with no newline, which it still stores). The
+# empty default covers a read that fails without assigning (addr is a
+# directory), so the https:// check below refuses it rather than `set -u`.
+BAO_ADDR=""
+IFS= read -r BAO_ADDR < "$CRED_DIR/addr" || :
 case "$BAO_ADDR" in
     https://*) ;;
     *) echo "bao-mcp-env: $CRED_DIR/addr must hold one https:// URL" >&2; exit 1 ;;
