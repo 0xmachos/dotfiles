@@ -359,7 +359,7 @@ function run_linkage {
     name="${claude_item##*/}"
     [[ "${name}" == ".DS_Store" ]] && continue
     if [[ -z "${claude_items[${name}]+_}" ]]; then
-      _fail "Untracked claude/ item: ${name} (add to claude_files in install_dotfiles and claude_items map)"
+      _fail "Untracked claude/ item: ${name} (add a claude_items entry; a single file also needs a claude_files entry, a directory of items a per-item loop in install_dotfiles)"
     elif [[ "${name}" != skills && "${name}" != rules && "${name}" != agents ]]; then
       _linkage_check_deployed "${claude_items[${name}]}" "claude/${name}"
     fi
