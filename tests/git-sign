@@ -368,7 +368,15 @@ function _gs_mod_shape {
   _gs_mod_has "const r = await next(e)" "acts after the command ran"
   _gs_mod_has "if (!command.includes('git')) return r" "probe is the script's own case-sensitive git substring"
   _gs_mod_has "if (r?.deny !== undefined) return r" "a denied call runs no check"
-  _gs_mod_has "const HOOK = '${HOME}/.claude/hooks/git-sign-hook'" "hook path is absolute (argv, no ~ expansion)"
+  _gs_mod_has "const HOOK_REL = '/.claude/hooks/git-sign-hook'" "hook path is relative to HOME"
+  _gs_mod_has "const home = await \$.env.get('HOME')" "HOME is read through \$.env"
+  # shellcheck disable=SC2016  # literal source text: the template string stays unexpanded
+  _gs_mod_has '$.process.run([`${base}${HOOK_REL}`]' "hook argv is joined under HOME (absolute: no shell, no ~)"
+  if /usr/bin/grep -qE '/Users/|/home/' "${mod}/hooks/register.ts"; then
+    _fail "git-sign-post: register.ts hardcodes a home directory: join paths under HOME"
+  else
+    _pass "git-sign-post: register.ts hardcodes no home directory"
+  fi
   _gs_mod_has "const TIMEOUT_MS = 60_000" "timeout is the 60 s command-hook default"
   _gs_mod_has "hook_event_name: failed ? 'PostToolUseFailure' : 'PostToolUse'" "payload names the leg the script branches on"
   if [[ -r "${mod}/.claude-plugin/plugin.json" ]] \

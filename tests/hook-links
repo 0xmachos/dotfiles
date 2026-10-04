@@ -64,9 +64,14 @@ function run_hook_links {
     return
   fi
 
-  # 1. Registration parity.
+  # 1. Registration parity. A script a third-party installer writes straight
+  # into ~/.claude/hooks/ (herdr's integration) has no repo copy to register;
+  # check 2 still requires it to be present.
+  local -a third_party=(hooks/herdr-agent-state.sh)
   for dest in "${dests[@]}"; do
-    if [[ "${dest}" == hooks/* ]]; then
+    if (( ${third_party[(Ie)${dest}]} )); then
+      _pass "third-party: ${dest} is installed by its own tool, not deployed from claude/"
+    elif [[ "${dest}" == hooks/* ]]; then
       if [[ -f "${SCRIPT_DIR}/claude/${dest}" ]]; then
         _pass "registered: ${dest} in claude/hooks/"
       else

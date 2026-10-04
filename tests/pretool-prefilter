@@ -171,10 +171,19 @@ function _pf_shape {
   _pf_source_has "const DECORATION = /[\\\\'\"\$()\`\\n]/g" 'DECORATION deletes quotes, backslashes, $ ( ) backtick and newline (the mirror assumes it)'
   _pf_source_has "const PUBLISH = /(^|[\\s'\"(;|&{}\`])(pr([\\s'\"-]|create|edit|comment|review|close|reopen|merge|upload|new|revert|transfer)|api([\\s'\"-]|graphql))/" 'PUBLISH shape matches the mirror'
   _pf_source_has "const TIMEOUT_MS = 60_000" "dispatcher timeout is 60 s"
-  _pf_source_has "const DISPATCHER = '${HOME}/.claude/hooks/pretool-dispatch'" "dispatcher path is absolute (exec form: no ~ expansion)"
-  _pf_source_has "const MARKER_DIR = '${HOME}/Library/Caches/statusline'" "liveness marker dir is the status line's cache dir"
-  # shellcheck disable=SC2016  # literal source text: the template string stays unexpanded
-  _pf_source_has '$.fs.write(`${MARKER_DIR}/guards-${id}`' 'liveness marker is guards-<session id> (statusline-command reads it)'
+  _pf_source_has "const DISPATCHER_REL = '/.claude/hooks/pretool-dispatch'" "dispatcher path is relative to HOME"
+  _pf_source_has "const MARKER_REL = '/Library/Caches/statusline'" "liveness marker dir is the status line's cache dir, relative to HOME"
+  # shellcheck disable=SC2016  # literal source text: the template strings stay unexpanded
+  _pf_source_has '$.process.run([`${home}${DISPATCHER_REL}`]' 'dispatcher argv is joined under HOME (absolute: no shell, no ~)'
+  # shellcheck disable=SC2016
+  _pf_source_has '$.fs.write(`${home}${MARKER_REL}/guards-${id}`' 'liveness marker is guards-<session id> (statusline-command reads it)'
+  _pf_source_has "homeOf(await \$.env.get('HOME'))" 'HOME is read through $.env and validated'
+  _pf_source_has "return { deny: failClosed('HOME is unset or not an absolute path') }" 'an unusable HOME denies guarded calls'
+  if /usr/bin/grep -qE '/Users/|/home/' "${PF_SRC}"; then
+    _fail "register.ts hardcodes a home directory: join paths under HOME"
+  else
+    _pass "register.ts hardcodes no home directory"
+  fi
   if [[ -x "${HOME}/.claude/hooks/pretool-dispatch" ]]; then
     _pass "deployed dispatcher exists and is executable"
   else

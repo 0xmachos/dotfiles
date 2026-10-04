@@ -797,9 +797,12 @@ function _ptd_settings_shape {
   # prefilter and git-sign-post mods and no settings entry registers the
   # dispatcher, a standalone guard or git-sign-hook (a leftover entry runs
   # the same work twice per call). _ptd_coverage cannot tell the shapes
-  # apart (each routes the same guards), so this does.
+  # apart (each routes the same guards), so this does. The dirs start with
+  # `~` (Claude Code expands it there, not `$HOME`), so the file names no
+  # home directory and serves every Mac.
   local settings="${1:-${SCRIPT_DIR}/claude/settings.json}"
-  local moddirs="${HOME}/.claude/mods/pretool-prefilter:${HOME}/.claude/mods/git-sign-post"
+  # shellcheck disable=SC2088  # a literal ~: Claude Code expands it, not the shell
+  local moddirs='~/.claude/mods/pretool-prefilter:~/.claude/mods/git-sign-post'
   _section "pretool-dispatch: settings registration shape"
 
   if [[ ! -f "${settings}" ]]; then
