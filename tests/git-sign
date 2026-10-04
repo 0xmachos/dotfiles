@@ -395,6 +395,16 @@ function _gs_mod_shape {
   else
     _fail "\$HOME/.claude/hooks/git-sign-hook missing or not executable: run ./bittersweet dotfiles"
   fi
+  # The engine loads the mod from ~/.claude/mods/git-sign-post: a missing or
+  # stale link silently drops the signing nudge. Checked only where ~/.claude
+  # is deployed from this checkout, like tests/hook-links.
+  if [[ "$(readlink "${HOME}/.claude/settings.json" 2>/dev/null)" != "${SCRIPT_DIR}/claude/settings.json" ]]; then
+    _skip "git-sign-post: mod link not checked: ~/.claude not linked to this repo"
+  elif [[ "$(readlink "${HOME}/.claude/mods/git-sign-post" 2>/dev/null)" == "${mod}" && -r "${HOME}/.claude/mods/git-sign-post/hooks/register.ts" ]]; then
+    _pass "git-sign-post: deployed mod link resolves to this repo's mod"
+  else
+    _fail "git-sign-post: ~/.claude/mods/git-sign-post is missing or does not link to ${mod}: run ./bittersweet dotfiles"
+  fi
 }
 
 function _gs_mod_tests {

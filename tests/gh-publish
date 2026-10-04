@@ -23,8 +23,11 @@ function _gp_test_run {
   # $3 the NO_GITLEAKS seam, $4 the NO_IDENTITY seam (defaults isolate both).
   # GH_CONFIG_DIR (2026-09-25) points at the sandbox gh config below, so alias
   # resolution never reads the real ~/.config/gh.
+  # HOME points into the sandbox so the hook's body snapshots (under
+  # ~/Library/Caches/gh-publish) never touch the real home.
   jq -n --arg c "$1" '{tool_name:"Bash", tool_input:{command:$c}}' \
-    | GH_PUBLISH_PATTERNS="${2:-${_gp_dir}/patterns}" \
+    | HOME="${_gp_dir}/home" \
+      GH_PUBLISH_PATTERNS="${2:-${_gp_dir}/patterns}" \
       GH_PUBLISH_SSH_CONFIG="${_gp_dir}/sshcfg" \
       GH_PUBLISH_NO_GITLEAKS="${3-1}" \
       GH_PUBLISH_NO_IDENTITY="${4-1}" \
@@ -39,7 +42,8 @@ function _gp_test_inject_expect {
   # for reads the suite cannot provoke from a real file.
   local want="$1" cmd="$2" inject="$3" label="$4" out got
   out="$(jq -n --arg c "${cmd}" '{tool_name:"Bash", tool_input:{command:$c}}' \
-    | GH_PUBLISH_PATTERNS="${_gp_dir}/patterns" \
+    | HOME="${_gp_dir}/home" \
+      GH_PUBLISH_PATTERNS="${_gp_dir}/patterns" \
       GH_PUBLISH_SSH_CONFIG="${_gp_dir}/sshcfg" \
       GH_PUBLISH_NO_GITLEAKS=1 GH_PUBLISH_NO_IDENTITY=1 \
       GH_PUBLISH_OS="7.7:99Z999z" \
@@ -478,6 +482,7 @@ function run_gh_publish {
   out="$(jq -n --arg c "gh issue create -t t --body-file ${_gp_dir}/good.md" \
       '{tool_name:"Bash", tool_input:{command:$c}}' \
     | PATH="${_gp_dir}/stubbin:${PATH}" \
+      HOME="${_gp_dir}/home" \
       GH_PUBLISH_GITLEAKS="${_gp_dir}/stubbin/gitleaks" \
       GH_PUBLISH_PATTERNS="${_gp_dir}/patterns" \
       GH_PUBLISH_SSH_CONFIG="${_gp_dir}/sshcfg" \

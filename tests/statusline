@@ -968,6 +968,11 @@ function _sl_guards {
   _sl_expect_lacks "guards: inside the grace → hidden" "${_SL_OUT}" "GUARDS OFF"
   _sl_run 140 "$(_sl_json "${sess} | .cost.total_duration_ms = 20000.5")"
   _sl_expect_has "guards: a fractional duration is truncated, not an error" "$(_sl_line 1)" "${off}"
+  # A duration Claude Code did not send must not hide the segment for good.
+  _sl_run 140 "$(_sl_json "${sess} | del(.cost.total_duration_ms)")"
+  _sl_expect_has "guards: no duration in the payload → shown" "$(_sl_line 1)" "${off}"
+  _sl_run 140 "$(_sl_json "${sess} | .cost.total_duration_ms = \"soon\"")"
+  _sl_expect_has "guards: a non-numeric duration → shown" "$(_sl_line 1)" "${off}"
   _sl_run 140 "$(_sl_json ".cost.total_duration_ms = 20000")"
   _sl_expect_lacks "guards: no session id → hidden" "${_SL_OUT}" "GUARDS OFF"
   printf 'pretool-prefilter\n' > "${marker}"

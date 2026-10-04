@@ -189,6 +189,16 @@ function _pf_shape {
   else
     _fail "\$HOME/.claude/hooks/pretool-dispatch missing or not executable: run ./bittersweet dotfiles"
   fi
+  # The engine loads the mod from ~/.claude/mods/<name>: a missing or stale
+  # link is a silent unload (every guard off). Checked only where ~/.claude
+  # is deployed from this checkout, like tests/hook-links.
+  if [[ "$(readlink "${HOME}/.claude/settings.json" 2>/dev/null)" != "${SCRIPT_DIR}/claude/settings.json" ]]; then
+    _skip "mod link: ~/.claude not linked to this repo (run: bittersweet dotfiles)"
+  elif [[ "$(readlink "${HOME}/.claude/mods/pretool-prefilter" 2>/dev/null)" == "${PF_MOD}" && -r "${HOME}/.claude/mods/pretool-prefilter/hooks/register.ts" ]]; then
+    _pass "deployed mod link ~/.claude/mods/pretool-prefilter resolves to this repo's mod"
+  else
+    _fail "\$HOME/.claude/mods/pretool-prefilter is missing or does not link to ${PF_MOD}: run ./bittersweet dotfiles"
+  fi
   if (( ${#PF_TOKENS} >= 10 )); then
     _pass "TOKENS parsed from register.ts (${#PF_TOKENS} entries)"
   else
