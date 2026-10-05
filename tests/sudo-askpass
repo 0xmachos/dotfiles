@@ -15,7 +15,8 @@
 # shellcheck source=tests/lib
 
 function _sudo_askpass_run {
-  jq -n --arg c "$1" '{tool_name:"Bash", tool_input:{command:$c}}' \
+  _json_str "$1"
+  print -r -- "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":${REPLY}}}" \
     | SUDO_ASKPASS_HOSTS="box-claude other-claude" /bin/zsh "${SCRIPT_DIR}/claude/hooks/sudo-askpass-hook"
 }
 
@@ -60,6 +61,7 @@ function run_sudo_askpass {
     _sudo_askpass_expect PASS "ssh elsewhere 'sudo -n id'" 'a host not in the list'
     _sudo_askpass_expect PASS "ssh box-claudex 'sudo -n id'" 'a longer host name'
     _sudo_askpass_expect PASS "sudo -n true" 'local sudo -n, no ssh'
+    _sudo_askpass_expect PASS "echo box-claude; sudo -n id" 'the host name without ssh'
     _sudo_askpass_expect PASS "ssh box-claude 'sudo -u nobody id'" 'sudo -u with an operand'
   }
 

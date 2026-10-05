@@ -26,7 +26,7 @@
 # shellcheck source=tests/lib
 # shellcheck disable=SC2154  # SCRIPT_DIR is set by the sourcing dispatcher
 
-typeset -g PF_MOD='' PF_SRC='' PF_SB=''
+typeset -g PF_MOD='' PF_SRC='' PF_SB='' PF_TEXT=''
 typeset -ga PF_TOKENS=()
 
 function _pf_load_tokens {
@@ -85,10 +85,18 @@ function _pf_bash {
 
 function _pf_dispatch {
   # $1 = payload; remaining args = VAR=value pairs. Prints the verdict word.
+  # The pairs are exported inside the substitution's own subshell, so they
+  # reach only the dispatcher and no env process is started.
   local payload="$1" out rc=0
   shift
-  out="$(printf '%s' "${payload}" \
-    | /usr/bin/env "$@" /bin/zsh "${SCRIPT_DIR}/claude/hooks/pretool-dispatch" 2>/dev/null)" || rc=$?
+  out="$(
+    local kv
+    for kv in "$@"; do
+      # shellcheck disable=SC2163  # exports the NAME=value pair itself
+      export "${kv}"
+    done
+    printf '%s' "${payload}" | /bin/zsh "${SCRIPT_DIR}/claude/hooks/pretool-dispatch" 2>/dev/null
+  )" || rc=$?
   # The dispatcher's PASS is exit 0 and empty stdout; any other exit status
   # (2 = could not judge) is INVALID here even when stdout is empty.
   if (( rc != 0 )); then
@@ -116,16 +124,22 @@ function _pf_deny_case {
   fi
 }
 
+function _pf_dispatcher_passes {
+  # $1 = label, $2 = Bash command: the real dispatcher must PASS it.
+  local verdict
+  verdict="$(_pf_dispatch "$(_pf_bash "$2")")"
+  if [[ "${verdict}" == PASS ]]; then
+    _pass "dispatcher passes: $1"
+  else
+    _fail "dispatcher does not pass $1 (got ${verdict})"
+  fi
+}
+
 function _pf_pass_case {
   # $1 = label, $2 = Bash command. The dispatcher must PASS it and the mirror
   # must not dispatch it (the zero-exec path).
-  local label="$1" cmd="$2" verdict
-  verdict="$(_pf_dispatch "$(_pf_bash "${cmd}")")"
-  if [[ "${verdict}" == PASS ]]; then
-    _pass "dispatcher passes: ${label}"
-  else
-    _fail "dispatcher does not pass ${label} (got ${verdict})"
-  fi
+  local label="$1" cmd="$2"
+  _pf_dispatcher_passes "${label}" "${cmd}"
   if _pf_needs_dispatch "${cmd}"; then
     _fail "prefilter dispatches a token-free command: ${label}"
   else
@@ -136,13 +150,8 @@ function _pf_pass_case {
 function _pf_innocent_case {
   # $1 = label, $2 = command that carries a token inside an innocent word. The
   # dispatcher passes it; the prefilter still dispatches (a cost, never a gap).
-  local label="$1" cmd="$2" verdict
-  verdict="$(_pf_dispatch "$(_pf_bash "${cmd}")")"
-  if [[ "${verdict}" == PASS ]]; then
-    _pass "dispatcher passes: ${label}"
-  else
-    _fail "dispatcher does not pass ${label} (got ${verdict})"
-  fi
+  local label="$1" cmd="$2"
+  _pf_dispatcher_passes "${label}" "${cmd}"
   if _pf_needs_dispatch "${cmd}"; then
     _pass "prefilter dispatches (token inside a word): ${label}"
   else
@@ -151,8 +160,9 @@ function _pf_innocent_case {
 }
 
 function _pf_source_has {
+  # PF_TEXT holds register.ts, read once: a substring test, not a grep per pin.
   local needle="$1" label="$2"
-  if /usr/bin/grep -qF -- "${needle}" "${PF_SRC}"; then
+  if [[ "${PF_TEXT}" == *"${needle}"* ]]; then
     _pass "register.ts: ${label}"
   else
     _fail "register.ts lacks '${needle}': ${label}"
@@ -179,7 +189,7 @@ function _pf_shape {
   _pf_source_has '$.fs.write(`${home}${MARKER_REL}/guards-${id}`' 'liveness marker is guards-<session id> (statusline-command reads it)'
   _pf_source_has "homeOf(await \$.env.get('HOME'))" 'HOME is read through $.env and validated'
   _pf_source_has "return { deny: failClosed('HOME is unset or not an absolute path') }" 'an unusable HOME denies guarded calls'
-  if /usr/bin/grep -qE '/Users/|/home/' "${PF_SRC}"; then
+  if [[ "${PF_TEXT}" == */Users/* || "${PF_TEXT}" == */home/* ]]; then
     _fail "register.ts hardcodes a home directory: join paths under HOME"
   else
     _pass "register.ts hardcodes no home directory"
@@ -234,7 +244,7 @@ function _pf_cases {
 
   _section "pretool-prefilter: denied commands are dispatched, token-free ones are not"
 
-  mkdir -p "${gpdir}/gh"
+  zf_mkdir -p "${gpdir}/gh"
   print -r -- 'FIXTURE_TOKEN' > "${gpdir}/patterns"
   print -r -- 'Host testalias99' > "${gpdir}/sshcfg"
   : > "${gpdir}/gh/config.yml"
@@ -348,6 +358,8 @@ function run_pretool_prefilter {
   PF_SB="$(mktemp -d "${TMPDIR:-/tmp}/pretool-prefilter.XXXXXX")"
   trap 'rm -rf -- "${PF_SB}"' EXIT
 
+  zmodload -F zsh/files b:zf_mkdir
+  PF_TEXT="$(<"${PF_SRC}")"
   _pf_load_tokens
   _pf_shape
   _pf_minimums

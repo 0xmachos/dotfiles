@@ -19,13 +19,23 @@ function run_plutil {
             -type f \
             \( -name "*.plist" -o -name "*.mobileconfig" \))
 
+  (( ${#files} )) || return 0
+
+  # One plutil run covers the common all-valid case; a failure falls back to
+  # per-file runs so each diagnostic names its file.
   local output
+  if /usr/bin/plutil -lint "${files[@]}" >/dev/null 2>&1; then
+    for file in "${files[@]}"; do
+      _pass "${file:t}"
+    done
+    return
+  fi
   for file in "${files[@]}"; do
     output=""
     if output="$(/usr/bin/plutil -lint "${file}" 2>&1)"; then
-      _pass "$(/usr/bin/basename "${file}")"
+      _pass "${file:t}"
     else
-      _fail "$(/usr/bin/basename "${file}"): ${output}"
+      _fail "${file:t}: ${output}"
     fi
   done
 }

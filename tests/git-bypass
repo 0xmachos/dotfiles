@@ -23,8 +23,9 @@
 # shellcheck source=tests/lib
 
 function _hbg_test_run {
-  jq -n --arg c "$1" '{tool_name:"Bash", tool_input:{command:$c}}' \
-    | /bin/zsh "${SCRIPT_DIR}/claude/hooks/git-bypass-hook"
+  _json_str "$1"
+  /bin/zsh "${SCRIPT_DIR}/claude/hooks/git-bypass-hook" \
+    <<< "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":${REPLY}}}"
 }
 
 function _hbg_test_expect {

@@ -15,6 +15,8 @@
 #   * every name in bittersweet's shared_skills array exists under claude/skills
 # Line caps and size caps are tests/agents-md's job.
 #
+# One ruby run parses every skill's frontmatter and a second parses every rule's; file reads are in-process.
+#
 # Skips whole when claude/ is absent (gitignored, synced out of band).
 #
 # Run: ./test agent-rules
@@ -26,113 +28,184 @@
 
 readonly -a _AGENT_RULES_TWINS=(swift rust npm python objc ci)
 
-# Frontmatter lines of $1 (between the first two '---' fences).
-function _agent_rules_frontmatter {
-  /usr/bin/awk 'NR==1 { if ($0 != "---") exit; next } /^---[[:space:]]*$/ { exit } { print }' "$1"
+# Splits $1 in one pass, no process start. Sets: _AR_FIRST (line 1), _AR_FM
+# (lines between the first two '---' fences, empty unless line 1 is exactly
+# '---'), _AR_CLOSED (1 when a closing fence exists) and _AR_BODY (everything
+# after the closing fence, unchanged).
+function _agent_rules_split {
+  local line n=0
+  _AR_FIRST="" _AR_FM="" _AR_BODY="" _AR_CLOSED=0
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    if (( n++ == 0 )); then
+      _AR_FIRST="${line}"
+    elif (( _AR_CLOSED )); then
+      _AR_BODY+="${line}"$'\n'
+    elif [[ "${line}" =~ ^---[[:space:]]*$ ]]; then
+      _AR_CLOSED=1
+    elif [[ "${_AR_FIRST}" == "---" ]]; then
+      _AR_FM+="${line}"$'\n'
+    fi
+  done < "$1"
 }
 
-# Everything after the closing '---' fence of $1, unchanged.
-function _agent_rules_body {
-  /usr/bin/awk 'NR==1 { next } f { print; next } /^---[[:space:]]*$/ { f = 1 }' "$1"
-}
-
-# Ruby parses the frontmatter and requires a non-empty string description.
+# Ruby parses each frontmatter (one per argument) and prints one line per
+# argument: "ok", or "err <first line of the message>". A skill needs a mapping
+# with a non-empty string description.
 readonly _AGENT_RULES_RUBY='
-begin
-  d = YAML.safe_load(STDIN.read)
-  raise "frontmatter is not a mapping" unless d.is_a?(Hash)
-  desc = d["description"]
-  raise "description is missing or empty" unless desc.is_a?(String) && !desc.strip.empty?
-rescue Exception => e
-  warn e.message.lines.first.to_s.strip
-  exit 1
+ARGV.each do |doc|
+  begin
+    d = YAML.safe_load(doc)
+    raise "frontmatter is not a mapping" unless d.is_a?(Hash)
+    desc = d["description"]
+    raise "description is missing or empty" unless desc.is_a?(String) && !desc.strip.empty?
+    puts "ok"
+  rescue Exception => e
+    puts "err #{e.message.lines.first.to_s.strip}"
+  end
 end
 '
-
-function _agent_rules_check_skill {
-  local file="$1" dir fm err
-  dir="${file:h:t}"
-  if [[ "$(/usr/bin/head -n 1 "${file}")" != "---" ]]; then
-    _fail "skills/${dir}/SKILL.md: line 1 is not '---'"
-    return
-  fi
-  fm="$(_agent_rules_frontmatter "${file}")"
-  if /usr/bin/grep -qxF "name: ${dir}" <<< "${fm}"; then
-    _pass "skills/${dir}: name matches the directory"
-  else
-    _fail "skills/${dir}/SKILL.md: 'name:' is not '${dir}'"
-  fi
-  if [[ -x /usr/bin/ruby ]]; then
-    if err="$(/usr/bin/ruby -ryaml -e "${_AGENT_RULES_RUBY}" <<< "${fm}" 2>&1)"; then
-      _pass "skills/${dir}: frontmatter parses, description non-empty"
-    else
-      _fail "skills/${dir}/SKILL.md: frontmatter invalid: ${err}"
-    fi
-  else
-    _skip "skills/${dir}: /usr/bin/ruby missing — YAML parse skipped"
-    if /usr/bin/grep -qE '^description:[[:space:]]*[^[:space:]]' <<< "${fm}"; then
-      _pass "skills/${dir}: description present"
-    else
-      _fail "skills/${dir}/SKILL.md: no non-empty 'description:'"
-    fi
-  fi
-}
 
 # Rules: frontmatter is optional (none = eager). When line 1 opens a fence it
 # must be exactly '---', the fence must close, and the YAML must be a mapping
 # whose paths: (if present) is a non-empty list of non-empty strings.
 readonly _AGENT_RULES_RULE_RUBY='
-begin
-  d = YAML.safe_load(STDIN.read)
-  raise "frontmatter is not a mapping" unless d.is_a?(Hash)
-  if d.key?("paths")
-    p = d["paths"]
-    raise "paths: is not a non-empty list" unless p.is_a?(Array) && !p.empty?
-    raise "paths: has a non-string or empty item" unless p.all? { |x| x.is_a?(String) && !x.strip.empty? }
+ARGV.each do |doc|
+  begin
+    d = YAML.safe_load(doc)
+    raise "frontmatter is not a mapping" unless d.is_a?(Hash)
+    if d.key?("paths")
+      p = d["paths"]
+      raise "paths: is not a non-empty list" unless p.is_a?(Array) && !p.empty?
+      raise "paths: has a non-string or empty item" unless p.all? { |x| x.is_a?(String) && !x.strip.empty? }
+    end
+    puts "ok"
+  rescue Exception => e
+    puts "err #{e.message.lines.first.to_s.strip}"
   end
-rescue Exception => e
-  warn e.message.lines.first.to_s.strip
-  exit 1
 end
 '
 
-function _agent_rules_check_rule {
-  local file="$1" name first fm err
-  name="${file:t}"
-  first="$(/usr/bin/head -n 1 "${file}")"
-  if [[ "${first}" != ---* ]]; then
-    _pass "rules/${name}: no frontmatter (eager)"
-    return
-  fi
-  if [[ "${first}" != "---" ]]; then
-    _fail "rules/${name}: line 1 is '${first}', not exactly '---' — the fence is not recognised and the rule loads eagerly"
-    return
-  fi
-  if ! /usr/bin/awk 'NR==1 { next } /^---[[:space:]]*$/ { found = 1; exit } END { exit !found }' "${file}"; then
-    _fail "rules/${name}: frontmatter fence never closes"
-    return
-  fi
-  if [[ ! -x /usr/bin/ruby ]]; then
-    _skip "rules/${name}: /usr/bin/ruby missing — YAML parse skipped"
-    return
-  fi
-  fm="$(_agent_rules_frontmatter "${file}")"
-  if err="$(/usr/bin/ruby -ryaml -e "${_AGENT_RULES_RULE_RUBY}" <<< "${fm}" 2>&1)"; then
-    _pass "rules/${name}: frontmatter parses; paths: is a list or absent"
-  else
-    _fail "rules/${name}: frontmatter invalid: ${err}"
-  fi
+# $1 ruby program, then one frontmatter per argument. Sets _AR_YAML, one result
+# line per frontmatter. A ruby that dies leaves lines missing, which the
+# caller reports as a failure.
+function _agent_rules_yaml_batch {
+  local program="$1" out line
+  shift
+  out="$(/usr/bin/ruby -ryaml -e "${program}" -- "$@" 2>/dev/null)" || out=""
+  _AR_YAML=()
+  while IFS= read -r line; do
+    _AR_YAML+=("${line}")
+  done <<< "${out}"
+}
+
+# $@ SKILL.md paths. Phase 1 reads every file and queues the frontmatter of
+# each whose line 1 is a fence. One ruby run parses the queue. Phase 2 reports
+# each skill in order.
+function _agent_rules_check_skills {
+  local file dir i k=1 res have_ruby=0
+  local -r desc_re=$'(^|\n)description:[ \t\r\f\v]*[^ \t\r\f\v\n]'
+  local -a dirs=() firsts=() name_ok=() desc_ok=() fms=()
+  [[ -x /usr/bin/ruby ]] && have_ruby=1
+  for file in "$@"; do
+    _agent_rules_split "${file}"
+    dirs+=("${file:h:t}")
+    firsts+=("${_AR_FIRST}")
+    if [[ $'\n'"${_AR_FM}" == *$'\n'"name: ${file:h:t}"$'\n'* ]]; then
+      name_ok+=(1)
+    else
+      name_ok+=(0)
+    fi
+    # Used only when ruby is missing.
+    if [[ "${_AR_FM}" =~ ${desc_re} ]]; then
+      desc_ok+=(1)
+    else
+      desc_ok+=(0)
+    fi
+    [[ "${_AR_FIRST}" == "---" ]] && fms+=("${_AR_FM}")
+  done
+  (( have_ruby && ${#fms[@]} )) && _agent_rules_yaml_batch "${_AGENT_RULES_RUBY}" "${fms[@]}"
+  for (( i = 1; i <= ${#dirs[@]}; i++ )); do
+    dir="${dirs[i]}"
+    if [[ "${firsts[i]}" != "---" ]]; then
+      _fail "skills/${dir}/SKILL.md: line 1 is not '---'"
+      continue
+    fi
+    if (( name_ok[i] )); then
+      _pass "skills/${dir}: name matches the directory"
+    else
+      _fail "skills/${dir}/SKILL.md: 'name:' is not '${dir}'"
+    fi
+    if (( have_ruby )); then
+      res="${_AR_YAML[k]:-err no result from ruby}"
+      if [[ "${res}" == ok ]]; then
+        _pass "skills/${dir}: frontmatter parses, description non-empty"
+      else
+        _fail "skills/${dir}/SKILL.md: frontmatter invalid: ${res#err }"
+      fi
+    else
+      _skip "skills/${dir}: /usr/bin/ruby missing — YAML parse skipped"
+      if (( desc_ok[i] )); then
+        _pass "skills/${dir}: description present"
+      else
+        _fail "skills/${dir}/SKILL.md: no non-empty 'description:'"
+      fi
+    fi
+    (( k++ ))
+  done
+}
+
+# $@ rule paths, same two phases as the skills.
+function _agent_rules_check_rules {
+  local file name i k=1 res
+  local -a names=() outcome=() fms=()
+  for file in "$@"; do
+    name="${file:t}"
+    names+=("${name}")
+    _agent_rules_split "${file}"
+    if [[ "${_AR_FIRST}" != ---* ]]; then
+      outcome+=("pass rules/${name}: no frontmatter (eager)")
+    elif [[ "${_AR_FIRST}" != "---" ]]; then
+      outcome+=("fail rules/${name}: line 1 is '${_AR_FIRST}', not exactly '---' — the fence is not recognised and the rule loads eagerly")
+    elif (( ! _AR_CLOSED )); then
+      outcome+=("fail rules/${name}: frontmatter fence never closes")
+    elif [[ ! -x /usr/bin/ruby ]]; then
+      outcome+=("skip rules/${name}: /usr/bin/ruby missing — YAML parse skipped")
+    else
+      outcome+=("yaml")
+      fms+=("${_AR_FM}")
+    fi
+  done
+  (( ${#fms[@]} )) && _agent_rules_yaml_batch "${_AGENT_RULES_RULE_RUBY}" "${fms[@]}"
+  for (( i = 1; i <= ${#names[@]}; i++ )); do
+    case "${outcome[i]}" in
+      "pass "*) _pass "${outcome[i]#pass }" ;;
+      "fail "*) _fail "${outcome[i]#fail }" ;;
+      "skip "*) _skip "${outcome[i]#skip }" ;;
+      *)
+        res="${_AR_YAML[k]:-err no result from ruby}"
+        (( k++ ))
+        if [[ "${res}" == ok ]]; then
+          _pass "rules/${names[i]}: frontmatter parses; paths: is a list or absent"
+        else
+          _fail "rules/${names[i]}: frontmatter invalid: ${res#err }"
+        fi
+        ;;
+    esac
+  done
 }
 
 function _agent_rules_check_twin {
-  local n="$1" rule skill
+  local n="$1" rule skill rule_body
   rule="${SCRIPT_DIR}/claude/rules/${n}.md"
   skill="${SCRIPT_DIR}/claude/skills/${n}-conventions/SKILL.md"
   if [[ ! -f "${rule}" || ! -f "${skill}" ]]; then
     _fail "claude/rules/${n}.md and claude/skills/${n}-conventions/SKILL.md: one of the pair is missing"
     return
   fi
-  if [[ "$(_agent_rules_body "${rule}"; echo x)" == "$(_agent_rules_body "${skill}"; echo x)" ]]; then
+  _agent_rules_split "${rule}"
+  rule_body="${_AR_BODY}"
+  _agent_rules_split "${skill}"
+  if [[ "${rule_body}" == "${_AR_BODY}" ]]; then
     _pass "${n}: skill body equals rule body"
   else
     _fail "claude/skills/${n}-conventions/SKILL.md body differs from claude/rules/${n}.md — the skill must carry the rule text byte for byte"
@@ -140,24 +213,28 @@ function _agent_rules_check_twin {
 }
 
 function _agent_rules_check_shared {
-  local line name
-  line="$(/usr/bin/grep -m1 'shared_skills=(' "${SCRIPT_DIR}/bittersweet" || true)"
-  if [[ -z "${line}" ]]; then
+  local line found="" name
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    if [[ "${line}" == *'shared_skills=('* ]]; then
+      found="${line}"
+      break
+    fi
+  done < "${SCRIPT_DIR}/bittersweet"
+  if [[ -z "${found}" ]]; then
     _fail "bittersweet: no shared_skills array found"
     return
   fi
   # Pattern in variables: a literal '(' in ${..#pat} is a zsh glob error.
   local open='shared_skills=(' close=')'
-  line="${line#*"${open}"}"
-  line="${line%"${close}"*}"
-  while IFS= read -r name; do
-    [[ -n "${name}" ]] || continue
+  found="${found#*"${open}"}"
+  found="${found%"${close}"*}"
+  for name in ${=found}; do
     if [[ -f "${SCRIPT_DIR}/claude/skills/${name}/SKILL.md" ]]; then
       _pass "shared_skills: ${name} exists under claude/skills"
     else
       _fail "bittersweet shared_skills lists '${name}' but claude/skills/${name}/SKILL.md is missing"
     fi
-  done < <(/usr/bin/tr ' ' '\n' <<< "${line}")
+  done
 }
 
 function run_agent_rules {
@@ -170,13 +247,11 @@ function run_agent_rules {
     return
   fi
 
-  local f n
-  for f in "${SCRIPT_DIR}"/claude/skills/*/SKILL.md; do
-    _agent_rules_check_skill "${f}"
-  done
-  for f in "${SCRIPT_DIR}"/claude/rules/*.md; do
-    _agent_rules_check_rule "${f}"
-  done
+  local n
+  local -a skills=("${SCRIPT_DIR}"/claude/skills/*/SKILL.md)
+  local -a rules=("${SCRIPT_DIR}"/claude/rules/*.md)
+  (( ${#skills[@]} )) && _agent_rules_check_skills "${skills[@]}"
+  (( ${#rules[@]} )) && _agent_rules_check_rules "${rules[@]}"
   for n in "${_AGENT_RULES_TWINS[@]}"; do
     _agent_rules_check_twin "${n}"
   done

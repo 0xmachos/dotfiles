@@ -342,9 +342,10 @@ function run_git_sign {
 }
 
 function _gs_mod_has {
-  # $1 = literal source text, $2 = label.
+  # $1 = literal source text, $2 = label. Matches against ${mod_src}, read once
+  # by _gs_mod_shape (zsh dynamic scope).
   local needle="$1" label="$2"
-  if /usr/bin/grep -qF -- "${needle}" "${SCRIPT_DIR}/claude/mods/git-sign-post/hooks/register.ts"; then
+  if [[ "${mod_src}" == *"${needle}"* ]]; then
     _pass "git-sign-post: ${label}"
   else
     _fail "git-sign-post register.ts lacks '${needle}': ${label}"
@@ -359,8 +360,10 @@ function _gs_mod_shape {
   # the fail-open shape (no .catch, which could only answer with a deny).
   _section "git-sign-post mod: module shape"
   local mod="${SCRIPT_DIR}/claude/mods/git-sign-post"
+  local mod_src
+  mod_src="$(<"${mod}/hooks/register.ts")"
   _gs_mod_has "on('tool.call', { tool: 'Bash' }, signPost)" "one Bash registration, wrapping the call"
-  if /usr/bin/grep -qF -- 'signPost).catch' "${mod}/hooks/register.ts"; then
+  if [[ "${mod_src}" == *'signPost).catch'* ]]; then
     _fail "git-sign-post: signPost has a .catch (a deny for a command that already ran)"
   else
     _pass "git-sign-post: no .catch on the registration (fail-open)"
@@ -372,7 +375,7 @@ function _gs_mod_shape {
   _gs_mod_has "const home = await \$.env.get('HOME')" "HOME is read through \$.env"
   # shellcheck disable=SC2016  # literal source text: the template string stays unexpanded
   _gs_mod_has '$.process.run([`${base}${HOOK_REL}`]' "hook argv is joined under HOME (absolute: no shell, no ~)"
-  if /usr/bin/grep -qE '/Users/|/home/' "${mod}/hooks/register.ts"; then
+  if [[ "${mod_src}" == *'/Users/'* || "${mod_src}" == *'/home/'* ]]; then
     _fail "git-sign-post: register.ts hardcodes a home directory: join paths under HOME"
   else
     _pass "git-sign-post: register.ts hardcodes no home directory"
@@ -462,8 +465,9 @@ fatal: failed to write commit object'
     'legacy .tool_response payload still triggers the fallback' tool_response
   out="$(_gs_hook PostToolUseFailure 'git commit -m x' "${repo}" "${refusal}")"
   if [[ "${out}" == *'NO ready-made retry'* && "${out}" == *'git-sign-unpushed'* \
-        && "${out}" != *'GIT_CONFIG_KEY_0=commit.gpgsign'* && "${out}" != *'git commit -m x'* ]]; then
-    _pass "fallback context is park-and-hand-off, names git-sign-unpushed, never echoes the command or a runnable unsigned recipe"
+        && "${out}" != *'GIT_CONFIG_KEY_0=commit.gpgsign'* && "${out}" != *'git commit -m x'* \
+        && "${out}" != *'chains, substitutes, or pushes'* ]]; then
+    _pass "fallback context is park-and-hand-off, names git-sign-unpushed, never echoes the command or a runnable unsigned recipe; a standalone commit gets no chain note"
   else
     _fail "fallback context malformed: ${out}"
   fi
@@ -1153,14 +1157,15 @@ function _git_sign_prepush_cases {
 function _git_sign_refusal_cases {
   # Uses ${repo}/${sandbox} from _git_sign_claude_cases via dynamic scope.
   # --- Compound commands are never reproduced with signing disabled ---
-  local refusal_resp compound simple
+  local refusal_resp compound
   refusal_resp='Couldn'"'"'t sign message (signer): agent refused operation?
 fatal: failed to write commit object'
   # The ORIGINAL command must never be echoed back runnable. No hook branch
   # hands back any command now, so the verbatim command's absence pins the
   # compound case, where a partial/templated echo is easiest to reintroduce.
   compound="$(_gs_hook PostToolUseFailure 'git commit -m x && git push' "${repo}" "${refusal_resp}")"
-  if [[ "${compound}" == *'NO ready-made retry'* && "${compound}" != *'git commit -m x && git push'* ]]; then
+  if [[ "${compound}" == *'NO ready-made retry'* && "${compound}" == *'chains, substitutes, or pushes'* \
+        && "${compound}" != *'git commit -m x && git push'* ]]; then
     _pass "compound commit+push is not handed back as a signing-disabled retry"
   else
     _fail "compound command was reproduced with signing disabled"
@@ -1170,19 +1175,11 @@ fatal: failed to write commit object'
   # push check and never reaches it.
   local chained_nopush
   chained_nopush="$(_gs_hook PostToolUseFailure 'git commit -m x && echo done' "${repo}" "${refusal_resp}")"
-  if [[ "${chained_nopush}" == *'NO ready-made retry'* && "${chained_nopush}" != *'git commit -m x && echo done'* ]]; then
+  if [[ "${chained_nopush}" == *'NO ready-made retry'* && "${chained_nopush}" == *'chains, substitutes, or pushes'* \
+        && "${chained_nopush}" != *'git commit -m x && echo done'* ]]; then
     _pass "a chained command with no push is not reproduced either"
   else
     _fail "chained command was reproduced with signing disabled"
   fi
-  # Only the user may authorise an unsigned commit: a standalone commit gets
-  # the SAME park-and-hand-off text as the compound cases, never a recipe.
-  simple="$(_gs_hook PostToolUseFailure 'git commit -m x' "${repo}" "${refusal_resp}")"
-  if [[ "${simple}" == *'NO ready-made retry'* && "${simple}" != *'GIT_CONFIG_KEY_0=commit.gpgsign'* ]]; then
-    _pass "a standalone commit gets park-and-hand-off text too, never a ready-made unsigned retry"
-  else
-    _fail "standalone commit unexpectedly got a runnable unsigned retry: ${simple}"
-  fi
-
   /bin/rm -rf "${sandbox}"
 }

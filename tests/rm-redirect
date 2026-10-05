@@ -29,13 +29,21 @@ function _rm_redirect_run {
 }
 
 function _rm_redirect_expect {
-  local want="$1" cmd="$2" label="${3:-$2}" out got
+  # Optional $4/$5: a fragment the hook output must contain and the label for
+  # that second check, made on the same hook run.
+  local want="$1" cmd="$2" label="${3:-$2}" frag="${4:-}" fraglabel="${5:-}" out got
   out="$(_rm_redirect_run "${cmd}")"
   got="$(_hook_verdict "${out}")"
   if [[ "${got}" == "${want}" ]]; then
     _pass "${want}: ${label}"
   else
     _fail "${label} — expected ${want}, got ${got}"
+  fi
+  [[ -n "${frag}" ]] || return 0
+  if [[ "${out}" == *"${frag}"* ]]; then
+    _pass "${fraglabel}"
+  else
+    _fail "${fraglabel} — output lacks: ${frag}"
   fi
 }
 
@@ -131,7 +139,10 @@ function run_rm_redirect {
   # Decorated (quoted/escaped) rm-family word → DENY: it suppresses alias
   # lookup. Explicit labels: _pass/_fail print via zsh's builtin echo, which
   # interprets a leading \r/\u (cosmetic only).
-  _rm_redirect_expect DENY '\rm foo.txt' 'backslash-escaped rm'
+  # The deny message must name the replacement tool (decorated form: bare rm
+  # PASSes).
+  _rm_redirect_expect DENY '\rm foo.txt' 'backslash-escaped rm' \
+    trash 'deny reason names trash'
   _rm_redirect_expect DENY '"rm" foo.txt'
   _rm_redirect_expect DENY "'rm' foo.txt"
   _rm_redirect_expect DENY '\unlink foo.txt' 'backslash-escaped unlink'
@@ -185,7 +196,10 @@ function run_rm_redirect {
   _rm_redirect_expect DENY 'env -u FOO rm foo'         # operand-flag walk
   _rm_redirect_expect DENY 'nice rm foo'
   _rm_redirect_expect DENY 'nohup rm foo'
-  _rm_redirect_expect DENY 'echo foo | xargs rm'
+  # Per-class deny text (2026-09-25): each class names a rewrite that works,
+  # not a generic "use plain rm".
+  _rm_redirect_expect DENY 'echo foo | xargs rm' 'echo foo | xargs rm' \
+    'xargs trash' 'xargs deny reason says xargs trash'
   _rm_redirect_expect DENY 'xargs -0 rm < list'
   _rm_redirect_expect DENY '( exec rm foo )'
   _rm_redirect_expect DENY 'xargs -I{} rm {}'          # {} must not fracture the segment into a bare "rm"
@@ -194,28 +208,27 @@ function run_rm_redirect {
   _rm_redirect_expect DENY '\time rm foo'              'decorated time is BYPASS, unlike bare time'
   _rm_redirect_expect DENY 'builtin command rm foo'    'builtin falls through to command'
   _rm_redirect_expect DENY 'builtin exec rm foo'       'builtin falls through to exec'
-  _rm_redirect_expect DENY 'command time rm f'         'RM_WRAPPER blames command, not time'
-  _rm_redirect_expect DENY 'time command rm f'         'RM_WRAPPER blames command even when time comes first'
+  _rm_redirect_expect DENY 'command time rm f'         'RM_WRAPPER blames command, not time' \
+    'command rm' 'command time rm f blames command in the reason text'
+  _rm_redirect_expect DENY 'time command rm f'         'RM_WRAPPER blames command even when time comes first' \
+    'command rm' 'time command rm f blames command in the reason text'
 
   # find/gfind → DENY.
-  _rm_redirect_expect DENY "find . -name '*.tmp' -delete"
+  _rm_redirect_expect DENY "find . -name '*.tmp' -delete" "find . -name '*.tmp' -delete" \
+    '-exec trash {} +' 'find deny reason says -exec trash {} +'
   _rm_redirect_expect DENY 'find . -exec rm {} \;'
   _rm_redirect_expect DENY 'find . -exec rm {} +'
   _rm_redirect_expect DENY 'gfind . -delete'
 
   # fd/fdfind → DENY (2026-09-25 — same -exec-target class as find).
-  _rm_redirect_expect DENY 'fd -e tmp -x rm'
-  _rm_redirect_expect DENY 'fd -X rm'
-  _rm_redirect_expect DENY 'fd --exec rm {}'
-  _rm_redirect_expect DENY 'fdfind -x gshred'
-
+  _rm_redirect_expect DENY 'fd -e tmp -x rm' 'fd -e tmp -x rm' \
+    '-x trash' 'fd deny reason says -x trash'
   # fd's -x and -X differ (per-match vs batched exec) and match
   # case-sensitively (2026-09-25); the reason must name the flag typed.
-  if [[ "$(_rm_redirect_run 'fd -X rm')" == *'-X rm'* ]]; then
-    _pass "fd -X deny reason says -X, not -x"
-  else
-    _fail "fd -X deny reason does not name -X"
-  fi
+  _rm_redirect_expect DENY 'fd -X rm' 'fd -X rm' \
+    '-X rm' 'fd -X deny reason says -X, not -x'
+  _rm_redirect_expect DENY 'fd --exec rm {}'
+  _rm_redirect_expect DENY 'fdfind -x gshred'
 
   # nocorrect/coproc/repeat (2026-09-25) are transparent prefixes, like bare
   # `time`: PASS bare, DENY when the rm-family word is decorated. `repeat`'s
@@ -228,7 +241,8 @@ function run_rm_redirect {
   _rm_redirect_expect DENY 'repeat 3 \rm foo'   'repeat before a decorated rm, past the numeric operand'
 
   # git clean -f without -n → DENY; git clean -n / git rm → PASS.
-  _rm_redirect_expect DENY 'git clean -fdx'
+  _rm_redirect_expect DENY 'git clean -fdx' 'git clean -fdx' \
+    'git clean -n' 'git clean deny reason says git clean -n'
   _rm_redirect_expect DENY 'git clean --force'
   _rm_redirect_expect DENY 'git -C x clean -f'
   _rm_redirect_expect PASS 'git clean -n'
@@ -290,53 +304,12 @@ function run_rm_redirect {
     _fail "malformed stdin did not fail open"
   fi
 
-  # The deny message must name the replacement tool (decorated form: bare rm
-  # PASSes).
-  if [[ "$(_rm_redirect_run '\rm foo')" == *trash* ]]; then
-    _pass "deny reason names trash"
-  else
-    _fail "deny reason does not mention trash"
-  fi
-
   # rc=0 on a DENY too (hook header, "Fail-open by convention").
   if /usr/bin/jq -n --arg c '\rm foo' '{tool_name:"Bash", tool_input:{command:$c}}' \
       | /bin/zsh "${SCRIPT_DIR}/claude/hooks/rm-redirect-hook" > /dev/null; then
     _pass "DENY still exits 0"
   else
     _fail "a DENY verdict must not exit nonzero"
-  fi
-
-  # Per-class deny text (2026-09-25): each class names a rewrite that works,
-  # not a generic "use plain rm".
-  if [[ "$(_rm_redirect_run 'find . -name "*.o" | xargs rm')" == *'xargs trash'* ]]; then
-    _pass "xargs deny reason says xargs trash"
-  else
-    _fail "xargs deny reason does not say xargs trash"
-  fi
-  if [[ "$(_rm_redirect_run 'command time rm f')" == *'command rm'* ]]; then
-    _pass "command time rm f blames command in the reason text"
-  else
-    _fail "command time rm f does not blame command in the reason text"
-  fi
-  if [[ "$(_rm_redirect_run 'time command rm f')" == *'command rm'* ]]; then
-    _pass "time command rm f blames command in the reason text"
-  else
-    _fail "time command rm f does not blame command in the reason text"
-  fi
-  if [[ "$(_rm_redirect_run 'find . -delete')" == *'-exec trash {} +'* ]]; then
-    _pass "find deny reason says -exec trash {} +"
-  else
-    _fail "find deny reason does not say -exec trash {} +"
-  fi
-  if [[ "$(_rm_redirect_run 'fd -x rm')" == *'-x trash'* ]]; then
-    _pass "fd deny reason says -x trash"
-  else
-    _fail "fd deny reason does not say -x trash"
-  fi
-  if [[ "$(_rm_redirect_run 'git clean -fdx')" == *'git clean -n'* ]]; then
-    _pass "git clean deny reason says git clean -n"
-  else
-    _fail "git clean deny reason does not say git clean -n"
   fi
 
   # Case variants at a command position DENY: the alias is case-sensitive,

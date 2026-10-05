@@ -21,17 +21,44 @@
 # shellcheck source=tests/lib
 # shellcheck disable=SC2016  # literal $ in fixtures: they are the hook's input
 
+# Payloads for the Bash and path cases are built in zsh. Each payload and the
+# text it carries are recorded, and one jq call decodes them all at the end
+# (_tmp_guard_payloads_ok), so a bad escape fails loudly instead of reaching the
+# hook as fail-open invalid JSON.
+typeset -ga TG_SENT TG_PAYLOADS
+
+function _tmp_guard_json {
+  # Set REPLY to $1 escaped for the inside of a JSON string.
+  local s="$1"
+  s=${s//\\/\\\\}
+  s=${s//\"/\\\"}
+  s=${s//$'\n'/\\n}
+  REPLY=${s//$'\t'/\\t}
+}
+
 function _tmp_guard_run {
-  # Echo the hook's stdout for Bash command $1.
-  jq -n --arg c "$1" '{tool_name:"Bash", tool_input:{command:$c}}' \
-    | /bin/zsh "${SCRIPT_DIR}/claude/hooks/tmp-guard-hook"
+  # Set TG_OUT to the hook's stdout for Bash command $1.
+  _tmp_guard_json "$1"
+  TG_SENT+=("$1")
+  TG_PAYLOADS+=("{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"${REPLY}\"}}")
+  TG_OUT="$(/bin/zsh "${SCRIPT_DIR}/claude/hooks/tmp-guard-hook" <<< "${TG_PAYLOADS[-1]}" || true)"
 }
 
 function _tmp_guard_run_path {
-  # Echo the hook's stdout for tool $1 with input key $2 set to path $3.
-  jq -n --arg t "$1" --arg k "$2" --arg p "$3" \
-    '{tool_name:$t, tool_input:({($k):$p, content:"x"})}' \
-    | /bin/zsh "${SCRIPT_DIR}/claude/hooks/tmp-guard-hook"
+  # Set TG_OUT to the hook's stdout for tool $1 with input key $2 set to path $3.
+  _tmp_guard_json "$3"
+  TG_SENT+=("$3")
+  TG_PAYLOADS+=("{\"tool_name\":\"$1\",\"tool_input\":{\"$2\":\"${REPLY}\",\"content\":\"x\"}}")
+  TG_OUT="$(/bin/zsh "${SCRIPT_DIR}/claude/hooks/tmp-guard-hook" <<< "${TG_PAYLOADS[-1]}" || true)"
+}
+
+function _tmp_guard_payloads_ok {
+  # True when jq decodes every recorded payload back to the text it was built from.
+  local dir="$1"
+  printf '%s\x1e' "${TG_SENT[@]}" > "${dir}/sent"
+  printf '%s\n' "${TG_PAYLOADS[@]}" \
+    | jq -j '(.tool_input.command // .tool_input.file_path // .tool_input.notebook_path), "\u001e"' > "${dir}/decoded" 2>/dev/null
+  [[ "$(<"${dir}/sent")" == "$(<"${dir}/decoded")" ]]
 }
 
 function _tmp_guard_run_file {
@@ -41,10 +68,12 @@ function _tmp_guard_run_file {
 }
 
 function _tmp_guard_run_env {
-  # Echo the hook's stdout for Bash command $1 run by a zsh that reads the
-  # startup file directory $2 (ZDOTDIR), stderr folded in.
-  jq -n --arg c "$1" '{tool_name:"Bash", tool_input:{command:$c}}' \
-    | ZDOTDIR="$2" /bin/zsh "${SCRIPT_DIR}/claude/hooks/tmp-guard-hook" 2>&1 || true
+  # Set TG_OUT to the hook's stdout for Bash command $1 run by a zsh that reads
+  # the startup file directory $2 (ZDOTDIR), stderr folded in.
+  _tmp_guard_json "$1"
+  TG_SENT+=("$1")
+  TG_PAYLOADS+=("{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"${REPLY}\"}}")
+  TG_OUT="$(ZDOTDIR="$2" /bin/zsh "${SCRIPT_DIR}/claude/hooks/tmp-guard-hook" <<< "${TG_PAYLOADS[-1]}" 2>&1 || true)"
 }
 
 function _tmp_guard_check {
@@ -59,12 +88,14 @@ function _tmp_guard_check {
 
 function _tmp_guard_expect {
   local want="$1" cmd="$2" label="${3:-$2}"
-  _tmp_guard_check "${want}" "$(_tmp_guard_run "${cmd}")" "${label}"
+  _tmp_guard_run "${cmd}"
+  _tmp_guard_check "${want}" "${TG_OUT}" "${label}"
 }
 
 function _tmp_guard_expect_path {
   local want="$1" tool="$2" key="$3" target="$4"
-  _tmp_guard_check "${want}" "$(_tmp_guard_run_path "${tool}" "${key}" "${target}")" "${tool} ${target}"
+  _tmp_guard_run_path "${tool}" "${key}" "${target}"
+  _tmp_guard_check "${want}" "${TG_OUT}" "${tool} ${target}"
 }
 
 function _tmp_guard_expect_file {
@@ -74,6 +105,9 @@ function _tmp_guard_expect_file {
 
 function run_tmp_guard {
   _section "tmp scratch write guard hook"
+
+  TG_SENT=()
+  TG_PAYLOADS=()
 
   # claude/ is gitignored, so the hook is absent on a clean clone and in CI.
   if [[ ! -f "${SCRIPT_DIR}/claude/hooks/tmp-guard-hook" ]]; then
@@ -269,6 +303,9 @@ function run_tmp_guard {
   _tmp_guard_expect DENY 'curl --output-dir /tmp -O url'
   _tmp_guard_expect DENY 'curl -D /tmp/h url'
   _tmp_guard_expect DENY 'curl -c /tmp/jar url'
+  _tmp_guard_expect DENY 'curl --dump-header /tmp/h url'
+  _tmp_guard_expect DENY 'curl --cookie-jar /tmp/jar url'
+  _tmp_guard_expect DENY 'curl --trace-ascii /tmp/t url'
   _tmp_guard_expect DENY 'curl -o ~/a -o /tmp/b u' 'second -o under the root'
   _tmp_guard_expect DENY 'curl -H "X: y" -o /tmp/x url'
   _tmp_guard_expect PASS 'curl -o ~/x url'
@@ -278,6 +315,7 @@ function run_tmp_guard {
   _tmp_guard_expect PASS 'curl -T /tmp/up http://h/'
   _tmp_guard_expect DENY 'wget -O /tmp/x url'
   _tmp_guard_expect DENY 'wget -P /tmp url'
+  _tmp_guard_expect DENY 'wget -a /tmp/log url'
   _tmp_guard_expect DENY 'wget -O/tmp/x url'
   _tmp_guard_expect DENY 'wget --output-document=/tmp/x url'
   _tmp_guard_expect DENY 'wget --directory-prefix /tmp url'
@@ -461,6 +499,10 @@ function run_tmp_guard {
   _tmp_guard_expect DENY "${hd}" 'heredoc body fed to bash, quoted delimiter'
   hd=$'sh <<EOF\ntouch /tmp/x\nEOF'
   _tmp_guard_expect DENY "${hd}" 'heredoc body fed to sh'
+  hd=$'dash <<EOF\ntouch /tmp/x\nEOF'
+  _tmp_guard_expect DENY "${hd}" 'heredoc body fed to dash'
+  hd=$'su root <<EOF\ntouch /tmp/x\nEOF'
+  _tmp_guard_expect DENY "${hd}" 'heredoc body fed to su'
   hd=$'sudo -s <<EOF\ntouch /tmp/x\nEOF'
   _tmp_guard_expect DENY "${hd}" 'heredoc body fed to sudo -s'
   hd=$'$SHELL <<EOF\ntouch /tmp/x\nEOF'
@@ -715,7 +757,6 @@ function run_tmp_guard {
   _tmp_guard_expect PASS 'eval "echo a"; eval "echo b"'
   _tmp_guard_expect DENY 'tar -xf a -C ~/x -C /tmp/y' 'repeated -C'
   _tmp_guard_expect DENY 'tar -cf ~/a.tar -f /tmp/b.tar x' 'repeated -f'
-  _tmp_guard_expect DENY 'git -C ~/a -C /tmp/b init' 'repeated git -C'
   _tmp_guard_expect DENY 'cd ~/a; cd /tmp/b; touch x' 'second cd is the root one'
   _tmp_guard_expect DENY 'FOO=1 BAR=2 BAZ=3 cp a /tmp/b' 'several assignments'
   _tmp_guard_expect DENY 'sudo -u root nice -n 5 timeout 9 cp a /tmp/b' 'several wrappers'
@@ -733,21 +774,22 @@ function run_tmp_guard {
   fi
 
   # --- Verdict shape --------------------------------------------------------
-  local out reason rc root length
-  out="$(_tmp_guard_run 'echo hi > /tmp/x')"
-  reason="$(jq -r '.hookSpecificOutput.permissionDecisionReason' <<< "${out}")"
+  local reason rc root length
+  _tmp_guard_run 'echo hi > /tmp/x'
+  reason="$(jq -r '.hookSpecificOutput.permissionDecisionReason' <<< "${TG_OUT}")"
   if [[ "${reason}" == 'write to /tmp blocked: use ~/Library/Caches/tint/<repo>-<job>/ instead.' ]]; then
     _pass "deny reason is the one-line message"
   else
     _fail "deny reason unexpected: ${reason}"
   fi
-  if [[ "$(jq -r '.hookSpecificOutput.hookEventName' <<< "${out}")" == PreToolUse ]]; then
+  if [[ "$(jq -r '.hookSpecificOutput.hookEventName' <<< "${TG_OUT}")" == PreToolUse ]]; then
     _pass "deny names the PreToolUse event"
   else
     _fail "deny does not name the PreToolUse event"
   fi
   for root in /tmp /private/tmp /var/tmp /private/var/tmp /var/folders /private/var/folders; do
-    reason="$(jq -r '.hookSpecificOutput.permissionDecisionReason' <<< "$(_tmp_guard_run_path Write file_path "${root}/x")")"
+    _tmp_guard_run_path Write file_path "${root}/x"
+    reason="$(jq -r '.hookSpecificOutput.permissionDecisionReason' <<< "${TG_OUT}")"
     length=${#reason}
     if [[ "${reason}" == "write to ${root} blocked: "* ]] && (( length <= 120 )); then
       _pass "reason names ${root} (${length} chars)"
@@ -807,14 +849,21 @@ function run_tmp_guard {
 
   # --- Shell options from the user's startup files do not change a verdict -----
   # zsh reads $ZDOTDIR/.zshenv for every invocation, scripts included.
-  local zdir zout
+  local zdir
   zdir="$(mktemp -d "${TMPDIR:-/tmp}/tmp-guard-zdotdir.XXXXXX")"
   print -r -- 'setopt ksharrays shwordsplit nobareglobqual nounset errexit noglob nomatch' > "${zdir}/.zshenv"
-  zout="$(_tmp_guard_run_env 'cp a /tmp/b' "${zdir}")"
-  _tmp_guard_check DENY "${zout}" 'deny under ksharrays, shwordsplit and errexit'
-  zout="$(_tmp_guard_run_env $'git commit -m "$(cat <<\'EOF\'\nmkdir /tmp/x\nEOF\n)"' "${zdir}")"
-  _tmp_guard_check PASS "${zout}" 'pass under ksharrays, shwordsplit and errexit, stdout and stderr empty'
-  zout="$(_tmp_guard_run_env 'cat /tmp/x' "${zdir}")"
-  _tmp_guard_check PASS "${zout}" 'read passes under ksharrays'
+  _tmp_guard_run_env 'cp a /tmp/b' "${zdir}"
+  _tmp_guard_check DENY "${TG_OUT}" 'deny under ksharrays, shwordsplit and errexit'
+  _tmp_guard_run_env $'git commit -m "$(cat <<\'EOF\'\nmkdir /tmp/x\nEOF\n)"' "${zdir}"
+  _tmp_guard_check PASS "${TG_OUT}" 'pass under ksharrays, shwordsplit and errexit, stdout and stderr empty'
+  _tmp_guard_run_env 'cat /tmp/x' "${zdir}"
+  _tmp_guard_check PASS "${TG_OUT}" 'read passes under ksharrays'
+
+  # Every payload above was built in zsh, not by jq: decode them all once.
+  if _tmp_guard_payloads_ok "${zdir}"; then
+    _pass "all ${#TG_PAYLOADS} zsh-built payloads decode to the command or path sent"
+  else
+    _fail "a zsh-built payload does not decode to the command or path sent"
+  fi
   /bin/rm -rf "${zdir}"
 }

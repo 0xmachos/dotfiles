@@ -44,38 +44,67 @@ function _lh_find_tool {
   fi
 }
 
-# Runs the hook on JSON payload $1 with optional NAME=VALUE env overrides
+# Runs the hook on the payload file $1 with optional NAME=VALUE env overrides
 # ($2...); LINT_HOOK_LOG defaults to empty (logging off) so no case writes the
 # real log, and a later LINT_HOOK_LOG=... override wins. Sets globals
-# LH_LAST_STDOUT, LH_LAST_STDERR, LH_LAST_RC. Call it as a plain statement, never inside `$(...)`: the subshell would lose the
-# globals. Stdin is a temp file, not a pipe, and rc is captured via if/else,
-# not a bare `rc=$?`: under ./test's `set -euo pipefail` a bare failure
-# would abort the ENTIRE suite run, not just one case.
-function _lh_exec {
-  local payload="$1" outf errf payloadf
+# LH_LAST_STDOUT, LH_LAST_STDERR, LH_LAST_RC. Call it as a plain statement,
+# never inside `$(...)`: the subshell would lose the globals. Stdin is a file,
+# not a pipe, and rc is captured via if/else, not a bare `rc=$?`: under
+# ./test's `set -euo pipefail` a bare failure would abort the ENTIRE suite run,
+# not just one case. The overrides are exported in a subshell (no `env`
+# exec); the output files are fixed names under LH_SCRATCH, overwritten per
+# call (cases run serially).
+function _lh_exec_file {
+  local payloadf="$1" outf="${LH_SCRATCH}/exec-out" errf="${LH_SCRATCH}/exec-err"
   shift
-  outf="$(/usr/bin/mktemp "${TMPDIR:-/tmp}/lint-hook-test.XXXXXX")"
-  errf="$(/usr/bin/mktemp "${TMPDIR:-/tmp}/lint-hook-test.XXXXXX")"
-  payloadf="$(/usr/bin/mktemp "${TMPDIR:-/tmp}/lint-hook-test.XXXXXX")"
-  printf '%s' "${payload}" > "${payloadf}"
 
-  if env LINT_HOOK_LOG= "$@" /bin/zsh "${SCRIPT_DIR}/claude/hooks/lint-hook" < "${payloadf}" > "${outf}" 2> "${errf}"; then
+  if (
+    local kv
+    export LINT_HOOK_LOG=
+    # shellcheck disable=SC2163  # kv holds a NAME=VALUE argument to export
+    for kv in "$@"; do export "${kv}"; done
+    exec /bin/zsh "${SCRIPT_DIR}/claude/hooks/lint-hook"
+  ) < "${payloadf}" > "${outf}" 2> "${errf}"; then
     LH_LAST_RC=0
   else
     LH_LAST_RC=$?
   fi
   LH_LAST_STDOUT="$(< "${outf}")"
   LH_LAST_STDERR="$(< "${errf}")"
-  /bin/rm -f "${outf}" "${errf}" "${payloadf}"
 }
 
-# Payload {tool_name $2 (default Write), tool_input.file_path $1}. Plain
-# statement, like _lh_exec.
+# Runs the hook on JSON payload string $1 plus env overrides ($2...). Plain
+# statement, like _lh_exec_file.
+function _lh_exec {
+  local payload="$1" payloadf="${LH_SCRATCH}/exec-in"
+  shift
+  printf '%s' "${payload}" > "${payloadf}"
+  _lh_exec_file "${payloadf}" "$@"
+}
+
+# Payload {tool_name $2 (default Write), tool_input.file_path $1}, then env
+# overrides ($3...). Plain statement, like _lh_exec.
 function _lh_run {
   local file="$1" tool_name="${2:-Write}" payload
+  shift $(( $# < 2 ? $# : 2 ))
   payload="$(jq -n --arg f "${file}" --arg t "${tool_name}" \
     '{tool_name: $t, tool_input: {file_path: $f}}')"
-  _lh_exec "${payload}"
+  _lh_exec "${payload}" "$@"
+}
+
+# _lh_run with the hook's cwd = $1: a relative file_path $2, plus _lh_run's
+# remaining arguments. cd/restore, not a `(cd dir && _lh_run ...)` subshell,
+# which would discard LH_LAST_*. A failed cd fails loudly: a vacuous PASS
+# would read as a skip.
+function _lh_run_in {
+  local dir="$1" saved="${PWD}"
+  shift
+  if ! cd "${dir}"; then
+    _fail "cannot cd to ${dir} for a relative-path case"
+    return 0
+  fi
+  _lh_run "$@"
+  cd "${saved}" || return
 }
 
 # Payload with an arbitrary tool_input field ($1 name, $2 value): the
@@ -125,6 +154,38 @@ function _lh_expect {
   fi
 }
 
+# Asserts the last run: verdict $1 (PASS|CONTEXT), exit 0 and empty stderr, as
+# one case labelled "<$3 or $1>, exit 0, empty stderr: $2".
+function _lh_check {
+  local want="$1" label="$2" tag="${3:-$1}" got
+  got="$(_lint_hook_verdict "${LH_LAST_STDOUT}")"
+  if [[ "${got}" == "${want}" && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
+    _pass "${tag}, exit 0, empty stderr: ${label}"
+  else
+    _fail "${label} — expected ${want}, got ${got} (rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR} out=${LH_LAST_STDOUT})"
+  fi
+}
+
+# Shebang table: each row is `want|repo|file|shebang|label[|body]`, repo one of
+# bare, rc (opted in), norepo; the body defaults to a script with SC2086.
+# Every row is its own _lh_expect case, so a failing row never hides the rest.
+function _lh_shebang_table {
+  local row dir
+  local -a r
+  # shellcheck disable=SC2034  # row is used inside the zsh-only (@s:|:) split below
+  for row in "$@"; do
+    # shellcheck disable=SC2296  # zsh-only (@s:|:) split on a separator
+    r=("${(@s:|:)row}")
+    case "${r[2]}" in
+      bare) dir="${LH_BARE}" ;;
+      rc) dir="${LH_RCFILE}" ;;
+      norepo) dir="${LH_NOREPO}" ;;
+    esac
+    printf '%s\n%s\n' "${r[4]}" "${r[6]:-echo \$1}" > "${dir}/${r[3]}"
+    _lh_expect "${r[1]}" "${dir}/${r[3]}" "${r[5]}"
+  done
+}
+
 # Three sandbox repos (opted in via .shellcheckrc, via a workflow file, opted
 # out) and one non-repo directory, all under $TMPDIR. No real repo is touched.
 function _lh_setup_repos {
@@ -141,10 +202,12 @@ function _lh_setup_repos {
   echo "runs shellcheck in CI" > "${LH_WORKFLOW}/.github/workflows/ci.yml"
 
   LH_NOREPO="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/lint-hook-norepo.XXXXXX")"
+  # Per-run files of _lh_exec and the raw-stdin cases.
+  LH_SCRATCH="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/lint-hook-scratch.XXXXXX")"
 }
 
 function _lh_teardown_repos {
-  /bin/rm -rf "${LH_BARE}" "${LH_RCFILE}" "${LH_WORKFLOW}" "${LH_NOREPO}"
+  /bin/rm -rf "${LH_BARE}" "${LH_RCFILE}" "${LH_WORKFLOW}" "${LH_NOREPO}" "${LH_SCRATCH}"
 }
 
 function run_lint_hook {
@@ -212,21 +275,14 @@ function run_lint_hook {
     printf '#!/bin/zsh\necho $1\n' > "${LH_WORKFLOW}/issue"
     _lh_expect CONTEXT "${LH_WORKFLOW}/issue" "zsh script with a real finding, workflow-file repo"
 
-    # THE REGRESSION GUARD: a .sh file with a zsh shebang and a real finding
-    # in a repo with no convention -> PASS (no SC1071 false positive).
-    printf '#!/usr/bin/env zsh\necho $1\n' > "${LH_BARE}/x.sh"
-    _lh_expect PASS "${LH_BARE}/x.sh" ".sh + canonical zsh shebang + real issue, bare repo (regression guard)"
-
-    # Opted-in repo -> CONTEXT (the extension never short-circuits the shebang).
-    printf '#!/usr/bin/env zsh\necho $1\n' > "${LH_RCFILE}/x.sh"
-    _lh_expect CONTEXT "${LH_RCFILE}/x.sh" ".sh + canonical zsh shebang + real issue, convention repo"
-
-    # Non-canonical zsh shebangs (env, leading space) route like "#!/bin/zsh".
-    printf '#! /bin/zsh\necho $1\n' > "${LH_BARE}/space.sh"
-    _lh_expect PASS "${LH_BARE}/space.sh" ".sh + '#! /bin/zsh' (space) + real issue, bare repo"
-
-    printf '#!/usr/bin/env -S zsh -f\necho $1\n' > "${LH_BARE}/envs.sh"
-    _lh_expect PASS "${LH_BARE}/envs.sh" ".sh + '#!/usr/bin/env -S zsh -f' + real issue, bare repo"
+    # A .sh file with a zsh shebang is skipped in a bare repo (no SC1071 false
+    # positive) and linted in an opted-in repo; non-canonical zsh shebangs
+    # route like "#!/bin/zsh".
+    _lh_shebang_table \
+      "PASS|bare|x.sh|#!/usr/bin/env zsh|.sh + canonical zsh shebang + real issue, bare repo (regression guard)" \
+      "CONTEXT|rc|x.sh|#!/usr/bin/env zsh|.sh + canonical zsh shebang + real issue, convention repo" \
+      "PASS|bare|space.sh|#! /bin/zsh|.sh + '#! /bin/zsh' (space) + real issue, bare repo" \
+      "PASS|bare|envs.sh|#!/usr/bin/env -S zsh -f|.sh + '#!/usr/bin/env -S zsh -f' + real issue, bare repo"
 
     printf '#!/usr/bin/zsh\necho $1\n' > "${LH_RCFILE}/nc.sh"
     _lh_run "${LH_RCFILE}/nc.sh"
@@ -237,51 +293,25 @@ function run_lint_hook {
       _fail ".sh + '#!/usr/bin/zsh', convention repo — expected CONTEXT+SC2086, no SC1071, got: ${out}"
     fi
 
-    # Outside any git repository -> PASS.
-    printf '#!/bin/zsh\necho $1\n' > "${LH_NOREPO}/issue"
-    _lh_expect PASS "${LH_NOREPO}/issue" "zsh script with a real finding, not a git repo"
-
-    # Neither zsh nor bash/sh: skipped, not routed into the .sh arm, opted in
-    # or not.
-    printf '#!/usr/bin/expect -f\nputs $1\n' > "${LH_BARE}/other.sh"
-    _lh_expect PASS "${LH_BARE}/other.sh" ".sh + unrelated interpreter shebang (expect), bare repo"
-    printf '#!/usr/bin/expect -f\nputs $1\n' > "${LH_RCFILE}/other.sh"
-    _lh_expect PASS "${LH_RCFILE}/other.sh" ".sh + unrelated interpreter shebang (expect), convention repo"
-
-    # bash/sh are linted whatever the repo, shebang form or extension.
-    printf '#!/bin/bash\necho $1\n' > "${LH_BARE}/bissue"
-    _lh_expect CONTEXT "${LH_BARE}/bissue" "'#!/bin/bash' shebang with a real finding, bare repo"
-
-    printf '#!/bin/sh\necho $1\n' > "${LH_BARE}/shissue"
-    _lh_expect CONTEXT "${LH_BARE}/shissue" "'#!/bin/sh' shebang with a real finding, bare repo"
-
-    printf '#!/usr/bin/env bash\necho $1\n' > "${LH_BARE}/envbissue"
-    _lh_expect CONTEXT "${LH_BARE}/envbissue" "'#!/usr/bin/env bash' shebang with a real finding, bare repo"
-
-    printf '#!/usr/bin/bash\necho $1\n' > "${LH_BARE}/bin-bash.sh"
-    _lh_expect CONTEXT "${LH_BARE}/bin-bash.sh" "'#!/usr/bin/bash' shebang with a real finding, bare repo"
-
-    printf '#!/usr/local/bin/bash\necho $1\n' > "${LH_BARE}/usrlocal-bash.sh"
-    _lh_expect CONTEXT "${LH_BARE}/usrlocal-bash.sh" "'#!/usr/local/bin/bash' shebang with a real finding, bare repo"
-
-    printf '#!/opt/homebrew/bin/bash\necho $1\n' > "${LH_BARE}/homebrew-bash.sh"
-    _lh_expect CONTEXT "${LH_BARE}/homebrew-bash.sh" "'#!/opt/homebrew/bin/bash' shebang with a real finding, bare repo"
-
-    printf '#!/usr/bin/env -S bash -eu\necho $1\n' > "${LH_BARE}/env-s-bash.sh"
-    _lh_expect CONTEXT "${LH_BARE}/env-s-bash.sh" "'#!/usr/bin/env -S bash -eu' shebang with a real finding, bare repo"
-
-    printf '#! /bin/bash\necho $1\n' > "${LH_BARE}/space-bash.sh"
-    _lh_expect CONTEXT "${LH_BARE}/space-bash.sh" "'#! /bin/bash' (space) shebang with a real finding, bare repo"
-
-    printf '#!/usr/bin/sh\necho $1\n' > "${LH_BARE}/usrbin-sh.sh"
-    _lh_expect CONTEXT "${LH_BARE}/usrbin-sh.sh" "'#!/usr/bin/sh' shebang with a real finding, bare repo"
-
-    printf '#!/usr/bin/env -S sh\necho $1\n' > "${LH_BARE}/env-s-sh.sh"
-    _lh_expect CONTEXT "${LH_BARE}/env-s-sh.sh" "'#!/usr/bin/env -S sh' shebang with a real finding, bare repo"
-
-    # A "zsh" mentioned in a shebang-line comment must not change the route.
-    printf '#!/bin/bash # also runs under zsh\necho $1\n' > "${LH_BARE}/commented.sh"
-    _lh_expect CONTEXT "${LH_BARE}/commented.sh" "'#!/bin/bash # also runs under zsh' takes the bash route"
+    # Not a git repo, other interpreters (skipped, never routed into the .sh
+    # arm) and bash/sh (linted whatever the repo, shebang form or extension;
+    # a "zsh" in a shebang-line comment must not change the route).
+    _lh_shebang_table \
+      "PASS|norepo|issue|#!/bin/zsh|zsh script with a real finding, not a git repo" \
+      "PASS|bare|other.sh|#!/usr/bin/expect -f|.sh + unrelated interpreter shebang (expect), bare repo|puts \$1" \
+      "PASS|rc|other.sh|#!/usr/bin/expect -f|.sh + unrelated interpreter shebang (expect), convention repo|puts \$1" \
+      "CONTEXT|bare|bissue|#!/bin/bash|'#!/bin/bash' shebang with a real finding, bare repo" \
+      "CONTEXT|bare|shissue|#!/bin/sh|'#!/bin/sh' shebang with a real finding, bare repo" \
+      "CONTEXT|bare|envbissue|#!/usr/bin/env bash|'#!/usr/bin/env bash' shebang with a real finding, bare repo" \
+      "CONTEXT|bare|bin-bash.sh|#!/usr/bin/bash|'#!/usr/bin/bash' shebang with a real finding, bare repo" \
+      "CONTEXT|bare|usrlocal-bash.sh|#!/usr/local/bin/bash|'#!/usr/local/bin/bash' shebang with a real finding, bare repo" \
+      "CONTEXT|bare|homebrew-bash.sh|#!/opt/homebrew/bin/bash|'#!/opt/homebrew/bin/bash' shebang with a real finding, bare repo" \
+      "CONTEXT|bare|env-s-bash.sh|#!/usr/bin/env -S bash -eu|'#!/usr/bin/env -S bash -eu' shebang with a real finding, bare repo" \
+      "CONTEXT|bare|envloop|#!/usr/bin/env -S bash -eu|'#!/usr/bin/env -S bash -eu' shebang, no extension, with a real finding, bare repo" \
+      "CONTEXT|bare|space-bash.sh|#! /bin/bash|'#! /bin/bash' (space) shebang with a real finding, bare repo" \
+      "CONTEXT|bare|usrbin-sh.sh|#!/usr/bin/sh|'#!/usr/bin/sh' shebang with a real finding, bare repo" \
+      "CONTEXT|bare|env-s-sh.sh|#!/usr/bin/env -S sh|'#!/usr/bin/env -S sh' shebang with a real finding, bare repo" \
+      "CONTEXT|bare|commented.sh|#!/bin/bash # also runs under zsh|'#!/bin/bash # also runs under zsh' takes the bash route"
 
     # .sh/.bash by extension (no shebang) is unconditional. Assert SC2086, not
     # just CONTEXT: shellcheck adds an SC2148 no-shebang tip on its own.
@@ -296,14 +326,19 @@ function run_lint_hook {
 
     _lh_expect CONTEXT "${LH_BARE}/plain.sh" ".sh by extension via an Edit payload" Edit
 
+    # The .bash extension takes the same unconditional arm; a CRLF shebang
+    # (trailing "\r") still reads as bash.
+    printf 'echo $1\n' > "${LH_BARE}/plain.bash"
+    _lh_run "${LH_BARE}/plain.bash"
+    _lh_check CONTEXT ".bash by extension, no shebang, bare repo"
+    printf '#!/bin/bash\r\necho $1\n' > "${LH_BARE}/crlf"
+    _lh_run "${LH_BARE}/crlf"
+    _lh_check CONTEXT "'#!/bin/bash' shebang with a CRLF line ending, bare repo"
+
     # A relative file_path starting with "-" must not read as a linter flag
     # (the hook absolutises it first).
     printf 'echo $1\n' > "${LH_BARE}/-x.sh"
-    local saved_pwd_dash
-    saved_pwd_dash="$(pwd)"
-    cd "${LH_BARE}" || return
-    _lh_run -x.sh
-    cd "${saved_pwd_dash}" || return
+    _lh_run_in "${LH_BARE}" -x.sh
     if [[ "$(_lint_hook_verdict "${LH_LAST_STDOUT}")" == CONTEXT && "${LH_LAST_STDOUT}" == *SC2086* && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
       _pass "CONTEXT with SC2086, exit 0, empty stderr: relative file_path starting with '-'"
     else
@@ -311,12 +346,8 @@ function run_lint_hook {
     fi
 
     # Seam: a nonexistent LINT_HOOK_SHELLCHECK reads as shellcheck absent.
-    _lh_exec "$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s"}}' "${LH_BARE}/plain.sh")" LINT_HOOK_SHELLCHECK=/nonexistent
-    if [[ "$(_lint_hook_verdict "${LH_LAST_STDOUT}")" == PASS && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
-      _pass "PASS, exit 0, empty stderr: LINT_HOOK_SHELLCHECK pointed at a nonexistent path reads as absent"
-    else
-      _fail "LINT_HOOK_SHELLCHECK=/nonexistent did not fail open cleanly (rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR})"
-    fi
+    _lh_run "${LH_BARE}/plain.sh" Write LINT_HOOK_SHELLCHECK=/nonexistent
+    _lh_check PASS "LINT_HOOK_SHELLCHECK pointed at a nonexistent path reads as absent"
 
     # chmod 000 makes shellcheck exit 2 (permission denied): fails open.
     printf '#!/bin/bash\necho hi\n' > "${LH_BARE}/perm.sh"
@@ -328,54 +359,65 @@ function run_lint_hook {
     # It execs /bin/sleep rather than forking, so the alarm lands on the
     # running process and nothing is orphaned. LINT_HOOK_DEADLINE=1 keeps
     # the case short.
-    local lh_slow
-    lh_slow="$(/usr/bin/mktemp "${TMPDIR:-/tmp}/lint-hook-slow.XXXXXX")"
-    {
-      echo '#!/bin/zsh'
-      echo 'exec /bin/sleep 30'
-    } > "${lh_slow}"
+    local lh_slow="${LH_SCRATCH}/slow-linter"
+    printf '#!/bin/zsh\nexec /bin/sleep 30\n' > "${lh_slow}"
     /bin/chmod +x "${lh_slow}"
     printf '#!/bin/bash\necho $1\n' > "${LH_BARE}/timeout.sh"
-    local lh_t0 lh_t1 lh_elapsed lh_tmp_before lh_tmp_after
-    lh_tmp_before="$(/usr/bin/find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'lint-hook.*' 2>/dev/null | /usr/bin/wc -l | tr -d ' ')"
-    lh_t0="$(/bin/date +%s)"
-    _lh_exec "$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s"}}' "${LH_BARE}/timeout.sh")" "LINT_HOOK_SHELLCHECK=${lh_slow}" LINT_HOOK_DEADLINE=1
-    lh_t1="$(/bin/date +%s)"
-    lh_elapsed=$(( lh_t1 - lh_t0 ))
-    lh_tmp_after="$(/usr/bin/find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'lint-hook.*' 2>/dev/null | /usr/bin/wc -l | tr -d ' ')"
+    local lh_t0 lh_elapsed
+    local -a lh_leaked_before lh_leaked_after
+    lh_leaked_before=("${TMPDIR:-/tmp}"/lint-hook.*(N))
+    lh_t0="${EPOCHSECONDS}"
+    _lh_run "${LH_BARE}/timeout.sh" Write "LINT_HOOK_SHELLCHECK=${lh_slow}" LINT_HOOK_DEADLINE=1
+    lh_elapsed=$(( EPOCHSECONDS - lh_t0 ))
+    lh_leaked_after=("${TMPDIR:-/tmp}"/lint-hook.*(N))
     if [[ "$(_lint_hook_verdict "${LH_LAST_STDOUT}")" == PASS && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" && "${lh_elapsed}" -lt 5 ]]; then
       _pass "PASS, exit 0, empty stderr, ${lh_elapsed}s: a hung linter is killed at the deadline, not waited out"
     else
       _fail "hung linter was not bounded by the deadline (rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR} elapsed=${lh_elapsed}s out=${LH_LAST_STDOUT})"
     fi
-    if [[ "${lh_tmp_after}" -le "${lh_tmp_before}" ]]; then
+    if (( ${#lh_leaked_after} <= ${#lh_leaked_before} )); then
       _pass "no leaked lint-hook.* temp file after a killed linter"
     else
-      _fail "lint-hook.* temp file count grew after a killed linter (before=${lh_tmp_before} after=${lh_tmp_after})"
+      _fail "lint-hook.* temp file count grew after a killed linter (before=${#lh_leaked_before} after=${#lh_leaked_after})"
     fi
+
+    # A non-numeric or zero LINT_HOOK_DEADLINE falls back to the 5 s default
+    # (perl's alarm(0) means "no alarm"), cutting a 30 s sleep off near 5. The
+    # 20 s bound allows hook start-up under parallel load; a disabled deadline
+    # takes 30 s.
+    local lh_bad_deadline
+    for lh_bad_deadline in abc 0; do
+      lh_t0="${EPOCHSECONDS}"
+      _lh_run "${LH_BARE}/timeout.sh" Write "LINT_HOOK_SHELLCHECK=${lh_slow}" "LINT_HOOK_DEADLINE=${lh_bad_deadline}"
+      lh_elapsed=$(( EPOCHSECONDS - lh_t0 ))
+      if [[ "$(_lint_hook_verdict "${LH_LAST_STDOUT}")" == PASS && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" && "${lh_elapsed}" -lt 20 ]]; then
+        _pass "PASS, exit 0, empty stderr, ${lh_elapsed}s: LINT_HOOK_DEADLINE=${lh_bad_deadline} falls back to the 5s default"
+      else
+        _fail "LINT_HOOK_DEADLINE=${lh_bad_deadline} did not fall back to the default deadline (rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR} elapsed=${lh_elapsed}s)"
+      fi
+    done
     /bin/rm -f "${lh_slow}"
 
     # LINE-CAP branch: 120 findings. file_path is absolutised, so only the
-    # finding COUNT decides which cap fires, not line length. cd/restore, not
-    # a `(cd dir && _lh_run ...)` subshell, which would discard LH_LAST_*.
+    # finding COUNT decides which cap fires, not line length.
     {
       echo '#!/bin/bash'
       local i
-      for i in $(seq 1 120); do echo "echo \$v${i}"; done
+      for i in {1..120}; do echo "echo \$v${i}"; done
     } > "${LH_BARE}/huge.sh"
-    local saved_pwd ctx3 lines3
-    saved_pwd="$(pwd)"
-    cd "${LH_BARE}" || return
-    _lh_run huge.sh
-    cd "${saved_pwd}" || return
+    local ctx3
+    local -a lines3
+    _lh_run_in "${LH_BARE}" huge.sh
     ctx3="$(printf '%s' "${LH_LAST_STDOUT}" | jq -r '.hookSpecificOutput.additionalContext')"
-    lines3="$(printf '%s\n' "${ctx3}" | /usr/bin/wc -l | tr -d ' ')"
+    # shellcheck disable=SC2296  # zsh-only (@f) split on newlines
+    lines3=("${(@f)ctx3}")
     # 42 = "found issues in FILE:" line + 40 findings + "...N more" marker.
-    if (( lines3 == 42 )); then
+    if (( ${#lines3} == 42 )); then
       _pass "line-cap branch: exactly 42 lines (prefix + 40 findings + 1 marker)"
     else
-      _fail "line-cap branch: expected exactly 42 lines, got ${lines3}"
+      _fail "line-cap branch: expected exactly 42 lines, got ${#lines3}"
     fi
+
     if [[ "${ctx3}" == *' more'* ]]; then
       _pass "line-cap branch: marker reads '...N more'"
     else
@@ -388,7 +430,7 @@ function run_lint_hook {
       echo '#!/bin/bash'
       local j vname
       # shellcheck disable=SC2034,SC2296  # zsh-only ${(l:width::pad:)str} left-pad; $j IS used inside it, shellcheck's bash parser just can't see through the zsh flag syntax
-      for j in $(seq 1 30); do
+      for j in {1..30}; do
         vname="v${(l:300::0:)j}"
         echo "${vname}=1"
       done
@@ -429,11 +471,11 @@ function run_lint_hook {
       echo '#!/bin/bash'
       local k vname2
       # shellcheck disable=SC2034,SC2296  # zsh-only ${(l:width::pad:)str} left-pad; $k IS used inside it, shellcheck's bash parser just can't see through the zsh flag syntax
-      for k in $(seq 1 11); do
+      for k in {1..11}; do
         vname2="w${(l:340::0:)k}"
         echo "${vname2}=1"
       done
-      for k in $(seq 1 40); do
+      for k in {1..40}; do
         echo "echo \$w${k}"
       done
     } > "${LH_BARE}/mixed.sh"
@@ -478,7 +520,8 @@ function run_lint_hook {
   local -a lh_f
   lh_mg="$(_lh_find_tool magika)"
   if [[ -n "${lh_mg}" ]]; then
-    _lh_exec "$(jq -n --arg f "${LH_NOREPO}/notes.md" '{tool_input:{file_path:$f}}')" "LINT_HOOK_LOG=${lh_log}"
+    # magika start-up under load can exceed the 5 s default deadline.
+    _lh_run "${LH_NOREPO}/notes.md" Write "LINT_HOOK_LOG=${lh_log}" LINT_HOOK_DEADLINE=30
     lh_line="$(< "${lh_log}")" 2>/dev/null || lh_line=""
     # shellcheck disable=SC2296  # zsh-only ${(ps:\t:)} split on tabs
     lh_f=("${(@ps:\t:)lh_line}")
@@ -491,8 +534,8 @@ function run_lint_hook {
       _fail "unlinted .md log line wrong (rc=${LH_LAST_RC} out=${LH_LAST_STDOUT} line=${lh_line})"
     fi
 
-    _lh_exec "$(jq -n --arg f "${LH_NOREPO}/noshebang" '{tool_input:{file_path:$f}}')" "LINT_HOOK_LOG=${lh_log}"
-    lh_line="$(/usr/bin/tail -n 1 "${lh_log}")"
+    _lh_run "${LH_NOREPO}/noshebang" Write "LINT_HOOK_LOG=${lh_log}" LINT_HOOK_DEADLINE=30
+    lh_line="$(/usr/bin/tail -n 1 "${lh_log}" 2>/dev/null)" || lh_line=""
     # shellcheck disable=SC2296  # zsh-only ${(ps:\t:)} split on tabs
     lh_f=("${(@ps:\t:)lh_line}")
     if [[ "$(/usr/bin/wc -l < "${lh_log}")" -eq 2 && "${lh_f[3]}" == - ]]; then
@@ -502,7 +545,7 @@ function run_lint_hook {
     fi
 
     printf '{}\n' > "${LH_NOREPO}/clean.json"
-    _lh_exec "$(jq -n --arg f "${LH_NOREPO}/clean.json" '{tool_input:{file_path:$f}}')" "LINT_HOOK_LOG=${lh_log}"
+    _lh_run "${LH_NOREPO}/clean.json" Write "LINT_HOOK_LOG=${lh_log}" LINT_HOOK_DEADLINE=30
     if [[ "$(/usr/bin/wc -l < "${lh_log}")" -eq 2 ]]; then
       _pass "linted file (.json) is not logged"
     else
@@ -512,7 +555,7 @@ function run_lint_hook {
     _skip "magika not installed — unlinted-log content cases"
   fi
 
-  _lh_exec "$(jq -n --arg f "${LH_NOREPO}/notes.md" '{tool_input:{file_path:$f}}')" "LINT_HOOK_LOG=${LH_NOREPO}/absent.tsv" LINT_HOOK_MAGIKA=/nonexistent
+  _lh_run "${LH_NOREPO}/notes.md" Write "LINT_HOOK_LOG=${LH_NOREPO}/absent.tsv" LINT_HOOK_MAGIKA=/nonexistent
   if [[ ! -e "${LH_NOREPO}/absent.tsv" && -z "${LH_LAST_STDOUT}" && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
     _pass "LINT_HOOK_MAGIKA=/nonexistent: nothing logged, exit 0, empty stderr"
   else
@@ -560,16 +603,8 @@ PLIST
   # "-" relative path vs jq flags (as the shellcheck case above); jq has no
   # optional-tool guard, so this always runs.
   printf '{"a": 1,}\n' > "${LH_NOREPO}/-e.json"
-  local saved_pwd_dashj
-  saved_pwd_dashj="$(pwd)"
-  cd "${LH_NOREPO}" || return
-  _lh_run -e.json
-  cd "${saved_pwd_dashj}" || return
-  if [[ "$(_lint_hook_verdict "${LH_LAST_STDOUT}")" == CONTEXT && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
-    _pass "CONTEXT, exit 0, empty stderr: relative json file_path starting with '-'"
-  else
-    _fail "relative json file_path starting with '-' was not linted (rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR})"
-  fi
+  _lh_run_in "${LH_NOREPO}" -e.json
+  _lh_check CONTEXT "relative json file_path starting with '-'"
 
   # chmod 000 makes jq exit 2 (permission denied): fails open.
   printf '{"a": 1,}\n' > "${LH_NOREPO}/permbad.json"
@@ -581,6 +616,18 @@ PLIST
   printf '{\n  // a comment\n  "a": 1\n}\n' > "${LH_NOREPO}/tsconfig.json"
   _lh_expect PASS "${LH_NOREPO}/tsconfig.json" "tsconfig.json with a comment (skip-list)"
 
+  # Also skipped: jsconfig.json and tsconfig*.json variants (by basename),
+  # anything under .vscode/.
+  /bin/mkdir -p "${LH_NOREPO}/.vscode"
+  printf '{\n  // a comment\n  "a": 1\n}\n' > "${LH_NOREPO}/jsconfig.json"
+  printf '{\n  // a comment\n  "a": 1\n}\n' > "${LH_NOREPO}/tsconfig.base.json"
+  printf '{\n  // a comment\n  "a": 1\n}\n' > "${LH_NOREPO}/.vscode/settings.json"
+  local lh_jsonc
+  for lh_jsonc in jsconfig.json tsconfig.base.json .vscode/settings.json; do
+    _lh_run "${LH_NOREPO}/${lh_jsonc}"
+    _lh_check PASS "${lh_jsonc} with a comment (skip-list)"
+  done
+
   # Also skipped: devcontainer.json (by basename) and anything under .zed/.
   /bin/mkdir -p "${LH_NOREPO}/.devcontainer" "${LH_NOREPO}/.zed"
   printf '{\n  // a comment\n  "a": 1\n}\n' > "${LH_NOREPO}/.devcontainer/devcontainer.json"
@@ -589,16 +636,8 @@ PLIST
   _lh_expect PASS "${LH_NOREPO}/.zed/settings.json" ".zed/settings.json with a comment (skip-list)"
 
   # Same .zed/ skip by a RELATIVE path (file_path is absolutised first).
-  local saved_pwd_zed
-  saved_pwd_zed="$(pwd)"
-  cd "${LH_NOREPO}" || return
-  _lh_run .zed/settings.json
-  cd "${saved_pwd_zed}" || return
-  if [[ "$(_lint_hook_verdict "${LH_LAST_STDOUT}")" == PASS && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
-    _pass "PASS, exit 0, empty stderr: .zed/settings.json addressed by a RELATIVE path (skip-list)"
-  else
-    _fail "relative .zed/settings.json path was not skipped (rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR})"
-  fi
+  _lh_run_in "${LH_NOREPO}" .zed/settings.json
+  _lh_check PASS ".zed/settings.json addressed by a RELATIVE path (skip-list)"
 
   # --- swift -------------------------------------------------------------
 
@@ -614,39 +653,8 @@ PLIST
     printf '#!/usr/bin/env swift\nlet x = 1\n' > "${LH_NOREPO}/envswift.swift"
     _lh_expect CONTEXT "${LH_NOREPO}/envswift.swift" "'#!/usr/bin/env swift' still reaches swiftlint via the extension arm"
 
-    # The env-shebang word loop declares locals; a stray `NAME=value` on
-    # stdout would turn a verdict into INVALID.
-    printf '#!/usr/bin/env -S bash -eu\necho $1\n' > "${LH_BARE}/envloop"
-    _lh_expect CONTEXT "${LH_BARE}/envloop" "env -S bash shebang with a finding: exactly one valid verdict object, no stray stdout"
-
-    # A non-numeric or zero LINT_HOOK_DEADLINE falls back to the 5 s default
-    # (perl's alarm(0) means "no alarm"), cutting a 30 s sleep off near 5. The
-    # 20 s bound allows hook start-up under parallel load (an 8 s bound over a
-    # 9 s sleep failed at 8 s, 2026-09-29); a disabled deadline takes 30 s.
-    local lh_slow30 lh_bad_deadline
-    lh_slow30="$(/usr/bin/mktemp "${TMPDIR:-/tmp}/lint-hook-slow.XXXXXX")"
-    {
-      echo '#!/bin/zsh'
-      echo 'exec /bin/sleep 30'
-    } > "${lh_slow30}"
-    /bin/chmod +x "${lh_slow30}"
-    for lh_bad_deadline in abc 0; do
-      lh_t0="$(/bin/date +%s)"
-      _lh_exec "$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s"}}' "${LH_BARE}/timeout.sh")" "LINT_HOOK_SHELLCHECK=${lh_slow30}" "LINT_HOOK_DEADLINE=${lh_bad_deadline}"
-      lh_t1="$(/bin/date +%s)"
-      lh_elapsed=$(( lh_t1 - lh_t0 ))
-      if [[ "$(_lint_hook_verdict "${LH_LAST_STDOUT}")" == PASS && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" && "${lh_elapsed}" -lt 20 ]]; then
-        _pass "PASS, exit 0, empty stderr, ${lh_elapsed}s: LINT_HOOK_DEADLINE=${lh_bad_deadline} falls back to the 5s default"
-      else
-        _fail "LINT_HOOK_DEADLINE=${lh_bad_deadline} did not fall back to the default deadline (rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR} elapsed=${lh_elapsed}s)"
-      fi
-    done
-    _lh_exec "$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s"}}' "${LH_NOREPO}/bad.swift")" LINT_HOOK_SWIFTLINT=/nonexistent
-    if [[ "$(_lint_hook_verdict "${LH_LAST_STDOUT}")" == PASS && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
-      _pass "PASS, exit 0, empty stderr: LINT_HOOK_SWIFTLINT pointed at a nonexistent path reads as absent"
-    else
-      _fail "LINT_HOOK_SWIFTLINT=/nonexistent did not fail open cleanly (rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR})"
-    fi
+    _lh_run "${LH_NOREPO}/bad.swift" Write LINT_HOOK_SWIFTLINT=/nonexistent
+    _lh_check PASS "LINT_HOOK_SWIFTLINT pointed at a nonexistent path reads as absent"
 
     # NESTED CONFIG: a .swiftlint.yml one directory above the file (no git
     # repo) must be found whatever cwd the hook inherited.
@@ -663,16 +671,8 @@ PLIST
 
     # Config restored, RELATIVE file_path, cwd = the file's own directory.
     printf 'disabled_rules:\n  - identifier_name\n' > "${swnest}/.swiftlint.yml"
-    local saved_pwd3
-    saved_pwd3="$(pwd)"
-    cd "${swnest}/sub" || return
-    _lh_run bad.swift
-    cd "${saved_pwd3}" || return
-    if [[ "$(_lint_hook_verdict "${LH_LAST_STDOUT}")" == PASS && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
-      _pass "PASS, exit 0, empty stderr: relative swift file_path, cwd = the file's own directory, config one level up"
-    else
-      _fail "relative swift file_path with a config one level up was not honoured (rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR})"
-    fi
+    _lh_run_in "${swnest}/sub" bad.swift
+    _lh_check PASS "relative swift file_path, cwd = the file's own directory, config one level up"
     /bin/rm -rf "${swnest}"
 
     # OUTERMOST CONFIG: a root config opts in force_unwrapping; a sub config
@@ -702,38 +702,23 @@ PLIST
     # identifier_name, yet a project below with no config must still report
     # it. With an unrelated HOME the file is outside $HOME, so the walk goes
     # to "/" and does pick the outer config up.
-    local swhome swhpl
+    local swhome
     swhome="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/lint-hook-swhome.XXXXXX")"
     /bin/mkdir -p "${swhome}/home/proj"
     printf 'disabled_rules:\n  - identifier_name\n' > "${swhome}/.swiftlint.yml"
     printf 'disabled_rules:\n  - identifier_name\n' > "${swhome}/home/.swiftlint.yml"
     printf 'let x = 1\n' > "${swhome}/home/proj/f.swift"
-    swhpl="$(jq -n --arg f "${swhome}/home/proj/f.swift" '{tool_name:"Write", tool_input:{file_path:$f}}')"
-    _lh_exec "${swhpl}" "HOME=${swhome}/home"
-    if [[ "$(_lint_hook_verdict "${LH_LAST_STDOUT}")" == CONTEXT && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
-      _pass "CONTEXT, exit 0, empty stderr: configs at \$HOME and above it are not selected for a file under \$HOME"
-    else
-      _fail "a config at or above \$HOME was selected for a file under \$HOME (out=${LH_LAST_STDOUT} rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR})"
-    fi
+    _lh_run "${swhome}/home/proj/f.swift" Write "HOME=${swhome}/home"
+    _lh_check CONTEXT "configs at \$HOME and above it are not selected for a file under \$HOME"
     /bin/rm -f "${swhome}/home/.swiftlint.yml"
     /bin/mkdir -p "${swhome}/home/proj/deep"
     printf 'let x = 1\n' > "${swhome}/home/proj/deep/g.swift"
     printf 'disabled_rules:\n  - identifier_name\n' > "${swhome}/home/proj/.swiftlint.yml"
-    swhpl="$(jq -n --arg f "${swhome}/home/proj/deep/g.swift" '{tool_name:"Write", tool_input:{file_path:$f}}')"
-    _lh_exec "${swhpl}" "HOME=${swhome}/home"
-    if [[ "$(_lint_hook_verdict "${LH_LAST_STDOUT}")" == PASS && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
-      _pass "PASS, exit 0, empty stderr: a config below \$HOME is still found from a deeper directory"
-    else
-      _fail "a config below \$HOME was not found from a deeper directory (out=${LH_LAST_STDOUT} rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR})"
-    fi
+    _lh_run "${swhome}/home/proj/deep/g.swift" Write "HOME=${swhome}/home"
+    _lh_check PASS "a config below \$HOME is still found from a deeper directory"
     /bin/rm -f "${swhome}/home/proj/.swiftlint.yml"
-    swhpl="$(jq -n --arg f "${swhome}/home/proj/f.swift" '{tool_name:"Write", tool_input:{file_path:$f}}')"
-    _lh_exec "${swhpl}" "HOME=${swhome}/elsewhere"
-    if [[ "$(_lint_hook_verdict "${LH_LAST_STDOUT}")" == PASS && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
-      _pass "PASS, exit 0, empty stderr: a file outside \$HOME walks up to / and finds the outer config"
-    else
-      _fail "a file outside \$HOME did not find the outer config (out=${LH_LAST_STDOUT} rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR})"
-    fi
+    _lh_run "${swhome}/home/proj/f.swift" Write "HOME=${swhome}/elsewhere"
+    _lh_check PASS "a file outside \$HOME walks up to / and finds the outer config"
     /bin/rm -rf "${swhome}"
 
     # A malformed .swiftlint.yml makes swiftlint fall back to default rules
@@ -752,7 +737,7 @@ PLIST
     swutf="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/lint-hook-swutf.XXXXXX")"
     {
       local m
-      for m in $(seq 1 30); do
+      for m in {1..30}; do
         printf 'let %s%d = 1\n' "$(printf 'é%.0s' {1..300})" "${m}"
       done
     } > "${swutf}/wide.swift"
@@ -773,11 +758,7 @@ PLIST
   # --- input edge cases --------------------------------------------------
 
   _lh_run_field notafilepath something-else
-  if [[ "$(_lint_hook_verdict "${LH_LAST_STDOUT}")" == PASS && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
-    _pass "PASS, exit 0, empty stderr: payload with no tool_input.file_path"
-  else
-    _fail "missing file_path did not read as a clean PASS (rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR})"
-  fi
+  _lh_check PASS "payload with no tool_input.file_path"
 
   _lh_expect PASS "${LH_NOREPO}/does-not-exist.json" "nonexistent path"
 
@@ -785,11 +766,7 @@ PLIST
   # empty; a bad-JSON path under the second must still be linted.
   printf '{"a": 1,}\n' > "${LH_NOREPO}/nb.json"
   _lh_run_field notebook_path "${LH_NOREPO}/nb.json"
-  if [[ "$(_lint_hook_verdict "${LH_LAST_STDOUT}")" == CONTEXT && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
-    _pass "CONTEXT, exit 0, empty stderr: bad json addressed via tool_input.notebook_path"
-  else
-    _fail "notebook_path field was not honoured (rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR})"
-  fi
+  _lh_check CONTEXT "bad json addressed via tool_input.notebook_path"
 
   # Directory skip: node_modules/, dist/, .git/, vendor/, absolute and
   # RELATIVE (file_path is absolutised first).
@@ -800,28 +777,12 @@ PLIST
   printf '{"a": 1,}\n' > "${LH_NOREPO}/.git/bad.json"
   _lh_expect PASS "${LH_NOREPO}/.git/bad.json" "bad json under .git/ (dir skip, absolute path)"
 
-  printf '{"a": 1,}\n' > "${LH_NOREPO}/dist/bad.json"
-  local saved_pwd2
-  saved_pwd2="$(pwd)"
-  cd "${LH_NOREPO}" || return
-  _lh_exec "$(jq -n '{tool_input:{file_path:"dist/bad.json"}}')"
-  cd "${saved_pwd2}" || return
-  if [[ "$(_lint_hook_verdict "${LH_LAST_STDOUT}")" == PASS && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
-    _pass "PASS, exit 0, empty stderr: bad json under a RELATIVE dist/ path (dir skip)"
-  else
-    _fail "relative dist/ path was not skipped (rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR})"
-  fi
-
-  printf '{"a": 1,}\n' > "${LH_NOREPO}/vendor/bad.json"
-  saved_pwd2="$(pwd)"
-  cd "${LH_NOREPO}" || return
-  _lh_exec "$(jq -n '{tool_input:{file_path:"vendor/bad.json"}}')"
-  cd "${saved_pwd2}" || return
-  if [[ "$(_lint_hook_verdict "${LH_LAST_STDOUT}")" == PASS && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
-    _pass "PASS, exit 0, empty stderr: bad json under a RELATIVE vendor/ path (dir skip)"
-  else
-    _fail "relative vendor/ path was not skipped (rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR})"
-  fi
+  local lh_skipdir
+  for lh_skipdir in dist vendor; do
+    printf '{"a": 1,}\n' > "${LH_NOREPO}/${lh_skipdir}/bad.json"
+    _lh_run_in "${LH_NOREPO}" "${lh_skipdir}/bad.json"
+    _lh_check PASS "bad json under a RELATIVE ${lh_skipdir}/ path (dir skip)"
+  done
 
   # Oversized file (well past MAX_BYTES) is skipped despite invalid JSON. The
   # zsh padding needs a real (empty) variable: the bare "${(l:...)}" form is
@@ -842,43 +803,30 @@ PLIST
   printf '{"a": 1,}\n' > "${LH_NOREPO}/a dir/\$weird.json"
   _lh_expect CONTEXT "${LH_NOREPO}/a dir/\$weird.json" "path with a space and a dollar sign"
 
-  # Malformed or irrelevant stdin: no verdict, exit 0, empty stderr.
-  _lh_exec '{}'
-  if [[ -z "${LH_LAST_STDOUT}" && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
-    _pass "fail-open, exit 0, empty stderr: payload with an empty tool_input"
-  else
-    _fail "payload with an empty tool_input did not fail open cleanly (out=${LH_LAST_STDOUT} rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR})"
-  fi
-  _lh_exec 'not json'
-  if [[ -z "${LH_LAST_STDOUT}" && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
-    _pass "fail-open, exit 0, empty stderr: unparseable payload"
-  else
-    _fail "unparseable payload did not fail open cleanly (out=${LH_LAST_STDOUT} rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR})"
-  fi
-
-  # Stdin shapes the in-shell read must treat as `$(cat)` did.
-  _lh_exec ''
-  if [[ -z "${LH_LAST_STDOUT}" && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
-    _pass "fail-open, exit 0, empty stderr: empty stdin"
-  else
-    _fail "empty stdin did not fail open cleanly (out=${LH_LAST_STDOUT} rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR})"
-  fi
-  _lh_exec $'\n\n'
-  if [[ -z "${LH_LAST_STDOUT}" && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
-    _pass "fail-open, exit 0, empty stderr: stdin of newlines only"
-  else
-    _fail "newline-only stdin did not fail open cleanly (out=${LH_LAST_STDOUT} rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR})"
-  fi
+  # Malformed or irrelevant stdin, then the shapes the in-shell read must treat
+  # as `$(cat)` did: no verdict, exit 0, empty stderr.
+  local lh_n
+  local -a lh_stdin_payloads=('{}' 'not json' '' $'\n\n')
+  local -a lh_stdin_labels=(
+    "payload with an empty tool_input"
+    "unparseable payload"
+    "empty stdin"
+    "stdin of newlines only"
+  )
+  for (( lh_n = 1; lh_n <= ${#lh_stdin_payloads}; lh_n++ )); do
+    _lh_exec "${lh_stdin_payloads[lh_n]}"
+    _lh_check PASS "${lh_stdin_labels[lh_n]}" fail-open
+  done
 
   # Raw stdin built with printf %b: a NUL byte must not cut the payload, and a
   # JSON \u0000 escape in file_path must not shift or truncate it.
   printf '{"a": 1,}\n' > "${LH_NOREPO}/nul.json"
-  local lh_raw lh_want lh_got
+  local lh_raw lh_want
   # shellcheck disable=SC2034  # read by the zsh (l) expansion below
   local lh_empty=''
   # shellcheck disable=SC2296  # zsh (l) pads the empty parameter to 200000 bytes
   lh_pad="${(l:200000::x:)lh_empty}"
-  local lh_label lh_fmt lh_payloadf lh_out lh_err lh_rc
+  local lh_label lh_fmt lh_payloadf="${LH_SCRATCH}/raw-in"
   local -a lh_raw_cases=(
     "CONTEXT|{\"pad\":\"${lh_pad}\",\"tool_input\":{\"file_path\":\"${LH_NOREPO}/nul.json\"}}|200 KB payload (several sysread chunks), file_path after the padding"
     "FAIL-OPEN|{\"pad\":\"${lh_pad}\",\"tool_input\":{\"file_path\":\"${LH_NOREPO}/nul.json\"}}\0|200 KB payload then a raw NUL byte"
@@ -893,22 +841,9 @@ PLIST
     lh_want="${lh_raw%%|*}"
     lh_raw="${lh_raw#*|}"
     lh_label="${lh_raw##*|}" lh_fmt="${lh_raw%|*}"
-    lh_payloadf="$(/usr/bin/mktemp "${TMPDIR:-/tmp}/lint-hook-test.XXXXXX")"
     printf '%b' "${lh_fmt}" > "${lh_payloadf}"
-    lh_out="$(env LINT_HOOK_LOG= /bin/zsh "${SCRIPT_DIR}/claude/hooks/lint-hook" < "${lh_payloadf}" 2>"${lh_payloadf}.err")"; lh_rc=$?
-    lh_err="$(< "${lh_payloadf}.err")"
-    /bin/rm -f "${lh_payloadf}" "${lh_payloadf}.err"
-    if [[ "${lh_want}" == FAIL-OPEN ]]; then
-      lh_got="$(_lint_hook_verdict "${lh_out}")"
-      [[ "${lh_got}" == PASS ]] || lh_got=BAD
-    else
-      lh_got="$(_lint_hook_verdict "${lh_out}")"
-    fi
-    if [[ ( "${lh_want}" == FAIL-OPEN && "${lh_got}" == PASS || "${lh_want}" == CONTEXT && "${lh_got}" == CONTEXT ) && "${lh_rc}" == 0 && -z "${lh_err}" ]]; then
-      _pass "${lh_want}, exit 0, empty stderr: ${lh_label}"
-    else
-      _fail "${lh_label} — expected ${lh_want}, got verdict=${lh_got} rc=${lh_rc} stderr=${lh_err}"
-    fi
+    _lh_exec_file "${lh_payloadf}"
+    _lh_check "${lh_want/FAIL-OPEN/PASS}" "${lh_label}" "${lh_want}"
   done
 
   # The .github/workflows convention scan is a zsh glob loop standing in for
@@ -932,17 +867,12 @@ PLIST
   echo 'shellcheck' > "${lh_priv}/wfscan-unreadable/.github/workflows/ci.yml"
   /bin/chmod 000 "${lh_priv}/wfscan-unreadable/.github/workflows/ci.yml"
   for lh_wfname in mixedcase nesteddot symlinkonly nomatch unreadable; do
-    _lh_exec "$(jq -n --arg f "${lh_priv}/wfscan-${lh_wfname}/s" '{tool_input:{file_path:$f}}')" LINT_HOOK_SHELLCHECK="${lh_wfstub}"
-    lh_got="$(_lint_hook_verdict "${LH_LAST_STDOUT}")"
     case "${lh_wfname}" in
       mixedcase|nesteddot) lh_want=CONTEXT ;;
       *) lh_want=PASS ;;
     esac
-    if [[ "${lh_got}" == "${lh_want}" && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
-      _pass "${lh_want}, exit 0, empty stderr: workflow scan (${lh_wfname})"
-    else
-      _fail "workflow scan (${lh_wfname}) — expected ${lh_want}, got ${lh_got} rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR}"
-    fi
+    _lh_run "${lh_priv}/wfscan-${lh_wfname}/s" Write LINT_HOOK_SHELLCHECK="${lh_wfstub}"
+    _lh_check "${lh_want}" "workflow scan (${lh_wfname})"
   done
   /bin/chmod 600 "${lh_priv}/wfscan-unreadable/.github/workflows/ci.yml"
 
@@ -954,13 +884,8 @@ PLIST
   printf '#!/bin/zsh\necho $x\n' > "${lh_wfrepo}/s"
   echo 'shellcheck' > "${lh_wfrepo}/real/ci.yml"
   /bin/ln -s ../real "${lh_wfrepo}/.github/workflows"
-  _lh_exec "$(jq -n --arg f "${lh_wfrepo}/s" '{tool_input:{file_path:$f}}')" LINT_HOOK_SHELLCHECK="${lh_wfstub}"
-  lh_got="$(_lint_hook_verdict "${LH_LAST_STDOUT}")"
-  if [[ "${lh_got}" == PASS && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
-    _pass "PASS, exit 0, empty stderr: workflows directory that is a symlink is not scanned"
-  else
-    _fail "symlinked workflows directory — expected PASS, got ${lh_got} rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR}"
-  fi
+  _lh_run "${lh_wfrepo}/s" Write LINT_HOOK_SHELLCHECK="${lh_wfstub}"
+  _lh_check PASS "workflows directory that is a symlink is not scanned"
 
   # Linter output is held in memory, not a temp file: trailing blank lines
   # still count towards the line cap, then are trimmed from the report.
@@ -977,14 +902,14 @@ LH_STUB
   /bin/chmod +x "${lh_stub}"
   printf '#!/bin/bash\necho $x\n' > "${LH_NOREPO}/stubbed.sh"
   local lh_ctx
-  _lh_exec "$(jq -n --arg f "${LH_NOREPO}/stubbed.sh" '{tool_input:{file_path:$f}}')" LINT_HOOK_SHELLCHECK="${lh_stub}" STUB_MODE=blank_tail
+  _lh_run "${LH_NOREPO}/stubbed.sh" Write LINT_HOOK_SHELLCHECK="${lh_stub}" STUB_MODE=blank_tail
   lh_ctx="$(printf '%s' "${LH_LAST_STDOUT}" | jq -r '.hookSpecificOutput.additionalContext')"
   if [[ "${lh_ctx}" == "shellcheck found issues in ${LH_NOREPO}/stubbed.sh:"$'\n''1:1: note: a [SC1]' && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
     _pass "linter output with trailing blank lines: the report ends at the last non-blank line"
   else
     _fail "trailing blank lines were not trimmed from the report: ${lh_ctx}"
   fi
-  _lh_exec "$(jq -n --arg f "${LH_NOREPO}/stubbed.sh" '{tool_input:{file_path:$f}}')" LINT_HOOK_SHELLCHECK="${lh_stub}" STUB_MODE=capped_blank_tail
+  _lh_run "${LH_NOREPO}/stubbed.sh" Write LINT_HOOK_SHELLCHECK="${lh_stub}" STUB_MODE=capped_blank_tail
   lh_ctx="$(printf '%s' "${LH_LAST_STDOUT}" | jq -r '.hookSpecificOutput.additionalContext')"
   if [[ "${lh_ctx}" == *$'\n\n\n''...3 more' && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
     _pass "linter output with blank lines past the line cap: blank lines count towards the cap, marker says 3 more"

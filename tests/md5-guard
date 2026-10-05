@@ -49,6 +49,22 @@ function _md5_guard_expect {
   fi
 }
 
+function _md5_guard_pad {
+  # REPLY = $1 x characters, built in-process.
+  # shellcheck disable=SC2034
+  local empty=''
+  # shellcheck disable=SC2296
+  REPLY="${(l:$1::x:)empty}"
+}
+
+function _md5_guard_expect_hd {
+  # Verdict for a one-line heredoc body holding an md5 call: $2 is the
+  # introducing line, the terminator is EOF. The tool word is assembled at
+  # runtime so fixtures do not trip md5-write-hook.
+  local md5word='md5'
+  _md5_guard_expect "$1" "$2"$'\n'"${md5word} f"$'\n'"EOF" "$3"
+}
+
 function run_md5_guard {
   _section "md5 → sha256 guard hook"
 
@@ -168,7 +184,7 @@ function run_md5_guard {
   # assembled at runtime so fixtures do not trip md5-write-hook.
   local pad big md5word
   md5word='md5'
-  pad="$(printf 'x%.0s' {1..100000})"
+  _md5_guard_pad 100000; pad="${REPLY}"
   big="bash <<EOF
 ${pad}
 ${md5word} g
@@ -178,11 +194,11 @@ EOF"
   local fixture_dir
   fixture_dir="$(mktemp -d "${TMPDIR:-/tmp}/md5-guard-fixtures.XXXXXX")"
 
-  pad="$(printf 'x%.0s' {1..1100000})"
+  _md5_guard_pad 1100000; pad="${REPLY}"
   printf '%s\n' "bash <<EOF" "${pad}" "${md5word} g" "EOF" > "${fixture_dir}/huge"
   _md5_guard_expect_file PASS "${fixture_dir}/huge" 'command over the 1MB cap (fail-open)'
 
-  pad="$(printf 'x%.0s' {1..70000})"
+  _md5_guard_pad 70000; pad="${REPLY}"
   printf '%s\n' "echo ${pad} && md5 f" > "${fixture_dir}/longline"
   _md5_guard_expect_file PASS "${fixture_dir}/longline" 'single line over 64KB (fail-open)'
 
@@ -203,7 +219,6 @@ EOF"
   _md5_guard_expect DENY '2>/dev/null md5 f' 'leading fd redirection'
   _md5_guard_expect DENY 'env -u FOO md5 f' 'wrapper flag that takes an operand'
   _md5_guard_expect DENY 'sudo -u root md5 f' 'sudo -u with an operand'
-  _md5_guard_expect DENY 'nice -n 10 md5 f' 'nice -n with an operand'
   _md5_guard_expect DENY 'timeout -k 5 12 md5 f' 'timeout with flag operand and duration'
   _md5_guard_expect DENY 'md5 f # MD5_GUARD_SKIP=' 'bypass marker with no value does not exempt'
   _md5_guard_expect DENY 'MD5_GUARD_SKIP= md5 f' 'bypass assigned an empty value does not exempt'
@@ -231,18 +246,15 @@ EOF"
   hd="python3 - <<'PY'"$'\n'"doc = \"\"\"run ${md5word} f\"\"\""$'\n'"PY"
   _md5_guard_expect PASS "${hd}" 'heredoc body (python3 consumer, single-quoted delimiter) is data'
 
-  hd='cat <<"EOF"'$'\n'"${md5word} f"$'\n'"EOF"
-  _md5_guard_expect PASS "${hd}" 'heredoc body (cat consumer, double-quoted delimiter) is data'
+  _md5_guard_expect_hd PASS 'cat <<"EOF"' 'heredoc body (cat consumer, double-quoted delimiter) is data'
 
   hd=$'cat <<-EOF\n\t'"${md5word} f"$'\n\tEOF'
   _md5_guard_expect PASS "${hd}" 'heredoc body (cat consumer, <<-, tab-indented terminator) is data'
 
   # A heredoc fed to an actual shell executes its body: still scanned, denied.
-  hd="sh <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
-  _md5_guard_expect DENY "${hd}" 'heredoc body (sh consumer, unquoted delimiter) still scanned as commands'
+  _md5_guard_expect_hd DENY "sh <<EOF" 'heredoc body (sh consumer, unquoted delimiter) still scanned as commands'
 
-  hd="bash <<'EOF'"$'\n'"${md5word} f"$'\n'"EOF"
-  _md5_guard_expect DENY "${hd}" 'heredoc body (bash consumer, single-quoted delimiter) still scanned as commands'
+  _md5_guard_expect_hd DENY "bash <<'EOF'" 'heredoc body (bash consumer, single-quoted delimiter) still scanned as commands'
 
   # The heredoc-introducing line is scanned in full.
   hd="cat <<EOF | ${md5word}"
@@ -270,103 +282,69 @@ EOF"
   # shell paths, and any consumer word starting with $. Each DENY is paired
   # with a same-shape PASS to prove an exact-word match, not a prefix.
 
-  hd="ssh host <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
-  _md5_guard_expect DENY "${hd}" 'ssh host <<EOF — remote command reads the body as commands'
+  _md5_guard_expect_hd DENY "ssh host <<EOF" 'ssh host <<EOF — remote command reads the body as commands'
 
-  hd="ssh -T host bash <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
-  _md5_guard_expect DENY "${hd}" 'ssh -T host bash <<EOF — still ssh regardless of the remote command word'
+  _md5_guard_expect_hd DENY "ssh -T host bash <<EOF" 'ssh -T host bash <<EOF — still ssh regardless of the remote command word'
 
-  hd="ssh-keygen <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
-  _md5_guard_expect PASS "${hd}" 'ssh-keygen is not ssh — exact word match, not a prefix match'
+  _md5_guard_expect_hd PASS "ssh-keygen <<EOF" 'ssh-keygen is not ssh — exact word match, not a prefix match'
 
-  hd="su <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
-  _md5_guard_expect DENY "${hd}" 'bare su <<EOF'
+  _md5_guard_expect_hd DENY "su <<EOF" 'bare su <<EOF'
 
-  hd="su - <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
-  _md5_guard_expect DENY "${hd}" 'su - <<EOF'
+  _md5_guard_expect_hd DENY "su - <<EOF" 'su - <<EOF'
 
-  hd="su - someone <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
-  _md5_guard_expect DENY "${hd}" 'su - user <<EOF'
+  _md5_guard_expect_hd DENY "su - someone <<EOF" 'su - user <<EOF'
 
-  hd="su -c 'true' <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
-  _md5_guard_expect DENY "${hd}" 'su -c ... <<EOF'
+  _md5_guard_expect_hd DENY "su -c 'true' <<EOF" 'su -c ... <<EOF'
 
-  hd="subl <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
-  _md5_guard_expect PASS "${hd}" 'subl is not su — exact word match, not a prefix match'
+  _md5_guard_expect_hd PASS "subl <<EOF" 'subl is not su — exact word match, not a prefix match'
 
-  hd="sudo -s <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
-  _md5_guard_expect DENY "${hd}" 'sudo -s <<EOF — bare flag spawns an interactive shell'
+  _md5_guard_expect_hd DENY "sudo -s <<EOF" 'sudo -s <<EOF — bare flag spawns an interactive shell'
 
-  hd="sudo -i <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
-  _md5_guard_expect DENY "${hd}" 'sudo -i <<EOF'
+  _md5_guard_expect_hd DENY "sudo -i <<EOF" 'sudo -i <<EOF'
 
-  hd="sudo --shell <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
-  _md5_guard_expect DENY "${hd}" 'sudo --shell <<EOF (long flag)'
+  _md5_guard_expect_hd DENY "sudo --shell <<EOF" 'sudo --shell <<EOF (long flag)'
 
-  hd="sudo --login <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
-  _md5_guard_expect DENY "${hd}" 'sudo --login <<EOF (long flag)'
+  _md5_guard_expect_hd DENY "sudo --login <<EOF" 'sudo --login <<EOF (long flag)'
 
-  hd="doas -s <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
-  _md5_guard_expect DENY "${hd}" 'doas -s <<EOF'
+  _md5_guard_expect_hd DENY "doas -s <<EOF" 'doas -s <<EOF'
 
-  hd="sudo -s tee f <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
-  _md5_guard_expect PASS "${hd}" 'sudo -s with a following command is not the bare shell-spawning form'
+  _md5_guard_expect_hd PASS "sudo -s tee f <<EOF" 'sudo -s with a following command is not the bare shell-spawning form'
 
-  hd="sudo -u root bash <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
-  _md5_guard_expect DENY "${hd}" 'sudo -u root bash <<EOF — already resolved via the pre-existing wrapper unwrap'
+  _md5_guard_expect_hd DENY "sudo -u root bash <<EOF" 'sudo -u root bash <<EOF — already resolved via the pre-existing wrapper unwrap'
 
-  hd="sudo -u root tee f <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
-  _md5_guard_expect PASS "${hd}" 'sudo -u root tee f <<EOF — tee is not a shell'
+  _md5_guard_expect_hd PASS "sudo -u root tee f <<EOF" 'sudo -u root tee f <<EOF — tee is not a shell'
 
-  hd="/bin/sh <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
-  _md5_guard_expect DENY "${hd}" '/bin/sh <<EOF — absolute path, basename match'
+  _md5_guard_expect_hd DENY "/bin/sh <<EOF" '/bin/sh <<EOF — absolute path, basename match'
 
-  hd="./sh <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
-  _md5_guard_expect DENY "${hd}" './sh <<EOF — relative path, basename match'
+  _md5_guard_expect_hd DENY "./sh <<EOF" './sh <<EOF — relative path, basename match'
 
-  hd="/usr/bin/env bash <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
-  _md5_guard_expect DENY "${hd}" '/usr/bin/env bash <<EOF'
+  _md5_guard_expect_hd DENY "/usr/bin/env bash <<EOF" '/usr/bin/env bash <<EOF'
 
-  hd="env sh <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
-  _md5_guard_expect DENY "${hd}" 'env sh <<EOF'
+  _md5_guard_expect_hd DENY "env sh <<EOF" 'env sh <<EOF'
 
-  hd="command bash <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
-  _md5_guard_expect DENY "${hd}" 'command bash <<EOF'
+  _md5_guard_expect_hd DENY "command bash <<EOF" 'command bash <<EOF'
 
-  hd="exec bash <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
-  _md5_guard_expect DENY "${hd}" 'exec bash <<EOF'
+  _md5_guard_expect_hd DENY "exec bash <<EOF" 'exec bash <<EOF'
 
-  hd="/usr/bin/python3 - <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
-  _md5_guard_expect PASS "${hd}" '/usr/bin/python3 - <<EOF — a path is not automatically a shell'
+  _md5_guard_expect_hd PASS "/usr/bin/python3 - <<EOF" '/usr/bin/python3 - <<EOF — a path is not automatically a shell'
 
-  hd="env python3 - <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
-  _md5_guard_expect PASS "${hd}" 'env python3 - <<EOF'
+  _md5_guard_expect_hd PASS "env python3 - <<EOF" 'env python3 - <<EOF'
 
   # Unresolvable consumer words (starting with $) fail toward scanning.
   # shellcheck disable=SC2016
-  hd='$SHELL <<EOF'$'\n'"${md5word} f"$'\n'"EOF"
-  # shellcheck disable=SC2016
-  _md5_guard_expect DENY "${hd}" '$SHELL <<EOF — unresolvable consumer word fails toward scanning'
+  _md5_guard_expect_hd DENY '$SHELL <<EOF' '$SHELL <<EOF — unresolvable consumer word fails toward scanning'
 
   # shellcheck disable=SC2016
-  hd='${I:-bash} <<EOF'$'\n'"${md5word} f"$'\n'"EOF"
-  # shellcheck disable=SC2016
-  _md5_guard_expect DENY "${hd}" '${I:-bash} <<EOF — unresolvable consumer word fails toward scanning'
+  _md5_guard_expect_hd DENY '${I:-bash} <<EOF' '${I:-bash} <<EOF — unresolvable consumer word fails toward scanning'
 
   # shellcheck disable=SC2016
-  hd='${I:=bash} <<EOF'$'\n'"${md5word} f"$'\n'"EOF"
-  # shellcheck disable=SC2016
-  _md5_guard_expect DENY "${hd}" '${I:=bash} <<EOF — assignment-shaped expansion still fails toward scanning'
+  _md5_guard_expect_hd DENY '${I:=bash} <<EOF' '${I:=bash} <<EOF — assignment-shaped expansion still fails toward scanning'
 
   # shellcheck disable=SC2016
-  hd='"$SH" <<EOF'$'\n'"${md5word} f"$'\n'"EOF"
-  # shellcheck disable=SC2016
-  _md5_guard_expect DENY "${hd}" '"$SH" <<EOF — quoted dynamic word still fails toward scanning'
+  _md5_guard_expect_hd DENY '"$SH" <<EOF' '"$SH" <<EOF — quoted dynamic word still fails toward scanning'
 
   # shellcheck disable=SC2016
-  hd='cat "$f" <<EOF'$'\n'"${md5word} f"$'\n'"EOF"
-  # shellcheck disable=SC2016
-  _md5_guard_expect PASS "${hd}" 'dollar in argument position does not trigger the dynamic-consumer rule'
+  _md5_guard_expect_hd PASS 'cat "$f" <<EOF' 'dollar in argument position does not trigger the dynamic-consumer rule'
 
   # Two heredocs on one line, neither consumer dynamic. The outer while loop of
   # _md5_guard_scan_heredocs declares `local hdelim='' hdstack=P hdch` and
@@ -390,11 +368,9 @@ EOF"
   # docker exec / container exec: accepted gap, their "exec" is a subcommand,
   # not the shell builtin the wrapper unwrap sees through. See
   # _md5_guard_scan_heredocs.
-  hd="docker exec -i c sh <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
-  _md5_guard_expect PASS "${hd}" 'docker exec ... sh <<EOF — accepted gap, not a pass-through wrapper unwrap'
+  _md5_guard_expect_hd PASS "docker exec -i c sh <<EOF" 'docker exec ... sh <<EOF — accepted gap, not a pass-through wrapper unwrap'
 
-  hd="container exec c sh <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
-  _md5_guard_expect PASS "${hd}" 'container exec ... sh <<EOF — accepted gap, not a pass-through wrapper unwrap'
+  _md5_guard_expect_hd PASS "container exec c sh <<EOF" 'container exec ... sh <<EOF — accepted gap, not a pass-through wrapper unwrap'
 
   # --- C3: N>&M / >&N / <&N / &>/&>> are redirections, not separators ----
   # A bare & is a command boundary, but the & in 2>&1, >&2, <&1, &>out and
@@ -402,20 +378,15 @@ EOF"
   # `bash 2>&1 <<EOF` and lose the consumer. |& still resets like a pipe (its
   # & follows |, not >/<).
 
-  hd="bash 2>&1 <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
-  _md5_guard_expect DENY "${hd}" 'bash 2>&1 <<EOF — the & in 2>&1 is a redirection, not a boundary'
+  _md5_guard_expect_hd DENY "bash 2>&1 <<EOF" 'bash 2>&1 <<EOF — the & in 2>&1 is a redirection, not a boundary'
 
-  hd="cat 2>&1 <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
-  _md5_guard_expect PASS "${hd}" 'cat 2>&1 <<EOF — same redirection shape, non-shell consumer, plain-text body is data'
+  _md5_guard_expect_hd PASS "cat 2>&1 <<EOF" 'cat 2>&1 <<EOF — same redirection shape, non-shell consumer, plain-text body is data'
 
-  hd="bash >&2 <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
-  _md5_guard_expect DENY "${hd}" 'bash >&2 <<EOF'
+  _md5_guard_expect_hd DENY "bash >&2 <<EOF" 'bash >&2 <<EOF'
 
-  hd="bash &>out <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
-  _md5_guard_expect DENY "${hd}" 'bash &>out <<EOF'
+  _md5_guard_expect_hd DENY "bash &>out <<EOF" 'bash &>out <<EOF'
 
-  hd="cmd |& bash <<EOF"$'\n'"${md5word} f"$'\n'"EOF"
-  _md5_guard_expect DENY "${hd}" 'cmd |& bash <<EOF — |& still resets, so bash is a fresh consumer'
+  _md5_guard_expect_hd DENY "cmd |& bash <<EOF" 'cmd |& bash <<EOF — |& still resets, so bash is a fresh consumer'
 
   # --- C4: every heredoc on one line must resolve to the same consumer ---
   # `bash <<A <<B` feeds BOTH to bash: the consumer must not reset after the

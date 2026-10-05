@@ -54,6 +54,20 @@ function _hook_verdict {
   fi
 }
 
+# JSON string literal of $1 into REPLY, quotes included. \, ", newline and tab
+# are escaped in pure zsh; any other control character takes the jq path.
+function _json_str {
+  local s="${1//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//$'\n'/\\n}"
+  s="${s//$'\t'/\\t}"
+  if [[ "${s}" == *[[:cntrl:]]* ]]; then
+    REPLY="$(jq -n --arg s "$1" '$s')"
+  else
+    REPLY="\"${s}\""
+  fi
+}
+
 # Run "$@" detached from any controlling terminal, whether or not the caller
 # has one (2026-09-25), so cases proving the terminal-gated bypass variables
 # (PII_HOOK_BYPASS, MSG_POLICY_SKIP, GIT_SIGN_SKIP) are REFUSED give the same

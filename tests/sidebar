@@ -9,9 +9,12 @@ function run_sidebar {
   local fixture out
   fixture="$(mktemp -d "${TMPDIR}sidebar-test.XXXXXX")"
   mkdir -p "${fixture}/bin" "${fixture}/.git" "${fixture}/deep/nested/more"
-  printf '#!/bin/zsh' > "${fixture}/zeta"
+  printf '#!/bin/zsh\n' > "${fixture}/zeta"
+  printf '#!/bin/zsh' > "${fixture}/unterminated"
+  printf '#!/bin/zsh\n' > "${fixture}/has.extension"
   printf '#autoload\n' > "${fixture}/bin/alpha"
-  printf '#compdef zeta\n' > "${fixture}/bin/zeta"
+  printf '#compdef beta\n' > "${fixture}/bin/beta"
+  printf '#!/bin/zsh\n' > "${fixture}/bin/zeta"
   printf '#!/bin/bash\n' > "${fixture}/bash-only"
   printf '#!/bin/zsh\n' > "${fixture}/.git/ignored"
   printf '#!/bin/zsh\n' > "${fixture}/deep/nested/gamma"
@@ -20,7 +23,7 @@ function run_sidebar {
   _generate_zsh_sidebar_syntax "${fixture}" "${fixture}/output.sublime-syntax"
   out="$(<"${fixture}/output.sublime-syntax")"
   out="${out#*hidden_file_extensions:$'\n'}"
-  if [[ "${out}" == $'  - alpha\n  - gamma\n  - zeta' ]]; then
+  if [[ "${out}" == $'  - alpha\n  - beta\n  - gamma\n  - unterminated\n  - zeta' ]]; then
     _pass "sidebar recognizes unterminated headers, sorts, deduplicates and excludes unrelated files"
   else
     _fail "sidebar generated unexpected filenames: ${out}"

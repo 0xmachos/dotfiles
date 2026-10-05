@@ -64,6 +64,9 @@ function run_test_helpers {
     $'---\ntitle: fixture\n---\n'
     $'---\ntype: ""\ntitle: fixture\ndescription: test\ntimestamp: today\n---\n'
     $'---\ntype: reference\ntitle: fixture\ndescription: test\ntimestamp: today\n---\n'
+    $'---\ntype:\ntitle: fixture\ndescription: test\ntimestamp: today\n---\n'
+    $'---\ntype: # reference\ntitle: fixture\ndescription: test\ntimestamp: today\n---\n'
+    $'preface\ntype: reference\ntitle: fixture\ndescription: test\ntimestamp: today\n---\n'
   )
   local rc
   for (( i=1; i<=${#documents}; i++ )); do
@@ -75,4 +78,46 @@ function run_test_helpers {
       _fail "frontmatter fixture ${i}: unexpected status ${rc}"
     fi
   done
+
+  # One awk run checks the whole bundle: a bad file must not leak state into
+  # the files after it, each required key must be enforced, and the reserved
+  # index and log are skipped.
+  local bundle key k
+  bundle="$(mktemp -d "${TMPDIR}okf-bundle.XXXXXX")"
+  local good=$'---\ntype: reference\ntitle: fixture\ndescription: test\ntimestamp: today\n---\n'
+  print -rn -- "${good}" > "${bundle}/a-good.md"
+  print -rn -- "${good}" > "${bundle}/c-good.md"
+  print -rn -- "${good}" > "${bundle}/f-good.md"
+  for key in type title description timestamp; do
+    {
+      print -r -- '---'
+      for k in type title description timestamp; do
+        if [[ "${k}" != "${key}" ]]; then print -r -- "${k}: fixture"; fi
+      done
+      print -r -- '---'
+    } > "${bundle}/b-no-${key}.md"
+  done
+  : > "${bundle}/d-empty.md"
+  print -rn -- $'---\ntype: reference\n' > "${bundle}/e-unterminated.md"
+  print -rn -- $'preface\n'"${good}" > "${bundle}/e-preface.md"
+  : > "${bundle}/index.md"
+  : > "${bundle}/log.md"
+  out="$(_okf_check_conformance "${bundle}")"
+  local line nfail=0 named=1
+  while IFS= read -r line; do
+    if [[ "${line}" == *FAIL* ]]; then (( nfail += 1 )); fi
+  done <<< "${out}"
+  for key in type title description timestamp; do
+    if [[ "${out}" != *"b-no-${key}.md missing/empty frontmatter: ${key}"* ]]; then named=0; fi
+  done
+  local unterminated="missing/empty frontmatter: missing or unterminated leading frontmatter"
+  if (( nfail == 7 && named )) &&
+      [[ "${out}" == *"d-empty.md ${unterminated}"* && "${out}" == *"e-unterminated.md ${unterminated}"* &&
+      "${out}" == *"e-preface.md ${unterminated}"* &&
+      "${out}" != *PASS* && "${out}" != *"index.md"* && "${out}" != *"log.md"* ]]; then
+    _pass "okf conformance flags each bad concept doc and only those"
+  else
+    _fail "okf conformance over a mixed bundle: ${out}"
+  fi
+  /bin/rm -rf "${bundle}"
 }

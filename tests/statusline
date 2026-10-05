@@ -54,23 +54,32 @@ function _sl_run {
   local cols="$1" payload="$2"
   shift 2
   _SL_RC=0
-  _SL_OUT="$(printf '%s' "${payload}" | _run_no_tty env -u CLAUDE_CODE_AUTO_COMPACT_WINDOW \
-    -u GIT_DIR -u GIT_WORK_TREE GIT_CEILING_DIRECTORIES="${_SL_SB}" \
-    HOME="${_SL_SB}" COLUMNS="${cols}" STATUSLINE_NOW="${_SL_NOW}" \
-    STATUSLINE_OSASCRIPT="${_SL_SB}/osascript-stub" "$@" \
-    /bin/zsh "${SCRIPT_DIR}/claude/statusline-command" 2>"${_SL_SB}/stderr")" || _SL_RC=$?
+  # The environment is set inside the command substitution's own subshell, so
+  # no `env` process is started and nothing leaks into the suite's shell.
+  _SL_OUT="$(
+    unset CLAUDE_CODE_AUTO_COMPACT_WINDOW GIT_DIR GIT_WORK_TREE
+    export GIT_CEILING_DIRECTORIES="${_SL_SB}" HOME="${_SL_SB}" COLUMNS="${cols}" \
+      STATUSLINE_NOW="${_SL_NOW}" STATUSLINE_OSASCRIPT="${_SL_SB}/osascript-stub"
+    # shellcheck disable=SC2163  # each extra argument is a NAME=value pair
+    if (( $# )); then export "$@"; fi
+    printf '%s' "${payload}" | _run_no_tty /bin/zsh "${SCRIPT_DIR}/claude/statusline-command" \
+      2>"${_SL_SB}/stderr")" || _SL_RC=$?
   if (( _SL_RC != 0 )); then
     _fail "statusline-command exited ${_SL_RC} at ${cols} cols on $(printf '%q' "${payload}"): $(head -3 "${_SL_SB}/stderr")"
   fi
 }
 
+# Pure zsh: these run inside $( ) on most assertions, so no sed process.
 function _sl_plain {
-  printf '%s' "$1" | sed $'s/\e\\[[0-9;]*m//g'
+  setopt localoptions extendedglob
+  print -r -- "${1//$'\e'\[[0-9;]#m/}"
 }
 
 # _sl_line <n> — line n of the last output
 function _sl_line {
-  sed -n "${1}p" <<< "${_SL_OUT}"
+  # shellcheck disable=SC2296  # zsh (@f) splits on newlines, keeping empty lines
+  local -a rows=("${(@f)_SL_OUT}")
+  print -r -- "${rows[$1]-}"
 }
 
 function _sl_expect_has {
@@ -282,6 +291,8 @@ function _sl_usage {
   plain="$(_sl_plain "$(_sl_line 3)")"
   _sl_expect_eq "7d 10 points ahead shows ⇡10" "${plain}" "7d 35% ⇡10"
   _sl_expect_has "7d pace 10 ahead is yellow" "$(_sl_line 3)" "${YELLOW}⇡10${RESET}"
+  _sl_run 140 "$(_sl_json '.rate_limits.seven_day = {used_percentage: 55, resets_at: ($now + 453600)}')"
+  _sl_expect_has "7d pace 30 ahead is red" "$(_sl_line 3)" "${RED}⇡30${RESET}"
   _sl_run 140 "$(_sl_json '.rate_limits.seven_day = {used_percentage: 34, resets_at: ($now + 453600)}')"
   _sl_expect_hidden "7d 9 points ahead stays hidden"
 }
@@ -379,6 +390,14 @@ function _sl_identity {
   _sl_expect_eq "no effort field → no badge; model → Opus" "$(_sl_plain "$(_sl_line 1)")" "work Opus"
   _sl_run 140 "$(_sl_json "${fable}")"
   _sl_expect_eq "Fable 5.1 (1M context) → Fable" "$(_sl_plain "$(_sl_line 1)")" "work Fable"
+
+  # Shown only when thinking is explicitly off; a known repo turns the directory
+  # name into an OSC 8 hyperlink to it
+  _sl_run 140 "$(_sl_json '.thinking.enabled = false')"
+  _sl_expect_has "thinking disabled → 🧠off badge" "$(_sl_line 1)" "${YELLOW}🧠off${RESET}"
+  _sl_run 140 "$(_sl_json '.workspace.repo = {host: "example.test", owner: "o", name: "r"}')"
+  _sl_expect_has "known repo → directory name is an OSC 8 link" "$(_sl_line 1)" \
+    $'\e]8;;https://example.test/o/r\e\\'"${_SL_CYAN}work${RESET}"$'\e]8;;\e\\'
 }
 
 # Directory name is the last path component: basename semantics, including a
@@ -700,16 +719,17 @@ function _sl_cache_alert {
   else
     _fail "cache_alert marker ${marker} not created"
   fi
-  # The osascript call is backgrounded; give it up to 2s to land
+  # The osascript call is backgrounded; give it up to 2s to land. zselect (loaded
+  # by ./test) is a 100 ms sleep with no process start; it returns 1 on timeout.
   for (( i = 0; i < 20; i++ )); do
     [[ -s "${log}" ]] && break
-    sleep 0.1
+    zselect -t 10 || :
   done
   _sl_expect_has "cache_alert posts the message" "$(cat "${log}" 2>/dev/null)" \
     "work · Opus — cache goes cold in 4m (160K tokens to re-cache)"
 
   _sl_run 140 "$(_sl_alert_payload '"s1"' true 240 160000)"
-  sleep 0.5
+  zselect -t 50 || :
   _sl_expect_eq "cache_alert fires once per session+expires_at" \
     "$(/usr/bin/grep -c 'cache goes cold' "${log}" 2>/dev/null)" "1"
 
@@ -736,9 +756,9 @@ function _sl_cache_alert {
   # load), never invent one.
   for (( i = 0; i < 20; i++ )); do
     [[ -f "${log}" ]] && (( $(/usr/bin/grep -c 'cache goes cold' "${log}") >= 4 )) && break
-    sleep 0.1
+    zselect -t 10 || :
   done
-  sleep 1
+  zselect -t 100 || :
   _sl_expect_eq "cache_alert delivered exactly four times (s1 once, s6, s7, s8)" \
     "$(/usr/bin/grep -c 'cache goes cold' "${log}" 2>/dev/null)" "4"
 }
@@ -832,6 +852,10 @@ function _sl_subagent {
 # for everything that runs after it.
 function _sl_run_spawn {
   # <payload> — HOME sandbox, shims first on PATH, real clock
+  # Re-stamp the 5h sample before each render so it stays under a minute old
+  # and the once-a-minute prune never runs.
+  local five="${_SL_SB}/Library/Caches/statusline/usage/five"
+  if [[ -f "${five}" ]]; then printf '%s 55\n' "${_SL_NOW}" > "${five}"; fi
   printf '%s' "$1" | _run_no_tty env -u CLAUDE_CODE_AUTO_COMPACT_WINDOW \
     -u GIT_DIR -u GIT_WORK_TREE -u STATUSLINE_NOW GIT_CEILING_DIRECTORIES="${_SL_SB}" \
     HOME="${_SL_SB}" COLUMNS=140 PATH="${_SL_SB}/shims:${PATH}" \

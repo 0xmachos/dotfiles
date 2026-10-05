@@ -21,7 +21,8 @@
 
 function _muse_exec_run {
   # Echo the hook's stdout for Bash command $1.
-  jq -n --arg c "$1" '{tool_name:"Bash", tool_input:{command:$c}}' \
+  _json_str "$1"
+  print -r -- "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":${REPLY}}}" \
     | /bin/zsh "${SCRIPT_DIR}/claude/hooks/muse-exec-hook"
 }
 
@@ -83,7 +84,6 @@ function run_muse_exec {
   _muse_exec_expect DENY 'timeout 90s muse exec --workspace "$PWD" < /dev/null' 'timeout 90s explicit suffix'
   _muse_exec_expect PASS 'timeout 2m muse exec --workspace "$PWD" < /dev/null' 'timeout 2m == 120s, allowed'
   _muse_exec_expect PASS 'timeout 120 muse exec --workspace "$PWD" < /dev/null' 'timeout exactly 120s'
-  _muse_exec_expect PASS 'timeout 1800 muse exec --workspace "$PWD" < /dev/null' 'timeout 1800s'
   _muse_exec_expect PASS 'gtimeout 1800 muse exec --workspace "$PWD" < /dev/null' 'gtimeout wrapper'
   _muse_exec_expect PASS 'muse exec --workspace "$PWD" < /dev/null' 'no timeout at all is allowed'
   _muse_exec_expect DENY 'timeout -k 5 90 muse exec --workspace "$PWD" < /dev/null' \
@@ -93,7 +93,6 @@ function run_muse_exec {
 
   _muse_exec_expect DENY 'timeout 1800 muse exec --workspace "$PWD"' 'stdin left open'
   _muse_exec_expect PASS 'timeout 1800 muse exec --workspace "$PWD" </dev/null' 'no space before /dev/null'
-  _muse_exec_expect PASS 'timeout 1800 muse exec --workspace "$PWD" < /dev/null' 'space before /dev/null'
 
   # --- Rule 4: forbidden flags ---------------------------------------------
 

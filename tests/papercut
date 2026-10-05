@@ -31,6 +31,7 @@
 # shellcheck disable=SC2296,SC2051,SC2015,SC2079  # zsh-only syntax: (@f) flags, {1..$n}, float (( )), A && B || C reporting
 
 zmodload zsh/datetime 2>/dev/null
+zmodload zsh/zselect 2>/dev/null
 
 typeset -g PC_T='' PC_HOME='' PC_CWD='' PC_BIN='' PC_LOG='' PC_LOCK=''
 typeset -gi PC_RC=0
@@ -63,16 +64,22 @@ function _pc_fresh {
   /bin/mkdir -p "${PC_HOME}" "${PC_CWD}"
 }
 
-# The tool's own environment: no agent hints unless the case adds them through
-# PC_EXTRA (cleared after each run).
-function _pc_env {
-  /usr/bin/env -u CLAUDECODE -u PAPERCUT_AGENT -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE \
-    HOME="${PC_HOME}" GIT_CEILING_DIRECTORIES="${PC_T}" "${PC_EXTRA[@]}" "$@"
+# Runs a command in directory $1 under the tool's own environment: no agent
+# hints unless the case adds them through PC_EXTRA (cleared after each run).
+# It ends in exec, so call it inside a ( subshell ).
+function _pc_exec {
+  local dir="$1"
+  shift
+  cd "${dir}" || return 1
+  unset -v CLAUDECODE PAPERCUT_AGENT GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+  export HOME="${PC_HOME}" GIT_CEILING_DIRECTORIES="${PC_T}"
+  (( ${#PC_EXTRA[@]} == 0 )) || export "${PC_EXTRA[@]}"
+  exec "$@"
 }
 
 function _pc_run {
   PC_RC=0
-  ( cd "${PC_CWD}" && _pc_env /bin/zsh "${PC_BIN}" "$@" ) > "${PC_T}/out" 2> "${PC_T}/err" || PC_RC=$?
+  ( _pc_exec "${PC_CWD}" /bin/zsh "${PC_BIN}" "$@" ) > "${PC_T}/out" 2> "${PC_T}/err" || PC_RC=$?
   PC_EXTRA=()
 }
 
@@ -91,6 +98,15 @@ function _pc_expect_err {
     _pass "stderr has '${pattern}': ${label}"
   else
     _fail "${label} — stderr lacks '${pattern}': $(/usr/bin/head -c 300 "${PC_T}/err")"
+  fi
+}
+
+function _pc_expect_no_err {
+  local pattern="$1" label="$2"
+  if /usr/bin/grep -q -- "${pattern}" "${PC_T}/err"; then
+    _fail "${label} — stderr has '${pattern}': $(/usr/bin/head -c 300 "${PC_T}/err")"
+  else
+    _pass "stderr lacks '${pattern}': ${label}"
   fi
 }
 
@@ -261,8 +277,10 @@ function _pc_test_usage {
 
   _pc_run -h
   _pc_expect_rc 64 "-h"
+  _pc_expect_no_err 'unknown option' "-h is help, not an unknown option"
   _pc_run --help
   _pc_expect_rc 64 "--help"
+  _pc_expect_no_err 'unknown option' "--help is help, not an unknown option"
 
   _pc_run 'no remedy here'
   _pc_expect_rc 64 "missing Fix:"
@@ -272,9 +290,11 @@ function _pc_test_usage {
 
   _pc_run '   '
   _pc_expect_rc 64 "blank message"
+  _pc_expect_err 'blank' "blank message is named as blank"
   _pc_expect_nolog "blank message"
   _pc_run $'\n\t '
   _pc_expect_rc 64 "whitespace-only message"
+  _pc_expect_err 'blank' "whitespace-only message is named as blank"
 
   _pc_run --repo 'bad repo!' 'x Fix: y'
   _pc_expect_rc 64 "bad --repo value"
@@ -385,8 +405,8 @@ function _pc_test_repo_detection {
 
   # HOME is the sandbox, so git reads no real config or global hooks.
   /bin/mkdir -p "${PC_T}/work/myrepo/sub dir" "${PC_T}/work/my repo+x"
-  _pc_env /usr/bin/git init -q "${PC_T}/work/myrepo" >/dev/null 2>&1
-  _pc_env /usr/bin/git init -q "${PC_T}/work/my repo+x" >/dev/null 2>&1
+  ( _pc_exec "${PC_CWD}" /usr/bin/git init -q "${PC_T}/work/myrepo" ) >/dev/null 2>&1
+  ( _pc_exec "${PC_CWD}" /usr/bin/git init -q "${PC_T}/work/my repo+x" ) >/dev/null 2>&1
 
   PC_CWD="${PC_T}/work/myrepo"
   _pc_run 'in repo Fix: x'
@@ -495,7 +515,7 @@ function _pc_test_count {
            '- [ ] 2026-09-20T09:00:00Z · bot · a · oldest Fix: y' \
            '- [ ] 2026-10-01T08:00:00Z · bot · a · newest Fix: z'
   /bin/mkdir -p "${PC_T}/work/a"
-  _pc_env /usr/bin/git init -q "${PC_T}/work/a" >/dev/null 2>&1
+  ( _pc_exec "${PC_CWD}" /usr/bin/git init -q "${PC_T}/work/a" ) >/dev/null 2>&1
   PC_CWD="${PC_T}/work/a"
   _pc_run count
   _pc_expect_rc 0 "count with entries"
@@ -593,37 +613,40 @@ function _pc_test_resolve {
   fi
 }
 
-# Waits up to 5 s for the holder to report it has the lock.
+# Waits up to 5 s for the holder to write its pid, which means it has the lock.
 function _pc_wait_held {
   local i
   for i in {1..50}; do
-    [[ -e "${PC_T}/held" ]] && return 0
-    /bin/sleep 0.1
+    [[ -s "${PC_T}/held" ]] && return 0
+    zselect -t 10 || :
   done
   return 1
 }
 
 function _pc_test_lock {
-  local before t0 elapsed holder rc_a=0 rc_r=0 pid_a pid_r
+  local before t0 elapsed holder rc_a=0 rc_r=0 pid_a pid_r hpid
   _section "papercut: lock contention"
   _pc_fresh
 
   _pc_append 'seed Fix: x'
   before="$(_pc_sha)"
   /bin/rm -f "${PC_T:?}/held"
-  /usr/bin/lockf -k -t 10 "${PC_LOCK}" /bin/sh -c ': > "$1"; /bin/sleep 8' sh "${PC_T}/held" &
+  # The holder execs sleep so that killing its pid drops the lock at once.
+  /usr/bin/lockf -k -t 10 "${PC_LOCK}" /bin/sh -c 'echo $$ > "$1"; exec /bin/sleep 60' sh "${PC_T}/held" &
   holder=$!
   if ! _pc_wait_held; then
     _fail "lock holder never acquired the lock"
-    wait "${holder}" 2>/dev/null
+    kill "${holder}" 2>/dev/null || :
+    wait "${holder}" 2>/dev/null || :
     return
   fi
+  hpid="$(<"${PC_T}/held")"
 
   # Append and resolve contend at once so one 5 s wait covers both.
   t0="${EPOCHREALTIME}"
-  ( cd "${PC_CWD}" && _pc_env /bin/zsh "${PC_BIN}" 'blocked Fix: x' ) > "${PC_T}/out.a" 2> "${PC_T}/err.a" &
+  ( _pc_exec "${PC_CWD}" /bin/zsh "${PC_BIN}" 'blocked Fix: x' ) > "${PC_T}/out.a" 2> "${PC_T}/err.a" &
   pid_a=$!
-  ( cd "${PC_CWD}" && _pc_env /bin/zsh "${PC_BIN}" resolve 1 'blocked' ) > "${PC_T}/out.r" 2> "${PC_T}/err.r" &
+  ( _pc_exec "${PC_CWD}" /bin/zsh "${PC_BIN}" resolve 1 'blocked' ) > "${PC_T}/out.r" 2> "${PC_T}/err.r" &
   pid_r=$!
   wait "${pid_a}" || rc_a=$?
   wait "${pid_r}" || rc_r=$?
@@ -647,7 +670,8 @@ function _pc_test_lock {
     _fail "file changed while the lock was held elsewhere"
   fi
 
-  wait "${holder}" 2>/dev/null
+  kill "${hpid}" 2>/dev/null || :
+  wait "${holder}" 2>/dev/null || :
   _pc_run 'after release Fix: x'
   _pc_expect_rc 0 "append succeeds once the lock is released"
 }
@@ -660,7 +684,7 @@ function _pc_test_concurrent {
 
   _pc_append 'seed Fix: x'
   for i in {1..6}; do
-    ( cd "${PC_CWD}" && _pc_env /bin/zsh "${PC_BIN}" "concurrent ${i} Fix: x" ) > "${PC_T}/out.${i}" 2> "${PC_T}/err.${i}" &
+    ( _pc_exec "${PC_CWD}" /bin/zsh "${PC_BIN}" "concurrent ${i} Fix: x" ) > "${PC_T}/out.${i}" 2> "${PC_T}/err.${i}" &
     pids+=($!)
   done
   n=0

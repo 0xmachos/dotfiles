@@ -12,25 +12,65 @@
 function _jump_test_scripts_exist {
   _section "script existence"
 
-  local bindir="bin"
+  local name
+  for name in jump-user jump-system npm-audit-check; do
+    if [[ -x "bin/${name}" ]]; then
+      _pass "${name} is executable"
+    else
+      _fail "${name} missing or not executable"
+    fi
+  done
+}
 
-  if [[ -x "${bindir}/jump-user" ]]; then
-    _pass "jump-user is executable"
-  else
-    _fail "jump-user missing or not executable"
-  fi
+# Each driver's text without its trailing `main "$@"`, so a case can eval the functions in a subshell.
+typeset -gA _JUMP_BODY=()
+function _jump_load_bodies {
+  local script
+  local -a lines
+  local main_call='main "$@"'
+  for script in bin/jump-user bin/jump-system; do
+    # shellcheck disable=SC2296  # zsh (@f) line split
+    lines=("${(@f)$(<"${script}")}")
+    # shellcheck disable=SC2296  # zsh array pattern removal
+    _JUMP_BODY[${script}]="${(F)${(@)lines:#${main_call}*}}"
+  done
+}
 
-  if [[ -x "${bindir}/jump-system" ]]; then
-    _pass "jump-system is executable"
-  else
-    _fail "jump-system missing or not executable"
-  fi
+# True when a line of file $1 matches glob $2 (grep -q on one line at a time).
+function _jump_log_has {
+  local line
+  [[ -r "$1" ]] || return 1
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    # shellcheck disable=SC2053,SC2296  # zsh ${~} makes the glob in $2 live
+    [[ "${line}" == ${~2} ]] && return 0
+  done < "$1"
+  return 1
+}
 
-  if [[ -x "${bindir}/npm-audit-check" ]]; then
-    _pass "npm-audit-check is executable"
-  else
-    _fail "npm-audit-check missing or not executable"
-  fi
+# argv[0] and the payload for each launchd plist, from one PlistBuddy dump per plist.
+typeset -ga _JUMP_PLISTS=()
+typeset -gA _JUMP_PLIST_PROG=() _JUMP_PLIST_PAYLOAD=()
+function _jump_load_plists {
+  local plist dump
+  local -a lines
+  setopt local_options null_glob
+  _JUMP_PLISTS=()
+  _JUMP_PLIST_PROG=()
+  _JUMP_PLIST_PAYLOAD=()
+  for plist in LaunchAgents/*.plist LaunchDaemons/*.plist; do
+    [[ -f "${plist}" ]] || continue
+    # SC2034: dump is read by the zsh (@f) split below, which shellcheck cannot parse.
+    # shellcheck disable=SC2034
+    dump=$(/usr/libexec/PlistBuddy -c "Print :ProgramArguments" "${plist}" 2>/dev/null) || continue
+    # shellcheck disable=SC2296  # zsh (@f) line split
+    lines=("${(@f)dump}")
+    # `Array {`, one 4-space-indented element per argument, `}`.
+    (( ${#lines[@]} >= 3 )) || continue
+    _JUMP_PLISTS+=("${plist}")
+    _JUMP_PLIST_PROG[${plist}]="${lines[2]#    }"
+    # shellcheck disable=SC2296  # zsh (F) join
+    _JUMP_PLIST_PAYLOAD[${plist}]="${(F)lines[2,-2]}"
+  done
 }
 
 # Real connectivity gate against scutil fixtures: no network or updater runs.
@@ -49,7 +89,7 @@ if [[ "$2" == "${JUMP_TEST_REACHABLE_DOMAIN}" ]]; then
 fi
 print -r -- 'Not Reachable'
 MOCK
-  chmod 700 "${fixture}/scutil"
+  zf_chmod 700 "${fixture}/scutil"
 
   local script name output expected_calls expected_rc actual
   local -a calls
@@ -80,7 +120,7 @@ MOCK
       # shellcheck disable=SC1090,SC1091,SC2034,SC2329
       actual=$(
         set +e
-        source <(/usr/bin/grep -v '^main "\$@"' "${script}")
+        eval "${_JUMP_BODY[${script}]}"
         export JUMP_TEST_CALLS="${fixture}/calls"
         export JUMP_TEST_REACHABLE_DOMAIN="${reachable_domain}"
         export JUMP_TEST_STATUS="${probe_status}"
@@ -108,7 +148,7 @@ MOCK
       fi
     done
   done
-  /bin/rm -rf "${fixture}"
+  zf_rm -rf "${fixture}"
 }
 
 # Every *_BINARY/*_APP path the scripts declare exists. Derived from the
@@ -199,40 +239,39 @@ function _jump_test_run_and_log {
   for script in bin/jump-system bin/jump-user; do
     name="${script##*/}"
     test_log="${TMPDIR}test-jump-$$-${name}.log"
-    /bin/rm -f "${test_log}"
+    zf_rm -f "${test_log}"
 
-    # Sourced without `main "$@"`, in a subshell so definitions don't leak.
+    # Evaled without `main "$@"`, in a subshell so definitions don't leak.
     # `set +e`: the runner uses `set -e` and the failure case returns non-zero
     # on purpose, which would abort the subshell before `echo "$?"`.
-    # SC2034: LOG_FILE is read by the sourced run_and_log; SC1090/SC1091:
-    # dynamic process-substitution source.
-    # shellcheck disable=SC1090,SC1091,SC2034
-    rc_true=$(set +e; source <(/usr/bin/grep -v '^main "\$@"' "${script}"); LOG_FILE="${test_log}"; run_and_log "ok step" /usr/bin/true >/dev/null 2>&1; echo "$?")
+    # SC2034: LOG_FILE is read by the evaled run_and_log.
+    # shellcheck disable=SC2034
+    rc_true=$(set +e; eval "${_JUMP_BODY[${script}]}"; LOG_FILE="${test_log}"; run_and_log "ok step" /usr/bin/true >/dev/null 2>&1; echo "$?")
     if [[ "${rc_true}" == "0" ]]; then
       _pass "${name}: run_and_log returns 0 on success"
     else
       _fail "${name}: run_and_log returned '${rc_true}' on success (expected 0)"
     fi
-    if [[ ! -f "${test_log}" ]] || ! grep -q "ok step" "${test_log}" 2>/dev/null; then
+    if ! _jump_log_has "${test_log}" '*ok step*'; then
       _pass "${name}: success does not write to log file"
     else
       _fail "${name}: success should not write to log file"
     fi
 
-    # shellcheck disable=SC1090,SC1091,SC2034
-    rc_false=$(set +e; source <(/usr/bin/grep -v '^main "\$@"' "${script}"); LOG_FILE="${test_log}"; run_and_log "bad step" /usr/bin/false >/dev/null 2>&1; echo "$?")
+    # shellcheck disable=SC2034
+    rc_false=$(set +e; eval "${_JUMP_BODY[${script}]}"; LOG_FILE="${test_log}"; run_and_log "bad step" /usr/bin/false >/dev/null 2>&1; echo "$?")
     if [[ "${rc_false}" != "0" ]]; then
       _pass "${name}: run_and_log returns non-zero on failure"
     else
       _fail "${name}: run_and_log swallowed the failure (returned 0)"
     fi
-    if grep -q "FAIL.*bad step" "${test_log}" 2>/dev/null; then
+    if _jump_log_has "${test_log}" '*FAIL*bad step*'; then
       _pass "${name}: failure writes [FAIL] to log file"
     else
       _fail "${name}: failure should write [FAIL] to log file"
     fi
 
-    /bin/rm -f "${test_log}"
+    zf_rm -f "${test_log}"
   done
 }
 
@@ -261,9 +300,8 @@ function _jump_test_launchd_not_in_symlink_array {
   local -a bin_files=(${=raw})
 
   local plist prog base
-  for plist in LaunchAgents/*.plist LaunchDaemons/*.plist; do
-    [[ -f "${plist}" ]] || continue
-    prog=$(/usr/libexec/PlistBuddy -c "Print :ProgramArguments:0" "${plist}" 2>/dev/null) || continue
+  for plist in "${_JUMP_PLISTS[@]}"; do
+    prog="${_JUMP_PLIST_PROG[${plist}]}"
     base="${prog##*/}"
     if (( ${bin_files[(Ie)${base}]} )); then
       _fail "${plist##*/}: ${base} is launchd-invoked but in install_scripts' symlink array — must be copied, not symlinked"
@@ -280,9 +318,8 @@ function _jump_test_launchd_program_outside_documents {
 
   local plist prog real
   local -i checked=0
-  for plist in LaunchAgents/*.plist LaunchDaemons/*.plist; do
-    [[ -f "${plist}" ]] || continue
-    prog=$(/usr/libexec/PlistBuddy -c "Print :ProgramArguments:0" "${plist}" 2>/dev/null) || continue
+  for plist in "${_JUMP_PLISTS[@]}"; do
+    prog="${_JUMP_PLIST_PROG[${plist}]}"
     if [[ ! -e "${prog}" ]]; then
       _skip "${plist##*/}: ${prog} not installed"
       continue
@@ -314,9 +351,8 @@ function _jump_test_launchd_payloads_under_documents {
 
   local plist args tok
   local -i found=0
-  for plist in LaunchAgents/*.plist LaunchDaemons/*.plist; do
-    [[ -f "${plist}" ]] || continue
-    args=$(/usr/libexec/PlistBuddy -c "Print :ProgramArguments" "${plist}" 2>/dev/null | /usr/bin/sed '1d;$d' || true)
+  for plist in "${_JUMP_PLISTS[@]}"; do
+    args="${_JUMP_PLIST_PAYLOAD[${plist}]}"
     [[ -n "${args}" ]] || continue
     # SC2296/SC2206: zsh word-splitting flag, not valid bash.
     # shellcheck disable=SC2296,SC2206
@@ -370,15 +406,15 @@ function _jump_test_run_and_log_unwritable {
     name="${script##*/}"
     locked="${TMPDIR}test-jump-$$-${name}-locked.log"
     capture="${TMPDIR}test-jump-$$-${name}-logger.txt"
-    /bin/rm -f "${locked}" "${capture}"
+    zf_rm -f "${locked}" "${capture}"
     : > "${locked}"
-    chmod 444 "${locked}"
+    zf_chmod 444 "${locked}"
 
-    # SC1090/SC1091: dynamic source. SC2034: LOG_FILE is read by the sourced
-    # function. SC2329: the logger shim is invoked only from the sourced
-    # run_and_log, which shellcheck cannot follow.
-    # shellcheck disable=SC1090,SC1091,SC2034,SC2329
-    rc=$(set +e; source <(/usr/bin/grep -v '^main "\$@"' "${script}"); LOG_FILE="${locked}"; logger() { echo "$@" >> "${capture}"; }; run_and_log "bad step" /usr/bin/false >/dev/null 2>&1; echo "$?")
+    # SC2034: LOG_FILE is read by the evaled function. SC2329: the logger shim
+    # is invoked only from the evaled run_and_log, which shellcheck cannot
+    # follow.
+    # shellcheck disable=SC2034,SC2329
+    rc=$(set +e; eval "${_JUMP_BODY[${script}]}"; LOG_FILE="${locked}"; logger() { echo "$@" >> "${capture}"; }; run_and_log "bad step" /usr/bin/false >/dev/null 2>&1; echo "$?")
 
     if [[ "${rc}" != "0" ]]; then
       _pass "${name}: preserves the command's exit code when the log is unwritable"
@@ -386,18 +422,22 @@ function _jump_test_run_and_log_unwritable {
       _fail "${name}: swallowed the failure (returned 0) when the log was unwritable"
     fi
 
-    if grep -q "cannot write" "${capture}" 2>/dev/null; then
+    if _jump_log_has "${capture}" '*cannot write*'; then
       _pass "${name}: reports the failed log write to syslog"
     else
       _fail "${name}: failed log write was silent — detail lost with no signal"
     fi
 
-    chmod 644 "${locked}"
-    /bin/rm -f "${locked}" "${capture}"
+    zf_chmod 644 "${locked}"
+    zf_rm -f "${locked}" "${capture}"
   done
 }
 
 function run_jump {
+  # Builtin rm and chmod: the zf_ prefix leaves the external commands alone.
+  zmodload -F zsh/files b:zf_rm b:zf_chmod
+  _jump_load_bodies
+  _jump_load_plists
   _jump_test_scripts_exist
   _jump_test_zsh_syntax
   _jump_test_reachability

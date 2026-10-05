@@ -21,25 +21,39 @@
 # shellcheck source=tests/lib
 
 function _shc_run {
-  # Echo the hook's stdout for stdin $1; $2... are `env` arguments.
+  # Run the hook with stdin $1; $2... are VAR=value, -u VAR or -C dir, applied
+  # in order. Sets the caller's `out` (stdout) and `rc` (hook exit status).
   local payload="$1"
   shift
-  printf '%s' "${payload}" \
-    | SESSION_HOST_CONTEXT_PAPERCUT=/nonexistent/papercut env "$@" /bin/zsh "${SCRIPT_DIR}/claude/hooks/session-host-context" || true
+  rc=0
+  # shellcheck disable=SC2034  # out is read by the caller
+  out="$(
+    typeset -x SESSION_HOST_CONTEXT_PAPERCUT=/nonexistent/papercut
+    while (( $# > 0 )); do
+      case "$1" in
+        -u) unset "$2"; shift 2 ;;
+        -C) cd "$2" || exit 99; shift 2 ;;
+        *) typeset -x "${1%%=*}=${1#*=}"; shift ;;
+      esac
+    done
+    printf '%s' "${payload}" | /bin/zsh "${SCRIPT_DIR}/claude/hooks/session-host-context"
+  )" || rc=$?
 }
 
-function _shc_expect_exit0 {
-  # Assert the hook exits 0 for stdin $1, labelled $2; $3... are `env` args.
-  local payload="$1" label="$2" got=0
-  shift 2
-  printf '%s' "${payload}" \
-    | SESSION_HOST_CONTEXT_PAPERCUT=/nonexistent/papercut env "$@" /bin/zsh "${SCRIPT_DIR}/claude/hooks/session-host-context" >/dev/null \
-    || got=$?
-  if [[ "${got}" -eq 0 ]]; then
-    _pass "${label}: exit 0"
+function _shc_exit0 {
+  # Assert the last _shc_run exited 0, labelled $1.
+  if [[ "${rc}" -eq 0 ]]; then
+    _pass "$1: exit 0"
   else
-    _fail "${label}: expected exit 0, got ${got}"
+    _fail "$1: expected exit 0, got ${rc}"
   fi
+}
+
+function _shc_mkstub {
+  # $1 = stub path, $2... = script lines (shebang added). Caller chmods.
+  local f="$1" l
+  shift
+  { print -r -- '#!/bin/sh'; for l in "$@"; do print -r -- "${l}"; done; } > "${f}"
 }
 
 function run_session_host_context {
@@ -51,108 +65,103 @@ function run_session_host_context {
     return 0
   fi
 
-  local stub_dir out got
+  local stub_dir out rc got
   stub_dir="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/session-host-context-test.XXXXXX")"
+  local pc_rec="${stub_dir}/pc-cwd.txt" pc_dir="${stub_dir}/proj dir" long_host
+  # shellcheck disable=SC2296  # (l:200::x:): left-pad to 200 chars
+  long_host="${(l:200::x:)${:-}}"
+  mkdir -p "${pc_dir}"
 
   # Mixed-case hostname, so the lowercasing assertion has something to bite on.
-  {
-    print -r -- '#!/bin/sh'
-    print -r -- 'echo "TestHost-Mixed"'
-  } > "${stub_dir}/scutil"
-  chmod 755 "${stub_dir}/scutil"
-
+  _shc_mkstub "${stub_dir}/scutil" 'echo "TestHost-Mixed"'
   # Failing scutil, for the "unknown" fallback.
-  {
-    print -r -- '#!/bin/sh'
-    print -r -- 'exit 1'
-  } > "${stub_dir}/scutil-fail"
-  chmod 755 "${stub_dir}/scutil-fail"
+  _shc_mkstub "${stub_dir}/scutil-fail" 'exit 1'
+  # A 200-char hostname, for the worst-case line.
+  _shc_mkstub "${stub_dir}/scutil-long" "echo \"${long_host}\""
+  # A newline in a probed value must not make the one-line output two lines.
+  _shc_mkstub "${stub_dir}/scutil-newline" 'echo "firstline"' 'echo "second line · macOS should not appear"'
 
   # sw_vers stubs mimic the real no-flag three-line form (the hook makes one
   # call): pre-release (letter-ending build), release (digit), failing.
-  {
-    print -r -- '#!/bin/sh'
-    print -r -- 'printf "ProductName:\t\tmacOS\nProductVersion:\t\t26.5\nBuildVersion:\t\t26A5378n\n"'
-  } > "${stub_dir}/sw_vers-seed"
-  chmod 755 "${stub_dir}/sw_vers-seed"
-  {
-    print -r -- '#!/bin/sh'
-    print -r -- 'printf "ProductName:\t\tmacOS\nProductVersion:\t\t27.0\nBuildVersion:\t\t26A428\n"'
-  } > "${stub_dir}/sw_vers-release"
-  chmod 755 "${stub_dir}/sw_vers-release"
-  {
-    print -r -- '#!/bin/sh'
-    print -r -- 'exit 1'
-  } > "${stub_dir}/sw_vers-fail"
-  chmod 755 "${stub_dir}/sw_vers-fail"
+  _shc_mkstub "${stub_dir}/sw_vers-seed" \
+    'printf "ProductName:\t\tmacOS\nProductVersion:\t\t26.5\nBuildVersion:\t\t26A5378n\n"'
+  _shc_mkstub "${stub_dir}/sw_vers-release" \
+    'printf "ProductName:\t\tmacOS\nProductVersion:\t\t27.0\nBuildVersion:\t\t26A428\n"'
+  _shc_mkstub "${stub_dir}/sw_vers-fail" 'exit 1'
 
-  # readlink: a fake versions/ path.
-  {
-    print -r -- '#!/bin/sh'
-    print -r -- 'echo "/fake/versions/9.9.9/cli.js"'
-  } > "${stub_dir}/readlink-fake"
-  chmod 755 "${stub_dir}/readlink-fake"
-  # readlink resolving nothing, for the "neither present" case.
-  {
-    print -r -- '#!/bin/sh'
-    print -r -- 'exit 1'
-  } > "${stub_dir}/readlink-fail"
-  chmod 755 "${stub_dir}/readlink-fail"
+  # readlink: a fake versions/ path, and one resolving nothing ("neither present").
+  _shc_mkstub "${stub_dir}/readlink-fake" 'echo "/fake/versions/9.9.9/cli.js"'
+  _shc_mkstub "${stub_dir}/readlink-fail" 'exit 1'
+
+  # Stubbed `papercut count`.
+  _shc_mkstub "${stub_dir}/pc-full" 'echo "3 1 2026-09-20"'
+  _shc_mkstub "${stub_dir}/pc-dash" 'echo "2 0 -"'
+  _shc_mkstub "${stub_dir}/pc-zero" 'echo "0 0 -"'
+  _shc_mkstub "${stub_dir}/pc-fail" 'echo "3 1 2026-09-20"' 'exit 1'
+  _shc_mkstub "${stub_dir}/pc-bad" 'echo "three 1 2026-09-20"'
+  _shc_mkstub "${stub_dir}/pc-baddate" 'echo "3 1 2026-9-20"'
+  _shc_mkstub "${stub_dir}/pc-extra" 'echo "3 1 2026-09-20 extra"'
+  _shc_mkstub "${stub_dir}/pc-two" 'echo "3 1 2026-09-20"' 'echo "4 2 2026-09-21"'
+  _shc_mkstub "${stub_dir}/pc-record" "pwd -P > '${pc_rec}'" 'echo "3 1 2026-09-20"'
+  _shc_mkstub "${stub_dir}/pc-noexec" 'echo "3 1 2026-09-20"'
+  # One chmod for every stub; pc-noexec stays present but not executable.
+  chmod 755 "${stub_dir}"/*(.)
+  chmod 644 "${stub_dir}/pc-noexec"
 
   # --- resume / fork: silent, exit 0 -----------------------------------
-  out="$(_shc_run '{"source":"resume"}')"
+  _shc_run '{"source":"resume"}'
   if [[ -z "${out}" ]]; then
     _pass "resume (compact JSON): empty stdout"
   else
     _fail "resume (compact JSON): expected empty stdout, got: ${out}"
   fi
-  _shc_expect_exit0 '{"source":"resume"}' "resume"
+  _shc_exit0 "resume"
 
-  out="$(_shc_run '{"source": "resume"}')"
+  _shc_run '{"source": "resume"}'
   if [[ -z "${out}" ]]; then
     _pass "resume (spaced JSON): empty stdout"
   else
     _fail "resume (spaced JSON): expected empty stdout, got: ${out}"
   fi
 
-  out="$(_shc_run '{"source":"fork"}')"
+  _shc_run '{"source":"fork"}'
   if [[ -z "${out}" ]]; then
     _pass "fork: empty stdout"
   else
     _fail "fork: expected empty stdout, got: ${out}"
   fi
-  _shc_expect_exit0 '{"source":"fork"}' "fork"
+  _shc_exit0 "fork"
 
   # --- regression: a stripped PATH must not defeat the resume skip -------
   # The hook reads stdin with the `read` builtin; a bare `cat` would fail
   # here, leave `input` empty and double-inject.
-  out="$(_shc_run '{"source":"resume"}' 'PATH=/nonexistent')"
+  _shc_run '{"source":"resume"}' 'PATH=/nonexistent'
   if [[ -z "${out}" ]]; then
     _pass "resume under a stripped PATH: empty stdout (PATH-independent stdin read)"
   else
     _fail "resume under a stripped PATH: expected empty stdout, got: ${out}"
   fi
-  _shc_expect_exit0 '{"source":"resume"}' "resume under a stripped PATH" 'PATH=/nonexistent'
+  _shc_exit0 "resume under a stripped PATH"
 
   # --- regression: HOME and CLAUDE_CODE_EXECPATH both unset must still exit 0
   # (fail-open under set -u; the readlink fallback references $HOME) ---------
-  _shc_expect_exit0 '{"source":"startup"}' "HOME and CLAUDE_CODE_EXECPATH both unset" \
-    -u HOME -u CLAUDE_CODE_EXECPATH
+  _shc_run '{"source":"startup"}' -u HOME -u CLAUDE_CODE_EXECPATH
+  _shc_exit0 "HOME and CLAUDE_CODE_EXECPATH both unset"
 
   # --- startup / clear / compact / no source: fire, exit 0, ONE line ----
   local payload
   for payload in '{}' '{"source":"startup"}' '{"source":"clear"}' '{"source":"compact"}'; do
-    out="$(_shc_run "${payload}")"
+    _shc_run "${payload}"
     if [[ -n "${out}" && "${out}" == 'Host: '* && "${out}" != *$'\n'* ]]; then
       _pass "${payload}: non-empty single-line stdout starting 'Host: '"
     else
       _fail "${payload}: expected a single 'Host: ...' line, got: ${out}"
     fi
+    if [[ "${payload}" == *startup* ]]; then _shc_exit0 "startup"; fi
   done
-  _shc_expect_exit0 '{"source":"startup"}' "startup"
 
   # --- hostname lowercased -----------------------------------------------
-  out="$(_shc_run '{"source":"startup"}' "SESSION_HOST_CONTEXT_SCUTIL=${stub_dir}/scutil")"
+  _shc_run '{"source":"startup"}' "SESSION_HOST_CONTEXT_SCUTIL=${stub_dir}/scutil"
   if [[ "${out}" == *"Host: testhost-mixed"* ]]; then
     _pass "mixed-case hostname is lowercased in output"
   else
@@ -160,7 +169,7 @@ function run_session_host_context {
   fi
 
   # --- scutil failure -> unknown fallback --------------------------------
-  out="$(_shc_run '{"source":"startup"}' "SESSION_HOST_CONTEXT_SCUTIL=${stub_dir}/scutil-fail")"
+  _shc_run '{"source":"startup"}' "SESSION_HOST_CONTEXT_SCUTIL=${stub_dir}/scutil-fail"
   if [[ "${out}" == *"Host: unknown"* ]]; then
     _pass "scutil failure falls back to 'unknown'"
   else
@@ -168,38 +177,37 @@ function run_session_host_context {
   fi
 
   # --- OS segment: seed vs release vs failure, one sw_vers call ----------
-  out="$(_shc_run '{"source":"startup"}' "SESSION_HOST_CONTEXT_SW_VERS=${stub_dir}/sw_vers-seed")"
+  _shc_run '{"source":"startup"}' "SESSION_HOST_CONTEXT_SW_VERS=${stub_dir}/sw_vers-seed"
   if [[ "${out}" == *"macOS 26.5 (26A5378n, seed)"* ]]; then
     _pass "letter-ending build gets pre-release seed phrasing"
   else
     _fail "letter-ending build missing seed phrasing, got: ${out}"
   fi
 
-  out="$(_shc_run '{"source":"startup"}' "SESSION_HOST_CONTEXT_SW_VERS=${stub_dir}/sw_vers-release")"
+  _shc_run '{"source":"startup"}' "SESSION_HOST_CONTEXT_SW_VERS=${stub_dir}/sw_vers-release"
   if [[ "${out}" == *"macOS 27.0 (26A428)"* && "${out}" != *"seed"* ]]; then
     _pass "digit-ending build gets plain macOS segment, no seed phrasing"
   else
     _fail "digit-ending build phrasing wrong, got: ${out}"
   fi
 
-  out="$(_shc_run '{"source":"startup"}' "SESSION_HOST_CONTEXT_SW_VERS=${stub_dir}/sw_vers-fail")"
+  _shc_run '{"source":"startup"}' "SESSION_HOST_CONTEXT_SW_VERS=${stub_dir}/sw_vers-fail"
   if [[ "${out}" != *"macOS "* ]]; then
     _pass "sw_vers failure omits the macOS segment"
   else
     _fail "sw_vers failure should omit the macOS segment, got: ${out}"
   fi
-  _shc_expect_exit0 '{"source":"startup"}' "sw_vers failure" \
-    "SESSION_HOST_CONTEXT_SW_VERS=${stub_dir}/sw_vers-fail"
+  _shc_exit0 "sw_vers failure"
 
   # --- Claude Code version: EXECPATH, readlink fallback, neither --------
-  out="$(_shc_run '{"source":"startup"}' 'CLAUDE_CODE_EXECPATH=/x/versions/2.9.9')"
+  _shc_run '{"source":"startup"}' 'CLAUDE_CODE_EXECPATH=/x/versions/2.9.9'
   if [[ "${out}" == *"Claude Code 2.9.9"* ]]; then
     _pass "CLAUDE_CODE_EXECPATH version is printed"
   else
     _fail "CLAUDE_CODE_EXECPATH version not printed, got: ${out}"
   fi
 
-  out="$(_shc_run '{"source":"startup"}' -u CLAUDE_CODE_EXECPATH "SESSION_HOST_CONTEXT_READLINK=${stub_dir}/readlink-fake")"
+  _shc_run '{"source":"startup"}' -u CLAUDE_CODE_EXECPATH "SESSION_HOST_CONTEXT_READLINK=${stub_dir}/readlink-fake"
   if [[ "${out}" == *"Claude Code 9.9.9"* ]]; then
     _pass "readlink fallback version is printed when EXECPATH is unset"
   else
@@ -208,23 +216,22 @@ function run_session_host_context {
 
   # --- regression: EXECPATH without "versions/" (npm/Homebrew shape) must
   # still fall back to readlink, not only when EXECPATH is unset.
-  out="$(_shc_run '{"source":"startup"}' \
+  _shc_run '{"source":"startup"}' \
     'CLAUDE_CODE_EXECPATH=/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/cli.js' \
-    "SESSION_HOST_CONTEXT_READLINK=${stub_dir}/readlink-fake")"
+    "SESSION_HOST_CONTEXT_READLINK=${stub_dir}/readlink-fake"
   if [[ "${out}" == *"Claude Code 9.9.9"* ]]; then
     _pass "EXECPATH without 'versions/' falls back to readlink"
   else
     _fail "EXECPATH without 'versions/' did not fall back to readlink, got: ${out}"
   fi
 
-  out="$(_shc_run '{"source":"startup"}' -u CLAUDE_CODE_EXECPATH "SESSION_HOST_CONTEXT_READLINK=${stub_dir}/readlink-fail")"
+  _shc_run '{"source":"startup"}' -u CLAUDE_CODE_EXECPATH "SESSION_HOST_CONTEXT_READLINK=${stub_dir}/readlink-fail"
   if [[ "${out}" != *"Claude Code"* ]]; then
     _pass "neither EXECPATH nor readlink: Claude Code segment omitted"
   else
     _fail "Claude Code segment should be omitted, got: ${out}"
   fi
-  _shc_expect_exit0 '{"source":"startup"}' "no version resolvable" \
-    -u CLAUDE_CODE_EXECPATH "SESSION_HOST_CONTEXT_READLINK=${stub_dir}/readlink-fail"
+  _shc_exit0 "no version resolvable"
 
   # --- Terminal segment: env-only, every case clears the runner's own
   # HERDR_ENV/TERM_PROGRAM/TERM_PROGRAM_VERSION first, then sets its inputs.
@@ -252,7 +259,7 @@ function run_session_host_context {
     term_seg="${term_seg%|*}"
     # shellcheck disable=SC2296,SC2206  # (=): split the case's env args on spaces
     term_case=(${=term_seg})
-    out="$(_shc_run '{"source":"startup"}' "${term_clear[@]}" "${term_case[@]}")"
+    _shc_run '{"source":"startup"}' "${term_clear[@]}" "${term_case[@]}"
     if [[ -n "${term_want}" ]]; then
       if [[ "${out}" == *" · ${term_want}" && "${out}" != *$'\n'* ]]; then
         _pass "terminal: ${term_label}"
@@ -267,7 +274,7 @@ function run_session_host_context {
   done
 
   # A newline in TERM_PROGRAM must not break the one-line contract.
-  out="$(_shc_run '{"source":"startup"}' "${term_clear[@]}" $'TERM_PROGRAM=ghostty\nevil')"
+  _shc_run '{"source":"startup"}' "${term_clear[@]}" $'TERM_PROGRAM=ghostty\nevil'
   if [[ "${out}" == *' · Terminal: Ghostty' && "${out}" != *$'\n'* ]]; then
     _pass "terminal: a newline in TERM_PROGRAM is truncated to one line"
   else
@@ -276,11 +283,11 @@ function run_session_host_context {
 
   # Fixed representative herdr+Ghostty line stays within the 150-byte target
   # regardless of where the suite runs.
-  out="$(_shc_run '{"source":"startup"}' "${term_clear[@]}" \
+  _shc_run '{"source":"startup"}' "${term_clear[@]}" \
     "SESSION_HOST_CONTEXT_SCUTIL=${stub_dir}/scutil" \
     "SESSION_HOST_CONTEXT_SW_VERS=${stub_dir}/sw_vers-seed" \
     'CLAUDE_CODE_EXECPATH=/x/versions/2.1.286' \
-    HERDR_ENV=1 TERM_PROGRAM=ghostty TERM_PROGRAM_VERSION=1.3.2-main+0081d4530)"
+    HERDR_ENV=1 TERM_PROGRAM=ghostty TERM_PROGRAM_VERSION=1.3.2-main+0081d4530
   got="$(printf '%s' "${out}" | /usr/bin/wc -c | tr -d ' ')"
   if [[ "${out}" == *'Terminal: herdr pane'* && ${got} -le 150 ]]; then
     _pass "representative herdr+Ghostty line is ${got} bytes (<= 150)"
@@ -294,19 +301,18 @@ function run_session_host_context {
   sandbox_home="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/session-host-context-home.XXXXXX")"
   mkdir -p "${sandbox_home}/.claude/hosts"
   echo "Injected host note — should never appear." > "${sandbox_home}/.claude/hosts/testhost-mixed.md"
-  out="$(_shc_run '{"source":"startup"}' "HOME=${sandbox_home}" "SESSION_HOST_CONTEXT_SCUTIL=${stub_dir}/scutil")"
+  _shc_run '{"source":"startup"}' "HOME=${sandbox_home}" "SESSION_HOST_CONTEXT_SCUTIL=${stub_dir}/scutil"
   if [[ "${out}" != *"Injected host note"* && "${out}" != *$'\n'* ]]; then
     _pass "hosts/<host>.md content is never read (mechanism dropped)"
   else
     _fail "hosts/<host>.md content leaked into output, got: ${out}"
   fi
-  _shc_expect_exit0 '{"source":"startup"}' "hosts/<host>.md present but unused" \
-    "HOME=${sandbox_home}" "SESSION_HOST_CONTEXT_SCUTIL=${stub_dir}/scutil"
+  _shc_exit0 "hosts/<host>.md present but unused"
   /bin/rm -rf "${sandbox_home}"
 
   # --- real (unstubbed) output stays within the 150-byte target. Counted with
   # `wc -c`, not `${#out}`: the "·" separator is 2 bytes but 1 character. ----
-  out="$(_shc_run '{"source":"startup"}')"
+  _shc_run '{"source":"startup"}'
   got="$(printf '%s' "${out}" | /usr/bin/wc -c | tr -d ' ')"
   if [[ "${out}" == 'Host: '* && "${out}" != *$'\n'* && ${got} -le 150 ]]; then
     _pass "real common-path output is one line, ${got} bytes (<= 150)"
@@ -317,44 +323,31 @@ function run_session_host_context {
   # --- worst-case stubbed output: exact string, and well under the documented
   # 10,000-char harness output cap (characters, the cap's unit). A guard on
   # this hook's output shape only, not a live trip of harness truncation. ----
-  local big_out big_len long_host expected_big_out
-  long_host="$(/usr/bin/python3 -c "print('x' * 200)")"
-  {
-    print -r -- '#!/bin/sh'
-    print -r -- "echo \"${long_host}\""
-  } > "${stub_dir}/scutil-long"
-  chmod 755 "${stub_dir}/scutil-long"
-  big_out="$(_shc_run '{"source":"startup"}' \
-    -u HERDR_ENV -u TERM_PROGRAM -u TERM_PROGRAM_VERSION \
+  local big_len expected_big_out
+  _shc_run '{"source":"startup"}' "${term_clear[@]}" \
     "SESSION_HOST_CONTEXT_SCUTIL=${stub_dir}/scutil-long" \
     "SESSION_HOST_CONTEXT_SW_VERS=${stub_dir}/sw_vers-seed" \
-    'CLAUDE_CODE_EXECPATH=/x/versions/2026.99.99-a-very-long-pre-release-suffix')"
+    'CLAUDE_CODE_EXECPATH=/x/versions/2026.99.99-a-very-long-pre-release-suffix'
   expected_big_out="Host: ${long_host} · macOS 26.5 (26A5378n, seed) · Claude Code 2026.99.99-a-very-long-pre-release-suffix"
-  big_len=${#big_out}
-  if [[ "${big_out}" == "${expected_big_out}" && ${big_len} -lt 1000 ]]; then
+  big_len=${#out}
+  if [[ "${out}" == "${expected_big_out}" && ${big_len} -lt 1000 ]]; then
     _pass "worst-case stubbed output matches exactly (${big_len} chars, well under the 10,000-char cap)"
   else
-    _fail "worst-case stubbed output changed shape (${big_len} chars): ${big_out}"
+    _fail "worst-case stubbed output changed shape (${big_len} chars): ${out}"
   fi
 
   # --- regression: a newline in a probed value must not make the one-line
   # output two lines. Not reachable today (LocalHostName is RFC-1034-restricted;
   # EXECPATH is this install's own path); the hook strips at the first newline
   # in both. ----------------------------------------------------------------
-  {
-    print -r -- '#!/bin/sh'
-    print -r -- 'echo "firstline"'
-    print -r -- 'echo "second line · macOS should not appear"'
-  } > "${stub_dir}/scutil-newline"
-  chmod 755 "${stub_dir}/scutil-newline"
-  out="$(_shc_run '{"source":"startup"}' "SESSION_HOST_CONTEXT_SCUTIL=${stub_dir}/scutil-newline")"
+  _shc_run '{"source":"startup"}' "SESSION_HOST_CONTEXT_SCUTIL=${stub_dir}/scutil-newline"
   if [[ "${out}" == 'Host: firstline'* && "${out}" != *$'\n'* ]]; then
     _pass "a newline in the scutil probe's output is truncated to one line"
   else
     _fail "a newline in the scutil probe's output was not truncated, got: ${out}"
   fi
 
-  out="$(_shc_run '{"source":"startup"}' $'CLAUDE_CODE_EXECPATH=/x/versions/2.9.9\nevil/cli.js')"
+  _shc_run '{"source":"startup"}' $'CLAUDE_CODE_EXECPATH=/x/versions/2.9.9\nevil/cli.js'
   if [[ "${out}" == *'Claude Code 2.9.9'* && "${out}" != *$'\n'* ]]; then
     _pass "a newline in CLAUDE_CODE_EXECPATH is truncated to one line"
   else
@@ -364,37 +357,16 @@ function run_session_host_context {
   # --- Papercuts segment: stubbed `papercut count` -----------------------
   # Every case runs with the other probes cleared of noise by only asserting
   # on the " · Papercuts:" tail or its absence.
-  local pc_rec="${stub_dir}/pc-cwd.txt" pc_dir="${stub_dir}/proj dir" pc_seg pc_got
-  mkdir -p "${pc_dir}"
-  function _shc_mkstub {
-    # $1 = file name under stub_dir, $2... = script lines (shebang added).
-    local f="${stub_dir}/$1"
-    shift
-    { print -r -- '#!/bin/sh'; local l; for l in "$@"; do print -r -- "${l}"; done; } > "${f}"
-    chmod 755 "${f}"
-  }
-  _shc_mkstub pc-full 'echo "3 1 2026-09-20"'
-  _shc_mkstub pc-dash 'echo "2 0 -"'
-  _shc_mkstub pc-zero 'echo "0 0 -"'
-  _shc_mkstub pc-fail 'echo "3 1 2026-09-20"' 'exit 1'
-  _shc_mkstub pc-bad 'echo "three 1 2026-09-20"'
-  _shc_mkstub pc-baddate 'echo "3 1 2026-9-20"'
-  _shc_mkstub pc-extra 'echo "3 1 2026-09-20 extra"'
-  _shc_mkstub pc-two 'echo "3 1 2026-09-20"' 'echo "4 2 2026-09-21"'
-  _shc_mkstub pc-record "pwd -P > '${pc_rec}'" 'echo "3 1 2026-09-20"'
-  # Present but not executable.
-  _shc_mkstub pc-noexec 'echo "3 1 2026-09-20"'
-  chmod 644 "${stub_dir}/pc-noexec"
-
+  local pc_seg pc_got
   local -a pc_clear=(-u HERDR_ENV -u TERM_PROGRAM -u TERM_PROGRAM_VERSION)
-  out="$(_shc_run '{"source":"startup"}' "${pc_clear[@]}" "SESSION_HOST_CONTEXT_PAPERCUT=${stub_dir}/pc-full")"
+  _shc_run '{"source":"startup"}' "${pc_clear[@]}" "SESSION_HOST_CONTEXT_PAPERCUT=${stub_dir}/pc-full"
   if [[ "${out}" == *' · Papercuts: 3 open (1 for this repo, oldest 2026-09-20)' && "${out}" != *$'\n'* ]]; then
     _pass "papercuts: full segment appended to the single line"
   else
     _fail "papercuts: full segment wrong, got: ${out}"
   fi
 
-  out="$(_shc_run '{"source":"startup"}' "${pc_clear[@]}" "SESSION_HOST_CONTEXT_PAPERCUT=${stub_dir}/pc-dash")"
+  _shc_run '{"source":"startup"}' "${pc_clear[@]}" "SESSION_HOST_CONTEXT_PAPERCUT=${stub_dir}/pc-dash"
   if [[ "${out}" == *' · Papercuts: 2 open (0 for this repo)' && "${out}" != *$'\n'* ]]; then
     _pass "papercuts: oldest '-' prints without a date"
   else
@@ -413,19 +385,18 @@ function run_session_host_context {
     'two-line output|'"${stub_dir}"'/pc-two'
   )
   for pc_seg in "${pc_omit[@]}"; do
-    out="$(_shc_run '{"source":"startup"}' "${pc_clear[@]}" "SESSION_HOST_CONTEXT_PAPERCUT=${pc_seg#*|}")"
+    _shc_run '{"source":"startup"}' "${pc_clear[@]}" "SESSION_HOST_CONTEXT_PAPERCUT=${pc_seg#*|}"
     if [[ "${out}" == 'Host: '* && "${out}" != *'Papercuts'* && "${out}" != *$'\n'* ]]; then
       _pass "papercuts: segment omitted, ${pc_seg%%|*}"
     else
       _fail "papercuts: segment should be omitted, ${pc_seg%%|*}, got: ${out}"
     fi
-    _shc_expect_exit0 '{"source":"startup"}' "papercuts omitted, ${pc_seg%%|*}" \
-      "SESSION_HOST_CONTEXT_PAPERCUT=${pc_seg#*|}"
+    _shc_exit0 "papercuts omitted, ${pc_seg%%|*}"
   done
 
   # resume must not run the CLI at all.
   /bin/rm -f "${pc_rec}"
-  out="$(_shc_run '{"source":"resume","cwd":"'"${pc_dir}"'"}' "SESSION_HOST_CONTEXT_PAPERCUT=${stub_dir}/pc-record")"
+  _shc_run '{"source":"resume","cwd":"'"${pc_dir}"'"}' "SESSION_HOST_CONTEXT_PAPERCUT=${stub_dir}/pc-record"
   if [[ -z "${out}" && ! -e "${pc_rec}" ]]; then
     _pass "papercuts: resume skips before the CLI runs"
   else
@@ -449,9 +420,7 @@ function run_session_host_context {
     pc_payload="${pc_case#*|}"
     pc_payload="${pc_payload%|*}"
     /bin/rm -f "${pc_rec}"
-    out="$(cd "${stub_dir}" && printf '%s' "${pc_payload}" \
-      | env "${pc_clear[@]}" "SESSION_HOST_CONTEXT_PAPERCUT=${stub_dir}/pc-record" \
-        /bin/zsh "${SCRIPT_DIR}/claude/hooks/session-host-context")" || true
+    _shc_run "${pc_payload}" -C "${stub_dir}" "${pc_clear[@]}" "SESSION_HOST_CONTEXT_PAPERCUT=${stub_dir}/pc-record"
     pc_got=""
     [[ -f "${pc_rec}" ]] && pc_got="$(<"${pc_rec}")"
     if [[ "${pc_got}" == "${pc_want}" && "${out}" == *' · Papercuts: 3 open (1 for this repo, oldest 2026-09-20)' ]]; then

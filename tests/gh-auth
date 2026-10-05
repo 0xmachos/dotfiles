@@ -32,26 +32,16 @@ function _gha_signing {
 
   local val
 
-  val="$(git config --global --get gpg.format 2>/dev/null || true)"
-  if [[ "${val}" == "ssh" ]]; then
-    _pass "gpg.format is ssh"
-  else
-    _fail "gpg.format is '${val:-unset}', expected ssh"
-  fi
-
-  val="$(git config --global --get commit.gpgsign 2>/dev/null || true)"
-  if [[ "${val}" == "true" ]]; then
-    _pass "commit.gpgsign is true"
-  else
-    _fail "commit.gpgsign is '${val:-unset}', expected true"
-  fi
-
-  val="$(git config --global --get tag.gpgsign 2>/dev/null || true)"
-  if [[ "${val}" == "true" ]]; then
-    _pass "tag.gpgsign is true"
-  else
-    _fail "tag.gpgsign is '${val:-unset}', expected true"
-  fi
+  local pair key
+  for pair in gpg.format=ssh commit.gpgsign=true tag.gpgsign=true; do
+    key="${pair%%=*}"
+    val="$(git config --global --get "${key}" 2>/dev/null || true)"
+    if [[ "${val}" == "${pair#*=}" ]]; then
+      _pass "${key} is ${val}"
+    else
+      _fail "${key} is '${val:-unset}', expected ${pair#*=}"
+    fi
+  done
 
   val="$(git config --global --get user.signingkey 2>/dev/null || true)"
   if [[ -n "${val}" ]]; then

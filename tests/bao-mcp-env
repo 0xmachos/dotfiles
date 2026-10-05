@@ -31,18 +31,20 @@ typeset -g BME_RC=0
 typeset -ga BME_EXTRA=()
 
 function _bme_setup {
+  # zf_* builtins: no rm, mkdir or chmod process per case.
+  zmodload -F zsh/files b:zf_rm b:zf_mkdir b:zf_chmod b:zf_rmdir
   BME_T="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/bao-mcp-env-test.XXXXXX")"
   BME_REC="${BME_T}/rec"
   # The space in "Application Support" is the point.
   BME_HOME="${BME_T}/home"
   BME_CRED_DIR="${BME_HOME}/Library/Application Support/openbao/claude"
-  /bin/mkdir -p "${BME_REC}" "${BME_CRED_DIR}"
+  zf_mkdir -p "${BME_REC}" "${BME_CRED_DIR}"
   BME_BIN="${SCRIPT_DIR}/bin/bao-mcp-env"
   BME_FX="${SCRIPT_DIR}/tests/fixtures/bao-mcp-env"
 }
 
 function _bme_teardown {
-  [[ -n "${BME_T}" && -d "${BME_T}" ]] && /bin/rm -rf "${BME_T}"
+  [[ -n "${BME_T}" && -d "${BME_T}" ]] && zf_rm -rf "${BME_T}"
 }
 
 # Writes role_id, secret_id and addr into the fixture credential dir. The
@@ -51,7 +53,7 @@ function _bme_write_creds {
   printf 'fake-role-id-0000\n' > "${BME_CRED_DIR}/role_id"
   printf 'fake-secret-id-0000\n' > "${BME_CRED_DIR}/secret_id"
   printf 'https://fake-bao.invalid:8200\n' > "${BME_CRED_DIR}/addr"
-  /bin/chmod 600 "${BME_CRED_DIR}/role_id" "${BME_CRED_DIR}/secret_id" "${BME_CRED_DIR}/addr"
+  zf_chmod 600 "${BME_CRED_DIR}/role_id" "${BME_CRED_DIR}/secret_id" "${BME_CRED_DIR}/addr"
 }
 
 # Real jq is used (pure filter). The child starts from an empty environment
@@ -61,8 +63,8 @@ function _bme_write_creds {
 # afterwards.
 function _bme_run {
   BME_RC=0
-  /bin/rm -rf "${BME_REC}"
-  /bin/mkdir -p "${BME_REC}"
+  zf_rm -rf "${BME_REC}"
+  zf_mkdir -p "${BME_REC}"
   /usr/bin/env -i \
     PATH="/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin" TMPDIR="${TMPDIR:-/tmp}" \
     HOME="${BME_HOME}" \
@@ -73,7 +75,28 @@ function _bme_run {
 }
 
 function _bme_calls {
-  if [[ -f "${BME_REC}/calls" ]]; then /bin/cat "${BME_REC}/calls"; else print 0; fi
+  if [[ -f "${BME_REC}/calls" ]]; then print -r -- "$(<"${BME_REC}/calls")"; else print 0; fi
+}
+
+# grep -q without the spawn: <pattern> is a literal, `^` and `$` anchor a line
+# start and end. A missing file never matches (like grep -q ... 2>/dev/null).
+function _bme_has {
+  local file="$1" pat="$2" at_start=0 at_end=0 line
+  [[ -r "${file}" ]] || return 1
+  if [[ "${pat}" == '^'* ]]; then at_start=1; pat="${pat#^}"; fi
+  if [[ "${pat}" == *'$' ]]; then at_end=1; pat="${pat%$}"; fi
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    if (( at_start && at_end )); then
+      [[ "${line}" == "${pat}" ]] && return 0
+    elif (( at_start )); then
+      [[ "${line}" == "${pat}"* ]] && return 0
+    elif (( at_end )); then
+      [[ "${line}" == *"${pat}" ]] && return 0
+    else
+      [[ "${line}" == *"${pat}"* ]] && return 0
+    fi
+  done < "${file}"
+  return 1
 }
 
 function _bme_expect_rc {
@@ -87,7 +110,7 @@ function _bme_expect_rc {
 
 function _bme_expect_out {
   local pattern="$1" label="$2"
-  if /usr/bin/grep -q -- "${pattern}" "${BME_T}/out"; then
+  if _bme_has "${BME_T}/out" "${pattern}"; then
     _pass "stdout has '${pattern}': ${label}"
   else
     _fail "${label} — stdout lacks '${pattern}': $(/usr/bin/head -c 300 "${BME_T}/out")"
@@ -96,7 +119,7 @@ function _bme_expect_out {
 
 function _bme_expect_err {
   local pattern="$1" label="$2"
-  if /usr/bin/grep -q -- "${pattern}" "${BME_T}/err"; then
+  if _bme_has "${BME_T}/err" "${pattern}"; then
     _pass "stderr has '${pattern}': ${label}"
   else
     _fail "${label} — stderr lacks '${pattern}': $(/usr/bin/head -c 300 "${BME_T}/err")"
@@ -105,7 +128,7 @@ function _bme_expect_err {
 
 function _bme_expect_not_out {
   local pattern="$1" label="$2"
-  if /usr/bin/grep -q -- "${pattern}" "${BME_T}/out"; then
+  if _bme_has "${BME_T}/out" "${pattern}"; then
     _fail "${label} — stdout unexpectedly has '${pattern}'"
   else
     _pass "${label}"
@@ -145,7 +168,7 @@ function _bme_test_missing_addr {
 
   # The address is private wiring: it must never fall back to a tracked default.
   _bme_write_creds
-  /bin/rm -f "${BME_CRED_DIR}/addr"
+  zf_rm -f "${BME_CRED_DIR}/addr"
   _bme_run mcp/example-service /usr/bin/env
   _bme_expect_rc 1 "address file absent"
   _bme_expect_err 'server address file missing or unreadable' "address file absent: message"
@@ -203,8 +226,8 @@ function _bme_test_missing_addr {
   _bme_expect_rc 1 "non-https first line is not rescued by an https second line"
 
   # An address that is a directory is refused, bao never invoked.
-  /bin/rm -f "${BME_CRED_DIR}/addr"
-  /bin/mkdir "${BME_CRED_DIR}/addr"
+  zf_rm -f "${BME_CRED_DIR}/addr"
+  zf_mkdir "${BME_CRED_DIR}/addr"
   _bme_run mcp/example-service /usr/bin/env
   _bme_expect_rc 1 "address path is a directory"
   _bme_expect_err 'must hold one https:// URL' "address is a directory: message"
@@ -213,7 +236,7 @@ function _bme_test_missing_addr {
   else
     _fail "address is a directory: bao was invoked"
   fi
-  /bin/rmdir "${BME_CRED_DIR}/addr"
+  zf_rmdir "${BME_CRED_DIR}/addr"
 
   # An inherited BAO_ADDR never stands in for a bad address file.
   : > "${BME_CRED_DIR}/addr"
@@ -250,8 +273,7 @@ function _bme_test_kv_failure {
   else
     _fail "kv read denied: expected 3 bao calls (login, kv, revoke), got $(_bme_calls)"
   fi
-  if /usr/bin/grep -q '^token$' "${BME_REC}/argv.3" 2>/dev/null \
-      && /usr/bin/grep -q '^revoke$' "${BME_REC}/argv.3" 2>/dev/null; then
+  if _bme_has "${BME_REC}/argv.3" '^token$' && _bme_has "${BME_REC}/argv.3" '^revoke$'; then
     _pass "kv read denied: token revoked even on failure"
   else
     _fail "kv read denied: revoke was not the third call — token may be left live: $(cat "${BME_REC}/argv.3" 2>/dev/null)"
@@ -271,42 +293,45 @@ function _bme_test_success {
   else
     _fail "success: expected 3 bao calls, got $(_bme_calls)"
   fi
-  if /usr/bin/grep -q '^token$' "${BME_REC}/argv.3" 2>/dev/null \
-      && /usr/bin/grep -q '^revoke$' "${BME_REC}/argv.3" 2>/dev/null; then
+  if _bme_has "${BME_REC}/argv.3" '^token$' && _bme_has "${BME_REC}/argv.3" '^revoke$'; then
     _pass "success: token revoked before exec"
   else
     _fail "success: revoke was not the third call"
   fi
-}
 
-function _bme_test_key_hygiene {
+  # Key hygiene, asserted on the success run's records.
   _section "bao-mcp-env: key hygiene"
 
-  _bme_write_creds
-  _bme_run mcp/example-service /usr/bin/env
-
-  if /usr/bin/grep -q 'role_id=@' "${BME_REC}/argv.1" 2>/dev/null \
-      && /usr/bin/grep -q 'secret_id=@' "${BME_REC}/argv.1" 2>/dev/null; then
+  if _bme_has "${BME_REC}/argv.1" 'role_id=@' && _bme_has "${BME_REC}/argv.1" 'secret_id=@'; then
     _pass "credentials passed as @file references, not literal argv values"
   else
     _fail "credentials not passed as @file references: $(cat "${BME_REC}/argv.1" 2>/dev/null)"
   fi
-  if /usr/bin/grep -qF "$(cat "${BME_CRED_DIR}/role_id")" "${BME_REC}/argv.1" 2>/dev/null; then
+  if _bme_has "${BME_REC}/argv.1" "$(<"${BME_CRED_DIR}/role_id")"; then
     _fail "role_id's literal file contents leaked into bao's argv"
   else
     _pass "role_id's literal contents never appear in bao's argv"
   fi
+  if _bme_has "${BME_REC}/argv.1" "$(<"${BME_CRED_DIR}/secret_id")"; then
+    _fail "secret_id's literal file contents leaked into bao's argv"
+  else
+    _pass "secret_id's literal contents never appear in bao's argv"
+  fi
 
   # Credential file contents never appear in any bao call's environment
   # (bao-mcp-env reads them, it does not pass them through its env).
-  if /usr/bin/grep -qF "$(cat "${BME_CRED_DIR}/secret_id")" "${BME_REC}"/env.* 2>/dev/null; then
+  local envfile leaked=0
+  for envfile in "${BME_REC}"/env.*(N); do
+    _bme_has "${envfile}" "$(<"${BME_CRED_DIR}/secret_id")" && leaked=1
+  done
+  if (( leaked )); then
     _fail "secret_id's literal contents leaked into a bao call's environment"
   else
     _pass "secret_id's literal contents never appear in any bao call's environment"
   fi
 
   # BAO_TOKEN is unset before exec.
-  if /usr/bin/grep -q '^BAO_TOKEN=' "${BME_T}/out"; then
+  if _bme_has "${BME_T}/out" '^BAO_TOKEN='; then
     _fail "BAO_TOKEN leaked into the exec'd child's environment"
   else
     _pass "BAO_TOKEN not present in the exec'd child's environment"
@@ -349,7 +374,6 @@ function run_bao_mcp_env {
   _bme_test_login_failure
   _bme_test_kv_failure
   _bme_test_success
-  _bme_test_key_hygiene
   _bme_test_malformed_field
   _bme_teardown
 }

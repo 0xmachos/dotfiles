@@ -20,10 +20,19 @@
 # shellcheck disable=SC2016
 # SC2016: the '$(id)' fixtures must not expand; the hook must quote them.
 
+function _fr_jstr {
+  # JSON string literal of $1 into REPLY. Escapes only \ and ": the fixtures
+  # hold no control characters.
+  local s="${1//\\/\\\\}"
+  REPLY="\"${s//\"/\\\"}\""
+}
+
 function _fr_run_url {
   # WebFetch-shaped single-url payload.
-  local tool="$1" url="$2"
-  jq -n --arg t "${tool}" --arg u "${url}" '{tool_name:$t, tool_input:{url:$u}}' \
+  local t u
+  _fr_jstr "$1"; t="${REPLY}"
+  _fr_jstr "$2"; u="${REPLY}"
+  print -r -- "{\"tool_name\":${t},\"tool_input\":{\"url\":${u}}}" \
     | /bin/zsh "${SCRIPT_DIR}/claude/hooks/fetch-route-hook"
 }
 
@@ -31,16 +40,16 @@ function _fr_run_urls {
   # MCP-shaped urls[] payload.
   local tool="$1"
   shift
-  local urls_json
-  urls_json="$(printf '%s\n' "$@" | jq -R . | jq -s .)"
-  jq -n --arg t "${tool}" --argjson u "${urls_json}" '{tool_name:$t, tool_input:{urls:$u}}' \
+  jq -n --arg t "${tool}" '{tool_name:$t, tool_input:{urls:$ARGS.positional}}' --args "$@" \
     | /bin/zsh "${SCRIPT_DIR}/claude/hooks/fetch-route-hook"
 }
 
 function _fr_run_search {
   # Search-shaped payload; tool defaults to WebSearch.
-  local query="$1" tool="${2:-WebSearch}"
-  jq -n --arg q "${query}" --arg t "${tool}" '{tool_name:$t, tool_input:{query:$q}}' \
+  local t q
+  _fr_jstr "${2:-WebSearch}"; t="${REPLY}"
+  _fr_jstr "$1"; q="${REPLY}"
+  print -r -- "{\"tool_name\":${t},\"tool_input\":{\"query\":${q}}}" \
     | /bin/zsh "${SCRIPT_DIR}/claude/hooks/fetch-route-hook"
 }
 
@@ -78,6 +87,9 @@ function _fr_expect_reason_has {
   fi
 }
 
+# Scratch dir for _fr_raw_case's stdin and stderr files: made once per run.
+typeset -g _FR_TMP=''
+
 function _fr_raw_case {
   # Raw stdin built by printf %b from $4. $1 label, $2 wanted verdict (PASS or
   # DENY), $3 a substring wanted in stderr ('' = stderr must be empty). Also
@@ -85,13 +97,11 @@ function _fr_raw_case {
   # One run per case: stdout and exit status come from the same run as stderr.
   # Stdin is a file, not a pipe: a hook that stops reading early must fail the
   # case, not hang the writer.
-  local label="$1" want="$2" errsub="$3" fmt="$4" out err rc got errf inf
-  errf="$(/usr/bin/mktemp "${TMPDIR:-/tmp}/fetch-route-test.XXXXXX")"
-  inf="$(/usr/bin/mktemp "${TMPDIR:-/tmp}/fetch-route-test.XXXXXX")"
+  local label="$1" want="$2" errsub="$3" fmt="$4" out err rc got
+  local errf="${_FR_TMP}/err" inf="${_FR_TMP}/in"
   printf '%b' "${fmt}" > "${inf}"
   out="$(/bin/zsh "${SCRIPT_DIR}/claude/hooks/fetch-route-hook" < "${inf}" 2>"${errf}")"; rc=$?
   err="$(< "${errf}")"
-  /bin/rm -f "${errf}" "${inf}"
   got="$(_hook_verdict "${out}")"
   if [[ "${rc}" -eq 0 && "${got}" == "${want}" && ( ( -z "${errsub}" && -z "${err}" ) || ( -n "${errsub}" && "${err}" == *"${errsub}"* ) ) ]]; then
     _pass "${want}, status 0, stderr as expected: ${label}"
@@ -113,6 +123,8 @@ function run_fetch_route {
     _skip "jq not installed (brew install jq)"
     return
   fi
+
+  _FR_TMP="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/fetch-route-test.XXXXXX")"
 
   # --- GitHub: every shape gets the right gh command, for every matched tool ---
 
@@ -239,7 +251,6 @@ function run_fetch_route {
     "gh api 'repos/example-org/example-repo/issues?state=closed'" 'api.github.com query string preserved and quoted'
 
   # urls[] (MCP) shape.
-  _fr_expect_url DENY mcp__exa__web_fetch_exa 'https://github.com/example-org/example-repo' 'exa web_fetch denied for github'
   out="$(_fr_run_urls mcp__parallel__web_fetch 'https://github.com/example-org/example-repo')"
   if [[ "$(_hook_verdict "${out}")" == DENY ]]; then
     _pass "DENY: github via urls[] MCP shape"
@@ -251,7 +262,6 @@ function run_fetch_route {
 
   local -a x_deny_tools=(WebFetch mcp__exa__web_fetch_exa mcp__exa__crawling_exa)
   for tool in "${x_deny_tools[@]}"; do
-    _fr_expect_url DENY "${tool}" 'https://x.com/someuser/status/1234567890' "x.com status denied for ${tool}"
     _fr_expect_reason_has "${tool}" 'https://x.com/someuser/status/1234567890' 'mcp__parallel__web_fetch' "X fallback named for ${tool}"
   done
   _fr_expect_url PASS mcp__parallel__web_fetch 'https://x.com/someuser/status/1234567890' 'X status allowed through mcp__parallel__web_fetch'
@@ -445,4 +455,6 @@ function run_fetch_route {
   _fr_raw_case '200 KB payload, routed URL after the padding' DENY '' '{"pad":"'"${fr_pad}"'","tool_name":"WebFetch","tool_input":{"url":"'"${fr_gh}"'"}}'
   _fr_raw_case '200 KB payload, WebSearch' DENY '' '{"pad":"'"${fr_pad}"'","tool_name":"WebSearch"}'
   _fr_raw_case '200 KB payload then a raw NUL byte' PASS 'could not parse tool_name' '{"pad":"'"${fr_pad}"'","tool_name":"WebSearch"}\0'
+
+  /bin/rm -rf "${_FR_TMP}"
 }

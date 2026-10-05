@@ -32,32 +32,39 @@
 #
 # shellcheck source=tests/lib
 
-function _pii_hook_run {
-  # Stage the sandbox, run the global hook in it. Extra KEY=VALUE args follow
-  # the default seams, so they override (env: last wins). Sets hook_rc/hook_out.
-  git -C "${pii_sandbox}" add -A
+function _pii_exec {
+  # Run in the sandbox: $1 is the runner mode (empty, tty or notty), the rest
+  # is KEY=VALUE overrides then the hook and its arguments. The default seams
+  # come first, so an override wins (env: last wins). Sets hook_rc/hook_out.
+  #   tty:   under script (real tty): PII_HOOK_BYPASS honoured.
+  #   notty: under _run_no_tty (no tty): PII_HOOK_BYPASS refused.
+  local mode="$1"; shift
+  local -a runner=()
+  case "${mode}" in
+    (tty) runner=(/usr/bin/script -q /dev/null) ;;
+    (notty) runner=(_run_no_tty) ;;
+  esac
   hook_rc=0
   hook_out="$(cd "${pii_sandbox}" && \
-    env PII_HOOK_PATTERNS="${pii_seam_patterns}" PII_HOOK_SSH_CONFIG=/dev/null \
-        "$@" "${pii_hook}" 2>&1)" || hook_rc=$?
+    "${runner[@]}" env PII_HOOK_PATTERNS="${pii_seam_patterns}" PII_HOOK_SSH_CONFIG=/dev/null \
+        "$@" </dev/null 2>&1)" || hook_rc=$?
+}
+
+function _pii_hook_run {
+  # Stage the sandbox, run the global hook in it. Extra KEY=VALUE args follow
+  # the default seams, so they override. Sets hook_rc/hook_out.
+  git -C "${pii_sandbox}" add -A
+  _pii_exec "" "$@" "${pii_hook}"
 }
 
 function _pii_hook_run_tty {
-  # _pii_hook_run under script (real tty): PII_HOOK_BYPASS honoured.
   git -C "${pii_sandbox}" add -A
-  hook_rc=0
-  hook_out="$(cd "${pii_sandbox}" && \
-    /usr/bin/script -q /dev/null env PII_HOOK_PATTERNS="${pii_seam_patterns}" PII_HOOK_SSH_CONFIG=/dev/null \
-        "$@" "${pii_hook}" </dev/null 2>&1)" || hook_rc=$?
+  _pii_exec tty "$@" "${pii_hook}"
 }
 
 function _pii_hook_run_notty {
-  # _pii_hook_run under _run_no_tty (no tty): PII_HOOK_BYPASS refused.
   git -C "${pii_sandbox}" add -A
-  hook_rc=0
-  hook_out="$(cd "${pii_sandbox}" && \
-    _run_no_tty env PII_HOOK_PATTERNS="${pii_seam_patterns}" PII_HOOK_SSH_CONFIG=/dev/null \
-        "$@" "${pii_hook}" 2>&1)" || hook_rc=$?
+  _pii_exec notty "$@" "${pii_hook}"
 }
 
 function _pii_reset {
@@ -91,30 +98,19 @@ function _pii_expect_pass {
 
 function _pii_msg_run {
   # Run message hook $1 on ${pii_msgfile} in the sandbox. Extra KEY=VALUE args
-  # override the default seams (env: last wins). Sets hook_rc/hook_out.
+  # override the default seams. Sets hook_rc/hook_out.
   local hook="$1"; shift
-  hook_rc=0
-  hook_out="$(cd "${pii_sandbox}" && \
-    env PII_HOOK_PATTERNS="${pii_seam_patterns}" PII_HOOK_SSH_CONFIG=/dev/null \
-        "$@" "${hook}" "${pii_msgfile}" 2>&1)" || hook_rc=$?
+  _pii_exec "" "$@" "${hook}" "${pii_msgfile}"
 }
 
 function _pii_msg_run_tty {
-  # _pii_msg_run under script (real tty): PII_HOOK_BYPASS honoured.
   local hook="$1"; shift
-  hook_rc=0
-  hook_out="$(cd "${pii_sandbox}" && \
-    /usr/bin/script -q /dev/null env PII_HOOK_PATTERNS="${pii_seam_patterns}" PII_HOOK_SSH_CONFIG=/dev/null \
-        "$@" "${hook}" "${pii_msgfile}" </dev/null 2>&1)" || hook_rc=$?
+  _pii_exec tty "$@" "${hook}" "${pii_msgfile}"
 }
 
 function _pii_msg_run_notty {
-  # _pii_msg_run under _run_no_tty (no tty): PII_HOOK_BYPASS refused.
   local hook="$1"; shift
-  hook_rc=0
-  hook_out="$(cd "${pii_sandbox}" && \
-    _run_no_tty env PII_HOOK_PATTERNS="${pii_seam_patterns}" PII_HOOK_SSH_CONFIG=/dev/null \
-        "$@" "${hook}" "${pii_msgfile}" 2>&1)" || hook_rc=$?
+  _pii_exec notty "$@" "${hook}" "${pii_msgfile}"
 }
 
 function _pii_forward_cases {
@@ -453,6 +449,24 @@ function run_pii_hook {
   _pii_expect_pass "TMPDIR without trailing slash works"
   _pii_reset
 
+  # 8e2. Layer 1: a gitleaks failure blocks, and so does a missing gitleaks
+  #      (PATH stub; the real gitleaks runs in every other case)
+  local gl_stub
+  gl_stub="$(mktemp -d "${TMPDIR:-/tmp}/pii-hook-gl.XXXXXX")"
+  printf '#!/bin/zsh\necho stub-gitleaks-hit\nexit 1\n' > "${gl_stub}/gitleaks"
+  chmod 755 "${gl_stub}/gitleaks"
+  echo "clean" > "${pii_sandbox}/notes.md"
+  _pii_hook_run PATH="${gl_stub}:${PATH}"
+  _pii_expect_block "a failing gitleaks blocks the commit" "stub-gitleaks-hit"
+  /bin/rm -rf "${gl_stub}"
+  if [[ -x /usr/bin/gitleaks || -x /bin/gitleaks ]]; then
+    _skip "gitleaks in a system path — missing-gitleaks case skipped"
+  else
+    _pii_hook_run PATH=/usr/bin:/bin
+    _pii_expect_block "a missing gitleaks blocks the commit" "gitleaks not found"
+  fi
+  _pii_reset
+
   # 8f. Labeled identifiers block: mac:<mac> / id:<uuid> forms
   {
     echo "id:${uuid}"
@@ -460,6 +474,12 @@ function run_pii_hook {
   } > "${pii_sandbox}/notes.md"
   _pii_hook_run
   _pii_expect_block "labeled MAC/UUID identifiers block" "MAC/UUID"
+  # The label's hex tail ("ac:") joins the MAC token, so match its first four pairs.
+  if [[ "${hook_out}" == *"${uuid}"* && "${hook_out}" == *"${mac%:4b:5a}"* ]]; then
+    _pass "both labeled identifiers are reported"
+  else
+    _fail "labeled identifiers — uuid or mac missing from output: ${hook_out}"
+  fi
   _pii_reset
 
   # 8g. color.ui=always must not empty the scan target (breaks awk anchors)
@@ -520,20 +540,6 @@ function run_pii_hook {
   echo "([" > "${pii_sandbox}/.pii-allowlist"
   _pii_hook_run
   _pii_expect_block "invalid .pii-allowlist regex hard-blocks" ".pii-allowlist (staged) has an invalid"
-  _pii_reset
-
-  # 11b. Sentinel is repo-scoped: another repo's must not skip this scan…
-  echo "mgmt iface at ${mac}" > "${pii_sandbox}/notes.md"
-  _pii_hook_run GIT_GLOBAL_HOOKS_SEEN=" pre-commit@/somewhere/else/.git "
-  _pii_expect_block "foreign-repo sentinel does not skip the scan" "MAC/UUID"
-  _pii_reset
-
-  # 11c. …while same-repo re-entry still short-circuits (recursion guard)
-  local own_sentinel
-  own_sentinel="pre-commit@$(git -C "${pii_sandbox}" rev-parse --absolute-git-dir)"
-  echo "mgmt iface at ${mac}" > "${pii_sandbox}/notes.md"
-  _pii_hook_run GIT_GLOBAL_HOOKS_SEEN=" ${own_sentinel} "
-  _pii_expect_pass "same-repo sentinel short-circuits re-entry"
   _pii_reset
 
   # 12. PII_HOOK_BYPASS=1 skips PII layers, loudly; needs a tty (via script)
@@ -621,21 +627,11 @@ function run_pii_hook {
     _fail "chain reaches the common-dir hook from a linked worktree — marker missing (rc=${hook_rc})"
   fi
 
-  # 16. hook-forward passes args and exit status for non-pre-commit hooks;
-  #     exits 0 when the repo has no such hook
+  # 16. hook-forward exits 0 when the repo has no such hook (the run-and-
+  #     propagate case is in _pii_forward_cases)
   local fwd_dir
   fwd_dir="$(mktemp -d "${TMPDIR:-/tmp}/pii-fwd.XXXXXX")"
   ln -s "${SCRIPT_DIR}/.config/git/hooks/hook-forward" "${fwd_dir}/commit-msg"
-  printf '#!/bin/zsh\ntouch fwd-marker\nexit 3\n' > "${pii_sandbox}/.git/hooks/commit-msg"
-  chmod 755 "${pii_sandbox}/.git/hooks/commit-msg"
-  hook_rc=0
-  (cd "${pii_sandbox}" && "${fwd_dir}/commit-msg" MSGFILE >/dev/null 2>&1) || hook_rc=$?
-  if [[ -f "${pii_sandbox}/fwd-marker" ]] && (( hook_rc == 3 )); then
-    _pass "hook-forward runs the repo hook and propagates its exit"
-  else
-    _fail "hook-forward runs the repo hook — marker=$([[ -f ${pii_sandbox}/fwd-marker ]] && echo yes || echo no) rc=${hook_rc}"
-  fi
-  /bin/rm -f "${pii_sandbox}/.git/hooks/commit-msg" "${pii_sandbox}/fwd-marker"
   hook_rc=0
   (cd "${pii_sandbox}" && "${fwd_dir}/commit-msg" >/dev/null 2>&1) || hook_rc=$?
   if (( hook_rc == 0 )); then

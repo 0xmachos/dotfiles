@@ -25,15 +25,28 @@
 
 function _pii_tree_materialise {
   # $1 = output file, filled with the tracked text files; echoes their count.
-  local out="$1" tpath n=0
+  # One grep sorts the text files from the rest, and zsh reads each one with
+  # $(<file): no per-file spawn.
+  local out="$1" tpath
+  local -a tracked candidates texts
+  local -i n=0
+  # shellcheck disable=SC2296,SC2206  # zsh (0) flag: split on NUL
+  tracked=( ${(0)"$(/usr/bin/git -C "${SCRIPT_DIR}" ls-files -z)"} )
+  for tpath in "${tracked[@]}"; do
+    [[ -f "${tpath}" && ! -L "${tpath}" ]] && candidates+=("${tpath}")
+  done
   : > "${out}"
-  while IFS= read -r tpath || [[ -n "${tpath}" ]]; do
-    [[ -f "${tpath}" && ! -L "${tpath}" ]] || continue
-    # grep -I treats a NUL-bearing file as binary and reports no match.
-    /usr/bin/grep -qI '' "${tpath}" 2>/dev/null || continue
-    { print -r -- "file ${tpath}"; /bin/cat "${tpath}"; print; } >> "${out}"
-    n=$(( n + 1 ))
-  done < <(/usr/bin/git -C "${SCRIPT_DIR}" ls-files -z | /usr/bin/tr "\0" "\n")
+  if (( ${#candidates} )); then
+    # grep -I treats a NUL-bearing file as binary and lists no match for it.
+    # shellcheck disable=SC2296,SC2206  # zsh (0) flag: split on NUL
+    texts=( ${(0)"$(/usr/bin/grep -lI --null '' -- "${candidates[@]}" 2>/dev/null || true)"} )
+    for tpath in "${texts[@]}"; do
+      print -r -- "file ${tpath}"
+      print -r -- "$(<"${tpath}")"
+      print
+      n+=1
+    done >> "${out}"
+  fi
   print -r -- "${n}"
 }
 

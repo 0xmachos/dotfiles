@@ -20,6 +20,9 @@
 # expands them. SC2296: zsh parameter-expansion flags.
 # shellcheck disable=SC2016,SC2296
 
+# zf_rm: in-process unlink for the per-run resets, no /bin/rm spawn.
+zmodload -F zsh/files b:zf_rm
+
 # Sandbox: $sb/dotfiles/.functions is a symlink to this repo's .functions (the
 # only thing shared with the repo); .extra/ and everything written is real and
 # private to the sandbox.
@@ -27,6 +30,10 @@ function _bus_make_sandbox {
   local sb="$1"
   mkdir -p "${sb}/dotfiles/.extra" "${sb}/Library/Logs" "${sb}/tmp"
   ln -s "${SCRIPT_DIR}/.functions" "${sb}/dotfiles/.functions"
+
+  # jump-user minus its `main` call, sourced by the user modes: one grep here,
+  # not one per run.
+  /usr/bin/grep -v '^main ' "${SCRIPT_DIR}/bin/jump-user" > "${sb}/jump-user-lib"
 
   cat > "${sb}/brew" <<'FAKE'
 #!/bin/sh
@@ -65,11 +72,11 @@ function _bus_run {
   local sb="${_bus_sb}" script
   bus_rc=0
   : > "${sb}/calls"; : > "${sb}/calls.env"; : > "${sb}/err"; : > "${sb}/Library/Logs/jump.log"
-  /bin/rm -f "${sb}/dotfiles/.extra/jump-pre"
+  zf_rm -f "${sb}/dotfiles/.extra/jump-pre"
   if [[ "${pre}" != "<absent>" ]]; then
     printf '%s\n' "${pre}" > "${sb}/dotfiles/.extra/jump-pre"
   fi
-  [[ "${mode}" == user-nofn ]] && /bin/rm -f "${sb}/dotfiles/.functions"
+  [[ "${mode}" == user-nofn ]] && zf_rm -f "${sb}/dotfiles/.functions"
   [[ "${mode}" != user-nofn && ! -e "${sb}/dotfiles/.functions" ]] \
     && ln -s "${SCRIPT_DIR}/.functions" "${sb}/dotfiles/.functions"
 
@@ -78,13 +85,13 @@ function _bus_run {
       script='set -uo pipefail; source "${HOME}/dotfiles/.functions/brew_upgrade_selected"; HOMEBREW_NO_ASK=1 brew_upgrade_selected "$1"' ;;
     *)
       # logger is shimmed so no test line reaches the real syslog.
-      script='set -uo pipefail; source <(/usr/bin/grep -v "^main " "$2"); logger() { :; }; run_brew_upgrade "$1"' ;;
+      script='set -uo pipefail; source "$2"; logger() { :; }; run_brew_upgrade "$1"' ;;
   esac
 
   /usr/bin/env -i HOME="${sb}" PATH=/usr/bin:/bin TMPDIR="${sb}/tmp/" \
     FAKE_CALLS="${sb}/calls" FAKE_OUTDATED="${outdated}" FAKE_OUTDATED_RC="${orc}" \
     FAKE_FORMULA_RC="${frc}" FAKE_UPGRADE_RC="${urc}" \
-    /bin/zsh -c "${script}" _ "${sb}/brew" "${SCRIPT_DIR}/bin/jump-user" \
+    /bin/zsh -c "${script}" _ "${sb}/brew" "${sb}/jump-user-lib" \
     > "${sb}/out" 2> "${sb}/err" || bus_rc=$?
   bus_calls="${(j:|:)${(f)"$(<"${sb}/calls")"}}"
   bus_err="$(<"${sb}/err")"
@@ -231,7 +238,7 @@ function _bus_test_environment {
 
   # Both files autoload as the .functions convention requires (jump path).
   local out
-  /bin/rm -f "${_bus_sb}/dotfiles/.extra/jump-pre"
+  zf_rm -f "${_bus_sb}/dotfiles/.extra/jump-pre"
   : > "${_bus_sb}/calls"
   out="$(/usr/bin/env -i HOME="${_bus_sb}" PATH=/usr/bin:/bin FAKE_CALLS="${_bus_sb}/calls" /bin/zsh -fc '
     fpath=("$HOME/dotfiles/.functions" $fpath)
@@ -297,12 +304,12 @@ function _bus_step {
     fn)
       script='set -uo pipefail; source "${HOME}/dotfiles/.functions/jump_step"; logger() { print -r -- "$*" >> "${SYSLOG}"; }; jump_step "test step" "$1"; print -r -- "rc=$?"' ;;
     user)
-      script='set -uo pipefail; source <(/usr/bin/grep -v "^main " "$2"); logger() { print -r -- "$*" >> "${SYSLOG}"; }; rc=0; jump_step "test step" "$1" || rc=1; print -r -- "rc=${rc}"' ;;
+      script='set -uo pipefail; source "$2"; logger() { print -r -- "$*" >> "${SYSLOG}"; }; rc=0; jump_step "test step" "$1" || rc=1; print -r -- "rc=${rc}"' ;;
     contrast)
-      script='set -uo pipefail; source <(/usr/bin/grep -v "^main " "$2"); logger() { print -r -- "$*" >> "${SYSLOG}"; }; rc=0; run_and_log "test step" "$1" || rc=1; print -r -- "rc=${rc}"' ;;
+      script='set -uo pipefail; source "$2"; logger() { print -r -- "$*" >> "${SYSLOG}"; }; rc=0; run_and_log "test step" "$1" || rc=1; print -r -- "rc=${rc}"' ;;
   esac
   bus_out="$(/usr/bin/env -i HOME="${sb}" PATH=/usr/bin:/bin TMPDIR="${sb}/tmp/" SYSLOG="${sb}/syslog" \
-    /bin/zsh -c "${script}" _ "${sb}/${step}" "${SCRIPT_DIR}/bin/jump-user" 2>&1)"
+    /bin/zsh -c "${script}" _ "${sb}/${step}" "${sb}/jump-user-lib" 2>&1)"
   bus_log="$(<"${sb}/Library/Logs/jump.log")"
   bus_sys="$(<"${sb}/syslog")"
 }

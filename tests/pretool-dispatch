@@ -31,6 +31,8 @@
 typeset -g PTD_SB=''
 typeset -g PTD_BOX=''
 typeset -g PTD_OUT=''
+typeset -g PTD_DISPATCHER=''
+typeset -g PTD_DIRS='' PTD_ROUTES='' PTD_HOOKS=''
 typeset -gi PTD_RC=0
 
 typeset -ga PTD_BASH=(md5-guard-hook gh-publish-hook git-bypass-hook muse-exec-hook rm-redirect-hook ssh-redirect-hook sudo-askpass-hook container-tmp-hook tmp-guard-hook)
@@ -49,8 +51,8 @@ function _ptd_new_box {
   # for each guard. Sets PTD_BOX.
   local name="$1" g
   PTD_BOX="${PTD_SB}/${name}"
-  mkdir -p "${PTD_BOX}/tmp"
-  cp "${SCRIPT_DIR}/claude/hooks/pretool-dispatch" "${PTD_BOX}/pretool-dispatch"
+  zf_mkdir -p "${PTD_BOX}/tmp"
+  print -r -- "${PTD_DISPATCHER}" > "${PTD_BOX}/pretool-dispatch"
   for g in "${PTD_ALL[@]}"; do
     _ptd_stub "${g}" ''
   done
@@ -62,6 +64,16 @@ function _ptd_stub {
   printf '#!/bin/zsh\nprint -r -- %s >> "${PTD_MARKER}"\n%s\n' "$1" "$2" > "${PTD_BOX}/$1"
 }
 
+function _ptd_export_pairs {
+  # Exports each NAME=value argument. Callers run it in a subshell, so the
+  # pairs reach only that run's dispatcher and no env process starts.
+  local kv
+  for kv in "$@"; do
+    # shellcheck disable=SC2163  # exports the NAME=value pair itself
+    export "${kv}"
+  done
+}
+
 function _ptd_run {
   # $1 = payload, remaining args = VAR=value pairs for the dispatcher's
   # environment. Runs the box's dispatcher from the box directory. Sets
@@ -70,8 +82,8 @@ function _ptd_run {
   shift
   : > "${PTD_BOX}/marker"
   PTD_RC=0
-  PTD_OUT="$(cd "${PTD_BOX}" && printf '%s' "${payload}" \
-    | /usr/bin/env "PTD_MARKER=${PTD_BOX}/marker" "TMPDIR=${PTD_BOX}/tmp/" "$@" /bin/zsh "${PTD_BOX}/pretool-dispatch" 2>"${PTD_BOX}/stderr")" || PTD_RC=$?
+  PTD_OUT="$(cd "${PTD_BOX}" && _ptd_export_pairs "PTD_MARKER=${PTD_BOX}/marker" "TMPDIR=${PTD_BOX}/tmp/" "$@" \
+    && printf '%s' "${payload}" | /bin/zsh "${PTD_BOX}/pretool-dispatch" 2>"${PTD_BOX}/stderr")" || PTD_RC=$?
 }
 
 function _ptd_marker {
@@ -102,6 +114,33 @@ function _ptd_has {
   [[ "$1" == *"$2"* ]]
 }
 
+function _ptd_eq {
+  # $1 = label, $2 = got, $3 = wanted: pass when equal.
+  if [[ "$2" == "$3" ]]; then
+    _pass "$1"
+  else
+    _fail "$1 — got: $2"
+  fi
+}
+
+function _ptd_in {
+  # $1 = label, $2 = text, $3 = needle: pass when the text holds the needle.
+  if _ptd_has "$2" "$3"; then
+    _pass "$1"
+  else
+    _fail "$1 — got: $2"
+  fi
+}
+
+function _ptd_blocked {
+  # $1 = label: the last run exited 2, printed no verdict and ran no guard.
+  if [[ ${PTD_RC} -eq 2 && -z "${PTD_OUT}" && ! -s "${PTD_BOX}/marker" ]]; then
+    _pass "$1"
+  else
+    _fail "$1 — rc=${PTD_RC} out=${PTD_OUT:0:120} marker=$(_ptd_marker)"
+  fi
+}
+
 # --- real-guard helpers ----------------------------------------------------
 
 function _ptd_real {
@@ -109,8 +148,19 @@ function _ptd_real {
   local payload="$1"
   shift
   PTD_RC=0
-  PTD_OUT="$(printf '%s' "${payload}" \
-    | /usr/bin/env "$@" /bin/zsh "${SCRIPT_DIR}/claude/hooks/pretool-dispatch" 2>/dev/null)" || PTD_RC=$?
+  PTD_OUT="$(_ptd_export_pairs "$@" \
+    && printf '%s' "${payload}" | /bin/zsh "${SCRIPT_DIR}/claude/hooks/pretool-dispatch" 2>/dev/null)" || PTD_RC=$?
+}
+
+function _ptd_run_guard {
+  # $1 = guard, $2 = payload; remaining args = VAR=value pairs. Runs the
+  # guard on its own, outside the dispatcher, and prints its stdout.
+  local g="$1" payload="$2"
+  shift 2
+  (
+    _ptd_export_pairs "$@"
+    printf '%s' "${payload}" | /bin/zsh "${SCRIPT_DIR}/claude/hooks/${g}" 2>/dev/null
+  ) || true
 }
 
 function _ptd_standalone {
@@ -118,8 +168,7 @@ function _ptd_standalone {
   # standalone guard's deny reason (empty when it passes).
   local g="$1" payload="$2" out
   shift 2
-  out="$(printf '%s' "${payload}" \
-    | /usr/bin/env "$@" /bin/zsh "${SCRIPT_DIR}/claude/hooks/${g}" 2>/dev/null)" || true
+  out="$(_ptd_run_guard "${g}" "${payload}" "$@")"
   jq -r '.hookSpecificOutput.permissionDecisionReason // empty' <<< "${out}" 2>/dev/null
 }
 
@@ -186,23 +235,28 @@ function _ptd_count_execs {
 
 # --- coverage invariant ------------------------------------------------------
 
+function _ptd_routes_for {
+  # $1 = tool. Prints the guards the dispatcher routes it to, one per line,
+  # from PTD_ROUTES (the --print-routes output, read once).
+  local route
+  while IFS= read -r route; do
+    if [[ "${route%%:*}" == "$1" ]]; then
+      # shellcheck disable=SC2086,SC2296  # zsh ${=} splits the route on purpose
+      print -rl -- ${=route#*: }
+    fi
+  done <<< "${PTD_ROUTES}"
+}
+
 function _ptd_reach {
   # $1 = tool. Prints the guards reachable for that tool, one per line: the
-  # settings file's PreToolUse entries, plus the dispatcher's routes when
-  # env.CLAUDE_CODE_PLUGIN_DIRS loads the prefilter mod (which dispatches
-  # every Bash, Write, Edit and NotebookEdit call it does not prefilter).
-  local tool="$1" settings="${SCRIPT_DIR}/claude/settings.json" m cmd base route
-  local dir dirs
-  dirs="$(jq -r '.env.CLAUDE_CODE_PLUGIN_DIRS // ""' "${settings}")"
+  # settings file's PreToolUse entries (PTD_HOOKS), plus the dispatcher's
+  # routes when env.CLAUDE_CODE_PLUGIN_DIRS (PTD_DIRS) loads the prefilter mod
+  # (which dispatches every Bash, Write, Edit and NotebookEdit call it does
+  # not prefilter). _ptd_coverage reads all three from the settings once.
+  local tool="$1" m cmd base dir
   # shellcheck disable=SC2066,SC2296  # zsh (@s.:.) splits the path list inside the quotes
-  for dir in "${(@s.:.)dirs}"; do
-    [[ "${dir:t}" == pretool-prefilter ]] || continue
-    while IFS= read -r route; do
-      if [[ "${route%%:*}" == "${tool}" ]]; then
-        # shellcheck disable=SC2086,SC2296  # zsh ${=} splits the route on purpose
-        print -rl -- ${=route#*: }
-      fi
-    done < <("${SCRIPT_DIR}/claude/hooks/pretool-dispatch" --print-routes)
+  for dir in "${(@s.:.)PTD_DIRS}"; do
+    [[ "${dir:t}" == pretool-prefilter ]] && _ptd_routes_for "${tool}"
   done
   while IFS=$'\t' read -r m cmd; do
     [[ -n "${cmd}" ]] || continue
@@ -211,16 +265,11 @@ function _ptd_reach {
     fi
     base="${cmd:t}"
     if [[ "${base}" == pretool-dispatch ]]; then
-      while IFS= read -r route; do
-        if [[ "${route%%:*}" == "${tool}" ]]; then
-          # shellcheck disable=SC2086,SC2296  # zsh ${=} splits the route on purpose
-          print -rl -- ${=route#*: }
-        fi
-      done < <("${SCRIPT_DIR}/claude/hooks/pretool-dispatch" --print-routes)
+      _ptd_routes_for "${tool}"
     else
       print -r -- "${base}"
     fi
-  done < <(jq -r '.hooks.PreToolUse[]? | .matcher as $m | .hooks[]? | [($m // ""), .command] | @tsv' "${settings}")
+  done <<< "${PTD_HOOKS}"
 }
 
 function _ptd_expect_reach {
@@ -241,21 +290,19 @@ function _ptd_expect_reach {
 # --- the suite ---------------------------------------------------------------
 
 function _ptd_fault_injection {
-  local g marker reason
-  local -a lines left
+  local marker
+  local -a left
+  # One payload for every case that only needs a Bash call to run the guards.
+  local hi
+  hi="$(_ptd_bash 'echo hi')"
 
   _section "pretool-dispatch: fault injection (stub guards)"
 
   # Order and routing.
   _ptd_new_box all-nine
-  _ptd_run "$(_ptd_bash 'echo hi')"
+  _ptd_run "${hi}"
   _ptd_expect PASS 'a Bash call with nine passing stubs'
-  marker="$(_ptd_marker)"
-  if [[ "${marker}" == "${PTD_BASH[*]}" ]]; then
-    _pass "Bash runs the nine guards in the listed order"
-  else
-    _fail "Bash order — got: ${marker}"
-  fi
+  _ptd_eq "Bash runs the nine guards in the listed order" "$(_ptd_marker)" "${PTD_BASH[*]}"
   left=("${PTD_BOX}"/tmp/*(N))
   if (( ${#left} == 0 )); then
     _pass "a run leaves no capture file behind"
@@ -270,30 +317,15 @@ function _ptd_fault_injection {
 
   _ptd_run "$(_ptd_write /x/a.txt body)"
   _ptd_expect PASS 'a Write call'
-  marker="$(_ptd_marker)"
-  if [[ "${marker}" == 'tmp-guard-hook md5-write-hook' ]]; then
-    _pass "Write runs tmp-guard-hook then md5-write-hook only"
-  else
-    _fail "Write runs tmp-guard-hook then md5-write-hook only — ""got: ${marker}"
-  fi
+  _ptd_eq "Write runs tmp-guard-hook then md5-write-hook only" "$(_ptd_marker)" 'tmp-guard-hook md5-write-hook'
 
   _ptd_run "$(jq -cn '{tool_name:"Edit", tool_input:{file_path:"/x/a", old_string:"a", new_string:"b"}, cwd:"/work"}')"
   _ptd_expect PASS 'an Edit call'
-  marker="$(_ptd_marker)"
-  if [[ "${marker}" == 'tmp-guard-hook md5-write-hook' ]]; then
-    _pass "Edit runs tmp-guard-hook then md5-write-hook only"
-  else
-    _fail "Edit runs tmp-guard-hook then md5-write-hook only — ""got: ${marker}"
-  fi
+  _ptd_eq "Edit runs tmp-guard-hook then md5-write-hook only" "$(_ptd_marker)" 'tmp-guard-hook md5-write-hook'
 
   _ptd_run "$(jq -cn '{tool_name:"NotebookEdit", tool_input:{notebook_path:"/x/n.ipynb", new_source:"1"}, cwd:"/work"}')"
   _ptd_expect PASS 'a NotebookEdit call'
-  marker="$(_ptd_marker)"
-  if [[ "${marker}" == 'tmp-guard-hook' ]]; then
-    _pass "NotebookEdit runs tmp-guard-hook only"
-  else
-    _fail "NotebookEdit runs tmp-guard-hook only — ""got: ${marker}"
-  fi
+  _ptd_eq "NotebookEdit runs tmp-guard-hook only" "$(_ptd_marker)" 'tmp-guard-hook'
 
   # A tool the matcher sends but the route table lacks means the two disagree:
   # a configuration bug, denied loudly, no guard run
@@ -308,11 +340,7 @@ function _ptd_fault_injection {
   # Two JSON objects on stdin: nobody would judge the second, so it is a parse
   # failure (exit 2), not a verdict on the first
   _ptd_run "$(jq -cn '{tool_name:"Bash", tool_input:{command:"ls"}}')$(jq -cn '{tool_name:"Bash", tool_input:{command:"md5 x"}}')"
-  if [[ ${PTD_RC} -eq 2 && -z "${PTD_OUT}" && ! -s "${PTD_BOX}/marker" ]]; then
-    _pass "two JSON objects on stdin exit 2 and run no guard"
-  else
-    _fail "two JSON objects on stdin exit 2 and run no guard — ""rc=${PTD_RC} out=${PTD_OUT:0:120} marker=$(_ptd_marker)"
-  fi
+  _ptd_blocked "two JSON objects on stdin exit 2 and run no guard"
 
   # Input the dispatcher cannot judge: the blocking status, never a pass.
   _ptd_run ''
@@ -322,169 +350,94 @@ function _ptd_fault_injection {
     _fail "empty stdin exits 2 with a stderr line and runs no guard — ""rc=${PTD_RC}"
   fi
   _ptd_run 'not json'
-  if [[ ${PTD_RC} -eq 2 && -z "${PTD_OUT}" && ! -s "${PTD_BOX}/marker" ]]; then
-    _pass "malformed JSON exits 2"
-  else
-    _fail "malformed JSON exits 2 — ""rc=${PTD_RC}"
-  fi
+  _ptd_blocked "malformed JSON exits 2"
   _ptd_run '{"tool_input":{"command":"ls"}}'
-  if [[ ${PTD_RC} -eq 2 && ! -s "${PTD_BOX}/marker" ]]; then
-    _pass "a payload with no tool name exits 2"
-  else
-    _fail "a payload with no tool name exits 2 — ""rc=${PTD_RC}"
-  fi
+  _ptd_blocked "a payload with no tool name exits 2"
   _ptd_run '{"tool_name":"Bash","tool_input":{"command":"ls\u0000id"}}'
-  if [[ ${PTD_RC} -eq 2 && ! -s "${PTD_BOX}/marker" ]]; then
-    _pass "a NUL inside a field exits 2 (it would shift the fields)"
-  else
-    _fail "a NUL inside a field exits 2 (it would shift the fields) — ""rc=${PTD_RC}"
-  fi
+  _ptd_blocked "a NUL inside a field exits 2 (it would shift the fields)"
   # A literal NUL (not the \u0000 escape) ends `read -d ''` early: the part
   # before it must not be judged on its own.
   _ptd_run $'{"tool_name":"Bash","tool_input":{"command":"ls"}}\0{"tool_name":"Bash","tool_input":{"command":"md5 x"}}'
-  if [[ ${PTD_RC} -eq 2 && ! -s "${PTD_BOX}/marker" ]]; then
-    _pass "a literal NUL in the payload exits 2 (nothing after it is judged)"
-  else
-    _fail "a literal NUL in the payload exits 2 (nothing after it is judged) — ""rc=${PTD_RC}"
-  fi
+  _ptd_blocked "a literal NUL in the payload exits 2 (nothing after it is judged)"
   _ptd_run '{"tool_name":"Bash","tool_input":{"command":["a"]}}'
-  if [[ ${PTD_RC} -eq 2 && ! -s "${PTD_BOX}/marker" ]]; then
-    _pass "a non-string command exits 2"
-  else
-    _fail "a non-string command exits 2 — ""rc=${PTD_RC}"
-  fi
+  _ptd_blocked "a non-string command exits 2"
 
   # Stub verdict classification. Every case runs all nine guards.
   _ptd_new_box exit1
   _ptd_stub muse-exec-hook 'exit 1'
-  _ptd_run "$(_ptd_bash 'echo hi')"
+  _ptd_run "${hi}"
   _ptd_expect DENY 'a stub that exits 1'
-  reason="$(_ptd_reason)"
-  if _ptd_has "${reason}" 'guard muse-exec-hook failed (exit 1); command not run unguarded'; then
-    _pass "the deny names the failing guard and its exit status"
-  else
-    _fail "the deny names the failing guard and its exit status — ""${reason}"
-  fi
-  if [[ "$(_ptd_marker)" == "${PTD_BASH[*]}" ]]; then
-    _pass "the guards after a failing stub still run"
-  else
-    _fail "the guards after a failing stub still run — ""$(_ptd_marker)"
-  fi
+  _ptd_in "the deny names the failing guard and its exit status" "$(_ptd_reason)" 'guard muse-exec-hook failed (exit 1); command not run unguarded'
+  _ptd_eq "the guards after a failing stub still run" "$(_ptd_marker)" "${PTD_BASH[*]}"
 
   _ptd_new_box garbage
   _ptd_stub rm-redirect-hook 'print -r -- garbage'
-  _ptd_run "$(_ptd_bash 'echo hi')"
+  _ptd_run "${hi}"
   _ptd_expect DENY 'a stub that prints garbage and exits 0'
-  reason="$(_ptd_reason)"
-  if _ptd_has "${reason}" 'guard rm-redirect-hook failed (exit 0)'; then
-    _pass "garbage output names the guard"
-  else
-    _fail "garbage output names the guard — ""${reason}"
-  fi
+  _ptd_in "garbage output names the guard" "$(_ptd_reason)" 'guard rm-redirect-hook failed (exit 0)'
 
   _ptd_new_box two-json
   _ptd_stub git-bypass-hook "print -r -- '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"a\"}}{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"b\"}}'"
-  _ptd_run "$(_ptd_bash 'echo hi')"
+  _ptd_run "${hi}"
   _ptd_expect DENY 'a stub that prints two JSON objects'
-  reason="$(_ptd_reason)"
-  if _ptd_has "${reason}" 'guard git-bypass-hook failed'; then
-    _pass "two JSON objects from a stub are an ERROR, not a pass-through"
-  else
-    _fail "two JSON objects from a stub are an ERROR, not a pass-through — ""${reason}"
-  fi
+  _ptd_in "two JSON objects from a stub are an ERROR, not a pass-through" "$(_ptd_reason)" 'guard git-bypass-hook failed'
 
   _ptd_new_box own-json
   _ptd_stub git-bypass-hook "print -r -- '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"a\"}}'"
-  _ptd_run "$(_ptd_bash 'echo hi')"
+  _ptd_run "${hi}"
   _ptd_expect DENY 'a stub that prints a JSON deny itself (not the seam format)'
-  if _ptd_has "$(_ptd_reason)" 'guard git-bypass-hook failed'; then
-    _pass "a JSON deny from a stub is an ERROR (only DENY<US>reason counts)"
-  else
-    _fail "a JSON deny from a stub is an ERROR (only DENY<US>reason counts) — ""$(_ptd_reason)"
-  fi
+  _ptd_in "a JSON deny from a stub is an ERROR (only DENY<US>reason counts)" "$(_ptd_reason)" 'guard git-bypass-hook failed'
 
   _ptd_new_box deny-x
   _ptd_stub ssh-redirect-hook "printf 'DENY\\x1fx marker'"
-  _ptd_run "$(_ptd_bash 'echo hi')"
+  _ptd_run "${hi}"
   _ptd_expect DENY 'a stub that prints DENY<US>x'
-  if [[ "$(_ptd_reason)" == 'x marker' ]]; then
-    _pass "the reason is exactly the text after the separator"
-  else
-    _fail "the reason is exactly the text after the separator — ""$(_ptd_reason)"
-  fi
+  _ptd_eq "the reason is exactly the text after the separator" "$(_ptd_reason)" 'x marker'
 
   _ptd_new_box deny-escape
   # shellcheck disable=SC2016  # the stub's own printf, not this shell's
   _ptd_stub ssh-redirect-hook 'printf "DENY\x1fline1\nsay \"hi\" \\\\ end"'
-  _ptd_run "$(_ptd_bash 'echo hi')"
+  _ptd_run "${hi}"
   _ptd_expect DENY 'a deny reason with a newline, quotes and a backslash'
-  if [[ "$(_ptd_reason)" == $'line1\nsay "hi" \\ end' ]]; then
-    _pass "the reason survives the JSON round trip"
-  else
-    _fail "the reason survives the JSON round trip — ""$(_ptd_reason)"
-  fi
+  _ptd_eq "the reason survives the JSON round trip" "$(_ptd_reason)" $'line1\nsay "hi" \\ end'
 
   _ptd_new_box deny-empty
   _ptd_stub ssh-redirect-hook "printf 'DENY\\x1f'"
-  _ptd_run "$(_ptd_bash 'echo hi')"
+  _ptd_run "${hi}"
   _ptd_expect DENY 'a stub that prints DENY<US> with no reason'
-  if _ptd_has "$(_ptd_reason)" 'guard ssh-redirect-hook failed'; then
-    _pass "an empty reason is an ERROR"
-  else
-    _fail "an empty reason is an ERROR — ""$(_ptd_reason)"
-  fi
+  _ptd_in "an empty reason is an ERROR" "$(_ptd_reason)" 'guard ssh-redirect-hook failed'
 
   _ptd_new_box two-denies
   _ptd_stub git-bypass-hook "printf 'DENY\\x1fAAA'"
   _ptd_stub ssh-redirect-hook "printf 'DENY\\x1fBBB'"
-  _ptd_run "$(_ptd_bash 'echo hi')"
+  _ptd_run "${hi}"
   _ptd_expect DENY 'two stubs deny (one object, checked by the verdict helper)'
-  if [[ "$(_ptd_reason)" == 'AAA | BBB' ]]; then
-    _pass "both reasons are in the one object, in guard order"
-  else
-    _fail "both reasons are in the one object, in guard order — ""$(_ptd_reason)"
-  fi
+  _ptd_eq "both reasons are in the one object, in guard order" "$(_ptd_reason)" 'AAA | BBB'
 
   _ptd_new_box deny-and-error
   _ptd_stub git-bypass-hook "printf 'DENY\\x1fAAA'"
   _ptd_stub container-tmp-hook 'exit 4'
-  _ptd_run "$(_ptd_bash 'echo hi')"
+  _ptd_run "${hi}"
   _ptd_expect DENY 'a deny and an error together'
-  if [[ "$(_ptd_reason)" == 'AAA | guard container-tmp-hook failed (exit 4); command not run unguarded: no diagnostic' ]]; then
-    _pass "the deny comes first, the error after it"
-  else
-    _fail "the deny comes first, the error after it — ""$(_ptd_reason)"
-  fi
+  _ptd_eq "the deny comes first, the error after it" "$(_ptd_reason)" 'AAA | guard container-tmp-hook failed (exit 4); command not run unguarded: no diagnostic'
 
   _ptd_new_box exit3
   _ptd_stub md5-guard-hook 'exit 3'
-  _ptd_run "$(_ptd_bash 'echo hi')"
+  _ptd_run "${hi}"
   _ptd_expect DENY 'a stub that exits 3 with no output'
-  if _ptd_has "$(_ptd_reason)" 'guard md5-guard-hook failed (exit 3)'; then
-    _pass "the exit status is reported"
-  else
-    _fail "the exit status is reported — ""$(_ptd_reason)"
-  fi
-  if [[ "$(_ptd_marker)" == "${PTD_BASH[*]}" ]]; then
-    _pass "the stub after an exit 3 still runs (marker file)"
-  else
-    _fail "the stub after an exit 3 still runs (marker file) — ""$(_ptd_marker)"
-  fi
+  _ptd_in "the exit status is reported" "$(_ptd_reason)" 'guard md5-guard-hook failed (exit 3)'
+  _ptd_eq "the stub after an exit 3 still runs (marker file)" "$(_ptd_marker)" "${PTD_BASH[*]}"
 
   _ptd_new_box prefix-deny
   _ptd_stub ssh-redirect-hook "printf 'noise DENY\\x1fx'"
-  _ptd_run "$(_ptd_bash 'echo hi')"
+  _ptd_run "${hi}"
   _ptd_expect DENY 'a stub that prints text before DENY<US>x'
-  if _ptd_has "$(_ptd_reason)" 'guard ssh-redirect-hook failed'; then
-    _pass "output must start with DENY<US>: anything before it is an ERROR"
-  else
-    _fail "output must start with DENY<US> — $(_ptd_reason)"
-  fi
+  _ptd_in "output must start with DENY<US>: anything before it is an ERROR" "$(_ptd_reason)" 'guard ssh-redirect-hook failed'
 
   _ptd_new_box sigterm
   # shellcheck disable=SC2016  # the stub's own text
   _ptd_stub muse-exec-hook 'kill -TERM $$; /bin/sleep 2'
-  _ptd_run "$(_ptd_bash 'echo hi')"
+  _ptd_run "${hi}"
   left=("${PTD_BOX}"/tmp/*(N))
   if [[ ${PTD_RC} -eq 2 && -z "${PTD_OUT}" && -s "${PTD_BOX}/stderr" && ${#left} -eq 0 && "$(_ptd_marker)" == 'md5-guard-hook gh-publish-hook git-bypass-hook muse-exec-hook' ]]; then
     _pass "a SIGTERM mid-run exits 2 (not 143), stops, and removes the capture file"
@@ -499,7 +452,7 @@ function _ptd_fault_injection {
   if [[ "$(/usr/bin/grep -c '^  local f_tool=' "${PTD_BOX}/pretool-dispatch")" == 1 ]]; then
     # shellcheck disable=SC2016
     /usr/bin/sed -i '' 's|^  local f_tool=|  : "${NOPE_UNSET_VARIABLE}"; local f_tool=|' "${PTD_BOX}/pretool-dispatch"
-    _ptd_run "$(_ptd_bash 'echo hi')"
+    _ptd_run "${hi}"
     left=("${PTD_BOX}"/tmp/*(N))
     if [[ ${PTD_RC} -eq 2 && -z "${PTD_OUT}" && ${#left} -eq 0 && "$(<"${PTD_BOX}/stderr")" == *'aborted unexpectedly'* && ! -s "${PTD_BOX}/marker" ]]; then
       _pass "a fatal error inside the dispatcher exits 2 (not 1), runs no guard and removes the capture file"
@@ -514,41 +467,28 @@ function _ptd_fault_injection {
   _ptd_stub md5-guard-hook 'readonly JQ=/usr/bin/jq'
   _ptd_stub gh-publish-hook 'readonly JQ=/usr/bin/jq'
   _ptd_stub git-bypass-hook 'readonly JQ=/usr/bin/jq'
-  _ptd_run "$(_ptd_bash 'echo hi')"
+  _ptd_run "${hi}"
   _ptd_expect PASS 'three stubs each declare readonly JQ'
-  if [[ "$(_ptd_marker)" == "${PTD_BASH[*]}" ]]; then
-    _pass "every guard ran despite the repeated readonly"
-  else
-    _fail "every guard ran despite the repeated readonly — ""$(_ptd_marker)"
-  fi
+  _ptd_eq "every guard ran despite the repeated readonly" "$(_ptd_marker)" "${PTD_BASH[*]}"
 
   _ptd_new_box isolation
   # shellcheck disable=SC2016  # the stub's own text
   _ptd_stub md5-guard-hook 'setopt extendedglob kshglob shwordsplit; cd /; umask 000; typeset -g LEAK=1; trap "print trap >> ${PTD_MARKER}" EXIT'
   # shellcheck disable=SC2016  # the stub's own text
   _ptd_stub gh-publish-hook 'print -r -- "opts=$([[ -o extendedglob ]] && print on || print off)$([[ -o kshglob ]] && print on || print off)$([[ -o shwordsplit ]] && print on || print off) pwd=${PWD:t} umask=$(umask) leak=${LEAK-unset}" >> "${PTD_MARKER}"'
-  _ptd_run "$(_ptd_bash 'echo hi')"
-  marker="$(<"${PTD_BOX}/marker")"
-  if _ptd_has "${marker}" "opts=offoffoff pwd=isolation umask=077 leak=unset"; then
-    _pass "a stub's options, cwd, umask and variables do not reach the next guard"
-  else
-    _fail "a stub's options, cwd, umask and variables do not reach the next guard — ""${marker}"
-  fi
+  _ptd_run "${hi}"
+  _ptd_in "a stub's options, cwd, umask and variables do not reach the next guard" "$(<"${PTD_BOX}/marker")" "opts=offoffoff pwd=isolation umask=077 leak=unset"
 
   # Hostile startup file: the dispatcher and the guards run with zsh defaults.
   _ptd_new_box zshenv
-  mkdir -p "${PTD_BOX}/zd"
+  zf_mkdir -p "${PTD_BOX}/zd"
   print -r -- 'setopt extendedglob ksharrays errexit nounset kshglob shwordsplit' > "${PTD_BOX}/zd/.zshenv"
   # shellcheck disable=SC2016  # the stub's own text
   _ptd_stub gh-publish-hook 'print -r -- "opts=$([[ -o extendedglob ]] && print on || print off)$([[ -o ksharrays ]] && print on || print off)$([[ -o errexit ]] && print on || print off)$([[ -o nounset ]] && print on || print off)" >> "${PTD_MARKER}"'
-  _ptd_run "$(_ptd_bash 'echo hi')" "ZDOTDIR=${PTD_BOX}/zd"
+  _ptd_run "${hi}" "ZDOTDIR=${PTD_BOX}/zd"
   _ptd_expect PASS 'a startup file sets ksharrays, errexit and nounset'
   marker="$(_ptd_marker)"
-  if _ptd_has "${marker}" 'opts=offoffoffoff'; then
-    _pass "the guards still see zsh default options"
-  else
-    _fail "the guards still see zsh default options — ""${marker}"
-  fi
+  _ptd_in "the guards still see zsh default options" "${marker}" 'opts=offoffoffoff'
   if [[ "${marker}" == *tmp-guard-hook ]]; then
     _pass "the whole run completed under that startup file"
   else
@@ -557,42 +497,27 @@ function _ptd_fault_injection {
 
   # A guard file that is missing or unreadable denies and does not stop the rest.
   _ptd_new_box missing
-  /bin/rm -f "${PTD_BOX}/ssh-redirect-hook"
-  _ptd_run "$(_ptd_bash 'echo hi')"
+  zf_rm -f "${PTD_BOX}/ssh-redirect-hook"
+  _ptd_run "${hi}"
   _ptd_expect DENY 'a missing guard file'
-  if _ptd_has "$(_ptd_reason)" 'guard ssh-redirect-hook failed'; then
-    _pass "the deny names the missing guard"
-  else
-    _fail "the deny names the missing guard — ""$(_ptd_reason)"
-  fi
-  if [[ "$(_ptd_marker)" == "${PTD_BASH[*]:s/ssh-redirect-hook /}" ]]; then
-    _pass "the other eight guards ran"
-  else
-    _fail "the other eight guards ran — ""$(_ptd_marker)"
-  fi
+  _ptd_in "the deny names the missing guard" "$(_ptd_reason)" 'guard ssh-redirect-hook failed'
+  _ptd_eq "the other eight guards ran" "$(_ptd_marker)" "${PTD_BASH[*]:s/ssh-redirect-hook /}"
 
   _ptd_new_box unreadable
   chmod 000 "${PTD_BOX}/sudo-askpass-hook"
-  _ptd_run "$(_ptd_bash 'echo hi')"
+  _ptd_run "${hi}"
   _ptd_expect DENY 'an unreadable guard file'
-  if _ptd_has "$(_ptd_reason)" 'guard sudo-askpass-hook failed'; then
-    _pass "the deny names the unreadable guard"
-  else
-    _fail "the deny names the unreadable guard — ""$(_ptd_reason)"
-  fi
+  _ptd_in "the deny names the unreadable guard" "$(_ptd_reason)" 'guard sudo-askpass-hook failed'
 
-  # The last stderr line of the failing guard, not of an earlier one.
+  # The last stderr line of the failing guard, not of an earlier one; a failing
+  # guard that wrote nothing gets "no diagnostic", not the earlier guards' text.
   _ptd_new_box stderr-attribution
   _ptd_stub md5-guard-hook 'print -u2 -r -- noise-from-first'
   _ptd_stub gh-publish-hook 'print -u2 -r -- early; print -u2 -r -- boom-line; exit 1'
-  _ptd_run "$(_ptd_bash 'echo hi')"
+  _ptd_stub git-bypass-hook 'exit 4'
+  _ptd_run "${hi}"
   _ptd_expect DENY 'a stub that fails after writing to stderr'
-  reason="$(_ptd_reason)"
-  if [[ "${reason}" == *'boom-line' && "${reason}" != *noise-from-first* && "${reason}" != *early* ]]; then
-    _pass "the reason carries the failing guard's last stderr line only"
-  else
-    _fail "the reason carries the failing guard's last stderr line only — ""${reason}"
-  fi
+  _ptd_eq "the reason carries the failing guard's last stderr line only" "$(_ptd_reason)" 'guard gh-publish-hook failed (exit 1); command not run unguarded: boom-line | guard git-bypass-hook failed (exit 4); command not run unguarded: no diagnostic'
 
   # What a guard is handed.
   _ptd_new_box seam
@@ -600,42 +525,26 @@ function _ptd_fault_injection {
   _ptd_stub md5-write-hook 'print -rn -- "${HOOK_PRE_DISPATCH}|${HOOK_PRE_TOOL}|${HOOK_PRE_PATH}|${HOOK_PRE_CONTENT}|${HOOK_PRE_COMMAND}|${HOOK_PRE_CWD}|" > "${PTD_BOX_OUT}"; print -rn -- "$(cat)" > "${PTD_BOX_OUT}.stdin"; [[ "$(/usr/bin/env)" == *HOOK_PRE_* ]] && print exported >> "${PTD_BOX_OUT}.leak"; true'
   _ptd_run "$(jq -cn '{tool_name:"Edit", tool_input:{file_path:"/x/p q.txt", old_string:"o", new_string:"N1\nN2\n\n", content:"C"}, cwd:"/some dir/"}')" "PTD_BOX_OUT=${PTD_BOX}/seam.out"
   _ptd_expect PASS 'an Edit call whose stub records its seam variables'
-  if [[ "$(<"${PTD_BOX}/seam.out")" == $'1|Edit|/x/p q.txt|C\nN1\nN2||/some dir/|' ]]; then
-    _pass "the seam carries tool, path, joined content, empty command and cwd"
-  else
-    _fail "the seam carries tool, path, joined content, empty command and cwd — ""$(<"${PTD_BOX}/seam.out")"
-  fi
-  if _ptd_has "$(<"${PTD_BOX}/seam.out.stdin")" '"tool_name":"Edit"'; then
-    _pass "a stub that reads stdin gets the payload"
-  else
-    _fail "a stub that reads stdin gets the payload — ""$(<"${PTD_BOX}/seam.out.stdin")"
-  fi
+  _ptd_eq "the seam carries tool, path, joined content, empty command and cwd" "$(<"${PTD_BOX}/seam.out")" $'1|Edit|/x/p q.txt|C\nN1\nN2||/some dir/|'
+  _ptd_in "a stub that reads stdin gets the payload" "$(<"${PTD_BOX}/seam.out.stdin")" '"tool_name":"Edit"'
   if [[ ! -e "${PTD_BOX}/seam.out.leak" ]]; then
     _pass "the seam variables are not exported to a guard's children"
   else
-    _fail "the seam variables are not exported to a guard's children — """
+    _fail "the seam variables are not exported to a guard's children"
   fi
 
   _ptd_new_box seam-bash
   # shellcheck disable=SC2016  # the stub's own text
   _ptd_stub md5-guard-hook 'print -rn -- "${HOOK_PRE_TOOL}|${HOOK_PRE_COMMAND}|${HOOK_PRE_PATH}|${HOOK_PRE_CWD}|" > "${PTD_BOX_OUT}"'
   _ptd_run "$(_ptd_bash $'echo a\nls "b c"\n\n')" "PTD_BOX_OUT=${PTD_BOX}/seam.out"
-  if [[ "$(<"${PTD_BOX}/seam.out")" == $'Bash|echo a\nls "b c"||/work|' ]]; then
-    _pass "the Bash command arrives intact with trailing newlines removed"
-  else
-    _fail "the Bash command arrives intact with trailing newlines removed — ""$(<"${PTD_BOX}/seam.out")"
-  fi
+  _ptd_eq "the Bash command arrives intact with trailing newlines removed" "$(<"${PTD_BOX}/seam.out")" $'Bash|echo a\nls "b c"||/work|'
 
   # No environment can redirect the guard directory.
   _ptd_new_box env-override
-  mkdir -p "${PTD_BOX}/elsewhere"
-  _ptd_run "$(_ptd_bash 'echo hi')" "GUARD_DIR=${PTD_BOX}/elsewhere" "HOOK_GUARD_DIR=${PTD_BOX}/elsewhere" "PRETOOL_DISPATCH_DIR=${PTD_BOX}/elsewhere" "ROUTES=Bash:"
+  zf_mkdir -p "${PTD_BOX}/elsewhere"
+  _ptd_run "${hi}" "GUARD_DIR=${PTD_BOX}/elsewhere" "HOOK_GUARD_DIR=${PTD_BOX}/elsewhere" "PRETOOL_DISPATCH_DIR=${PTD_BOX}/elsewhere" "ROUTES=Bash:"
   _ptd_expect PASS 'guard-directory and route environment variables are set'
-  if [[ "$(_ptd_marker)" == "${PTD_BASH[*]}" ]]; then
-    _pass "the guards still come from the dispatcher's own directory"
-  else
-    _fail "the guards still come from the dispatcher's own directory — ""$(_ptd_marker)"
-  fi
+  _ptd_eq "the guards still come from the dispatcher's own directory" "$(_ptd_marker)" "${PTD_BASH[*]}"
 
   # --print-routes.
   _ptd_new_box routes
@@ -659,7 +568,7 @@ function _ptd_real_guards {
 
   _section "pretool-dispatch: the real guards through the real dispatcher"
 
-  mkdir -p "${gpdir}/gh"
+  zf_mkdir -p "${gpdir}/gh"
   print -r -- 'FIXTURE_TOKEN' > "${gpdir}/patterns"
   print -r -- 'Host testalias99' > "${gpdir}/sshcfg"
   : > "${gpdir}/gh/config.yml"
@@ -696,7 +605,7 @@ function _ptd_real_guards {
   # The seam must only work while a guard is being sourced: an exported
   # HOOK_PRE_DISPATCH=1 (reachable through ~/.zshenv, which no guard blocks)
   # must not turn a standalone guard into a skip, nor its deny into text.
-  local -a seam_env=(HOOK_PRE_DISPATCH=1 HOOK_PRE_TOOL=Bash HOOK_PRE_COMMAND=ls HOOK_PRE_PATH=/x/ok HOOK_PRE_CONTENT=ok HOOK_PRE_CWD=/work)
+  local -a seam_env=(HOOK_PRE_DISPATCH=1 HOOK_PRE_TOOL=Bash HOOK_PRE_COMMAND=ls HOOK_PRE_PATH=/x/ok HOOK_PRE_CONTENT=ok HOOK_PRE_CWD=/work) extra_env
   local seam_out
   for c in \
     "md5-guard-hook|$(_ptd_bash 'md5 file.txt')" \
@@ -705,26 +614,23 @@ function _ptd_real_guards {
     "muse-exec-hook|$(_ptd_bash 'timeout 90 muse exec --workspace /w < /dev/null')" \
     "container-tmp-hook|$(jq -cn '{tool_name:"Bash", tool_input:{command:"container build -t x /tmp/ctx"}, cwd:"/work"}')" \
     "tmp-guard-hook|$(_ptd_write /tmp/x body)" \
-    "md5-write-hook|$(_ptd_write /x/a.py "h = ${md5_call}")"; do
-    seam_out="$(printf '%s' "${c#*|}" | /usr/bin/env "${seam_env[@]}" /bin/zsh "${SCRIPT_DIR}/claude/hooks/${c%%|*}" 2>/dev/null)" || true
+    "md5-write-hook|$(_ptd_write /x/a.py "h = ${md5_call}")" \
+    "gh-publish-hook|$(_ptd_bash "${gh_word} issue create -t t --body \"inline body\"")"; do
+    extra_env=()
+    [[ "${c%%|*}" == gh-publish-hook ]] && extra_env=("${gh_env[@]}")
+    seam_out="$(_ptd_run_guard "${c%%|*}" "${c#*|}" "${seam_env[@]}" "${extra_env[@]}")"
     if [[ "$(_hook_verdict "${seam_out}")" == DENY ]]; then
       _pass "standalone ${c%%|*} still denies with HOOK_PRE_DISPATCH=1 in its environment"
     else
       _fail "standalone ${c%%|*} still denies with HOOK_PRE_DISPATCH=1 in its environment — ""got $(_hook_verdict "${seam_out}"): ${seam_out:0:100}"
     fi
   done
-  seam_out="$(printf '%s' "$(_ptd_bash "${gh_word} issue create -t t --body \"inline body\"")" | /usr/bin/env "${seam_env[@]}" "${gh_env[@]}" /bin/zsh "${SCRIPT_DIR}/claude/hooks/gh-publish-hook" 2>/dev/null)" || true
-  if [[ "$(_hook_verdict "${seam_out}")" == DENY ]]; then
-    _pass "standalone gh-publish-hook still denies with HOOK_PRE_DISPATCH=1 in its environment"
-  else
-    _fail "standalone gh-publish-hook still denies with HOOK_PRE_DISPATCH=1 in its environment — ""got $(_hook_verdict "${seam_out}"): ${seam_out:0:100}"
-  fi
 
   # Exec count: copies of the real guards beside a copy of the dispatcher.
   local box="${PTD_SB}/execs" g n
-  mkdir -p "${box}"
-  cp "${SCRIPT_DIR}/claude/hooks/pretool-dispatch" "${box}/pretool-dispatch"
-  for g in "${PTD_ALL[@]}"; do cp "${SCRIPT_DIR}/claude/hooks/${g}" "${box}/${g}"; done
+  zf_mkdir -p "${box}"
+  # shellcheck disable=SC2086,SC2296  # zsh ${^array} prefixes each element
+  cp "${SCRIPT_DIR}/claude/hooks/pretool-dispatch" "${SCRIPT_DIR}/claude/hooks/"${^PTD_ALL} "${box}/"
   # shellcheck disable=SC2016  # literal dispatcher text
   n="$(/usr/bin/grep -c '2>>"${errfile}"' "${box}/pretool-dispatch")" || true
   if [[ "${n}" != 1 ]]; then
@@ -743,11 +649,15 @@ function _ptd_real_guards {
     _fail "the real guards wrote to stderr on a pass: ${errout:0:200}"
   fi
 
-  local want_n ok
+  local want_n ok names xtrace
+  local -a ext
   for c in pass deny; do
     _ptd_count_execs "${box}/${c}.json" "${box}/pretool-dispatch"
-    n="$(<"${box}/externals")"
-    n="${n##*$'\n'}"
+    # shellcheck disable=SC2296  # zsh (@f) splits on newlines, (j: :) joins
+    ext=("${(@f)$(<"${box}/externals")}")
+    n="${ext[-1]}"
+    # shellcheck disable=SC2296
+    names="${(j: :)ext[1,-2]} "
     ok=0
     if [[ "${c}" == pass ]]; then
       want_n=1
@@ -757,13 +667,14 @@ function _ptd_real_guards {
       [[ "${n}" == 2 && "$(_hook_verdict "$(<"${box}/stdout")")" == DENY ]] && ok=1
     fi
     if (( ok )); then
-      _pass "a ${c} run executes exactly ${want_n} external command(s): $(/usr/bin/sed -n '$!p' "${box}/externals" | /usr/bin/tr '\n' ' ')"
+      _pass "a ${c} run executes exactly ${want_n} external command(s): ${names}"
     else
-      _fail "a ${c} run executed ${n} external commands (wanted ${want_n}): $(/usr/bin/sed -n '$!p' "${box}/externals" | /usr/bin/tr '\n' ' ')"
+      _fail "a ${c} run executed ${n} external commands (wanted ${want_n}): ${names}"
     fi
   done
   # The trace must reach into the guards, or the count proves nothing.
-  if /usr/bin/grep -q 'md5-guard-hook:' "${box}/xtrace" || /usr/bin/grep -q '_md5_guard' "${box}/xtrace"; then
+  xtrace="$(<"${box}/xtrace")"
+  if [[ "${xtrace}" == *'md5-guard-hook:'* || "${xtrace}" == *_md5_guard* ]]; then
     _pass "the xtrace covers the guard subshells"
   else
     _fail "the xtrace holds no guard lines: the exec count is blind inside the guards"
@@ -778,6 +689,10 @@ function _ptd_coverage {
     _skip "claude/settings.json absent: claude/ not yet synced to this machine"
     return 0
   fi
+  # shellcheck disable=SC2034  # read by _ptd_reach
+  PTD_DIRS="$(jq -r '.env.CLAUDE_CODE_PLUGIN_DIRS // ""' "${settings}")"
+  PTD_ROUTES="$("${SCRIPT_DIR}/claude/hooks/pretool-dispatch" --print-routes)"
+  PTD_HOOKS="$(jq -r '.hooks.PreToolUse[]? | .matcher as $m | .hooks[]? | [($m // ""), .command] | @tsv' "${settings}")"
   _ptd_expect_reach Bash "${PTD_BASH[@]}"
   _ptd_expect_reach Write tmp-guard-hook md5-write-hook
   _ptd_expect_reach Edit tmp-guard-hook md5-write-hook
@@ -861,6 +776,8 @@ function run_pretool_dispatch {
   fi
 
   PTD_SB="$(mktemp -d "${TMPDIR:-/tmp}/pretool-dispatch-test.XXXXXX")"
+  zmodload -F zsh/files b:zf_mkdir b:zf_rm
+  PTD_DISPATCHER="$(<"${SCRIPT_DIR}/claude/hooks/pretool-dispatch")"
   trap '/bin/rm -rf "${PTD_SB}"' EXIT
 
   _ptd_fault_injection

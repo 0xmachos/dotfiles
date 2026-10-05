@@ -16,13 +16,37 @@
 #
 # shellcheck source=tests/lib
 
-# EOF without a closing fence fails, including an empty file (no AWK rule runs).
+# One awk run checks every FILE argument and prints "<name> missing/empty
+# frontmatter: <problem>" per bad file; status 1 if any is bad. EOF without a
+# closing fence fails, and so does an empty file (no AWK rule runs for it).
 function _okf_validate_frontmatter {
   /usr/bin/awk '
+    function report(msg) {
+      print name " missing/empty frontmatter: " msg
+      bad = 1
+    }
+    function finish(   i, missing) {
+      if (!started) return
+      if (invalid || !closed) {
+        report("missing or unterminated leading frontmatter")
+        return
+      }
+      for (i = 1; i <= 4; i++)
+        if (!found[required[i]]) missing = missing (missing == "" ? "" : " ") required[i]
+      if (missing != "") report(missing)
+    }
     BEGIN { split("type title description timestamp", required, " ") }
-    NR == 1 && $0 != "---" { invalid = 1; exit }
-    NR == 1 { next }
-    $0 == "---" { closed = 1; exit }
+    FNR == 1 {
+      finish()
+      started = 1; invalid = 0; closed = 0; done = 0
+      delete found
+      name = FILENAME; sub(/.*\//, "", name)
+      seen[FILENAME] = 1
+      if ($0 != "---") { invalid = 1; done = 1 }
+      next
+    }
+    done { next }
+    $0 == "---" { closed = 1; done = 1; next }
     /^[A-Za-z]+:/ {
       key = $0; sub(/:.*/, "", key)
       value = $0; sub(/^[^:]*:[[:space:]]*/, "", value)
@@ -31,37 +55,46 @@ function _okf_validate_frontmatter {
         found[key] = 1
     }
     END {
-      if (NR == 0 || invalid || !closed) {
-        print "missing or unterminated leading frontmatter"
-        exit 1
-      }
-      for (i = 1; i <= 4; i++) {
-        if (!found[required[i]]) {
-          printf "%s ", required[i]
-          missing = 1
+      finish()
+      for (i = 1; i < ARGC; i++)
+        if (!(ARGV[i] in seen)) {
+          name = ARGV[i]; sub(/.*\//, "", name)
+          report("missing or unterminated leading frontmatter")
         }
-      }
-      if (missing) { print ""; exit 1 }
+      exit bad
     }
-  ' "$1"
+  ' "$@"
 }
 
-
+# BUNDLE defaults to internals/; the regression suite passes a fixture.
 function _okf_check_conformance {
-  local bundle="${SCRIPT_DIR}/internals"
-  local file name missing ok=1
+  local bundle="${1:-${SCRIPT_DIR}/internals}"
+  local file name line out rc=0 ok=1
+  local -a files=()
 
   for file in "${bundle}"/*.md; do
     [[ -f "${file}" ]] || continue
     name="${file##*/}"
     [[ "${name}" == "index.md" || "${name}" == "log.md" ]] && continue
-    if ! missing="$(_okf_validate_frontmatter "${file}")"; then
-      _fail "okf: ${name} missing/empty frontmatter: ${missing}"
-      ok=0
-    fi
+    files+=("${file}")
   done
 
-  (( ok )) && _pass "Concept docs declare type, title, description, timestamp"
+  if (( ${#files} )); then
+    out="$(_okf_validate_frontmatter "${files[@]}")" || rc=$?
+    if [[ -n "${out}" ]]; then
+      while IFS= read -r line; do
+        _fail "okf: ${line}"
+        ok=0
+      done <<< "${out}"
+    elif (( rc )); then
+      _fail "okf: frontmatter validator exited ${rc} without a report"
+      ok=0
+    fi
+  fi
+
+  if (( ok )); then
+    _pass "Concept docs declare type, title, description, timestamp"
+  fi
 }
 
 function _okf_check_freshness {

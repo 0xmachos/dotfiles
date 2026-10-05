@@ -42,12 +42,17 @@
 readonly _AGENTS_CAP_BYTES=32768
 readonly _AGENTS_WARN_BYTES=24576
 
-# Byte size of $1, macOS wc's leading whitespace stripped.
+# zstat reads a file size without starting a process.
+zmodload -F zsh/stat b:zstat
+
+# Byte size of $1.
 function _agents_size {
-  # `wc -c < missing` would fail and, under the dispatcher's `set -euo
+  local -a st
+  # A missing file would fail the stat and, under the dispatcher's `set -euo
   # pipefail`, kill the whole ./test run with no summary.
   [[ -f "$1" ]] || { echo 0; return; }
-  wc -c < "$1" | tr -d '[:space:]'
+  zstat -A st +size -- "$1"
+  echo "${st[1]}"
 }
 
 function _agents_check_cap {
@@ -89,9 +94,14 @@ readonly _CAP_SKILL_LINES=500
 # $1 label, $2 file, $3 "max_bytes max_lines". Reuses _agents_size for bytes.
 function _agents_check_regrowth {
   local label="$1" file="$2" max_b="${3%% *}" max_l="${3##* }" bytes lines bad=0
+  local content newlines
   [[ -f "${file}" ]] || return 0
   bytes="$(_agents_size "${file}")"
-  lines="$(wc -l < "${file}" | tr -d '[:space:]')"
+  # Newline count, as `wc -l` gives it. read -d '' slurps the file and returns
+  # 1 at EOF.
+  IFS= read -rd '' content < "${file}" || true
+  newlines="${content//[^$'\n']/}"
+  lines="${#newlines}"
   if (( max_b > 0 && bytes > max_b )); then
     _fail "${label}: ${bytes} B over the ${max_b} B regrowth cap"; bad=1
   fi
@@ -103,7 +113,16 @@ function _agents_check_regrowth {
 
 # Frontmatter lines of $1 (between the first two '---' fences), empty if none.
 function _agents_frontmatter {
-  /usr/bin/awk 'NR==1 { if ($0 != "---") exit; next } /^---[[:space:]]*$/ { exit } { print }' "$1"
+  local line n=0
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    if (( n++ == 0 )); then
+      [[ "${line}" == "---" ]] || return 0
+    elif [[ "${line}" =~ ^---[[:space:]]*$ ]]; then
+      return 0
+    else
+      print -r -- "${line}"
+    fi
+  done < "$1"
 }
 
 function _agents_check_rule_file {
@@ -114,7 +133,12 @@ function _agents_check_rule_file {
   [[ "${name}" == orchestration.md ]] && cap="${_CAP_ORCH_LINES}"
   _agents_check_regrowth "rules/${name}" "${file}" "0 ${cap}"
 
-  if /usr/bin/grep -qE '^(globs|alwaysApply):' <<< "${fm}"; then
+  # `(^|\n)` anchors each pattern to a line start; the space classes exclude \n so a match stays on one line.
+  local -r key_re=$'(^|\n)(globs|alwaysApply):'
+  local -r scalar_re=$'(^|\n)paths:[ \t\r\f\v]*[^ \t\r\f\v\n#]'
+  local -r bare_re=$'(^|\n)paths:[ \t\r\f\v]*(\n|$)'
+  local -r item_re=$'(^|\n)[ \t\r\f\v]*-[ \t\r\f\v]+[^ \t\r\f\v\n]'
+  if [[ "${fm}" =~ ${key_re} ]]; then
     _fail "rules/${name}: carries a globs:/alwaysApply: key — not Claude Code frontmatter; use paths: as a list"
   else
     _pass "rules/${name}: no globs:/alwaysApply: keys"
@@ -123,10 +147,9 @@ function _agents_check_rule_file {
   # '- item' lines (block list, any indent). A value on the same line is a
   # scalar or an inline flow value. Shape only; tests/agent-rules parses the
   # YAML.
-  if /usr/bin/grep -qE '^paths:[[:space:]]*[^[:space:]#]' <<< "${fm}"; then
+  if [[ "${fm}" =~ ${scalar_re} ]]; then
     _fail "rules/${name}: paths: is not a block list"
-  elif /usr/bin/grep -qE '^paths:[[:space:]]*$' <<< "${fm}" \
-      && ! /usr/bin/grep -qE '^[[:space:]]*-[[:space:]]+[^[:space:]]' <<< "${fm}"; then
+  elif [[ "${fm}" =~ ${bare_re} && ! "${fm}" =~ ${item_re} ]]; then
     _fail "rules/${name}: paths: has no list items"
   else
     _pass "rules/${name}: paths: absent or a block list"
@@ -155,7 +178,7 @@ function _agents_check_regrowth_all {
 # Review rulebook: tracked and public, so it must stay public-safe and short
 # (a reviewer harness injects it whole).
 function _agents_check_review {
-  local review="${SCRIPT_DIR}/REVIEW.md" heading
+  local review="${SCRIPT_DIR}/REVIEW.md" heading text
   if [[ ! -f "${review}" ]]; then
     _fail "REVIEW.md missing — reviewers have no rulebook"
     return
@@ -166,8 +189,10 @@ function _agents_check_review {
     _fail "REVIEW.md is not tracked — it is the public rulebook and must be in git"
   fi
   _agents_check_regrowth "REVIEW.md" "${review}" "${_CAP_REVIEW}"
+  # Newline-padded text, so a heading matches only as a whole line.
+  text=$'\n'"$(<"${review}")"$'\n'
   for heading in 'What to flag' 'Evidence bar' 'Severity' 'Skip' 'Report shape'; do
-    if /usr/bin/grep -q "^## ${heading}\$" "${review}"; then
+    if [[ "${text}" == *$'\n'"## ${heading}"$'\n'* ]]; then
       _pass "REVIEW.md: section '${heading}' present"
     else
       _fail "REVIEW.md: section '${heading}' missing"

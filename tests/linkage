@@ -166,6 +166,18 @@ function _linkage_bao_migration {
   ) >/dev/null
 }
 
+# Fills the caller's `ignored` map with the gitignored items under .config/,
+# bin/ and LaunchAgents/, using one batched `git check-ignore`.
+function _linkage_load_ignored {
+  setopt local_options null_glob
+  local -a candidates=(.config/* bin/* LaunchAgents/*.plist)
+  local ignored_path
+  # `-z` keeps non-ASCII names unquoted.
+  while IFS= read -r -d '' ignored_path; do
+    ignored[${ignored_path}]=1
+  done < <(print -rN -- "${candidates[@]}" | git check-ignore -z --stdin)
+}
+
 function run_linkage {
   _section "Dotfile Coverage"
 
@@ -301,13 +313,18 @@ function run_linkage {
     fi
   done
 
+  # Gitignored per-clone items are skipped in steps 2-4: their names must not
+  # enter the tracked map (it would leak them).
+  # Read by steps 2-4 via zsh dynamic scope.
+  # shellcheck disable=SC2034
+  local -A ignored=()
+  _linkage_load_ignored
+
   # 2. .config/ subdirectories
   local subdir
   for subdir in .config/*/; do
     [[ -d "${subdir}" ]] || continue
-    # Gitignored per-clone items are skipped: their names must not enter the
-    # tracked map (it would leak them). Same for bin/ and LaunchAgents/.
-    if git check-ignore -q "${subdir%/}"; then continue; fi
+    if [[ -n "${ignored[${subdir%/}]+_}" ]]; then continue; fi
     name="${subdir%/}"
     name="${name##*/}"
     if [[ -z "${config_subdirs[${name}]+_}" ]]; then
@@ -321,7 +338,7 @@ function run_linkage {
   local script
   for script in bin/*; do
     [[ -f "${script}" ]] || continue
-    if git check-ignore -q "${script}"; then continue; fi
+    if [[ -n "${ignored[${script}]+_}" ]]; then continue; fi
     name="${script##*/}"
     if [[ -z "${bin_scripts[${name}]+_}" ]]; then
       _fail "Untracked bin/ script: ${name} (add to install_scripts or bin_scripts map)"
@@ -334,7 +351,7 @@ function run_linkage {
   local plist
   for plist in LaunchAgents/*.plist; do
     [[ -f "${plist}" ]] || continue
-    if git check-ignore -q "${plist}"; then continue; fi  # skip gitignored private agents
+    if [[ -n "${ignored[${plist}]+_}" ]]; then continue; fi  # skip gitignored private agents
     name="${plist##*/}"
     _linkage_check_deployed install_launchagents "LaunchAgents/${name}"
     _linkage_check_deployed load_launchagents "LaunchAgents/${name}"

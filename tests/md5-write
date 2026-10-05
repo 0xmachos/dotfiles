@@ -34,8 +34,8 @@ function _md5_write_run_edit {
 function _md5_write_expect {
   # NOT `path`: in zsh it is tied to PATH, so `local path=` replaces PATH and
   # every command (jq included) then fails "command not found".
-  local want="$1" file="$2" content="$3" label="${4:-$2}" out got
-  out="$(_md5_write_run "${file}" "${content}")"
+  local want="$1" file="$2" content="$3" label="${4:-$2}" runner="${5:-_md5_write_run}" out got
+  out="$("${runner}" "${file}" "${content}")"
   got="$(_hook_verdict "${out}")"
   if [[ "${got}" == "${want}" ]]; then
     _pass "${want}: ${label}"
@@ -115,29 +115,16 @@ h = hashlib.md5(d)' 'content naming the guard, in a comment'
   _md5_write_expect PASS /x/a.py 'def _md5_guard_split(s): pass' 'function name containing md5'
 
   # Edit payloads carry new_string, not content.
-  local out got
-  out="$(_md5_write_run_edit /x/a.py 'h = hashlib.md5(d)')"
-  got="$(_hook_verdict "${out}")"
-  if [[ "${got}" == DENY ]]; then
-    _pass "DENY: Edit payload (new_string) is scanned"
-  else
-    _fail "Edit payload — expected DENY, got ${got}"
-  fi
+  _md5_write_expect DENY /x/a.py 'h = hashlib.md5(d)' 'Edit payload (new_string) is scanned' _md5_write_run_edit
 
   # Only the new text is scanned, never the file on disk, or the edit that
   # removes existing MD5 would be blocked too.
-  out="$(_md5_write_run_edit /x/a.py 'h = hashlib.sha256(d)')"
-  got="$(_hook_verdict "${out}")"
-  if [[ "${got}" == PASS ]]; then
-    _pass "PASS: a clean Edit is not judged by the file on disk"
-  else
-    _fail "clean Edit — expected PASS, got ${got}"
-  fi
+  _md5_write_expect PASS /x/a.py 'h = hashlib.sha256(d)' 'a clean Edit is not judged by the file on disk' _md5_write_run_edit
 
   # The deny reason names the fix and the escape hatch, quotes the offending
   # line, and says the write did not happen.
+  local out reason
   out="$(_md5_write_run /x/a.py 'h = hashlib.md5(d)')"
-  local reason
   reason="$(printf '%s' "${out}" | jq -er '.hookSpecificOutput.permissionDecisionReason' 2>/dev/null)"
   if [[ "${reason}" == *"hashlib.sha256"* ]]; then
     _pass "deny reason names the SHA-256 replacement"
@@ -161,12 +148,7 @@ h = hashlib.md5(d)' 'content naming the guard, in a comment'
   fi
 
   # A double quote and a backslash in content must not break the JSON.
-  out="$(_md5_write_run /x/a.py 'h = hashlib.md5(b"a\"b\\c")')"
-  if [[ "$(_hook_verdict "${out}")" == DENY ]]; then
-    _pass "DENY: quotes and backslashes in the matched line stay valid JSON"
-  else
-    _fail "quotes/backslashes in content produced invalid JSON"
-  fi
+  _md5_write_expect DENY /x/a.py 'h = hashlib.md5(b"a\"b\\c")' 'quotes and backslashes in the matched line stay valid JSON'
 
   # Malformed and irrelevant payloads allow the write (fail-open).
   if [[ -z "$(printf '%s' '{}' | /bin/zsh "${SCRIPT_DIR}/claude/hooks/md5-write-hook")" ]]; then

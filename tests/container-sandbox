@@ -43,15 +43,24 @@ function run_container_sandbox {
     _fail "ls was altered: ${out//$'\n'/ }"
   fi
 
+  # The stub prints one argument per line: equality proves the caller's
+  # arguments reach the binary untouched, with no mount added.
   out="$(_csbx 'run -v /x:/sandbox alpine')"
-  if [[ "${out}" != *"${fixture}/Sandbox:/sandbox"* ]]; then
+  if [[ "${out}" == $'run\n-v\n/x:/sandbox\nalpine' ]]; then
     _pass "explicit /sandbox mount is not doubled"
   else
-    _fail "wrapper double-mounted /sandbox: ${out//$'\n'/ }"
+    _fail "wrapper altered an explicit /sandbox mount: ${out//$'\n'/ }"
+  fi
+
+  out="$(_csbx 'run -w /sandbox alpine')"
+  if [[ "${out}" == $'run\n-w\n/sandbox\nalpine' ]]; then
+    _pass "explicit /sandbox workdir is not doubled"
+  else
+    _fail "wrapper altered an explicit /sandbox workdir: ${out//$'\n'/ }"
   fi
 
   out="$(_csbx 'run alpine' 1)"
-  if [[ "${out}" != *"--volume"* ]]; then
+  if [[ "${out}" == $'run\nalpine' ]]; then
     _pass "CONTAINER_NO_SANDBOX=1 disables the auto-mount"
   else
     _fail "opt-out still mounted: ${out//$'\n'/ }"
