@@ -64,6 +64,25 @@ function _ssh_redirect_expect_env {
   _ssh_redirect_verdict "$3" "${5:-$4}"
 }
 
+function _ssh_redirect_expect_bounded {
+  # As _ssh_redirect_expect_env, but the hook runs under a 60 s alarm. A
+  # killed or failing hook leaves a marker in SSHR_T_OUT, never the empty
+  # output a PASS verdict is made of.
+  local raw rc
+  _json_str "$4"
+  # shellcheck disable=SC2154  # zsh pipestatus array
+  raw="$(print -r -- "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":${REPLY}}}" \
+    | SSH_REDIRECT_CONFIG="$1" HOME="$2" \
+      /usr/bin/perl -e 'alarm 60; exec @ARGV or die "exec: $!"' \
+        /bin/zsh "${SCRIPT_DIR}/claude/hooks/ssh-redirect-hook" 2>&1
+    print -rn -- "@rc=${pipestatus[-1]}")" || raw='@rc=unknown'
+  rc="${raw##*@rc=}"
+  SSHR_T_OUT="${raw%@rc=*}"
+  SSHR_T_OUT="${SSHR_T_OUT%$'\n'}"
+  if [[ "${rc}" != 0 ]]; then SSHR_T_OUT="hook failed with status ${rc}: ${SSHR_T_OUT}"; fi
+  _ssh_redirect_verdict "$3" "${5:-$4}"
+}
+
 function run_ssh_redirect {
   _section "ssh → claude-alias redirect hook"
 
@@ -204,6 +223,57 @@ function run_ssh_redirect {
     'a nonexistent config path fails open'
   _ssh_redirect_expect_env "${SSHR_T_HOME}/.ssh/empty-config" "${SSHR_T_HOME}" PASS 'ssh hosta' \
     'an empty config file fails open'
+
+  # Segment cap: the hook scans the first 500 segments and fails open past
+  # them. `true; ` repeated puts the ssh at segment 500, then 501.
+  local seg_cmd='' seg_i
+  for (( seg_i = 0; seg_i < 499; seg_i++ )); do seg_cmd+='true; '; done
+  _ssh_redirect_expect DENY "${seg_cmd}ssh hosta" 'ssh at segment 500, the last one scanned'
+  _ssh_redirect_expect PASS "${seg_cmd}true; ssh hosta" 'ssh at segment 501, past the segment cap'
+
+  # Include limits, on trees built under a scratch directory: a chain of files
+  # one Include deep each, and a file that includes itself twice beside a
+  # short cycle and a deep chain.
+  local sshr_scratch sshr_home sshr_i
+  sshr_scratch="$(mktemp -d "${TMPDIR:-/tmp}/ssh-redirect.XXXXXX")" || sshr_scratch=''
+  if [[ -z "${sshr_scratch}" ]]; then
+    _fail "could not create a scratch directory for the Include cases"
+  else
+    # Files c2..c4097 chain onward from the config (file 1): the hook reads at
+    # most 4096 files, so c4096 is read and c4097 is not.
+    sshr_home="${sshr_scratch}/depth"
+    /bin/mkdir -p "${sshr_home}/.ssh"
+    print -r -- 'Include c2' > "${sshr_home}/.ssh/config"
+    for (( sshr_i = 2; sshr_i <= 4097; sshr_i++ )); do
+      case "${sshr_i}" in
+        4096) print -r -- $'Host deepa\nHost deepa-claude\nInclude c4097' ;;
+        4097) print -r -- $'Host deepb\nHost deepb-claude' ;;
+        *) print -r -- "Include c$(( sshr_i + 1 ))" ;;
+      esac > "${sshr_home}/.ssh/c${sshr_i}"
+    done
+    _ssh_redirect_expect_bounded "${sshr_home}/.ssh/config" "${sshr_home}" DENY 'ssh deepa' \
+      'a host in the 4096th config file is found'
+    _ssh_redirect_expect_bounded "${sshr_home}/.ssh/config" "${sshr_home}" PASS 'ssh deepb' \
+      'a host in the 4097th config file is past the file cap'
+
+    # ping and pong include each other. loop includes itself twice, so
+    # without the visited set its copies fill the queue ahead of chain16.
+    sshr_home="${sshr_scratch}/cycle"
+    /bin/mkdir -p "${sshr_home}/.ssh"
+    print -r -- $'Include loop\nInclude chain1\nInclude ping' > "${sshr_home}/.ssh/config"
+    print -r -- 'Include loop loop' > "${sshr_home}/.ssh/loop"
+    print -r -- $'Host cycb\nHost cycb-claude\nInclude pong' > "${sshr_home}/.ssh/ping"
+    print -r -- 'Include ping' > "${sshr_home}/.ssh/pong"
+    for (( sshr_i = 1; sshr_i < 16; sshr_i++ )); do
+      print -r -- "Include chain$(( sshr_i + 1 ))" > "${sshr_home}/.ssh/chain${sshr_i}"
+    done
+    print -r -- $'Host cyca\nHost cyca-claude' > "${sshr_home}/.ssh/chain16"
+    _ssh_redirect_expect_bounded "${sshr_home}/.ssh/config" "${sshr_home}" DENY 'ssh cycb' \
+      'Include files that include each other end, and their hosts are found'
+    _ssh_redirect_expect_bounded "${sshr_home}/.ssh/config" "${sshr_home}" DENY 'ssh cyca' \
+      'a self-including file does not starve the files behind it'
+    /bin/rm -rf "${sshr_scratch}"
+  fi
 
   # No bypass: SSH_REDIRECT_SKIP is read nowhere, even exported in the hook's
   # own environment (a hook never sees the command's exports).

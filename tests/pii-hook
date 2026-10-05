@@ -180,6 +180,17 @@ function _pii_forward_cases {
     _fail "commit-msg: worktree chain — rc=${rc} marker=$([[ -e ${wt}/fwd-marker ]] && echo yes || echo no)"
   fi
 
+  # Arguments reach the repo hook intact, one word each (a space inside an
+  # argument stays inside it).
+  printf '#!/bin/zsh\nprint -rl -- "$@" > fwd-args\nexit 3\n' > "${repo}/.git/hooks/commit-msg"
+  rc=0
+  (cd "${repo}" && "${fwd}/commit-msg" first "second word" >/dev/null 2>&1) || rc=$?
+  if (( rc == 3 )) && [[ "$(<"${repo}/fwd-args" 2>/dev/null)" == $'first\nsecond word' ]]; then
+    _pass "hook-forward: the repo hook receives the hook's arguments"
+  else
+    _fail "hook-forward: arguments — rc=${rc} got '$(<"${repo}/fwd-args" 2>/dev/null)'"
+  fi
+
   # Spaces in the git dir fold to `_` in the sentinel.
   local sp="${work}/with space"
   git init -q "${sp}"
@@ -434,6 +445,45 @@ function run_pii_hook {
   _pii_hook_run
   _pii_expect_pass "dash-separated placeholder MAC passes"
   _pii_reset
+
+  # 8d1. Every placeholder form passes; a value one digit off each blocks.
+  #      Built by padding, so no regex-shaped literal sits in this file.
+  local z8 f8 z4 f4 z12 f12 okv badv
+  printf -v z8 '%08d' 0; printf -v z4 '%04d' 0; printf -v z12 '%012d' 0
+  f8="${z8//0/f}"; f4="${z4//0/f}"; f12="${z12//0/f}"
+  local -a ok_forms bad_forms
+  ok_forms=(
+    "${z8}-${z4}-${z4}-${z4}-${z12}"                  # nil UUID
+    "${f8}-${f4}-${f4}-${f4}-${f12}"                  # max UUID
+    "${f8//f/F}-${f4//f/F}-${f4//f/F}-${f4//f/F}-${f12//f/F}"        # max UUID, upper case
+    "ff:ff:ff:ff:ff:ff"                               # broadcast MAC
+    "ff-ff-ff-ff-ff-ff"                               # broadcast MAC, dashes
+    "00:00:00:00:00:00"                               # nil MAC
+    "00-00-00-00-00-00"                               # nil MAC, dashes
+    "00:00:5e:00:53:ab"                               # RFC 7042 documentation MAC
+    "00-00-5E-00-53-01"                               # RFC 7042, dashes, upper case
+  )
+  local h00=00 hff=ff
+  bad_forms=(
+    "${z8}-${z4}-${z4}-${z4}-${z12%?}1"               # nil UUID with a last digit set
+    "${f8%?}e-${f4}-${f4}-${f4}-${f12}"               # max UUID, one digit off
+    "${hff}:${hff}:${hff}:${hff}:${hff}:fe"           # broadcast MAC, one digit off
+    "${h00}:${h00}:${h00}:${h00}:${h00}:01"           # nil MAC, one digit off
+    "${h00}:${h00}:5e:${h00}:54:ab"                   # RFC 7042 with the wrong fifth octet
+    "${h00}:${h00}:5e:01:53:ab"                       # RFC 7042 with the wrong fourth octet
+  )
+  for okv in "${ok_forms[@]}"; do
+    echo "example: ${okv}" > "${pii_sandbox}/notes.md"
+    _pii_hook_run
+    _pii_expect_pass "placeholder token ${okv} passes"
+    _pii_reset
+  done
+  for badv in "${bad_forms[@]}"; do
+    echo "example: ${badv}" > "${pii_sandbox}/notes.md"
+    _pii_hook_run
+    _pii_expect_block "near-placeholder token ${badv} blocks" "MAC/UUID"
+    _pii_reset
+  done
 
   # 8d2. Mixed-separator MAC blocks (evades the two single-separator regexes)
   local mmac="0f:1e-2d:3c"

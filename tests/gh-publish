@@ -296,6 +296,12 @@ function run_gh_publish {
   mkdir -p "${_gp_dir}/dir.md"
   _gp_test_expect DENY "gh pr create -t t --body-file ${_gp_dir}/dir.md" \
     'a directory as the body file denies'
+  # The -f test has its own message: a FIFO or directory that a bare read
+  # would also refuse must still be named as not a readable regular file.
+  _gp_test_reason_has "gh pr create -t t --body-file ${_gp_dir}/fifo.md" \
+    'fifo.md is not readable' 'a FIFO body file as not a regular file'
+  _gp_test_reason_has "gh pr create -t t --body-file ${_gp_dir}/dir.md" \
+    'dir.md is not readable' 'a directory body file as not a regular file'
   # Injected faults: sysread may return short, so the body is read until EOF
   # (a short first read is not the whole body, and the cap still counts every
   # byte); a failed read denies; the sidecar hash is of the bytes scanned.
@@ -553,6 +559,13 @@ function run_gh_publish {
   # shellcheck disable=SC2016  # single-quoted literal fixture text, never expanded by this shell — it travels to jq --arg unmodified
   _gp_test_expect DENY 'G=gh; $G issue create -t t --body inline' \
     'gh publish verb as a variable command word fails closed'
+  # Only the variable-command-word check reaches a heredoc body here: it makes
+  # the body of a quoted heredoc fed to `$G` or `${G}` count as commands, and
+  # no live expansion is left for the dynamic-word backstop to trip on.
+  _gp_test_expect DENY $'$G <<\'EOF\'\ngh issue create -t t --body x\nEOF' \
+    'a quoted heredoc fed to a variable command word is scanned as commands'
+  _gp_test_expect DENY $'${G} <<\'EOF\'\ngh issue create -t t --body x\nEOF' \
+    'a quoted heredoc fed to a braced variable command word is scanned as commands'
 
   # A script FILE (not a -c string) handed to bash/sh/zsh is an accepted gap:
   # must not over-deny.
@@ -585,6 +598,16 @@ function run_gh_publish {
     'inline body before a trailing comment is still denied'
   _gp_test_expect PASS 'echo done # gh issue create --body x' \
     'a gh publish visible only inside a comment is never run, so not denied'
+  # Comment text is dropped before the split, so a substitution inside it is
+  # never a command position; a '#' inside a word is not a comment at all.
+  # shellcheck disable=SC2016  # single-quoted literal fixture text, never expanded by this shell — it travels to jq --arg unmodified
+  _gp_test_expect PASS 'echo done # $(gh issue create -t t --body x)' \
+    'a command substitution inside a comment is never run, so not denied'
+  # shellcheck disable=SC2016  # single-quoted literal fixture text, never expanded by this shell — it travels to jq --arg unmodified
+  _gp_test_expect PASS 'echo done # `gh issue create -t t --body x`' \
+    'a backtick substitution inside a comment is never run, so not denied'
+  _gp_test_expect DENY 'echo a#b; gh issue create -t t --body x' \
+    'a mid-word # does not start a comment that hides the next command'
   # shellcheck disable=SC2016  # single-quoted literal fixture text, never expanded by this shell — it travels to jq --arg unmodified
   _gp_test_expect DENY 'echo ${#x}; gh issue create -t t --body x' \
     '${#x} array-length form is not mistaken for a word-start # comment'

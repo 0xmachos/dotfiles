@@ -25,13 +25,14 @@
 
 function _pii_tree_materialise {
   # $1 = output file, filled with the tracked text files; echoes their count.
+  # $2 = repo root (default: the checkout under test).
   # One grep sorts the text files from the rest, and zsh reads each one with
   # $(<file): no per-file spawn.
-  local out="$1" tpath
+  local out="$1" root="${2:-${SCRIPT_DIR}}" tpath
   local -a tracked candidates texts
   local -i n=0
   # shellcheck disable=SC2296,SC2206  # zsh (0) flag: split on NUL
-  tracked=( ${(0)"$(/usr/bin/git -C "${SCRIPT_DIR}" ls-files -z)"} )
+  tracked=( ${(0)"$(/usr/bin/git -C "${root}" ls-files -z)"} )
   for tpath in "${tracked[@]}"; do
     [[ -f "${tpath}" && ! -L "${tpath}" ]] && candidates+=("${tpath}")
   done
@@ -50,8 +51,46 @@ function _pii_tree_materialise {
   print -r -- "${n}"
 }
 
+function _pii_tree_oracle {
+  # Pins the materialiser against a fixture repo whose text files are known:
+  # three tracked text files (one in a subdirectory, one with a space in its
+  # name) must come out, and a symlink, a NUL-bearing file and an empty file
+  # must not. The count and the `file <path>` markers are checked against that
+  # fixed list, not against the materialiser's own tracked-file walk.
+  local fx out n marker want=3
+  fx="$(mktemp -d "${TMPDIR:-/tmp}/pii-tree-fx.XXXXXX")"
+  out="${fx}.out"
+  /usr/bin/git init -q "${fx}"
+  mkdir -p "${fx}/sub"
+  print 'alpha' > "${fx}/a.txt"
+  print 'beta' > "${fx}/sub/b.txt"
+  print 'gamma' > "${fx}/c d.txt"
+  ln -s a.txt "${fx}/link.txt"
+  printf 'bin\0ary\n' > "${fx}/blob.bin"
+  : > "${fx}/empty.txt"
+  /usr/bin/git -C "${fx}" add -A
+  n="$(cd "${fx}" && _pii_tree_materialise "${out}" "${fx}")" || n=""
+  if [[ "${n}" == "${want}" ]]; then
+    _pass "pii-tree materialiser: a fixture repo yields exactly its ${want} text files"
+  else
+    _fail "pii-tree materialiser: fixture count '${n}', expected ${want}"
+  fi
+  local missing=""
+  for marker in "file a.txt" "file sub/b.txt" "file c d.txt"; do
+    [[ -r "${out}" && "$(<"${out}")" == *"${marker}"$'\n'* ]] || missing+=" '${marker}'"
+  done
+  if [[ -z "${missing}" ]] && [[ "$(<"${out}")" != *"link.txt"* && "$(<"${out}")" != *"blob.bin"* && "$(<"${out}")" != *"empty.txt"* ]]; then
+    _pass "pii-tree materialiser: every fixture text file is marked and the symlink, binary and empty file are skipped"
+  else
+    _fail "pii-tree materialiser: fixture output wrong; missing:${missing:- none}"
+  fi
+  /bin/rm -rf "${fx}" "${out}"
+}
+
 function run_pii_tree {
   _section "pii-tree: whole tracked tree against the PII scanner"
+
+  _pii_tree_oracle
 
   local scanner="${SCRIPT_DIR}/.config/git/hooks/pii-scan"
   if [[ ! -x "${scanner}" ]]; then

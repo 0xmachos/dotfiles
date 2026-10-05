@@ -265,6 +265,19 @@ function _sl_usage {
   _sl_expect_has "medium tier: 5h detail in brackets" "$(_sl_plain "$(_sl_line 2)")" \
     "5h 80% (out in 56m, resets in 1h 15m, use 30% fewer tokens)"
 
+  # Compact and tiny tiers: labelled usage, and one number without a 5h
+  # window shown (no resets_at, so thresholds only: 5h from 50%, 7d from 75%)
+  local both='.rate_limits = {five_hour: {used_percentage: 60}, seven_day: {used_percentage: 80}}'
+  _sl_run 50 "$(_sl_json "${both}")"
+  _sl_expect_eq "compact tier: 5h and 7d usage" "$(_sl_plain "${_SL_OUT}")" \
+    "work · Opus · 0K · 5h 60% · 7d 80%"
+  _sl_expect_has "compact tier: usage colours" "${_SL_OUT}" \
+    "${_SL_DIM}5h${RESET} ${YELLOW}60%${RESET} ${_SL_DIM}·${RESET} ${_SL_DIM}7d${RESET} ${RED}80%${RESET}"
+  _sl_run 30 "$(_sl_json "${both}")"
+  _sl_expect_eq "tiny tier: 5h and 7d usage" "$(_sl_plain "${_SL_OUT}")" "0K · 5h 60% · 7d 80%"
+  _sl_run 30 "$(_sl_json '.rate_limits = {five_hour: {used_percentage: 49}, seven_day: {used_percentage: 74}}')"
+  _sl_expect_eq "tiny tier: usage below the thresholds hidden" "${_SL_OUT}" "${GREEN}0K${RESET}"
+
   # Run-out rule: usage share must exceed elapsed share (5h = 18000s)
   _sl_run 140 "$(_sl_json '.rate_limits.five_hour = {used_percentage: 60, resets_at: ($now + 7201)}')"
   _sl_expect_eq "5h 60% at 59.99% elapsed: shown" "$(_sl_plain "$(_sl_line 3)")" \
@@ -418,6 +431,45 @@ function _sl_cwd {
   _sl_cwd_case "${_SL_SB}/work dir" "work dir Opus"
 }
 
+# ── (6b) git segment ───────────────────────────────────────────────────────
+# A repo under the sandbox, no commit needed: a.txt and b.txt are staged,
+# a.txt is edited again after staging (one modified), c.txt is untracked and
+# counts for neither. The segment is cached in /tmp for 5 s, keyed by a
+# checksum of the directory, so the cache file is removed after each run.
+function _sl_git_case {
+  # <label> <cols> <expected plain row 1>
+  local key
+  _sl_run "$2" "$(jq -cn --arg cwd "${_SL_SB}/repo" '{workspace: {current_dir: $cwd},
+    model: {id: "claude-opus-5-5[1m]", display_name: "Opus 5.5 (1M context)"}}')"
+  _sl_expect_eq "$1" "$(_sl_plain "$(_sl_line 1)")" "$3"
+  key="$(printf '%s' "${_SL_SB}/repo" | cksum)" || key=""
+  [[ -n "${key}" ]] && /bin/rm -f "/tmp/claude-statusline-git-${key%% *}"
+}
+
+function _sl_git {
+  mkdir -p "${_SL_SB}/repo"
+  git init -q -b main "${_SL_SB}/repo"
+  printf 'a\n' > "${_SL_SB}/repo/a.txt"
+  printf 'b\n' > "${_SL_SB}/repo/b.txt"
+  git -C "${_SL_SB}/repo" add a.txt b.txt
+  printf 'more\n' >> "${_SL_SB}/repo/a.txt"
+  printf 'c\n' > "${_SL_SB}/repo/c.txt"
+  _sl_git_case "git segment, full tier: branch, staged, modified" 140 "repo Opus · main +2 ~1"
+  _sl_git_case "git segment, medium tier: branch, staged, modified" 80 "repo Opus · main +2 ~1"
+  _sl_git_case "git segment, compact tier: branch only" 50 "repo main · Opus · 0K"
+
+  # Staged only: no ~ part, not ~0
+  git -C "${_SL_SB}/repo" add a.txt
+  _sl_git_case "git segment: staged only" 140 "repo Opus · main +2"
+  # Modified only: an intent-to-add entry counts as modified, not staged
+  git -C "${_SL_SB}/repo" rm -q --cached a.txt b.txt
+  git -C "${_SL_SB}/repo" add -N a.txt
+  _sl_git_case "git segment: modified only" 140 "repo Opus · main ~1"
+  # Clean index: branch alone
+  git -C "${_SL_SB}/repo" rm -q --cached a.txt
+  _sl_git_case "git segment: branch alone" 140 "repo Opus · main"
+}
+
 # ── (7, 8) cost and cache-hit bands ────────────────────────────────────────
 function _sl_cost_case {
   # <usd> <colour> — the sandbox FX rate is 1, so £ equals USD
@@ -466,6 +518,17 @@ function _sl_economics {
   _sl_hit_case 0.575 58 "${RED}"
   _sl_hit_case 0.995 100 "${GREEN}"
   _sl_hit_case 0.005 0 "${RED}"
+
+  # No prompt_cache hit ratio: the share is read tokens over input plus reads
+  # (700 / (300 + 700) = 70%), but only when caching_observed is absent
+  _sl_run 140 "$(_sl_json '.context_window.total_input_tokens = 300
+    | .context_window.current_usage.cache_read_input_tokens = 700')"
+  _sl_expect_has "legacy cache hit from read tokens: 70% yellow" "$(_sl_line 2)" "♻️${YELLOW}70%${RESET}"
+  _sl_run 140 "$(_sl_json '.context_window.total_input_tokens = 300
+    | .context_window.current_usage.cache_read_input_tokens = 700
+    | .prompt_cache = {caching_observed: false}')"
+  _sl_expect_eq "legacy cache hit skipped when caching_observed is present" \
+    "$(_sl_plain "$(_sl_line 2)")" "░░░░░░░░░░ 0K"
 
   # Fractional FX: the product truncates to four decimals before %.2f rounds,
   # so 1.2345 × 0.8141 = 1.0050 shows £1.00, not the £1.01 float maths gives
@@ -548,6 +611,12 @@ function _sl_expired {
     | .effort.level = \"xhigh\"")"
   _sl_expect_eq "expired: Fable price and effort label" "$(_sl_plain "$(_sl_line 2)")" \
     "142K tokens to Fable XHigh is £2.84"
+  _sl_run 140 "$(_sl_json "${_SL_EXPIRED} | .model = {id: \"claude-sonnet-5-5\", display_name: \"Sonnet 5.5\"}")"
+  _sl_expect_eq "expired: Sonnet price" "$(_sl_plain "$(_sl_line 2)")" \
+    "142K tokens to Sonnet Med is £0.57"
+  _sl_run 140 "$(_sl_json "${_SL_EXPIRED} | .model = {id: \"claude-haiku-4-5\", display_name: \"Haiku 4.5\"}")"
+  _sl_expect_eq "expired: Haiku price" "$(_sl_plain "$(_sl_line 2)")" \
+    "142K tokens to Haiku Med is £0.28"
   _sl_run 140 "$(_sl_json "${_SL_EXPIRED} | .model = {id: \"claude-new-9\", display_name: \"New\"}")"
   _sl_expect_eq "expired: unknown model → tokens only" "$(_sl_plain "$(_sl_line 2)")" \
     "142K tokens to New Med"
@@ -1043,6 +1112,7 @@ function run_statusline {
   _sl_countdowns
   _sl_identity
   _sl_cwd
+  _sl_git
   _sl_economics
   _sl_expired
   _sl_cache_alert

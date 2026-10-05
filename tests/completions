@@ -13,6 +13,7 @@
 # This file is sourced, not executed — chmod 644.
 #
 # shellcheck source=tests/lib
+# shellcheck disable=SC2030,SC2031  # fixture git environment stays in subshells
 
 function _completions_array_keys {
   # Parses the static array literal; sourcing bittersweet would invoke main().
@@ -90,6 +91,7 @@ function run_completions {
   _completions_check_parity
   _completions_check_freshness
   _completions_check_large_commit
+  _completions_check_blocked_commit
 }
 
 # Runs the real hook; every executable it dispatches is a fixture and the
@@ -142,6 +144,51 @@ EOF
   else
     rc=$?
     _fail "large staged changes skipped completion enforcement (status ${rc})"
+  fi
+  /bin/rm -rf "${fixture}"
+}
+
+# A failing `./test completions` blocks the commit: the hook exits 1 with the
+# drift banner and the test output, and never reaches the global scan hook.
+function _completions_check_blocked_commit {
+  local fixture out rc=0
+  fixture="$(mktemp -d "${TMPDIR}completion-block.XXXXXX")"
+  out="$(
+    export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+    unset GIT_INDEX_FILE GIT_DIR GIT_WORK_TREE GIT_OBJECT_DIRECTORY GIT_COMMON_DIR
+    cd "${fixture}" || exit 99
+    git init -q
+    git config core.hooksPath /dev/null
+    mkdir -p .completions .config/git/hooks .githooks
+    cat > bittersweet <<'EOF'
+#!/bin/zsh
+print generated > .completions/_bittersweet
+EOF
+    cat > ./test <<'EOF'
+#!/bin/zsh
+print tested >> calls
+print "completion drift detail"
+exit 1
+EOF
+    cat > .config/git/hooks/pre-commit <<'EOF'
+#!/bin/zsh
+print scanned >> calls
+EOF
+    chmod 755 bittersweet test .config/git/hooks/pre-commit
+    print old > .completions/_bittersweet
+    git add bittersweet .completions/_bittersweet
+    cp "${SCRIPT_DIR}/.githooks/pre-commit" .githooks/pre-commit
+    chmod 755 .githooks/pre-commit
+    hook_rc=0
+    /bin/zsh .githooks/pre-commit 2>&1 || hook_rc=$?
+    print -r -- "hook_rc=${hook_rc}"
+    print -r -- "calls=$(<calls)"
+  )" || rc=$?
+  if (( rc == 0 )) && [[ "${out}" == *'commit blocked'* && "${out}" == *'completion drift detail'* \
+        && "${out}" == *'hook_rc=1'* && "${out}" == *'calls=tested' && "${out}" != *scanned* ]]; then
+    _pass "a failing completion test blocks the commit and skips the scan"
+  else
+    _fail "failing completion test did not block the commit (status ${rc}): ${out}"
   fi
   /bin/rm -rf "${fixture}"
 }

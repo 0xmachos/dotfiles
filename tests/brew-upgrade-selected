@@ -62,14 +62,14 @@ FAKE
   chmod 700 "${sb}/step-ok" "${sb}/step-busy" "${sb}/step-fail" "${sb}/step-exit1"
 }
 
-# _bus_run <mode> <jump-pre content | "<absent>"> <outdated stdout> [outdated rc] [formula rc] [upgrade rc]
+# _bus_run <mode> <jump-pre content | "<absent>"> <outdated stdout> [outdated rc] [formula rc] [upgrade rc] [brew path]
 #   mode fn:        brew_upgrade_selected called directly.
 #   mode user:      jump-user's run_brew_upgrade (run_and_log around it).
 #   mode user-nofn: as user, but the function files are unreachable.
 # Sets: bus_rc, bus_calls (argv lines joined by |), bus_err, bus_log.
 function _bus_run {
   local mode="$1" pre="$2" outdated="$3" orc="${4:-0}" frc="${5:-0}" urc="${6:-0}"
-  local sb="${_bus_sb}" script
+  local sb="${_bus_sb}" script brew_path="${7:-${_bus_sb}/brew}"
   bus_rc=0
   : > "${sb}/calls"; : > "${sb}/calls.env"; : > "${sb}/err"; : > "${sb}/Library/Logs/jump.log"
   zf_rm -f "${sb}/dotfiles/.extra/jump-pre"
@@ -91,7 +91,7 @@ function _bus_run {
   /usr/bin/env -i HOME="${sb}" PATH=/usr/bin:/bin TMPDIR="${sb}/tmp/" \
     FAKE_CALLS="${sb}/calls" FAKE_OUTDATED="${outdated}" FAKE_OUTDATED_RC="${orc}" \
     FAKE_FORMULA_RC="${frc}" FAKE_UPGRADE_RC="${urc}" \
-    /bin/zsh -c "${script}" _ "${sb}/brew" "${sb}/jump-user-lib" \
+    /bin/zsh -c "${script}" _ "${brew_path}" "${sb}/jump-user-lib" \
     > "${sb}/out" 2> "${sb}/err" || bus_rc=$?
   bus_calls="${(j:|:)${(f)"$(<"${sb}/calls")"}}"
   bus_err="$(<"${sb}/err")"
@@ -207,6 +207,26 @@ function _bus_test_validation {
   else
     _pass "fn: a non-executable brew path fails"
   fi
+
+  # An unusable brew path is refused by the function's own check: a missing
+  # binary and a present-but-not-executable file both fail with the [FAIL]
+  # line, not with the shell's command-not-found or permission error.
+  local label brew_path
+  printf '#!/bin/sh\nexit 0\n' > "${_bus_sb}/brew-noexec"
+  chmod 600 "${_bus_sb}/brew-noexec"
+  for mode in fn user; do
+    for label in missing non-executable; do
+      brew_path="${_bus_sb}/no-such-brew"
+      [[ "${label}" == non-executable ]] && brew_path="${_bus_sb}/brew-noexec"
+      _bus_run "${mode}" '<absent>' '' 0 0 0 "${brew_path}"
+      _bus_check "${label} brew path is refused before any brew call" fail '' "${mode}"
+      if [[ "${bus_err}${bus_log}" == *'is not executable'* ]]; then
+        _pass "${mode}: ${label} brew path reports 'is not executable'"
+      else
+        _fail "${mode}: ${label} brew path message: err='${bus_err}' log='${bus_log}'"
+      fi
+    done
+  done
 }
 
 function _bus_test_environment {
@@ -369,12 +389,15 @@ function _bus_test_jump_step {
     _pass ".functions/jump_step never calls run_and_log"
   fi
 
-  # A usage error is not a silent success.
-  if /usr/bin/env -i HOME="${_bus_sb}" PATH=/usr/bin:/bin /bin/zsh -c \
-      'source "${HOME}/dotfiles/.functions/jump_step"; jump_step only-a-description' > /dev/null 2>&1; then
-    _fail "jump_step with no command returned 0"
+  # A usage error is not a silent success: status 2, apart from the 1 that
+  # means a failed step, with the usage line on stderr.
+  local usage_rc=0 usage_err
+  usage_err="$(/usr/bin/env -i HOME="${_bus_sb}" PATH=/usr/bin:/bin /bin/zsh -c \
+      'source "${HOME}/dotfiles/.functions/jump_step"; jump_step only-a-description' 2>&1 > /dev/null)" || usage_rc=$?
+  if (( usage_rc == 2 )) && [[ "${usage_err}" == *'usage: jump_step'* ]]; then
+    _pass "jump_step with no command returns 2 with a usage line"
   else
-    _pass "jump_step with no command fails"
+    _fail "jump_step with no command: rc=${usage_rc} err='${usage_err}'"
   fi
 }
 

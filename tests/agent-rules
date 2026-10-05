@@ -13,11 +13,14 @@
 #     as if the rule had no paths:, so a lazy rule silently turns eager)
 #   * each twin skill body equals its rule body
 #   * every name in bittersweet's shared_skills array exists under claude/skills
+#   * the twin list above names every rules/N.md that has a N-conventions skill
+#   * the handlers above, driven over fixture trees, report each fault they guard
 # Line caps and size caps are tests/agents-md's job.
 #
 # One ruby run parses every skill's frontmatter and a second parses every rule's; file reads are in-process.
 #
-# Skips whole when claude/ is absent (gitignored, synced out of band).
+# The fixture cases need no claude/ and run first. The real-tree checks skip
+# whole when claude/ is absent (gitignored, synced out of band).
 #
 # Run: ./test agent-rules
 #
@@ -237,10 +240,140 @@ function _agent_rules_check_shared {
   done
 }
 
+# Names N for which claude/rules/N.md and claude/skills/N-conventions/ both
+# exist under $1, sorted, into _AR_DERIVED.
+function _agent_rules_derive_twins {
+  setopt local_options null_glob
+  local f n
+  _AR_DERIVED=()
+  for f in "$1"/claude/rules/*.md; do
+    n="${f:t:r}"
+    [[ -d "$1/claude/skills/${n}-conventions" ]] && _AR_DERIVED+=("${n}")
+  done
+}
+
+# $1 root, then the listed twins. A pair on disk but not in the list would
+# have its skill body unchecked, so each is a failure, and so is a listed name
+# with no pair on disk.
+function _agent_rules_check_twin_list {
+  local root="$1" n bad=0
+  local -A listed=() derived=()
+  shift
+  for n in "$@"; do
+    listed[${n}]=1
+  done
+  _agent_rules_derive_twins "${root}"
+  for n in "${_AR_DERIVED[@]}"; do
+    derived[${n}]=1
+    if [[ -z "${listed[${n}]:-}" ]]; then
+      _fail "claude/rules/${n}.md has a ${n}-conventions skill but ${n} is not in _AGENT_RULES_TWINS — its body is never compared"
+      bad=1
+    fi
+  done
+  for n in "$@"; do
+    if [[ -z "${derived[${n}]:-}" ]]; then
+      _fail "_AGENT_RULES_TWINS lists '${n}' but claude/rules/${n}.md and claude/skills/${n}-conventions/ are not both present"
+      bad=1
+    fi
+  done
+  (( bad )) || _pass "twin list equals the rule/skill pairs on disk"
+}
+
+# Runs "$@" with SCRIPT_DIR pointing at $1 and sets REPLY to its output. The
+# command substitution is a subshell, so the pass and fail counters the
+# handler moves never reach the suite totals.
+function _agent_rules_run_in {
+  # shellcheck disable=SC2034
+  local SCRIPT_DIR="$1"
+  shift
+  REPLY="$("$@" 2>&1)" || true
+}
+
+# $1 case name, $2 captured output, $3 colour, $4 PASS or FAIL, $5 text. The
+# case passes when the output holds that line.
+function _agent_rules_expect {
+  if [[ "$2" == *"$3$4${RESET}  $5"* ]]; then
+    _pass "fixture: $1"
+  else
+    _fail "fixture: $1: expected a $4 line starting '$5', got: $2"
+  fi
+}
+
+# The twin, shared_skills and twin-list handlers over small fixture trees. Each
+# handler runs in a subshell with its own counters, so only the expectation
+# reaches the suite totals.
+function _agent_rules_fixture_cases {
+  local root t out
+  local -r fence=$'---\n' head=$'---\nk: v\n---\n'
+  root="$(mktemp -d "${TMPDIR}agent-rules-fixture.XXXXXX")"
+  /bin/mkdir -p "${root}"/{none,rule-only,skill-only,same,frontmatter,drift,tail,nolist,shared,extra,dup,ghost}/claude/{rules,skills}
+  /bin/mkdir -p "${root}"/{skill-only,same,frontmatter,drift,tail,extra,dup}/claude/skills/swift-conventions
+  /bin/mkdir -p "${root}"/{extra,dup}/claude/skills/newrule-conventions "${root}/shared/claude/skills/alpha"
+
+  print -rn -- "${head}body"$'\n' > "${root}/rule-only/claude/rules/swift.md"
+  print -rn -- "${head}body"$'\n' > "${root}/skill-only/claude/skills/swift-conventions/SKILL.md"
+  for t in same drift tail; do
+    print -rn -- "${head}body"$'\n' > "${root}/${t}/claude/rules/swift.md"
+  done
+  print -rn -- "${head}body"$'\n' > "${root}/same/claude/skills/swift-conventions/SKILL.md"
+  print -rn -- "${head}other"$'\n' > "${root}/drift/claude/skills/swift-conventions/SKILL.md"
+  print -rn -- "${head}body"$'\n\n' > "${root}/tail/claude/skills/swift-conventions/SKILL.md"
+  print -rn -- "${fence}paths:"$'\n  - "*.swift"\n'"${fence}body"$'\n' > "${root}/frontmatter/claude/rules/swift.md"
+  print -rn -- "${fence}name: swift-conventions"$'\n'"${fence}body"$'\n' > "${root}/frontmatter/claude/skills/swift-conventions/SKILL.md"
+
+  _agent_rules_run_in "${root}/none" _agent_rules_check_twin swift
+  _agent_rules_expect "twin: neither file present fails" "${REPLY}" "${RED}" FAIL \
+    "claude/rules/swift.md and claude/skills/swift-conventions/SKILL.md: one of the pair is missing"
+  _agent_rules_run_in "${root}/rule-only" _agent_rules_check_twin swift
+  _agent_rules_expect "twin: rule without skill fails" "${REPLY}" "${RED}" FAIL \
+    "claude/rules/swift.md and claude/skills/swift-conventions/SKILL.md: one of the pair is missing"
+  _agent_rules_run_in "${root}/skill-only" _agent_rules_check_twin swift
+  _agent_rules_expect "twin: skill without rule fails" "${REPLY}" "${RED}" FAIL \
+    "claude/rules/swift.md and claude/skills/swift-conventions/SKILL.md: one of the pair is missing"
+  _agent_rules_run_in "${root}/same" _agent_rules_check_twin swift
+  _agent_rules_expect "twin: equal bodies pass" "${REPLY}" "${GREEN}" PASS "swift: skill body equals rule body"
+  _agent_rules_run_in "${root}/frontmatter" _agent_rules_check_twin swift
+  _agent_rules_expect "twin: differing frontmatter does not matter" "${REPLY}" "${GREEN}" PASS "swift: skill body equals rule body"
+  _agent_rules_run_in "${root}/drift" _agent_rules_check_twin swift
+  _agent_rules_expect "twin: drifted body fails" "${REPLY}" "${RED}" FAIL \
+    "claude/skills/swift-conventions/SKILL.md body differs from claude/rules/swift.md"
+  _agent_rules_run_in "${root}/tail" _agent_rules_check_twin swift
+  _agent_rules_expect "twin: one extra trailing byte fails" "${REPLY}" "${RED}" FAIL \
+    "claude/skills/swift-conventions/SKILL.md body differs from claude/rules/swift.md"
+
+  print -r -- 'echo nothing to see' > "${root}/nolist/bittersweet"
+  print -r -- '  local -ar shared_skills=(alpha beta)' > "${root}/shared/bittersweet"
+  print -rn -- $'---\nname: alpha\n---\n' > "${root}/shared/claude/skills/alpha/SKILL.md"
+  _agent_rules_run_in "${root}/nolist" _agent_rules_check_shared
+  _agent_rules_expect "shared: no shared_skills array fails" "${REPLY}" "${RED}" FAIL "bittersweet: no shared_skills array found"
+  _agent_rules_run_in "${root}/shared" _agent_rules_check_shared
+  _agent_rules_expect "shared: a listed skill that exists passes" "${REPLY}" "${GREEN}" PASS "shared_skills: alpha exists under claude/skills"
+  _agent_rules_expect "shared: a listed skill that is absent fails" "${REPLY}" "${RED}" FAIL \
+    "bittersweet shared_skills lists 'beta' but claude/skills/beta/SKILL.md is missing"
+
+  # extra: swift and newrule are both paired. dup: the same, but newrule is
+  # in the list. ghost: swift is listed with no pair on disk.
+  print -rn -- "${head}body"$'\n' > "${root}/extra/claude/rules/swift.md"
+  print -rn -- "${head}body"$'\n' > "${root}/extra/claude/rules/newrule.md"
+  print -rn -- "${head}body"$'\n' > "${root}/dup/claude/rules/swift.md"
+  print -rn -- "${head}body"$'\n' > "${root}/dup/claude/rules/newrule.md"
+  _agent_rules_run_in "${root}/extra" _agent_rules_check_twin_list "${root}/extra" swift
+  _agent_rules_expect "twin list: a pair missing from the list fails" "${REPLY}" "${RED}" FAIL \
+    "claude/rules/newrule.md has a newrule-conventions skill but newrule is not in _AGENT_RULES_TWINS"
+  _agent_rules_run_in "${root}/dup" _agent_rules_check_twin_list "${root}/dup" swift newrule
+  _agent_rules_expect "twin list: a complete list passes" "${REPLY}" "${GREEN}" PASS "twin list equals the rule/skill pairs on disk"
+  _agent_rules_run_in "${root}/ghost" _agent_rules_check_twin_list "${root}/ghost" swift
+  _agent_rules_expect "twin list: a listed name with no pair fails" "${REPLY}" "${RED}" FAIL \
+    "_AGENT_RULES_TWINS lists 'swift' but claude/rules/swift.md and claude/skills/swift-conventions/ are not both present"
+  /bin/rm -rf "${root}"
+}
+
 function run_agent_rules {
   # null_glob: an empty skills/ is a no-op, not a glob error.
   setopt local_options null_glob
   _section "Agent rules: skill frontmatter and rule twins"
+
+  _agent_rules_fixture_cases
 
   if [[ ! -d "${SCRIPT_DIR}/claude" ]]; then
     _skip "claude/ absent — pending out-of-band sync"
@@ -252,6 +385,7 @@ function run_agent_rules {
   local -a rules=("${SCRIPT_DIR}"/claude/rules/*.md)
   (( ${#skills[@]} )) && _agent_rules_check_skills "${skills[@]}"
   (( ${#rules[@]} )) && _agent_rules_check_rules "${rules[@]}"
+  _agent_rules_check_twin_list "${SCRIPT_DIR}" "${_AGENT_RULES_TWINS[@]}"
   for n in "${_AGENT_RULES_TWINS[@]}"; do
     _agent_rules_check_twin "${n}"
   done

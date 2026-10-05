@@ -37,6 +37,21 @@ function _muse_exec_expect {
   fi
 }
 
+function _muse_exec_seam {
+  # $1 = command, $2 = stdin text. Sources the hook the way pretool-dispatch
+  # does: HOOK_PRE_* plain variables inside a function, so the hook sees
+  # ":file" in ZSH_EVAL_CONTEXT. Echoes the hook's stdout.
+  /bin/zsh -c '
+    function _drive {
+      HOOK_PRE_DISPATCH=1
+      HOOK_PRE_COMMAND="$1"
+      local guard="$2"
+      set --
+      source "${guard}"
+    }
+    _drive "$@"' _ "$1" "${SCRIPT_DIR}/claude/hooks/muse-exec-hook" <<< "$2"
+}
+
 function run_muse_exec {
   _section "muse exec guard hook"
 
@@ -474,5 +489,23 @@ function run_muse_exec {
     _pass "fail-open: unparseable payload allowed through"
   else
     _fail "fail-open: unparseable payload produced a verdict"
+  fi
+
+  # --- Dispatcher seam: command from HOOK_PRE_COMMAND, DENY line, no JSON --
+
+  local us=$'\x1f' benign deny_payload seam
+  benign='{"tool_name":"Bash","tool_input":{"command":"muse skills list"}}'
+  deny_payload='{"tool_name":"Bash","tool_input":{"command":"timeout 90 muse exec --workspace /w < /dev/null"}}'
+  seam="$(_muse_exec_seam 'timeout 90 muse exec --workspace /w < /dev/null' "${benign}")"
+  if [[ "${seam}" == "DENY${us}"*'muse exec was not run'* && "${seam}" != *hookSpecificOutput* ]]; then
+    _pass "dispatcher seam: a violating HOOK_PRE_COMMAND prints a DENY line"
+  else
+    _fail "dispatcher seam: expected a DENY line, got: ${seam:0:200}"
+  fi
+  seam="$(_muse_exec_seam 'muse skills list' "${deny_payload}")"
+  if [[ -z "${seam}" ]]; then
+    _pass "dispatcher seam: a clean HOOK_PRE_COMMAND passes and stdin is ignored"
+  else
+    _fail "dispatcher seam: expected no output, got: ${seam:0:200}"
   fi
 }

@@ -298,19 +298,26 @@ function _pc_test_usage {
 
   _pc_run --repo 'bad repo!' 'x Fix: y'
   _pc_expect_rc 64 "bad --repo value"
+  _pc_expect_err "invalid repo 'bad repo!'" "bad --repo value names the repo field"
   _pc_run --repo '' 'x Fix: y'
   _pc_expect_rc 64 "empty --repo value"
+  _pc_expect_err "invalid repo ''" "empty --repo value names the repo field"
   _pc_run --repo abcdefghijklmnopqrstuvwxyz0123456 'x Fix: y'
   _pc_expect_rc 64 "33-character --repo value"
+  _pc_expect_err "invalid repo 'abcdefghijklmnopqrstuvwxyz0123456'" "33-character --repo value names the repo field"
   _pc_run --agent 'bad/agent' 'x Fix: y'
   _pc_expect_rc 64 "bad --agent value"
+  _pc_expect_err "invalid agent 'bad/agent'" "bad --agent value names the agent field"
   _pc_run --repo
   _pc_expect_rc 64 "--repo without a value"
+  _pc_expect_err "--repo needs a value" "--repo without a value says so"
   _pc_run --nonsense 'x Fix: y'
   _pc_expect_rc 64 "unknown option"
+  _pc_expect_err "unknown option '--nonsense'" "unknown option is named"
   PC_EXTRA=(PAPERCUT_AGENT='bad agent')
   _pc_run 'x Fix: y'
   _pc_expect_rc 64 "bad PAPERCUT_AGENT value"
+  _pc_expect_err "invalid agent 'bad agent'" "bad PAPERCUT_AGENT value names the agent field"
   _pc_expect_nolog "bad labels"
 
   _pc_append 'seed Fix: x'
@@ -393,7 +400,8 @@ function _pc_test_overrides {
   line="$(_pc_last_entry)"
   [[ "$(_pc_field "${line}" 2)" == envbot ]] && _pass "PAPERCUT_AGENT beats CLAUDECODE" || _fail "precedence wrong: ${line}"
 
-  _pc_run 'f Fix: g'
+  # CLAUDECODE is exported to the run, so only the helper's unset keeps it out.
+  CLAUDECODE=1 _pc_run 'f Fix: g'
   line="$(_pc_last_entry)"
   [[ "$(_pc_field "${line}" 2)" == shell ]] && _pass "no hints gives agent shell" || _fail "default agent wrong: ${line}"
 }

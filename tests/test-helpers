@@ -26,6 +26,30 @@ function run_test_helpers {
     fi
   done
 
+  # _json_str output must decode with jq back to the exact input: one string
+  # takes the pure zsh escapes, the others carry a control character that only
+  # the jq fallback escapes.
+  local -a json_inputs=(
+    $'back\\slash "quote" new\nline\ttab'
+    $'a\rb'
+    $'a\x01b'
+    $'back\\slash "quote" new\nline\ttab cr\r ctl\x01 end'
+  )
+  local -a json_labels=(
+    'backslash, quote, newline and tab'
+    'carriage return'
+    '0x01 byte'
+    'all of them together'
+  )
+  for (( i=1; i<=${#json_inputs}; i++ )); do
+    _json_str "${json_inputs[i]}"
+    if jq -e --arg s "${json_inputs[i]}" '. == $s' >/dev/null 2>&1 <<< "${REPLY}"; then
+      _pass "_json_str round-trips through jq: ${json_labels[i]}"
+    else
+      _fail "_json_str round-trip: ${json_labels[i]} — got ${REPLY}"
+    fi
+  done
+
   # Exercise the actual expectation functions with an allow mutant. The
   # counters are isolated, so the expected assertion failure does not leak.
   local suite runner assertion

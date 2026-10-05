@@ -2,14 +2,17 @@
 # dotfiles/tests/extensions
 #
 # Fails if any file in the repo ends in .sh or .zsh: shell identity belongs in
-# the shebang. Skips .git/ only; poc/ and tests/ ARE scanned.
+# the shebang. Skips .git/ only; poc/ and tests/ ARE scanned. The scan reads
+# the working directory, so the fixture cases run it from a scratch tree.
 #
 # ShellCheck: lint with `shellcheck --shell=bash tests/extensions`.
 # This file is sourced, not executed — chmod 644.
 #
 # shellcheck source=tests/lib
+# SC2296: zsh parameter-expansion flags.
+# shellcheck disable=SC2296
 
-function run_extensions {
+function _extensions_scan {
   _section "Shell script extensions"
 
   # SC2154: fail_count comes from tests/lib.
@@ -35,4 +38,56 @@ function run_extensions {
   if (( fail_count == before_fails )); then
     _pass "No .sh or .zsh files in repo"
   fi
+}
+
+# Runs the scan from a fixture tree and checks which files it reports.
+# $1 label, $2 files to create (one per line, a trailing / makes a directory),
+# $3 reported files, space separated; empty means the scan must pass.
+function _extensions_fixture_case {
+  local label="$1" fixture entry out ok=1 name
+  local -a entries=("${(@f)2}") wants=("${(@s: :)3}") fails
+  fixture="$(mktemp -d "${TMPDIR:-/tmp}/extensions-tree.XXXXXX")"
+  [[ -z "$3" ]] && wants=()
+  for entry in "${entries[@]}"; do
+    if [[ "${entry}" == */ ]]; then
+      mkdir -p "${fixture}/${entry}"
+    else
+      mkdir -p "${fixture}/${entry:h}"
+      : > "${fixture}/${entry}"
+    fi
+  done
+  out="$(cd "${fixture}" && _extensions_scan)" || :
+  # Counts bumped inside the substitution are lost, so only the output counts.
+  if (( ${#wants[@]} == 0 )); then
+    [[ "${out}" == *PASS* && "${out}" != *FAIL* ]] || ok=0
+  else
+    for name in "${wants[@]}"; do
+      [[ "${out}" == *"Shell script with extension: ${name}"* ]] || ok=0
+    done
+    [[ "${out}" != *PASS* ]] || ok=0
+    # Exactly the wanted files: one FAIL line each.
+    fails=("${(@M)${(@f)out}:#*FAIL*}")
+    (( ${#fails[@]} == ${#wants[@]} )) || ok=0
+  fi
+  if (( ok )); then
+    _pass "extensions scan: ${label}"
+  else
+    _fail "extensions scan: ${label}: ${out}"
+  fi
+  /bin/rm -rf "${fixture}"
+}
+
+function _extensions_test_fixtures {
+  _extensions_fixture_case "a .sh file is reported" $'tool.sh' 'tool.sh'
+  _extensions_fixture_case "a .zsh file is reported" $'tool.zsh' 'tool.zsh'
+  _extensions_fixture_case "nested .sh and .zsh files are reported" $'a/b/one.sh\nc/two.zsh' 'a/b/one.sh c/two.zsh'
+  _extensions_fixture_case "extensionless files and other extensions pass" $'bin/tool\nnotes.md\nx.shx\ny.zsh.txt' ''
+  _extensions_fixture_case ".git is skipped" $'.git/hooks/sample.sh\n.git/zz.zsh\nbin/tool' ''
+  _extensions_fixture_case "a directory named like a script is not a file" $'dir.sh/\nbin/tool' ''
+  _extensions_fixture_case "a hidden .sh file is reported" $'.hidden.sh' '.hidden.sh'
+}
+
+function run_extensions {
+  _extensions_scan
+  _extensions_test_fixtures
 }

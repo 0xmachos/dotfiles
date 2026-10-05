@@ -32,6 +32,22 @@ function _container_tmp_expect {
   fi
 }
 
+function _container_tmp_seam {
+  # $1 = command, $2 = cwd, $3 = stdin text. Sources the guard the way
+  # pretool-dispatch does: HOOK_PRE_* plain variables inside a function, so the
+  # guard sees ":file" in ZSH_EVAL_CONTEXT. Echoes the guard's stdout.
+  /bin/zsh -c '
+    function _drive {
+      HOOK_PRE_DISPATCH=1
+      HOOK_PRE_COMMAND="$1"
+      HOOK_PRE_CWD="$2"
+      local guard="$3"
+      set --
+      source "${guard}"
+    }
+    _drive "$@"' _ "$1" "$2" "${SCRIPT_DIR}/claude/hooks/container-tmp-hook" <<< "$3"
+}
+
 function run_container_tmp {
   _section "container tmp-path hook"
 
@@ -83,5 +99,30 @@ function run_container_tmp {
     _pass "deny reason names \$HOME fix"
   else
     _fail "deny reason does not mention \$HOME"
+  fi
+
+  # Dispatcher seam: the command and cwd come from HOOK_PRE_COMMAND and
+  # HOOK_PRE_CWD (stdin carries a different payload and is not read), and a
+  # deny is the bare line DENY<US>reason, not JSON.
+  local us=$'\x1f' benign deny_payload seam
+  benign="$(jq -n '{tool_name:"Bash", tool_input:{command:"container ls"}, cwd:"/work"}')"
+  deny_payload="$(jq -n '{tool_name:"Bash", tool_input:{command:"container build /tmp/ctx"}, cwd:"/work"}')"
+  seam="$(_container_tmp_seam 'container build -t x /tmp/ctx' /work "${benign}")"
+  if [[ "${seam}" == "DENY${us}"*'is under a tmp dir'* && "${seam}" != *hookSpecificOutput* ]]; then
+    _pass "dispatcher seam: tmp build context prints a DENY line from HOOK_PRE_COMMAND"
+  else
+    _fail "dispatcher seam: expected a DENY line, got: ${seam:0:200}"
+  fi
+  seam="$(_container_tmp_seam 'container build -t x .' /private/tmp/s "${benign}")"
+  if [[ "${seam}" == "DENY${us}"*'is under a tmp dir'* ]]; then
+    _pass "dispatcher seam: implicit context resolves against HOOK_PRE_CWD"
+  else
+    _fail "dispatcher seam: tmp cwd was not denied, got: ${seam:0:200}"
+  fi
+  seam="$(_container_tmp_seam 'container ls' /work "${deny_payload}")"
+  if [[ -z "${seam}" ]]; then
+    _pass "dispatcher seam: a clean HOOK_PRE_COMMAND passes and stdin is ignored"
+  else
+    _fail "dispatcher seam: expected no output, got: ${seam:0:200}"
   fi
 }

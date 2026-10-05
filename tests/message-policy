@@ -293,6 +293,8 @@ exit 1' > "${sb}/gh-broken"
   # --- commit-msg fast feedback ---
   _mp_commitmsg_expect DENY 'Ledger-Event trailer' "${repo}" public $'Add x\n\nLedger-Event: true' staged
   _mp_commitmsg_expect PASS 'Ledger-Event trailer, private repo' "${repo}" private $'Add x\n\nLedger-Event: true' staged
+  _mp_commitmsg_expect DENY 'Claude-Session trailer' "${repo}" public $'Add x\n\nClaude-Session: https://example.invalid/session_x' staged
+  _mp_commitmsg_expect PASS 'Claude-Session trailer, private repo' "${repo}" private $'Add x\n\nClaude-Session: https://example.invalid/session_x' staged
   _mp_commitmsg_expect DENY '130-word body' "${repo}" public $'Add x\n\n'"${long_body}" staged
   _mp_commitmsg_expect PASS '130-word body with hooks.maxBodyWords=200' "${repo}" public $'Add x\n\n'"${long_body}" staged \
       GIT_CONFIG_PARAMETERS="'hooks.maxBodyWords=200'"

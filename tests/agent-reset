@@ -557,5 +557,28 @@ EOF
     _fail "restore failed (rc=${rc})"
   fi
 
+  # 10. The delete guard refuses a path that IS an allowed root (a wipe never
+  #     targets one, so the module is loaded and the guard called directly),
+  #     but accepts the agents dir whole and anything below a root.
+  if env AGENT_RESET_HOME="${fix}" PYTHONDONTWRITEBYTECODE=1 python3 - <<'EOF' > /dev/null 2>&1
+import importlib.machinery, importlib.util
+loader = importlib.machinery.SourceFileLoader("agent_reset", "./bin/agent-reset")
+spec = importlib.util.spec_from_loader("agent_reset", loader)
+m = importlib.util.module_from_spec(spec)
+loader.exec_module(m)
+assert not m._under_allowed_roots(m.CLAUDE_DIR)
+assert not m._under_allowed_roots(m.CODEX_DIR)
+assert not m._under_allowed_roots(m.DEV_DIR)
+assert m._under_allowed_roots(m.AGENTS_DIR)
+assert m._under_allowed_roots(m.CLAUDE_DIR / "projects")
+assert m._under_allowed_roots(m.DEV_DIR / "fixrepo" / "CLAUDE.md")
+assert not m._under_allowed_roots(m.HOME / "Desktop" / "x")
+EOF
+  then
+    _pass "delete guard refuses an allowed root itself, accepts agents dir and paths below a root"
+  else
+    _fail "delete guard root handling wrong"
+  fi
+
   rm -rf "${fix}"
 }

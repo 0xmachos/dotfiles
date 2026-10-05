@@ -21,6 +21,12 @@ function _md5_guard_run {
     | /bin/zsh "${SCRIPT_DIR}/claude/hooks/md5-guard-hook"
 }
 
+function _md5_guard_run_skip {
+  # Same as _md5_guard_run, with MD5_GUARD_SKIP=$1 in the hook's environment.
+  jq -n --arg c "$2" '{tool_name:"Bash", tool_input:{command:$c}}' \
+    | env MD5_GUARD_SKIP="$1" /bin/zsh "${SCRIPT_DIR}/claude/hooks/md5-guard-hook"
+}
+
 function _md5_guard_run_file {
   # The 1MB fixtures exceed ARG_MAX, so they go through a file, not argv.
   jq -Rs '{tool_name:"Bash", tool_input:{command:.}}' < "$1" \
@@ -162,6 +168,22 @@ function run_md5_guard {
   # environment, so the prefix is read from the command string).
   _md5_guard_expect PASS 'MD5_GUARD_SKIP=1 md5 f' 'MD5_GUARD_SKIP=1 override'
 
+  # Bypass exported in the hook's own environment (session-wide): any
+  # non-empty value exempts; an empty export exempts nothing.
+  local skip_out
+  skip_out="$(_md5_guard_run_skip 1 'md5 f')"
+  if [[ "$(_hook_verdict "${skip_out}")" == PASS ]]; then
+    _pass "PASS: exported MD5_GUARD_SKIP=1 exempts the command"
+  else
+    _fail "exported MD5_GUARD_SKIP=1 did not exempt the command"
+  fi
+  skip_out="$(_md5_guard_run_skip '' 'md5 f')"
+  if [[ "$(_hook_verdict "${skip_out}")" == DENY ]]; then
+    _pass "DENY: exported empty MD5_GUARD_SKIP exempts nothing"
+  else
+    _fail "exported empty MD5_GUARD_SKIP exempted the command"
+  fi
+
   # The deny reason names the replacement and the bypass.
   local reason
   reason="$(_md5_guard_run 'md5 f')"
@@ -201,6 +223,13 @@ EOF"
   _md5_guard_pad 70000; pad="${REPLY}"
   printf '%s\n' "echo ${pad} && md5 f" > "${fixture_dir}/longline"
   _md5_guard_expect_file PASS "${fixture_dir}/longline" 'single line over 64KB (fail-open)'
+
+  # Lines without md5 are skipped before they spend the 256KB tokeniser budget;
+  # without that skip, five 60KB filler lines exhaust it and the md5 line after
+  # them fails open.
+  _md5_guard_pad 60000; pad="${REPLY}"
+  printf '%s\n' "${pad}" "${pad}" "${pad}" "${pad}" "${pad}" "${md5word} f" > "${fixture_dir}/filler"
+  _md5_guard_expect_file DENY "${fixture_dir}/filler" 'md5 line after 300KB of md5-free lines is still scanned'
 
   /bin/rm -rf "${fixture_dir}"
 

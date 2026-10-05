@@ -20,6 +20,13 @@ function _sudo_askpass_run {
     | SUDO_ASKPASS_HOSTS="box-claude other-claude" /bin/zsh "${SCRIPT_DIR}/claude/hooks/sudo-askpass-hook"
 }
 
+# Same payload with SUDO_ASKPASS_HOSTS removed from the hook's environment.
+function _sudo_askpass_run_default {
+  _json_str "$1"
+  print -r -- "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":${REPLY}}}" \
+    | /usr/bin/env -u SUDO_ASKPASS_HOSTS /bin/zsh "${SCRIPT_DIR}/claude/hooks/sudo-askpass-hook"
+}
+
 function _sudo_askpass_expect {
   local want="$1" cmd="$2" label="${3:-$2}" out got
   out="$(_sudo_askpass_run "${cmd}")"
@@ -64,6 +71,33 @@ function run_sudo_askpass {
     _sudo_askpass_expect PASS "echo box-claude; sudo -n id" 'the host name without ssh'
     _sudo_askpass_expect PASS "ssh box-claude 'sudo -u nobody id'" 'sudo -u with an operand'
   }
+
+  # With SUDO_ASKPASS_HOSTS unset the hook falls back to its built-in host
+  # list. The first default host is read from the hook source, so this file
+  # names no real host.
+  local hook_src dhost out_def got_def
+  hook_src="$(<"${SCRIPT_DIR}/claude/hooks/sudo-askpass-hook")"
+  dhost="${hook_src#*SUDO_ASKPASS_HOSTS:-}"
+  dhost="${dhost%%\}*}"
+  dhost="${dhost%% *}"
+  if [[ -z "${dhost}" || "${dhost}" == "${hook_src}" ]]; then
+    _fail "default host list — no SUDO_ASKPASS_HOSTS default found in the hook"
+    dhost=unparsed-host
+  fi
+  out_def="$(_sudo_askpass_run_default "ssh ${dhost} 'sudo -n id'")" || out_def=""
+  got_def="$(_hook_verdict "${out_def}")"
+  if [[ "${got_def}" == DENY && "${out_def}" == *"(${dhost})"* ]]; then
+    _pass "DENY: default host list covers ${dhost} when SUDO_ASKPASS_HOSTS is unset"
+  else
+    _fail "default host list — expected DENY naming ${dhost}, got ${got_def}"
+  fi
+  out_def="$(_sudo_askpass_run_default "ssh box-claude 'sudo -n id'")" || out_def=""
+  got_def="$(_hook_verdict "${out_def}")"
+  if [[ "${got_def}" == PASS ]]; then
+    _pass "PASS: default host list does not cover other hosts"
+  else
+    _fail "default host list, other host — expected PASS, got ${got_def}"
+  fi
 
   # Fail-open on malformed input.
   local out

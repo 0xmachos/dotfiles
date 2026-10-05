@@ -446,6 +446,11 @@ fatal: failed to write commit object'
     'signing refusal -> fallback context'
   _gs_expect PASS PostToolUseFailure 'git commit -m x' "${repo}" 'error: pathspec did not match' \
     'unrelated commit failure is left alone'
+  # The other signer refusal wordings reach the same fallback.
+  _gs_expect CONTEXT PostToolUseFailure 'git commit -m x' "${repo}" 'error: Agent admitted failure to sign using the key' \
+    "'Agent admitted failure to sign' -> fallback context"
+  _gs_expect CONTEXT PostToolUseFailure 'git commit -m x' "${repo}" 'error: gpg failed to sign the data' \
+    "'gpg failed to sign the data' -> fallback context"
   # The hook's raw `*git*` probe on the JSON cannot see a \u escape that
   # spells one of those letters; such a payload must still be parsed.
   out="$(printf '%s' '{"hook_event_name":"PostToolUseFailure","tool_name":"Bash","cwd":"'"${repo}"'","tool_input":{"command":"\u0067it commit -m x","description":"t"},"error":"agent refused operation"}' \

@@ -225,15 +225,12 @@ function _agents_check_review_section {
   fi
 }
 
-function run_agents_md {
-  _section "Agent guidance: AGENTS.md / CLAUDE.md single-source"
-
+function _agents_check_repo_scope {
   local repo_agents="${SCRIPT_DIR}/AGENTS.md"
   local repo_claude="${SCRIPT_DIR}/CLAUDE.md"
-  local global_src="${SCRIPT_DIR}/claude/global-claude.md"
 
-  # 1. Repo scope. CLAUDE.md is gitignored by the *claude* rule, AGENTS.md by
-  #    .extra_gitexclude; neither present means pending sync, not damage.
+  # CLAUDE.md is gitignored by the *claude* rule, AGENTS.md by .extra_gitexclude;
+  # neither present means pending sync, not damage.
   if [[ ! -e "${repo_agents}" && ! -L "${repo_claude}" && ! -e "${repo_claude}" ]]; then
     _skip "repo: neither AGENTS.md nor CLAUDE.md present — clone pending out-of-band sync"
   else
@@ -267,9 +264,13 @@ function run_agents_md {
       fi
     fi
   fi
+}
 
-  # 2. Global source file. -f follows symlinks, so test -L separately: an
-  #    inverted source is otherwise missed wherever section 4 skips.
+function _agents_check_global_source {
+  local global_src="${SCRIPT_DIR}/claude/global-claude.md"
+
+  # -f follows symlinks, so test -L separately: an inverted source is otherwise
+  # missed wherever the live check skips.
   if [[ -L "${global_src}" ]]; then
     _fail "global: claude/global-claude.md is itself a symlink — the direction is inverted; it must be the real file both ~/.claude/CLAUDE.md and ~/.codex/AGENTS.md point at"
   elif [[ ! -f "${global_src}" ]]; then
@@ -278,6 +279,102 @@ function run_agents_md {
     _agents_check_cap "global-claude.md" "${global_src}"
     _agents_check_tail "global-claude.md" "${global_src}" '^## Machine notes'
   fi
+}
+
+# Runs "$@" with SCRIPT_DIR pointing at $1 and sets REPLY to its output. The
+# command substitution is a subshell, so the pass and fail counters the
+# handler moves never reach the suite totals.
+function _agents_run_in {
+  # shellcheck disable=SC2034
+  local SCRIPT_DIR="$1"
+  shift
+  REPLY="$("$@" 2>&1)" || true
+}
+
+# $1 case name, $2 captured output, $3 colour, $4 PASS, FAIL or SKIP, $5 text.
+# The case passes when the output holds that line.
+function _agents_expect {
+  if [[ "$2" == *"$3$4${RESET}  $5"* ]]; then
+    _pass "fixture: $1"
+  else
+    _fail "fixture: $1: expected a $4 line starting '$5', got: $2"
+  fi
+}
+
+# The repo-scope and global-source handlers over small fixture trees. Each
+# handler runs in a subshell with its own counters, so only the expectation
+# reaches the suite totals.
+function _agents_fixture_cases {
+  local root
+  local -r tail=$'## Code Review Rules\nSee REVIEW.md.\n## Before you stop\n'
+  root="$(mktemp -d "${TMPDIR}agents-md-fixture.XXXXXX")"
+  /bin/mkdir -p "${root}"/{empty,good,copy,missing,other,dangling,inverted,noagents}/claude "${root}"/{gsym,gabsent,gok}/claude
+
+  print -rn -- "${tail}" > "${root}/good/AGENTS.md"
+  ln -s AGENTS.md "${root}/good/CLAUDE.md"
+
+  print -rn -- "${tail}" > "${root}/copy/AGENTS.md"
+  print -rn -- "${tail}" > "${root}/copy/CLAUDE.md"
+
+  print -rn -- "${tail}" > "${root}/missing/AGENTS.md"
+
+  print -rn -- "${tail}" > "${root}/other/AGENTS.md"
+  print -rn -- "${tail}" > "${root}/other/NOTES.md"
+  ln -s NOTES.md "${root}/other/CLAUDE.md"
+
+  ln -s AGENTS.md "${root}/dangling/CLAUDE.md"
+
+  print -rn -- "${tail}" > "${root}/inverted/CLAUDE.md"
+  ln -s CLAUDE.md "${root}/inverted/AGENTS.md"
+
+  print -rn -- "${tail}" > "${root}/noagents/CLAUDE.md"
+
+  _agents_run_in "${root}/empty" _agents_check_repo_scope
+  _agents_expect "repo: neither file present skips" "${REPLY}" "${YELLOW}" SKIP "repo: neither AGENTS.md nor CLAUDE.md present"
+  _agents_run_in "${root}/good" _agents_check_repo_scope
+  _agents_expect "repo: CLAUDE.md -> AGENTS.md passes" "${REPLY}" "${GREEN}" PASS "repo: CLAUDE.md -> AGENTS.md, resolving"
+  if [[ "${REPLY}" == *FAIL* ]]; then
+    _fail "fixture: repo: a correct pair reports no failure: ${REPLY}"
+  else
+    _pass "fixture: repo: a correct pair reports no failure"
+  fi
+  _agents_run_in "${root}/copy" _agents_check_repo_scope
+  _agents_expect "repo: CLAUDE.md as a regular file fails" "${REPLY}" "${RED}" FAIL "repo: CLAUDE.md is a regular file, not a symlink"
+  _agents_run_in "${root}/missing" _agents_check_repo_scope
+  _agents_expect "repo: CLAUDE.md missing fails" "${REPLY}" "${RED}" FAIL "repo: CLAUDE.md missing"
+  _agents_run_in "${root}/other" _agents_check_repo_scope
+  _agents_expect "repo: CLAUDE.md pointing elsewhere fails" "${REPLY}" "${RED}" FAIL "repo: CLAUDE.md points at 'NOTES.md', expected the relative target 'AGENTS.md'"
+  _agents_run_in "${root}/dangling" _agents_check_repo_scope
+  _agents_expect "repo: CLAUDE.md link to an absent AGENTS.md fails" "${REPLY}" "${RED}" FAIL "repo: AGENTS.md missing"
+  _agents_expect "repo: dangling CLAUDE.md fails" "${REPLY}" "${RED}" FAIL "repo: CLAUDE.md is a dangling symlink to 'AGENTS.md'"
+  _agents_run_in "${root}/inverted" _agents_check_repo_scope
+  _agents_expect "repo: AGENTS.md as a symlink fails" "${REPLY}" "${RED}" FAIL "repo: AGENTS.md is a symlink"
+  _agents_run_in "${root}/noagents" _agents_check_repo_scope
+  _agents_expect "repo: AGENTS.md missing fails" "${REPLY}" "${RED}" FAIL "repo: AGENTS.md missing"
+
+  ln -s elsewhere.md "${root}/gsym/claude/global-claude.md"
+  print -rn -- $'## Machine notes\n' > "${root}/gok/claude/global-claude.md"
+  _agents_run_in "${root}/gsym" _agents_check_global_source
+  _agents_expect "global: a symlinked source fails" "${REPLY}" "${RED}" FAIL "global: claude/global-claude.md is itself a symlink"
+  _agents_run_in "${root}/gabsent" _agents_check_global_source
+  _agents_expect "global: an absent source skips" "${REPLY}" "${YELLOW}" SKIP "global: claude/global-claude.md absent"
+  _agents_run_in "${root}/gok" _agents_check_global_source
+  _agents_expect "global: a regular source with its tail passes" "${REPLY}" "${GREEN}" PASS "global-claude.md: tail intact"
+  /bin/rm -rf "${root}"
+}
+
+function run_agents_md {
+  _section "Agent guidance: AGENTS.md / CLAUDE.md single-source"
+
+  local global_src="${SCRIPT_DIR}/claude/global-claude.md"
+
+  _agents_fixture_cases
+
+  # 1. Repo scope.
+  _agents_check_repo_scope
+
+  # 2. Global source file.
+  _agents_check_global_source
 
   # 3. Deploy-code parity (hermetic): catches a bittersweet regression where
   #    this repo is not the live deployment.

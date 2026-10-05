@@ -30,21 +30,55 @@ function _rm_redirect_run {
 
 function _rm_redirect_expect {
   # Optional $4/$5: a fragment the hook output must contain and the label for
-  # that second check, made on the same hook run.
-  local want="$1" cmd="$2" label="${3:-$2}" frag="${4:-}" fraglabel="${5:-}" out got
-  out="$(_rm_redirect_run "${cmd}")"
-  got="$(_hook_verdict "${out}")"
+  # that second check, made on the same hook run. Optional $6: how many runs to
+  # allow before a wrong verdict counts (default 1; the hook's 0.3 s deadline
+  # fails open under load, so a near-cap DENY gets retries).
+  local want="$1" cmd="$2" label="${3:-$2}" frag="${4:-}" fraglabel="${5:-}" tries="${6:-1}" out got
+  local -i rc t
+  for (( t = 1; t <= tries; t++ )); do
+    rc=0
+    out="$(_rm_redirect_run "${cmd}")" || rc=$?
+    got="$(_hook_verdict "${out}")" || got=INVALID
+    [[ "${got}" == "${want}" ]] && break
+  done
   if [[ "${got}" == "${want}" ]]; then
     _pass "${want}: ${label}"
   else
     _fail "${label} — expected ${want}, got ${got}"
   fi
+  # The hook exits 0 for every verdict; a nonzero status is recorded, not fatal.
+  (( rc == 0 )) || _fail "${label} — hook exited ${rc}"
   [[ -n "${frag}" ]] || return 0
   if [[ "${out}" == *"${frag}"* ]]; then
     _pass "${fraglabel}"
   else
     _fail "${fraglabel} — output lacks: ${frag}"
   fi
+}
+
+function _rm_redirect_lines_command {
+  # REPLY = a command of $1 lines: `\rm x` first, then one-character lines.
+  local -a rm_redirect_lines=('\rm x')
+  local -i k
+  for (( k = 1; k < $1; k++ )); do rm_redirect_lines+=(a); done
+  # shellcheck disable=SC2296
+  REPLY="${(F)rm_redirect_lines}"
+}
+
+function _rm_redirect_bytes_command {
+  # REPLY = a command of exactly $1 characters: `\rm x` first, then 8000-
+  # character lines (under the per-line cap) cut to length. The last character
+  # is not a newline, which `$(...)` would strip.
+  # shellcheck disable=SC2034
+  local rm_redirect_none='' rm_redirect_filler
+  # shellcheck disable=SC2296
+  rm_redirect_filler="${(l:8000::a:)rm_redirect_none}"
+  local -a rm_redirect_lines=('\rm x')
+  local -i k
+  for (( k = 1; k <= 66; k++ )); do rm_redirect_lines+=("${rm_redirect_filler}"); done
+  # shellcheck disable=SC2296
+  local rm_redirect_all="${(F)rm_redirect_lines}"
+  REPLY="${rm_redirect_all[1,$1-1]}a"
 }
 
 function run_rm_redirect {
@@ -169,20 +203,36 @@ function run_rm_redirect {
   rm_redirect_oversized_probe="echo \"${(l:72000::w:)rm_redirect_empty}\""$'\n''\rm x'
   _rm_redirect_expect DENY "${rm_redirect_oversized_probe}" 'an oversized quoted line must not shadow a later short DENY'
 
-  # The byte budget counts MATCHING lines only (2026-09-25): many non-matching
-  # lines ahead of a short real match must not exhaust it. The filler word
-  # holds no "rm", "unlink", "shred", "find" or "clean" substring.
+  # The byte budget counts MATCHING lines only (2026-09-25): non-matching lines
+  # ahead of a short real match must not exhaust it. The filler word holds no
+  # "rm", "unlink", "shred", "find" or "clean" substring. 34 lines of 8005
+  # characters (under RM_LINE_CAP) total 272170, past the 262144 budget, in few
+  # enough lines to finish well inside the hook's 0.3 s deadline.
   # shellcheck disable=SC2034
   local -a rm_redirect_budget_lines
   local -i rm_redirect_bi
-  for (( rm_redirect_bi = 1; rm_redirect_bi <= 1500; rm_redirect_bi++ )); do
+  for (( rm_redirect_bi = 1; rm_redirect_bi <= 34; rm_redirect_bi++ )); do
     # shellcheck disable=SC2296
-    rm_redirect_budget_lines+=("echo ${(l:195::z:)rm_redirect_empty}")
+    rm_redirect_budget_lines+=("echo ${(l:8000::z:)rm_redirect_empty}")
   done
   local rm_redirect_budget_probe
   # shellcheck disable=SC2296
   rm_redirect_budget_probe="${(F)rm_redirect_budget_lines}"$'\n''\rm x'
-  _rm_redirect_expect DENY "${rm_redirect_budget_probe}" 'many non-matching lines ahead of a match must not exhaust the budget'
+  _rm_redirect_expect DENY "${rm_redirect_budget_probe}" 'non-matching lines ahead of a match must not exhaust the budget'
+
+  # Fail-open size caps (hook header, "Fail-open by convention"): 4000 raw
+  # lines and 524288 characters. At the cap the command is scanned and DENIEs;
+  # one past it PASSes without a scan. The just-under cases get 3 runs, since
+  # the 0.3 s deadline also fails open under load. The 700-call tokeniser cap
+  # has no case: the deadline always fires first when zsh/datetime loads.
+  _rm_redirect_lines_command 4000
+  _rm_redirect_expect DENY "${REPLY}" '4000 lines, at the line cap, still scanned' '' '' 3
+  _rm_redirect_lines_command 4001
+  _rm_redirect_expect PASS "${REPLY}" '4001 lines, past the line cap, fails open'
+  _rm_redirect_bytes_command 524288
+  _rm_redirect_expect DENY "${REPLY}" '524288 characters, at the byte cap, still scanned' '' '' 3
+  _rm_redirect_bytes_command 524289
+  _rm_redirect_expect PASS "${REPLY}" '524289 characters, past the byte cap, fails open'
 
   # TWO heredoc introducers on a line (2026-09-25) run the per-heredoc block
   # of _rm_redirect_scan_heredocs (`hdch`, `hconsumer_raw`) twice; a
@@ -331,7 +381,7 @@ function run_rm_redirect {
   for shape in '\rm foo' 'RM foo' 'xargs rm' 'command rm foo' 'find . -delete' \
                'find . -exec rm {} +' 'fd -X rm' 'fd --exec rm' 'git clean -fdx' \
                $'bash <<EOF\nrm x\nEOF' 'nocorrect \rm foo' 'env rm foo'; do
-    reason="$(_rm_redirect_run "${shape}" | jq -r '.hookSpecificOutput.permissionDecisionReason // empty')"
+    reason="$(_rm_redirect_run "${shape}" | jq -r '.hookSpecificOutput.permissionDecisionReason // empty')" || reason=''
     if [[ -n "${reason}" && "${reason}" != *$'\n'* && ${#reason} -le 120 \
           && "${reason}" == *': '* && "${reason}" == *. ]]; then
       _pass "deny text is one short line (${#reason} chars): ${shape//$'\n'/<NL>}"

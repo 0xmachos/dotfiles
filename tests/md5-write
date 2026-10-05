@@ -31,6 +31,20 @@ function _md5_write_run_edit {
     | /bin/zsh "${SCRIPT_DIR}/claude/hooks/md5-write-hook"
 }
 
+function _md5_write_run_notebook {
+  # Same, as a NotebookEdit (notebook_path and new_source).
+  jq -n --arg f "$1" --arg c "$2" \
+    '{tool_name:"NotebookEdit", tool_input:{notebook_path:$f, new_source:$c}}' \
+    | /bin/zsh "${SCRIPT_DIR}/claude/hooks/md5-write-hook"
+}
+
+function _md5_write_run_skip {
+  # Same as _md5_write_run, with MD5_GUARD_SKIP=$1 in the hook's environment.
+  jq -n --arg f "$2" --arg c "$3" \
+    '{tool_name:"Write", tool_input:{file_path:$f, content:$c}}' \
+    | env MD5_GUARD_SKIP="$1" /bin/zsh "${SCRIPT_DIR}/claude/hooks/md5-write-hook"
+}
+
 function _md5_write_expect {
   # NOT `path`: in zsh it is tied to PATH, so `local path=` replaces PATH and
   # every command (jq included) then fails "command not found".
@@ -102,6 +116,7 @@ crypto.createHash("md5")' 'URL on one line, a real call on the next'
   _md5_write_expect PASS /x/a.markdown 'Insecure.MD5 is banned.' 'markdown long extension'
   _md5_write_expect PASS /x/a.txt 'md5sum notes' 'plain text'
   _md5_write_expect PASS /x/NOTES.RST 'CC_MD5 appears here' 'rst, uppercase path'
+  _md5_write_expect PASS /x/a.adoc 'hashlib.md5 is banned.' 'asciidoc'
 
   # Exemption 3: content naming the guard exempts itself (how the hook and this
   # suite avoid blocking themselves). Checked on the ORIGINAL content: the
@@ -114,12 +129,34 @@ h = hashlib.md5(d)' 'content naming the guard, in a comment'
   _md5_write_expect PASS /x/a.py 'p = "md5.txt"' 'filename containing md5'
   _md5_write_expect PASS /x/a.py 'def _md5_guard_split(s): pass' 'function name containing md5'
 
+  # Bypass exported in the hook's own environment (session-wide): any
+  # non-empty value exempts; an empty export exempts nothing.
+  local skip_out
+  skip_out="$(_md5_write_run_skip 1 /x/a.py 'h = hashlib.md5(d)')"
+  if [[ "$(_hook_verdict "${skip_out}")" == PASS ]]; then
+    _pass "PASS: exported MD5_GUARD_SKIP=1 exempts the write"
+  else
+    _fail "exported MD5_GUARD_SKIP=1 did not exempt the write"
+  fi
+  skip_out="$(_md5_write_run_skip '' /x/a.py 'h = hashlib.md5(d)')"
+  if [[ "$(_hook_verdict "${skip_out}")" == DENY ]]; then
+    _pass "DENY: exported empty MD5_GUARD_SKIP exempts nothing"
+  else
+    _fail "exported empty MD5_GUARD_SKIP exempted the write"
+  fi
+
   # Edit payloads carry new_string, not content.
   _md5_write_expect DENY /x/a.py 'h = hashlib.md5(d)' 'Edit payload (new_string) is scanned' _md5_write_run_edit
 
   # Only the new text is scanned, never the file on disk, or the edit that
   # removes existing MD5 would be blocked too.
   _md5_write_expect PASS /x/a.py 'h = hashlib.sha256(d)' 'a clean Edit is not judged by the file on disk' _md5_write_run_edit
+
+  # NotebookEdit payloads carry new_source and notebook_path, not content and
+  # file_path. The path decides the prose exemption, so a prose notebook_path
+  # passes and a code one is denied with its path in the reason.
+  _md5_write_expect DENY /x/a.ipynb 'h = hashlib.md5(d)' 'NotebookEdit payload (new_source) is scanned' _md5_write_run_notebook
+  _md5_write_expect PASS /x/a.md 'h = hashlib.md5(d)' 'NotebookEdit notebook_path is read for the prose exemption' _md5_write_run_notebook
 
   # The deny reason names the fix and the escape hatch, quotes the offending
   # line, and says the write did not happen.
@@ -145,6 +182,13 @@ h = hashlib.md5(d)' 'content naming the guard, in a comment'
     _pass "deny reason names the escape hatch"
   else
     _fail "deny reason does not name the escape hatch"
+  fi
+  out="$(_md5_write_run_notebook /x/a.ipynb 'h = hashlib.md5(d)')"
+  reason="$(printf '%s' "${out}" | jq -er '.hookSpecificOutput.permissionDecisionReason' 2>/dev/null)" || reason=""
+  if [[ "${reason}" == *"into /x/a.ipynb"* ]]; then
+    _pass "NotebookEdit deny reason names the notebook_path"
+  else
+    _fail "NotebookEdit deny reason does not name the notebook_path"
   fi
 
   # A double quote and a backslash in content must not break the JSON.

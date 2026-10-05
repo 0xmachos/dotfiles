@@ -33,7 +33,7 @@ function _hbg_test_expect {
   out="$(_hbg_test_run "${cmd}")"
   got="$(_hook_verdict "${out}")"
   if [[ "${got}" == DENY ]]; then
-    reason="$(jq -r '.hookSpecificOutput.permissionDecisionReason' <<< "${out}")"
+    reason="$(jq -r '.hookSpecificOutput.permissionDecisionReason // empty' <<< "${out}")"
     if [[ "${reason}" == *$'\n'* || ${#reason} -gt 120 || -z "${reason}" ]]; then
       _fail "${label} — deny reason is not one line of at most 120 characters: ${reason}"
       return

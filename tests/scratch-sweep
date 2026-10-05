@@ -270,6 +270,20 @@ function run_scratch_sweep {
   fi
   _sweep_t_expect_gone "${root}/.sweep.lock" "dry run creates no lock"
 
+  # A dry run never takes the lock: it reports even while a live sweep holds
+  # it, and leaves that lock as it found it.
+  _sweep_t_fixture
+  /bin/mkdir -p "${root}/idle" "${root}/.sweep.lock"
+  _sweep_t_age "${root}/idle"
+  print -r -- "$$" > "${root}/.sweep.lock/pid"
+  _sweep_t_run "${root}" --dry-run
+  if (( SWEEP_T_RC == 0 )) && [[ "${SWEEP_T_OUT}" == *"would remove"*idle* && "${SWEEP_T_OUT}" != *"holds the lock"* ]] \
+     && _sweep_t_exists "${root}/idle" && [[ "$(<"${root}/.sweep.lock/pid")" == "$$" ]]; then
+    _pass "a dry run reports while another sweep holds the lock and leaves the lock alone"
+  else
+    _fail "dry run under a held lock: rc=${SWEEP_T_RC} out=${SWEEP_T_OUT}"
+  fi
+
   # --- Lock ------------------------------------------------------------------
   _sweep_t_fixture
   /bin/mkdir -p "${root}/idle"
@@ -442,6 +456,26 @@ function run_scratch_sweep {
   /usr/bin/touch -t 202001010000 "${root}/.sweep.lock"
   _sweep_t_run "${root}"
   _sweep_t_expect_gone "${root}/idle" "a lock past the age limit is replaced even with a live pid"
+  # Just either side of the 60-minute limit (a live pid, so only age decides).
+  # The respected lock is 55 minutes old: find rounds a partial minute up.
+  _sweep_t_fixture
+  /bin/mkdir -p "${root}/idle" "${root}/.sweep.lock"
+  _sweep_t_age "${root}/idle"
+  print -r -- "$$" > "${root}/.sweep.lock/pid"
+  /usr/bin/touch -t "$(/bin/date -v-61M '+%Y%m%d%H%M')" "${root}/.sweep.lock"
+  _sweep_t_run "${root}"
+  _sweep_t_expect_gone "${root}/idle" "a lock 61 minutes old is replaced even with a live pid"
+  _sweep_t_fixture
+  /bin/mkdir -p "${root}/idle" "${root}/.sweep.lock"
+  _sweep_t_age "${root}/idle"
+  print -r -- "$$" > "${root}/.sweep.lock/pid"
+  /usr/bin/touch -t "$(/bin/date -v-55M '+%Y%m%d%H%M')" "${root}/.sweep.lock"
+  _sweep_t_run "${root}"
+  if (( SWEEP_T_RC == 0 )) && _sweep_t_exists "${root}/idle" && [[ "${SWEEP_T_OUT}" == *"holds the lock"* ]]; then
+    _pass "a lock 55 minutes old with a live pid is respected"
+  else
+    _fail "55-minute lock: rc=${SWEEP_T_RC} out=${SWEEP_T_OUT}"
+  fi
   _sweep_t_fixture
   /bin/mkdir -p "${root}/idle" "${root}/.sweep.lock"
   _sweep_t_age "${root}/idle"

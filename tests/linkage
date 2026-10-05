@@ -131,6 +131,63 @@ function _linkage_hooks_path {
   _pass "core.hooksPath .githooks resolves to ${dir} with all four hooks"
 }
 
+# Drives each branch of _linkage_hooks_path against a fixture hooks directory.
+# The helper's own _fail runs in a command substitution, so it cannot count
+# against this suite: the captured FAIL/PASS line is what each case checks.
+function _linkage_test_hooks_path {
+  local fixture hook out
+  fixture="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/linkage-hooks.XXXXXX")" || {
+    _fail "hooks path cases: cannot create a fixture directory"
+    return
+  }
+  for hook in pre-commit commit-msg post-commit pre-push; do
+    : > "${fixture}/${hook}"
+    chmod 755 "${fixture}/${hook}"
+  done
+
+  out="$(_linkage_hooks_path .githooks "${fixture}")" || out=""
+  if [[ "${out}" == *PASS* && "${out}" != *FAIL* ]]; then
+    _pass "hooks path: relative .githooks with all four executable hooks passes"
+  else
+    _fail "hooks path: valid fixture was not accepted: ${out}"
+  fi
+
+  out="$(_linkage_hooks_path "${SCRIPT_DIR}/.githooks" "${fixture}")" || out=""
+  if [[ "${out}" == *FAIL*'is absolute'* ]]; then
+    _pass "hooks path: an absolute value fails"
+  else
+    _fail "hooks path: absolute value not rejected: ${out}"
+  fi
+
+  out="$(_linkage_hooks_path .git/hooks "${fixture}")" || out=""
+  if [[ "${out}" == *FAIL*'not .githooks'* ]]; then
+    _pass "hooks path: a relative value other than .githooks fails"
+  else
+    _fail "hooks path: wrong relative value not rejected: ${out}"
+  fi
+
+  for hook in pre-commit commit-msg post-commit pre-push; do
+    chmod 644 "${fixture}/${hook}"
+    out="$(_linkage_hooks_path .githooks "${fixture}")" || out=""
+    if [[ "${out}" == *FAIL*"lacks an executable ${hook}"* ]]; then
+      _pass "hooks path: a non-executable ${hook} fails"
+    else
+      _fail "hooks path: non-executable ${hook} not rejected: ${out}"
+    fi
+    chmod 755 "${fixture}/${hook}"
+  done
+
+  /bin/rm -f "${fixture}/pre-push"
+  out="$(_linkage_hooks_path .githooks "${fixture}")" || out=""
+  if [[ "${out}" == *FAIL*'lacks an executable pre-push'* ]]; then
+    _pass "hooks path: a missing hook fails"
+  else
+    _fail "hooks path: missing hook not rejected: ${out}"
+  fi
+
+  /bin/rm -rf "${fixture}"
+}
+
 function _linkage_bao_migration {
   (
     local fixture_home replacement legacy
@@ -186,6 +243,8 @@ function run_linkage {
   else
     _fail "bao migration removed an unready or unrelated installation"
   fi
+
+  _linkage_test_hooks_path
 
   # SC2154: fail_count is declared in tests/lib, sourced by the dispatcher.
   # shellcheck disable=SC2154
