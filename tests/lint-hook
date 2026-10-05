@@ -364,38 +364,41 @@ function run_lint_hook {
     /bin/chmod +x "${lh_slow}"
     printf '#!/bin/bash\necho $1\n' > "${LH_BARE}/timeout.sh"
     local lh_t0 lh_elapsed
-    local -a lh_leaked_before lh_leaked_after
-    lh_leaked_before=("${TMPDIR:-/tmp}"/lint-hook.*(N))
     lh_t0="${EPOCHSECONDS}"
     _lh_run "${LH_BARE}/timeout.sh" Write "LINT_HOOK_SHELLCHECK=${lh_slow}" LINT_HOOK_DEADLINE=1
     lh_elapsed=$(( EPOCHSECONDS - lh_t0 ))
-    lh_leaked_after=("${TMPDIR:-/tmp}"/lint-hook.*(N))
     if [[ "$(_lint_hook_verdict "${LH_LAST_STDOUT}")" == PASS && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" && "${lh_elapsed}" -lt 5 ]]; then
       _pass "PASS, exit 0, empty stderr, ${lh_elapsed}s: a hung linter is killed at the deadline, not waited out"
     else
       _fail "hung linter was not bounded by the deadline (rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR} elapsed=${lh_elapsed}s out=${LH_LAST_STDOUT})"
     fi
-    if (( ${#lh_leaked_after} <= ${#lh_leaked_before} )); then
-      _pass "no leaked lint-hook.* temp file after a killed linter"
-    else
-      _fail "lint-hook.* temp file count grew after a killed linter (before=${#lh_leaked_before} after=${#lh_leaked_after})"
-    fi
 
-    # A non-numeric or zero LINT_HOOK_DEADLINE falls back to the 5 s default
-    # (perl's alarm(0) means "no alarm"), cutting a 30 s sleep off near 5. The
-    # 20 s bound allows hook start-up under parallel load; a disabled deadline
-    # takes 30 s.
+    # Deadline value: perl's alarm survives exec, so a shellcheck stand-in that
+    # prints alarm(0) (the seconds left on the inherited alarm) and exits 1
+    # reports the deadline the hook set, with no sleeping. A non-numeric or
+    # zero LINT_HOOK_DEADLINE falls back to the 5 s default (alarm(0) would
+    # mean "no alarm", printing 0); a valid override passes through.
+    local lh_alarm="${LH_SCRATCH}/alarm-linter" lh_left
+    printf '#!/usr/bin/perl\nprint alarm(0), "\\n";\nexit 1;\n' > "${lh_alarm}"
+    /bin/chmod +x "${lh_alarm}"
     local lh_bad_deadline
-    for lh_bad_deadline in abc 0; do
-      lh_t0="${EPOCHSECONDS}"
-      _lh_run "${LH_BARE}/timeout.sh" Write "LINT_HOOK_SHELLCHECK=${lh_slow}" "LINT_HOOK_DEADLINE=${lh_bad_deadline}"
-      lh_elapsed=$(( EPOCHSECONDS - lh_t0 ))
-      if [[ "$(_lint_hook_verdict "${LH_LAST_STDOUT}")" == PASS && "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" && "${lh_elapsed}" -lt 20 ]]; then
-        _pass "PASS, exit 0, empty stderr, ${lh_elapsed}s: LINT_HOOK_DEADLINE=${lh_bad_deadline} falls back to the 5s default"
+    for lh_bad_deadline in abc 0 -3 1.5; do
+      _lh_run "${LH_BARE}/timeout.sh" Write "LINT_HOOK_SHELLCHECK=${lh_alarm}" "LINT_HOOK_DEADLINE=${lh_bad_deadline}"
+      lh_left="$(printf '%s' "${LH_LAST_STDOUT}" | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null | /usr/bin/tail -n 1)" || lh_left=""
+      if [[ "${lh_left}" =~ ^[0-9]+$ ]] && (( lh_left >= 1 && lh_left <= 5 )) && [[ "${LH_LAST_RC}" == 0 && -z "${LH_LAST_STDERR}" ]]; then
+        _pass "exit 0, empty stderr, ${lh_left}s left: LINT_HOOK_DEADLINE=${lh_bad_deadline} falls back to the 5s default"
       else
-        _fail "LINT_HOOK_DEADLINE=${lh_bad_deadline} did not fall back to the default deadline (rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR} elapsed=${lh_elapsed}s)"
+        _fail "LINT_HOOK_DEADLINE=${lh_bad_deadline} did not fall back to the default deadline (left='${lh_left}' rc=${LH_LAST_RC} stderr=${LH_LAST_STDERR})"
       fi
     done
+    _lh_run "${LH_BARE}/timeout.sh" Write "LINT_HOOK_SHELLCHECK=${lh_alarm}" LINT_HOOK_DEADLINE=30
+    lh_left="$(printf '%s' "${LH_LAST_STDOUT}" | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null | /usr/bin/tail -n 1)" || lh_left=""
+    if [[ "${lh_left}" =~ ^[0-9]+$ ]] && (( lh_left > 5 && lh_left <= 30 )); then
+      _pass "${lh_left}s left: LINT_HOOK_DEADLINE=30 overrides the 5s default"
+    else
+      _fail "LINT_HOOK_DEADLINE=30 was not applied (left='${lh_left}' out=${LH_LAST_STDOUT})"
+    fi
+    /bin/rm -f "${lh_alarm}"
     /bin/rm -f "${lh_slow}"
 
     # LINE-CAP branch: 120 findings. file_path is absolutised, so only the

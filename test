@@ -85,12 +85,47 @@ function _usage {
   echo "  --time  print per-suite wall time after the full run"
 }
 
+# Name of the suite now running in this shell; empty between suites.
+typeset -g RUNNING_SUITE=""
+
 function _run_suite {
   local suite="$1"
   shift
+  RUNNING_SUITE="${suite}"
   # shellcheck source=/dev/null
   source "${SCRIPT_DIR}/tests/${suite}"
   "run_${suite//-/_}" "$@"
+  RUNNING_SUITE=""
+}
+
+# Report a suite that ends the shell before it returns, then end the run. A
+# `||` or `if` around the suite call would switch errexit off inside the suite
+# body, so traps do the reporting. Parallel children set no trap: the parent
+# reports a child that died without counters.
+function _report_abort {
+  local rc="$1"
+  [[ -n "${RUNNING_SUITE}" ]] || return 0
+  _fail "${RUNNING_SUITE}: suite aborted (exit ${rc}) before it finished"
+  RUNNING_SUITE=""
+  _print_summary || :
+  exit 1
+}
+
+# zsh skips the EXIT trap when errexit ends a shell from inside a function, so
+# ZERR (which fires where errexit would abort) catches the bare failing command.
+# ZERR fires with errexit off and in subshells too; neither is an abort.
+function _on_zerr {
+  local rc=$?
+  [[ -o errexit ]] || return 0
+  (( ZSH_SUBSHELL == 0 )) || return 0
+  _report_abort "${rc}"
+}
+
+# A suite that calls `exit`.
+function _on_exit {
+  local rc=$?
+  (( ZSH_SUBSHELL == 0 )) || return 0
+  _report_abort "${rc}"
 }
 
 # Four workers, not hw.ncpu: the suites are bound by process-spawn latency,
@@ -270,5 +305,12 @@ function main {
   fi
   _print_summary
 }
+
+# Top level, not inside main: zsh runs an EXIT trap set in a function when that
+# function returns, not when the shell exits.
+if [[ -z "${DOTFILES_TEST_CHILD:-}" ]]; then
+  trap _on_zerr ZERR
+  trap _on_exit EXIT
+fi
 
 main "$@"

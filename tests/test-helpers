@@ -144,4 +144,38 @@ function run_test_helpers {
     _fail "okf conformance over a mixed bundle: ${out}"
   fi
   /bin/rm -rf "${bundle}"
+
+  # A suite that aborts under `set -e` must end the run with a FAIL naming it,
+  # in every run mode. The runner is copied beside a fixture suite so the real
+  # suite list is untouched; the copy's own suite list is emptied for -j runs.
+  local rdir mode label want
+  rdir="$(mktemp -d "${TMPDIR}runner-abort.XXXXXX")"
+  /bin/mkdir "${rdir}/tests"
+  /bin/cp "${SCRIPT_DIR}/tests/lib" "${rdir}/tests/lib"
+  /usr/bin/sed 's/^readonly -a SUITES=(.*/readonly -a SUITES=()/' "${SCRIPT_DIR}/test" > "${rdir}/test"
+  print -r -- zz-abort > "${rdir}/.extra_test_suites"
+  print -r -- zz-exit >> "${rdir}/.extra_test_suites"
+  print -r -- 'function run_zz_abort { _pass before; ( false ) || :; false || :; false; _pass after }' \
+    > "${rdir}/tests/zz-abort"
+  print -r -- 'function run_zz_exit { _pass before; exit 0 }' > "${rdir}/tests/zz-exit"
+  if [[ "$(<"${rdir}/test")" != *$'\nreadonly -a SUITES=()\n'* ]]; then
+    _fail "runner: the copied runner kept its suite list, so the abort cases did not run"
+    /bin/rm -rf "${rdir}"
+    return 0
+  fi
+  for mode in "zz-abort" "zz-exit" "-j 1" "-j 2"; do
+    label="${mode/zz-abort/one suite}"
+    label="${label/zz-exit/stray exit}"
+    want="${mode}"
+    [[ "${mode}" == -j* ]] && want="zz-abort"
+    rc=0
+    # shellcheck disable=SC2086  # $mode splits into the runner's arguments
+    out="$(/usr/bin/env -u DOTFILES_TEST_CHILD "${ZSH_BIN}" "${rdir}/test" ${=mode} 2>&1)" || rc=$?
+    if (( rc != 0 )) && [[ "${out}" == *"FAIL"*"${want}: suite aborted"* && "${out}" != *"PASS"*after* ]]; then
+      _pass "runner: an aborted suite is a FAIL naming it and a nonzero exit (${label})"
+    else
+      _fail "runner: aborted suite (${label}) exit ${rc}: ${out}"
+    fi
+  done
+  /bin/rm -rf "${rdir}"
 }

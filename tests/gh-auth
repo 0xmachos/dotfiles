@@ -17,6 +17,8 @@
 #     no bypass actors, read through gh.
 # Skips, not fails: gh missing or logged out, no network. A skip is "could
 # not check", never "checked and fine".
+# The ruleset verdicts also run offline against a gh stub on PATH that serves
+# canned JSON through the real jq filters.
 #
 # Run: ./test gh-auth    (or ./test for the full suite)
 # ShellCheck: lint with `shellcheck --shell=bash tests/gh-auth`.
@@ -210,7 +212,71 @@ function _gha_server_ruleset {
   fi
 }
 
+# $1 case name, $2 captured output, $3 colour, $4 PASS, FAIL or SKIP, $5 text.
+# The case passes when the output holds that line.
+function _gha_expect {
+  if [[ "$2" == *"$3$4${RESET}  $5"* ]]; then
+    _pass "fixture: $1"
+  else
+    _fail "fixture: $1: expected a $4 line starting '$5', got: $2"
+  fi
+}
+
+# $1 dir, $2 jq path. Writes a gh stub: `gh repo view` prints o/r; `gh api
+# <path> ... --jq <filter>` runs the filter over $GHA_STUB_DATA/<path with / as
+# _>.json.
+function _gha_write_stub {
+  print -r -- "#!/bin/zsh
+if [[ \"\$1\" == repo ]]; then print -r -- o/r; exit 0; fi
+p=\"\$2\"
+while (( \$# )); do [[ \"\$1\" == --jq ]] && break; shift; done
+exec \"${2}\" -r \"\$2\" < \"\${GHA_STUB_DATA}/\${p//\//_}.json\"" > "${1}/gh"
+  /bin/chmod 755 "${1}/gh"
+}
+
+# $1 data dir, $2 rulesets list JSON, $3 JSON of ruleset 7 (empty for none).
+# Sets REPLY to the output of _gha_server_ruleset with the stub first on PATH.
+function _gha_run_stub {
+  local -x GHA_STUB_DATA="$1"
+  /bin/mkdir -p "$1"
+  print -r -- "$2" > "$1/repos_o_r_rulesets.json"
+  [[ -n "$3" ]] && print -r -- "$3" > "$1/repos_o_r_rulesets_7.json"
+  REPLY="$(PATH="${GHA_STUB_BIN}:${PATH}" _gha_server_ruleset 2>&1)" || true
+}
+
+# _gha_server_ruleset over canned rulesets. Each run is a subshell, so only the
+# expectation reaches the suite totals.
+function _gha_ruleset_fixture_cases {
+  _section "gh-auth — ruleset verdicts over a stubbed gh"
+  local root rule_default rule_sig GHA_JQ GHA_STUB_BIN
+  GHA_JQ="$(command -v jq)" || GHA_JQ=""
+  if [[ -z "${GHA_JQ}" ]]; then
+    _skip "jq not installed — ruleset fixture cases need it"
+    return
+  fi
+  root="$(mktemp -d "${TMPDIR}gh-auth-fixture.XXXXXX")"
+  GHA_STUB_BIN="${root}/bin"
+  /bin/mkdir -p "${GHA_STUB_BIN}"
+  _gha_write_stub "${GHA_STUB_BIN}" "${GHA_JQ}"
+  rule_default='"conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"]}}'
+  rule_sig='"rules":[{"type":"required_signatures"}]'
+
+  _gha_run_stub "${root}/none" '[{"id":5,"enforcement":"disabled"}]' ""
+  _gha_expect "ruleset: only a disabled ruleset fails" "${REPLY}" "${RED}" FAIL "o/r has no active ruleset"
+  _gha_run_stub "${root}/nosig" '[{"id":7,"enforcement":"active"}]' "{\"rules\":[{\"type\":\"deletion\"}],${rule_default},\"bypass_actors\":[]}"
+  _gha_expect "ruleset: an active ruleset without required_signatures fails" "${REPLY}" "${RED}" FAIL "o/r: no active ruleset requires signatures"
+  _gha_run_stub "${root}/bypass" '[{"id":7,"enforcement":"active"}]' "{${rule_sig},${rule_default},\"bypass_actors\":[{\"actor_id\":1}]}"
+  _gha_expect "ruleset: a bypass actor fails" "${REPLY}" "${RED}" FAIL "o/r: no active ruleset requires signatures"
+  _gha_run_stub "${root}/branch" '[{"id":7,"enforcement":"active"}]' "{${rule_sig},\"conditions\":{\"ref_name\":{\"include\":[\"refs/heads/dev\"]}},\"bypass_actors\":[]}"
+  _gha_expect "ruleset: a ruleset off the default branch fails" "${REPLY}" "${RED}" FAIL "o/r: no active ruleset requires signatures"
+  _gha_run_stub "${root}/ok" '[{"id":7,"enforcement":"active"}]' "{${rule_sig},${rule_default},\"bypass_actors\":[]}"
+  _gha_expect "ruleset: required_signatures on the default branch with no bypass passes" "${REPLY}" "${GREEN}" PASS "o/r: active required_signatures ruleset"
+  /bin/rm -rf "${root}"
+}
+
 function run_gh_auth {
+  _gha_ruleset_fixture_cases
+
   # Signing and helper checks read the global git config that `bittersweet
   # dotfiles` symlinks from this repo. Where that link is absent (CI runner,
   # scratch clone) an empty config would read as a posture failure: skip.

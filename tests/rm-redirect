@@ -81,6 +81,49 @@ function _rm_redirect_bytes_command {
   REPLY="${rm_redirect_all[1,$1-1]}a"
 }
 
+function _rm_redirect_calls_command {
+  # REPLY = a command whose `\rm x` is tokeniser call number $1 + 1: $1 lines of
+  # `echo 'rm'` (each quoted, so each takes the tokeniser) ahead of it.
+  local -a rm_redirect_call_lines
+  local -i k
+  for (( k = 1; k <= $1; k++ )); do rm_redirect_call_lines+=("echo 'rm'"); done
+  rm_redirect_call_lines+=('\rm x')
+  # shellcheck disable=SC2296
+  REPLY="${(F)rm_redirect_call_lines}"
+}
+
+function _rm_redirect_make_copy {
+  # Copy the hook to $1/hook with ONE literal changed: $2 becomes $3. Returns 1
+  # (and says why) when the copy is unchanged or lacks the new literal, so a
+  # drifted pattern cannot give a green case. The hook reads no file relative
+  # to its own path, so the copy runs the same as the original.
+  local dir="$1" old="$2" new="$3" body changed
+  body="$(<"${SCRIPT_DIR}/claude/hooks/rm-redirect-hook")" || body=''
+  changed="${body/"${old}"/"${new}"}"
+  if [[ -z "${body}" || "${changed}" == "${body}" || "${changed}" != *"${new}"* ]]; then
+    _fail "hook copy: literal not found or not changed: ${old}"
+    return 1
+  fi
+  print -r -- "${changed}" > "${dir}/hook"
+}
+
+function _rm_redirect_run_copy {
+  # Echo the stdout of the hook copy $1/hook for Bash command $2.
+  jq -n --arg c "$2" '{tool_name:"Bash", tool_input:{command:$c}}' | /bin/zsh "$1/hook"
+}
+
+function _rm_redirect_copy_expect {
+  # Run hook copy $1/hook on command $3 and assert verdict $2, labelled $4.
+  local out got
+  out="$(_rm_redirect_run_copy "$1" "$3")" || out=''
+  got="$(_hook_verdict "${out}")" || got=INVALID
+  if [[ "${got}" == "$2" ]]; then
+    _pass "$2: $4"
+  else
+    _fail "$4 - expected $2, got ${got}"
+  fi
+}
+
 function run_rm_redirect {
   _section "rm → trash redirect hook"
 
@@ -223,8 +266,7 @@ function run_rm_redirect {
   # Fail-open size caps (hook header, "Fail-open by convention"): 4000 raw
   # lines and 524288 characters. At the cap the command is scanned and DENIEs;
   # one past it PASSes without a scan. The just-under cases get 3 runs, since
-  # the 0.3 s deadline also fails open under load. The 700-call tokeniser cap
-  # has no case: the deadline always fires first when zsh/datetime loads.
+  # the 0.3 s deadline also fails open under load.
   _rm_redirect_lines_command 4000
   _rm_redirect_expect DENY "${REPLY}" '4000 lines, at the line cap, still scanned' '' '' 3
   _rm_redirect_lines_command 4001
@@ -233,6 +275,23 @@ function run_rm_redirect {
   _rm_redirect_expect DENY "${REPLY}" '524288 characters, at the byte cap, still scanned' '' '' 3
   _rm_redirect_bytes_command 524289
   _rm_redirect_expect PASS "${REPLY}" '524289 characters, past the byte cap, fails open'
+
+  # Hook copies with one literal changed reach the branches the real deadline
+  # hides. A deadline already in the past fails open at once. A deadline pushed
+  # out to 600 s leaves the 700-call tokeniser cap (a backstop for a missing
+  # zsh/datetime) as the only limit: call 700 is scanned, call 701 fails open.
+  local rm_redirect_copy_dir
+  rm_redirect_copy_dir="$(mktemp -d "${TMPDIR:-/tmp}/rm-redirect-copy.XXXXXX")"
+  if _rm_redirect_make_copy "${rm_redirect_copy_dir}" 'EPOCHREALTIME + 0.3' 'EPOCHREALTIME - 600'; then
+    _rm_redirect_copy_expect "${rm_redirect_copy_dir}" PASS '\rm foo' 'deadline already passed: a command that DENYs fails open'
+  fi
+  if _rm_redirect_make_copy "${rm_redirect_copy_dir}" 'EPOCHREALTIME + 0.3' 'EPOCHREALTIME + 600'; then
+    _rm_redirect_calls_command 699
+    _rm_redirect_copy_expect "${rm_redirect_copy_dir}" DENY "${REPLY}" 'tokeniser call 700, at the cap, still scanned'
+    _rm_redirect_calls_command 700
+    _rm_redirect_copy_expect "${rm_redirect_copy_dir}" PASS "${REPLY}" 'tokeniser call 701, past the cap, fails open'
+  fi
+  /bin/rm -rf "${rm_redirect_copy_dir}"
 
   # TWO heredoc introducers on a line (2026-09-25) run the per-heredoc block
   # of _rm_redirect_scan_heredocs (`hdch`, `hconsumer_raw`) twice; a

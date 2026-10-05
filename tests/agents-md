@@ -281,6 +281,48 @@ function _agents_check_global_source {
   fi
 }
 
+# Skills Codex shares through ~/.agents/skills copies. The fixture cases shadow
+# the list with a shorter local one.
+typeset -a _AGENTS_SHARED_SKILLS=(git-history-repair zsh-style macos-security-footguns bao-admin swift-conventions rust-conventions npm-conventions python-conventions objc-conventions ci-conventions)
+
+# $1 home dir. Both global instruction files must link to
+# ${SCRIPT_DIR}/claude/global-claude.md.
+function _agents_check_live_links {
+  local home="$1" live global_src="${SCRIPT_DIR}/claude/global-claude.md"
+  for live in "${home}/.claude/CLAUDE.md" "${home}/.codex/AGENTS.md"; do
+    if [[ ! -L "${live}" ]]; then
+      _fail "global: ${live} is not a symlink — it must link to claude/global-claude.md"
+    elif [[ "$(readlink "${live}")" != "${global_src}" ]]; then
+      _fail "global: ${live} points at '$(readlink "${live}")', expected ${global_src}"
+    elif [[ ! -e "${live}" ]]; then
+      _fail "global: ${live} is a dangling symlink"
+    else
+      _pass "global: ${live} -> claude/global-claude.md"
+    fi
+  done
+}
+
+# $1 home dir. ~/.agents/skills holds copies of the shared allowlist (a copy has
+# no readlink to compare, so diff against the source; that also catches a stale
+# copy).
+function _agents_check_live_skills {
+  local home="$1" shared
+  if [[ -d "${home}/.agents/skills" && ! -L "${home}/.agents/skills" ]]; then
+    _pass "global: ~/.agents/skills is a real directory"
+  else
+    _fail "global: ~/.agents/skills must be a real directory of skill copies (run: bittersweet dotfiles)"
+  fi
+  for shared in "${_AGENTS_SHARED_SKILLS[@]}"; do
+    if [[ -L "${home}/.agents/skills/${shared}" ]]; then
+      _fail "global: ~/.agents/skills/${shared} is a symlink; a copy is required (run: bittersweet dotfiles)"
+    elif /usr/bin/diff -rq "${SCRIPT_DIR}/claude/skills/${shared}" "${home}/.agents/skills/${shared}" >/dev/null 2>&1; then
+      _pass "global: ~/.agents/skills/${shared} matches claude/skills/${shared}"
+    else
+      _fail "global: ~/.agents/skills/${shared} is missing or stale (run: bittersweet dotfiles)"
+    fi
+  done
+}
+
 # Runs "$@" with SCRIPT_DIR pointing at $1 and sets REPLY to its output. The
 # command substitution is a subshell, so the pass and fail counters the
 # handler moves never reach the suite totals.
@@ -361,12 +403,76 @@ function _agents_fixture_cases {
   _agents_run_in "${root}/gok" _agents_check_global_source
   _agents_expect "global: a regular source with its tail passes" "${REPLY}" "${GREEN}" PASS "global-claude.md: tail intact"
   /bin/rm -rf "${root}"
+  _agents_home_fixture_cases
+}
+
+# The ~/.claude, ~/.codex and ~/.agents handlers over fixture home dirs; the
+# real $HOME is never read. SCRIPT_DIR is a fixture tree holding the source
+# file and the skills.
+function _agents_home_fixture_cases {
+  local root skill sd
+  local -a _AGENTS_SHARED_SKILLS=(link-skill stale-skill gone-skill good-skill)
+  root="$(mktemp -d "${TMPDIR}agents-md-home.XXXXXX")"
+  sd="${root}/repo"
+  /bin/mkdir -p "${sd}/claude" "${root}"/{ok,notlink,wrong,dangling,skills,nodir,dirlink}/home/{.claude,.codex,.agents} "${root}/other/realskills" "${root}/nosrc/claude"
+  print -rn -- $'## Machine notes\n' > "${sd}/claude/global-claude.md"
+  print -rn -- $'## Machine notes\n' > "${root}/other/elsewhere.md"
+
+  # Links: ok links both files to the source; notlink holds regular files;
+  # wrong links elsewhere; dangling links to a source that is absent.
+  ln -s "${sd}/claude/global-claude.md" "${root}/ok/home/.claude/CLAUDE.md"
+  ln -s "${sd}/claude/global-claude.md" "${root}/ok/home/.codex/AGENTS.md"
+  print -rn -- x > "${root}/notlink/home/.claude/CLAUDE.md"
+  print -rn -- x > "${root}/notlink/home/.codex/AGENTS.md"
+  ln -s "${root}/other/elsewhere.md" "${root}/wrong/home/.claude/CLAUDE.md"
+  ln -s "${root}/other/elsewhere.md" "${root}/wrong/home/.codex/AGENTS.md"
+  ln -s "${root}/nosrc/claude/global-claude.md" "${root}/dangling/home/.claude/CLAUDE.md"
+  ln -s "${root}/nosrc/claude/global-claude.md" "${root}/dangling/home/.codex/AGENTS.md"
+
+  _agents_run_in "${sd}" _agents_check_live_links "${root}/ok/home"
+  _agents_expect "live links: ~/.claude/CLAUDE.md linked to the source passes" "${REPLY}" "${GREEN}" PASS "global: ${root}/ok/home/.claude/CLAUDE.md -> claude/global-claude.md"
+  _agents_expect "live links: ~/.codex/AGENTS.md linked to the source passes" "${REPLY}" "${GREEN}" PASS "global: ${root}/ok/home/.codex/AGENTS.md -> claude/global-claude.md"
+  _agents_run_in "${sd}" _agents_check_live_links "${root}/notlink/home"
+  _agents_expect "live links: ~/.claude/CLAUDE.md as a regular file fails" "${REPLY}" "${RED}" FAIL "global: ${root}/notlink/home/.claude/CLAUDE.md is not a symlink"
+  _agents_expect "live links: ~/.codex/AGENTS.md as a regular file fails" "${REPLY}" "${RED}" FAIL "global: ${root}/notlink/home/.codex/AGENTS.md is not a symlink"
+  _agents_run_in "${sd}" _agents_check_live_links "${root}/wrong/home"
+  _agents_expect "live links: ~/.claude/CLAUDE.md pointing elsewhere fails" "${REPLY}" "${RED}" FAIL "global: ${root}/wrong/home/.claude/CLAUDE.md points at '${root}/other/elsewhere.md'"
+  _agents_expect "live links: ~/.codex/AGENTS.md pointing elsewhere fails" "${REPLY}" "${RED}" FAIL "global: ${root}/wrong/home/.codex/AGENTS.md points at '${root}/other/elsewhere.md'"
+  _agents_run_in "${root}/nosrc" _agents_check_live_links "${root}/dangling/home"
+  _agents_expect "live links: ~/.claude/CLAUDE.md dangling fails" "${REPLY}" "${RED}" FAIL "global: ${root}/dangling/home/.claude/CLAUDE.md is a dangling symlink"
+  _agents_expect "live links: ~/.codex/AGENTS.md dangling fails" "${REPLY}" "${RED}" FAIL "global: ${root}/dangling/home/.codex/AGENTS.md is a dangling symlink"
+  _agents_run_in "${sd}" _agents_check_live_links "${root}/nodir/home"
+  _agents_expect "live links: absent ~/.codex/AGENTS.md fails" "${REPLY}" "${RED}" FAIL "global: ${root}/nodir/home/.codex/AGENTS.md is not a symlink"
+
+  # Skills: the source tree holds every shared skill; the skills home gets a
+  # matching copy of most, a symlink for the first, a stale copy for the second
+  # and no copy for the third.
+  for skill in "${_AGENTS_SHARED_SKILLS[@]}"; do
+    /bin/mkdir -p "${sd}/claude/skills/${skill}"
+    print -rn -- "${skill}" > "${sd}/claude/skills/${skill}/SKILL.md"
+  done
+  /bin/cp -R "${sd}/claude/skills" "${root}/skills/home/.agents/skills"
+  /bin/rm -rf "${root}/skills/home/.agents/skills/${_AGENTS_SHARED_SKILLS[1]}"
+  ln -s "${sd}/claude/skills/${_AGENTS_SHARED_SKILLS[1]}" "${root}/skills/home/.agents/skills/${_AGENTS_SHARED_SKILLS[1]}"
+  print -rn -- stale > "${root}/skills/home/.agents/skills/${_AGENTS_SHARED_SKILLS[2]}/SKILL.md"
+  /bin/rm -rf "${root}/skills/home/.agents/skills/${_AGENTS_SHARED_SKILLS[3]}"
+  ln -s "${root}/other/realskills" "${root}/dirlink/home/.agents/skills"
+
+  _agents_run_in "${sd}" _agents_check_live_skills "${root}/skills/home"
+  _agents_expect "live skills: a real skills directory passes" "${REPLY}" "${GREEN}" PASS "global: ~/.agents/skills is a real directory"
+  _agents_expect "live skills: a symlinked skill fails" "${REPLY}" "${RED}" FAIL "global: ~/.agents/skills/${_AGENTS_SHARED_SKILLS[1]} is a symlink; a copy is required"
+  _agents_expect "live skills: a stale copy fails" "${REPLY}" "${RED}" FAIL "global: ~/.agents/skills/${_AGENTS_SHARED_SKILLS[2]} is missing or stale"
+  _agents_expect "live skills: an absent copy fails" "${REPLY}" "${RED}" FAIL "global: ~/.agents/skills/${_AGENTS_SHARED_SKILLS[3]} is missing or stale"
+  _agents_expect "live skills: a matching copy passes" "${REPLY}" "${GREEN}" PASS "global: ~/.agents/skills/${_AGENTS_SHARED_SKILLS[4]} matches claude/skills/${_AGENTS_SHARED_SKILLS[4]}"
+  _agents_run_in "${sd}" _agents_check_live_skills "${root}/nodir/home"
+  _agents_expect "live skills: an absent skills directory fails" "${REPLY}" "${RED}" FAIL "global: ~/.agents/skills must be a real directory of skill copies"
+  _agents_run_in "${sd}" _agents_check_live_skills "${root}/dirlink/home"
+  _agents_expect "live skills: a symlinked skills directory fails" "${REPLY}" "${RED}" FAIL "global: ~/.agents/skills must be a real directory of skill copies"
+  /bin/rm -rf "${root}"
 }
 
 function run_agents_md {
   _section "Agent guidance: AGENTS.md / CLAUDE.md single-source"
-
-  local global_src="${SCRIPT_DIR}/claude/global-claude.md"
 
   _agents_fixture_cases
 
@@ -414,34 +520,6 @@ function run_agents_md {
     return
   fi
 
-  local live
-  for live in "${HOME}/.claude/CLAUDE.md" "${HOME}/.codex/AGENTS.md"; do
-    if [[ ! -L "${live}" ]]; then
-      _fail "global: ${live} is not a symlink — it must link to claude/global-claude.md"
-    elif [[ "$(readlink "${live}")" != "${global_src}" ]]; then
-      _fail "global: ${live} points at '$(readlink "${live}")', expected ${global_src}"
-    elif [[ ! -e "${live}" ]]; then
-      _fail "global: ${live} is a dangling symlink"
-    else
-      _pass "global: ${live} -> claude/global-claude.md"
-    fi
-  done
-  # ~/.agents/skills holds copies of the shared allowlist (a copy has no
-  # readlink to compare, so diff against the source; that also catches a stale
-  # copy).
-  local shared
-  if [[ -d "${HOME}/.agents/skills" && ! -L "${HOME}/.agents/skills" ]]; then
-    _pass "global: ~/.agents/skills is a real directory"
-  else
-    _fail "global: ~/.agents/skills must be a real directory of skill copies (run: bittersweet dotfiles)"
-  fi
-  for shared in git-history-repair zsh-style macos-security-footguns bao-admin swift-conventions rust-conventions npm-conventions python-conventions objc-conventions ci-conventions; do
-    if [[ -L "${HOME}/.agents/skills/${shared}" ]]; then
-      _fail "global: ~/.agents/skills/${shared} is a symlink; a copy is required (run: bittersweet dotfiles)"
-    elif /usr/bin/diff -rq "${SCRIPT_DIR}/claude/skills/${shared}" "${HOME}/.agents/skills/${shared}" >/dev/null 2>&1; then
-      _pass "global: ~/.agents/skills/${shared} matches claude/skills/${shared}"
-    else
-      _fail "global: ~/.agents/skills/${shared} is missing or stale (run: bittersweet dotfiles)"
-    fi
-  done
+  _agents_check_live_links "${HOME}"
+  _agents_check_live_skills "${HOME}"
 }

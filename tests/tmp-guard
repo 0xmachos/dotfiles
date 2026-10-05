@@ -76,6 +76,21 @@ function _tmp_guard_run_env {
   TG_OUT="$(ZDOTDIR="$2" /bin/zsh "${SCRIPT_DIR}/claude/hooks/tmp-guard-hook" <<< "${TG_PAYLOADS[-1]}" 2>&1 || true)"
 }
 
+function _tmp_guard_copy_hook {
+  # Copy the hook to $1/hook with ONE literal changed: $2 becomes $3. Returns 1
+  # (and says why) when the copy is unchanged or lacks the new literal, so a
+  # drifted pattern cannot give a green case. The hook reads no file relative
+  # to its own path, so the copy runs the same as the original.
+  local dir="$1" old="$2" new="$3" body changed
+  body="$(<"${SCRIPT_DIR}/claude/hooks/tmp-guard-hook")" || body=''
+  changed="${body/"${old}"/"${new}"}"
+  if [[ -z "${body}" || "${changed}" == "${body}" || "${changed}" != *"${new}"* ]]; then
+    _fail "hook copy: literal not found or not changed: ${old}"
+    return 1
+  fi
+  print -r -- "${changed}" > "${dir}/hook"
+}
+
 function _tmp_guard_check {
   local want="$1" out="$2" label="$3" got
   got="$(_hook_verdict "${out}")"
@@ -508,6 +523,8 @@ function run_tmp_guard {
   _tmp_guard_expect DENY "${hd}" 'heredoc body fed to zsh'
   hd=$'doas -s <<EOF\ntouch /tmp/x\nEOF'
   _tmp_guard_expect DENY "${hd}" 'heredoc body fed to doas -s'
+  hd=$'doas <<EOF\ntouch /tmp/x\nEOF'
+  _tmp_guard_expect PASS "${hd}" 'heredoc body fed to doas with no shell flag is data'
   hd=$'su root <<EOF\ntouch /tmp/x\nEOF'
   _tmp_guard_expect DENY "${hd}" 'heredoc body fed to su'
   hd=$'sudo -s <<EOF\ntouch /tmp/x\nEOF'
@@ -853,6 +870,24 @@ function run_tmp_guard {
   printf '%s\n' "echo ${pad} > /tmp/b" > "${fixture_dir}/okline"
   _tmp_guard_expect_file DENY "${fixture_dir}/okline" '15KB line is still scanned'
   /bin/rm -rf "${fixture_dir}"
+
+  # --- jq absent fails open ------------------------------------------------
+  # A hook copy whose readonly JQ path is missing allows a command the real
+  # hook denies.
+  local copy_dir copy_out
+  local -i copy_rc
+  copy_dir="$(mktemp -d "${TMPDIR:-/tmp}/tmp-guard-copy.XXXXXX")"
+  if _tmp_guard_copy_hook "${copy_dir}" 'readonly JQ=/usr/bin/jq' 'readonly JQ=/nonexistent/jq'; then
+    copy_rc=0
+    copy_out="$(printf '%s' '{"tool_name":"Bash","tool_input":{"command":"cp a /tmp/b"}}' | /bin/zsh "${copy_dir}/hook" 2>/dev/null)" || copy_rc=$?
+    _tmp_guard_check PASS "${copy_out}" 'jq missing: a command that DENYs fails open'
+    if (( copy_rc == 0 )); then
+      _pass "jq missing: exit status 0"
+    else
+      _fail "jq missing: exit status ${copy_rc}"
+    fi
+  fi
+  /bin/rm -rf "${copy_dir}"
 
   # --- Shell options from the user's startup files do not change a verdict -----
   # zsh reads $ZDOTDIR/.zshenv for every invocation, scripts included.
