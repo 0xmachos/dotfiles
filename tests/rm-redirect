@@ -249,8 +249,9 @@ function run_rm_redirect {
   # The byte budget counts MATCHING lines only (2026-09-25): non-matching lines
   # ahead of a short real match must not exhaust it. The filler word holds no
   # "rm", "unlink", "shred", "find" or "clean" substring. 34 lines of 8005
-  # characters (under RM_LINE_CAP) total 272170, past the 262144 budget, in few
-  # enough lines to finish well inside the hook's 0.3 s deadline.
+  # characters (under RM_LINE_CAP) total 272170, past the 262144 budget. The
+  # scan sits near the hook's 0.3 s deadline, which fails open under load
+  # (a parallel ./test flaked it to PASS once, 2026-10-04), so it gets retries.
   # shellcheck disable=SC2034
   local -a rm_redirect_budget_lines
   local -i rm_redirect_bi
@@ -261,7 +262,7 @@ function run_rm_redirect {
   local rm_redirect_budget_probe
   # shellcheck disable=SC2296
   rm_redirect_budget_probe="${(F)rm_redirect_budget_lines}"$'\n''\rm x'
-  _rm_redirect_expect DENY "${rm_redirect_budget_probe}" 'non-matching lines ahead of a match must not exhaust the budget'
+  _rm_redirect_expect DENY "${rm_redirect_budget_probe}" 'non-matching lines ahead of a match must not exhaust the budget' '' '' 3
 
   # Fail-open size caps (hook header, "Fail-open by convention"): 4000 raw
   # lines and 524288 characters. At the cap the command is scanned and DENIEs;
