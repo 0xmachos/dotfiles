@@ -5,8 +5,11 @@
 # `muse exec`). Feeds commands as stdin JSON and asserts the verdict:
 #   - DENY: short timeout, open stdin, forbidden flags, a non-bare muse word
 #     without the verify-reminder env var (--provider echo exempts rules 2, 5)
+#     Wrappers before the muse word (env, nohup, nice, command, exec, caffeinate,
+#     arch, chronic, ionice, watch, stdbuf, xargs, sudo, doas) are seen through;
+#     MUSE_EXEC_GUARD_SKIP=1 (text or exported) is no override
 #   - PASS: compliant canonical shapes; commands mentioning muse/exec only as
-#     data (grep/cat args, --help, other subcommands); MUSE_EXEC_GUARD_SKIP=1
+#     data (grep/cat args, --help, other subcommands)
 #
 # Run: ./test muse-exec
 # ShellCheck: lint with `shellcheck --shell=bash tests/muse-exec`.
@@ -65,9 +68,6 @@ function run_muse_exec {
     _skip "jq not installed (brew install jq)"
     return
   fi
-
-  # An exported bypass would turn every DENY into PASS with the suite green.
-  unset MUSE_EXEC_GUARD_SKIP
 
   # --- Non-firing cases: never a muse-exec command position at all --------
 
@@ -471,12 +471,47 @@ function run_muse_exec {
     _fail "deny reason does not carry the canonical form"
   fi
 
-  # --- Skip var, mirroring MD5_GUARD_SKIP's mechanics ----------------------
+  # --- No skip: the override token and exported variable are plain text ---
 
-  _muse_exec_expect PASS 'MUSE_EXEC_GUARD_SKIP=1 timeout 90 muse exec --sandbox --workspace "$PWD"' \
-    'MUSE_EXEC_GUARD_SKIP=1 override, prefixed'
-  MUSE_EXEC_GUARD_SKIP=1 _muse_exec_expect PASS 'timeout 90 muse exec --sandbox --workspace "$PWD"' \
-    'MUSE_EXEC_GUARD_SKIP=1 override, exported'
+  _muse_exec_expect DENY 'MUSE_EXEC_GUARD_SKIP=1 timeout 90 muse exec --sandbox --workspace "$PWD"' \
+    'MUSE_EXEC_GUARD_SKIP=1 in the command text no longer overrides'
+  MUSE_EXEC_GUARD_SKIP=1 _muse_exec_expect DENY 'timeout 90 muse exec --sandbox --workspace "$PWD"' \
+    'an exported MUSE_EXEC_GUARD_SKIP=1 no longer overrides'
+  _muse_exec_expect DENY 'echo MUSE_EXEC_GUARD_SKIP=1; muse exec --workspace "$PWD"' \
+    'the token anywhere in the text no longer overrides'
+
+  # --- Wrappers before the muse word are seen through (2026-10-09) ---------
+
+  local wr
+  for wr in 'env' 'env VAR=0' 'env -i VAR=0' 'env -u FOO' '/usr/bin/env' 'nohup' 'nice' 'nice -n 5' \
+            'command' 'command -p' 'exec' 'caffeinate' 'caffeinate -i' 'caffeinate -t 60' 'arch' 'arch -arm64' \
+            'chronic' 'ionice' 'ionice -c 3' 'watch' 'watch -n 5' 'stdbuf' 'stdbuf -oL' 'stdbuf -o L' \
+            'xargs' 'xargs -n 1' 'sudo' 'sudo -u root' 'doas' 'doas -u root' 'time' 'env nohup nice'; do
+    _muse_exec_expect DENY "${wr} muse exec --workspace \"\$PWD\"" "${wr} muse exec, stdin open"
+    _muse_exec_expect DENY "${wr} muse exec --sandbox --workspace \"\$PWD\" < /dev/null" \
+      "${wr} muse exec --sandbox"
+    _muse_exec_expect PASS "MUSE_EXPERIMENTAL_VERIFY_REMINDER=0 ${wr} muse exec --workspace \"\$PWD\" < /dev/null" \
+      "${wr} muse exec, compliant"
+  done
+  _muse_exec_expect DENY 'env VAR=0 timeout 90 muse exec --workspace "$PWD" < /dev/null' \
+    'env VAR=0 timeout 90 muse exec: the short timeout is seen'
+  _muse_exec_expect DENY 'nohup timeout 90 muse exec --workspace "$PWD" < /dev/null' \
+    'nohup timeout 90 muse exec: the short timeout is seen'
+  _muse_exec_expect DENY 'timeout 1800 nohup timeout 90 muse exec --workspace "$PWD" < /dev/null' \
+    'a short inner timeout counts when an outer one is long'
+  _muse_exec_expect PASS 'nohup timeout 1800 muse exec --workspace "$PWD" < /dev/null' \
+    'nohup timeout 1800 muse exec, compliant'
+  _muse_exec_expect DENY 'env VAR=0 /Users/someone/.local/bin/muse exec --workspace "$PWD" < /dev/null' \
+    'env VAR=0 over an absolute muse path still needs the verify-reminder env var'
+  _muse_exec_expect DENY 'env -S "muse exec --sandbox x" < /dev/null' 'env -S operand read as a command line'
+  _muse_exec_expect DENY 'echo go; env VAR=0 muse exec --workspace "$PWD"' 'wrapper after a separator'
+  _muse_exec_expect DENY 'echo x | xargs muse exec --workspace "$PWD" < /dev/null --sandbox' 'xargs after a pipe'
+  _muse_exec_expect PASS 'env VAR=0 muse skills list' 'env VAR=0 muse, a different subcommand'
+  _muse_exec_expect PASS 'nohup muse' 'nohup muse, interactive'
+  _muse_exec_expect PASS 'command -v muse' 'command -v muse only looks the word up'
+  _muse_exec_expect PASS 'env VAR=0 grep muse exec file.txt' 'env over grep, muse exec as data'
+  _muse_exec_expect PASS 'watch -n 5 cat muse.txt' 'watch over cat, muse only in a filename'
+  _muse_exec_expect PASS 'nohup muse exec --help' 'nohup muse exec --help stays read-only'
 
   # --- Malformed / non-Bash payloads must fail open, never block ----------
 

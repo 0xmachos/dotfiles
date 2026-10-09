@@ -5,9 +5,11 @@
 # points at `shasum -a 256`). Feeds commands as stdin JSON, asserts the verdict:
 # DENY for md5/md5sum/gmd5sum/md5deep and `openssl md5` at a command position
 # (through wrappers, subshells, command substitution); PASS for lookalikes
-# (`echo md5`, a path containing md5, `--grep=md5`), the SHA-256 replacements
-# and the MD5_GUARD_SKIP=1 bypass. Pins the matcher in both directions
-# (denying `brew install md5deep`, missing `a && md5 b`).
+# (`echo md5`, a path containing md5, `--grep=md5`) and the SHA-256
+# replacements. The hook has no override: the old skip token, in the text or the
+# environment, is plain text and denies like any other. Shell -c strings are
+# rescanned. Pins the matcher in both directions (denying `brew install md5deep`,
+# missing `a && md5 b`).
 #
 # Run: ./test md5-guard    (or ./test for the full suite)
 #
@@ -164,18 +166,18 @@ function run_md5_guard {
   heredoc=$'python3 - <<\'PY\'\nnew = """  x\n  run PASS \'grep -iE "a|md5|b" f\'\n"""\nPY'
   _md5_guard_expect PASS "${heredoc}" 'python heredoc with a triple-quoted block'
 
-  # Bypass as a command prefix (a PreToolUse hook never sees the command's
-  # environment, so the prefix is read from the command string).
-  _md5_guard_expect PASS 'MD5_GUARD_SKIP=1 md5 f' 'MD5_GUARD_SKIP=1 override'
-
-  # Bypass exported in the hook's own environment (session-wide): any
-  # non-empty value exempts; an empty export exempts nothing.
+  # No override (2026-10-09): the old skip token is now plain text. As a
+  # command prefix, as a token anywhere in the text, and exported in the
+  # hook's own environment, the command is still denied.
+  _md5_guard_expect DENY 'MD5_GUARD_SKIP=1 md5 f' 'MD5_GUARD_SKIP=1 prefix no longer overrides'
+  _md5_guard_expect DENY 'echo MD5_GUARD_SKIP=1; md5 f' 'skip token elsewhere in the text no longer overrides'
+  _md5_guard_expect DENY 'md5 f # MD5_GUARD_SKIP=1' 'skip token in a trailing comment no longer overrides'
   local skip_out
   skip_out="$(_md5_guard_run_skip 1 'md5 f')"
-  if [[ "$(_hook_verdict "${skip_out}")" == PASS ]]; then
-    _pass "PASS: exported MD5_GUARD_SKIP=1 exempts the command"
+  if [[ "$(_hook_verdict "${skip_out}")" == DENY ]]; then
+    _pass "DENY: exported MD5_GUARD_SKIP=1 no longer exempts the command"
   else
-    _fail "exported MD5_GUARD_SKIP=1 did not exempt the command"
+    _fail "exported MD5_GUARD_SKIP=1 still exempts the command"
   fi
   skip_out="$(_md5_guard_run_skip '' 'md5 f')"
   if [[ "$(_hook_verdict "${skip_out}")" == DENY ]]; then
@@ -184,7 +186,7 @@ function run_md5_guard {
     _fail "exported empty MD5_GUARD_SKIP exempted the command"
   fi
 
-  # The deny reason names the replacement and the bypass.
+  # The deny reason names the replacement and says there is no agent override.
   local reason
   reason="$(_md5_guard_run 'md5 f')"
   if [[ "${reason}" == *"shasum -a 256"* ]]; then
@@ -192,10 +194,11 @@ function run_md5_guard {
   else
     _fail "deny reason does not mention shasum -a 256"
   fi
-  if [[ "${reason}" == *MD5_GUARD_SKIP* ]]; then
-    _pass "deny reason names the MD5_GUARD_SKIP bypass"
+  if [[ "${reason}" == *"no agent override"* && "${reason}" == *"hand the user"* \
+     && "${reason}" != *MD5_GUARD_SKIP* ]]; then
+    _pass "deny reason says no agent override and names no skip token"
   else
-    _fail "deny reason does not mention MD5_GUARD_SKIP"
+    _fail "deny reason does not say no agent override, or still names MD5_GUARD_SKIP"
   fi
 
   # Size and triage limits. Only lines containing md5 reach the tokeniser, so
@@ -249,8 +252,34 @@ EOF"
   _md5_guard_expect DENY 'env -u FOO md5 f' 'wrapper flag that takes an operand'
   _md5_guard_expect DENY 'sudo -u root md5 f' 'sudo -u with an operand'
   _md5_guard_expect DENY 'timeout -k 5 12 md5 f' 'timeout with flag operand and duration'
-  _md5_guard_expect DENY 'md5 f # MD5_GUARD_SKIP=' 'bypass marker with no value does not exempt'
-  _md5_guard_expect DENY 'MD5_GUARD_SKIP= md5 f' 'bypass assigned an empty value does not exempt'
+  _md5_guard_expect DENY 'md5 f # MD5_GUARD_SKIP=' 'skip token with no value does not exempt'
+  _md5_guard_expect DENY 'MD5_GUARD_SKIP= md5 f' 'skip token assigned an empty value does not exempt'
+
+  # Wrappers added 2026-10-09: each is seen through to the md5 word.
+  _md5_guard_expect DENY 'caffeinate md5 f' 'caffeinate wrapper'
+  _md5_guard_expect DENY 'caffeinate -t 60 md5 f' 'caffeinate with a flag operand'
+  _md5_guard_expect DENY 'arch -arm64 md5 f' 'arch wrapper'
+  _md5_guard_expect DENY 'arch -e FOO=1 md5 f' 'arch -e with an operand'
+  _md5_guard_expect DENY 'chronic md5 f' 'chronic wrapper'
+  _md5_guard_expect DENY 'ionice -c 3 md5 f' 'ionice with a flag operand'
+  _md5_guard_expect DENY 'watch -n 5 md5 f' 'watch with a flag operand'
+  _md5_guard_expect PASS 'watch -n 5 ls md5.txt' 'watch over a non-md5 command'
+
+  # A shell's -c string and eval's text are scanned as a command line again
+  # (2026-10-09), to depth 3.
+  _md5_guard_expect DENY "sh -c 'md5 f'" 'sh -c string'
+  _md5_guard_expect DENY 'bash -c "md5 f"' 'bash -c double-quoted string'
+  _md5_guard_expect DENY "zsh -lc 'ls; md5 f'" 'zsh -lc string, md5 after a separator'
+  _md5_guard_expect DENY "sudo bash -c 'md5 f'" 'sh -c behind a wrapper'
+  _md5_guard_expect DENY "env FOO=1 sh -c 'cat f | md5'" 'md5 after a pipe inside the string'
+  _md5_guard_expect DENY "sh -c \"sh -c 'md5 f'\"" 'nested sh -c, depth 2'
+  _md5_guard_expect DENY "sh -c \"sh -c \\\"sh -c 'md5 f'\\\"\"" 'nested sh -c, depth 3'
+  _md5_guard_expect DENY "eval 'md5 f'" 'eval string'
+  _md5_guard_expect DENY "watch 'md5 f'" 'watch with a command string'
+  _md5_guard_expect PASS "sh -c 'echo md5'" 'md5 as an argument inside a sh -c string'
+  _md5_guard_expect PASS "sh -c 'grep -iE \"a|md5\" f'" 'quoted pipe inside a sh -c string is data'
+  _md5_guard_expect PASS "bash script.sh md5" 'a script operand is not a -c string'
+  _md5_guard_expect PASS "sh -c 'shasum -a 256 f'" 'sha256 inside a sh -c string'
   # False denials: SHA-256 over a file named md5.txt; a comment is not a command.
   _md5_guard_expect PASS 'openssl dgst -sha256 md5.txt' 'openssl sha256 over a file named md5.txt'
   _md5_guard_expect PASS 'shasum -a 256 md5.txt' 'shasum over a file named md5.txt'
