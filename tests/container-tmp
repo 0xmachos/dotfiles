@@ -91,8 +91,68 @@ function run_container_tmp {
   _container_tmp_expect PASS 'container system start'
   _container_tmp_expect PASS 'echo container build /tmp/x'      # not a command position
   _container_tmp_expect PASS 'container run -v /tmpfoo:/x img'  # /tmpfoo is not tmp-rooted
-  _container_tmp_expect PASS 'CONTAINER_TMP_SKIP=1 container build -t x /tmp/ctx' '' \
-    'CONTAINER_TMP_SKIP=1 override'
+
+  # The skip token is only text now: the command is checked as usual.
+  _container_tmp_expect DENY 'CONTAINER_TMP_SKIP=1 container build -t x /tmp/ctx' '' \
+    'CONTAINER_TMP_SKIP=1 is no override'
+  _container_tmp_expect DENY 'export CONTAINER_TMP_SKIP=1; container build -t x /tmp/ctx' '' \
+    'exported CONTAINER_TMP_SKIP=1 is no override'
+
+  # Wrappers before the container word are walked past → DENY.
+  _container_tmp_expect DENY 'sudo container build /tmp/x'
+  _container_tmp_expect DENY 'sudo -u root container build /tmp/x'
+  _container_tmp_expect DENY 'sudo -Eu root container build /tmp/x'
+  _container_tmp_expect DENY 'doas container build /tmp/x'
+  _container_tmp_expect DENY 'env FOO=1 container build /tmp/x'
+  _container_tmp_expect DENY 'env -i -u FOO FOO=1 /usr/local/bin/container build /tmp/x'
+  _container_tmp_expect DENY 'nice -n 5 container build /tmp/x'
+  _container_tmp_expect DENY 'nice -5 container build /tmp/x'
+  _container_tmp_expect DENY 'nohup container build /tmp/x'
+  _container_tmp_expect DENY 'command container build /tmp/x'
+  _container_tmp_expect DENY 'exec container build /tmp/x'
+  _container_tmp_expect DENY 'time container build /tmp/x'
+  _container_tmp_expect DENY 'timeout 30 container build /tmp/x'
+  _container_tmp_expect DENY 'timeout -k 5 30 container build /tmp/x'
+  _container_tmp_expect DENY 'gtimeout --signal TERM 30 container build /tmp/x'
+  _container_tmp_expect DENY 'caffeinate -i container build /tmp/x'
+  _container_tmp_expect DENY 'arch -arm64 container build /tmp/x'
+  _container_tmp_expect DENY 'chronic container build /tmp/x'
+  _container_tmp_expect DENY 'ionice -c 3 container build /tmp/x'
+  _container_tmp_expect DENY 'watch -n 5 container build /tmp/x'
+  _container_tmp_expect DENY 'stdbuf -oL container build /tmp/x'
+  _container_tmp_expect DENY 'sudo nice nohup env A=1 timeout 5 container build /tmp/x' '' \
+    'stacked wrappers'
+  _container_tmp_expect DENY 'sudo container run -v /tmp/d:/d img'
+  _container_tmp_expect DENY 'cd /tmp/ctx && sudo container build .' '' \
+    'cd then a wrapped container build'
+
+  # sh -c / bash -c / zsh -c strings are re-scanned, up to depth 3 → DENY.
+  _container_tmp_expect DENY 'sh -c "container build /tmp/x"'
+  _container_tmp_expect DENY "bash -c 'container build /tmp/x'"
+  _container_tmp_expect DENY 'zsh -lc "cd /tmp && container build ."'
+  _container_tmp_expect DENY 'sudo bash -c "container run -v /tmp/d:/d img"'
+  _container_tmp_expect DENY "sh -c 'echo hi; container build /tmp/x'"
+  _container_tmp_expect DENY "env -S 'container build /tmp/x'"
+  _container_tmp_expect DENY "sh -c \"sh -c 'bash -c \\\"container build /tmp/x\\\"'\"" '' \
+    'sh -c nested to depth 3'
+
+  # Wrappers and shell strings that hold no tmp-rooted container call → PASS.
+  _container_tmp_expect PASS 'sudo container ls'
+  _container_tmp_expect PASS "sudo container build ${HOME}/x"
+  _container_tmp_expect PASS 'sh -c "container ls"'
+  _container_tmp_expect PASS 'sh -c "echo container build /tmp/x"'
+  _container_tmp_expect PASS 'nice echo container build /tmp/x'
+  _container_tmp_expect PASS 'echo "container build /tmp/x; ls"' '' \
+    'quoted text holding ; is one segment'
+  _container_tmp_expect PASS 'sudo env FOO=1 docker build /tmp/x'
+  _container_tmp_expect PASS 'timeout 5 container run img ls /tmp'
+  _container_tmp_expect PASS 'sh -c "container build ." ; cd /tmp' '' \
+    'cd after the sh -c does not change its cwd'
+  _container_tmp_expect PASS 'env cd /tmp && container build .' "${HOME}/Dev/x" \
+    'a wrapped cd changes no cwd'
+  # Declared gap: a string nested deeper than 3 levels is not scanned.
+  _container_tmp_expect PASS "sh -c \"sh -c 'sh -c \\\"sh -c \\\\\\\"container build /tmp/x\\\\\\\"\\\"'\"" '' \
+    'sh -c nested to depth 4 (declared gap)'
 
   # The deny reason names the fix (move under $HOME).
   if [[ "$(_container_tmp_run 'container build /tmp/ctx')" == *HOME* ]]; then

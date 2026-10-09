@@ -7,10 +7,11 @@
 #
 # Contract (2026-09-25): plain rm/unlink/shred/gshred at ANY command position
 # PASSES (the shell alias already trashes it). DENY is only the forms that
-# skip the alias: a quoted or escaped rm-family word; a wrapper that execs
-# its target directly; find/gfind/fd/fdfind with an rm-family target; a bare
-# rm-family word in a heredoc body fed to a shell not reached through
-# sudo/doas; `git clean -f`/`--force` without `-n`/`--dry-run`.
+# skip the alias: a quoted or escaped rm-family word; a path-qualified one
+# (2026-10-09); a wrapper that execs its target directly, sudo and doas
+# included; find/gfind/fd/fdfind with an rm-family target; a bare rm-family
+# word in a heredoc body or sh/bash/zsh/dash/ksh -c string (child shells have
+# no alias table); `git clean -f`/`--force` without `-n`/`--dry-run`.
 #
 # Run: ./test rm-redirect
 # ShellCheck: lint with `shellcheck --shell=bash tests/rm-redirect`.
@@ -157,10 +158,11 @@ function run_rm_redirect {
   # which _hook_verdict reads as INVALID, not PASS.
   _rm_redirect_expect PASS $'rm -rf a\nrm -rf b' 'two qualifying lines, both PASS'
 
-  # Escape hatches and non-rm command words → PASS, unchanged.
-  _rm_redirect_expect PASS '/bin/rm foo'
-  _rm_redirect_expect PASS 'sudo rm -rf /Library/x'
-  _rm_redirect_expect PASS 'sudo find /tmp -delete'    # sudo escapes by design, same as sudo rm
+  # Non-rm command words → PASS, unchanged. The old escape hatches (a
+  # path-qualified rm, sudo/doas) DENY since 2026-10-09: see the sections below.
+  _rm_redirect_expect DENY '/bin/rm foo'               'path-qualified rm denies'
+  _rm_redirect_expect DENY 'sudo rm -rf /Library/x'    'sudo is a BYPASS wrapper, not an escape'
+  _rm_redirect_expect DENY 'sudo find /tmp -delete'    'sudo find -delete is checked like find -delete'
   _rm_redirect_expect PASS 'git rm foo'
   _rm_redirect_expect PASS 'docker rm c1'
   _rm_redirect_expect PASS 'npm rm pkg'
@@ -169,34 +171,74 @@ function run_rm_redirect {
   _rm_redirect_expect PASS 'trash foo'
   _rm_redirect_expect PASS 'builtin rm foo'            # rm is not a zsh builtin — inert
   _rm_redirect_expect PASS 'find . -exec mv {} /tmp \;'      # non-rm -exec target
-  _rm_redirect_expect PASS 'find . -exec /bin/rm {} +'       # explicit-path escape, same as top-level /bin/rm
+  _rm_redirect_expect DENY 'find . -exec /bin/rm {} +'       'find -exec with a path-qualified rm target'
   _rm_redirect_expect PASS $'cat <<EOF > script.sh\nrm foo\nEOF' 'heredoc writing rm into a file it does not execute'
 
-  # sudo/doas escape EVERY class, not just top-level rm (hook header, "sudo/doas
-  # are a documented, deliberate, blanket escape").
-  _rm_redirect_expect PASS 'sudo git clean -fdx'                       'sudo escapes git clean too'
-  _rm_redirect_expect PASS $'sudo bash <<EOF\nrm foo\nEOF'             'sudo escapes a heredoc-to-shell body too'
-  _rm_redirect_expect PASS $'sudo -s <<EOF\nrm foo\nEOF'               'bare sudo -s heredoc: sudo itself is the consumer'
+  # sudo/doas are no escape (2026-10-09): every class is checked as if they
+  # were absent, and a body run by `sudo bash` has no alias table.
+  _rm_redirect_expect DENY 'sudo git clean -fdx'                       'sudo git clean is checked too'
+  _rm_redirect_expect DENY $'sudo bash <<EOF\nrm foo\nEOF'             'sudo bash heredoc body is scanned'
+  _rm_redirect_expect DENY $'sudo -s <<EOF\nrm foo\nEOF'               'bare sudo -s heredoc: sudo itself is the consumer'
+  _rm_redirect_expect DENY $'doas sh <<EOF\nrm foo\nEOF'               'doas sh heredoc body is scanned'
+  _rm_redirect_expect DENY 'doas rm foo'                               'doas rm'
+  _rm_redirect_expect DENY 'sudo -u root rm foo'                       'sudo operand flag walk'
+  _rm_redirect_expect DENY 'sudo -E -- rm foo'                         'sudo flags and --'
+  _rm_redirect_expect DENY 'sudo xargs rm'                             'sudo before xargs'
+  _rm_redirect_expect DENY 'sudo -s "rm foo"'                          'sudo -s with the command as one string'
+  _rm_redirect_expect DENY 'sudo \rm foo'                              'sudo before a decorated rm'
+  _rm_redirect_expect PASS 'sudo ls /tmp'                              'sudo before a harmless command'
+  _rm_redirect_expect PASS 'sudo git rm foo'                           'sudo git rm stays an argument'
+  _rm_redirect_expect PASS 'sudo -u root trash foo'                    'sudo trash'
+  _rm_redirect_expect DENY 'sudo rm foo' 'sudo rm deny reason' \
+    'exact command' 'sudo deny reason tells the agent to hand the user the command'
 
-  # A path-qualified rm-family word (2026-09-25) is the escape EVERYWHERE:
-  # after a BYPASS wrapper, xargs, or in a shell heredoc body.
-  _rm_redirect_expect PASS 'xargs -0 /bin/rm'                          'xargs with the /bin/rm escape'
-  _rm_redirect_expect PASS 'command /bin/rm foo'                       'command with the /bin/rm escape'
-  _rm_redirect_expect PASS $'bash <<EOF\n/bin/rm foo\nEOF'             'heredoc body: the /bin/rm escape applies there too'
+  # A path-qualified rm-family word denies EVERYWHERE (2026-10-09): bare, after
+  # a wrapper or xargs, as a find/fd target, in a shell heredoc body.
+  _rm_redirect_expect DENY 'xargs -0 /bin/rm'                          'xargs with a path-qualified rm'
+  _rm_redirect_expect DENY 'command /bin/rm foo'                       'command with a path-qualified rm'
+  _rm_redirect_expect DENY $'bash <<EOF\n/bin/rm foo\nEOF'             'heredoc body: a path-qualified rm denies there too'
+  _rm_redirect_expect DENY '/usr/bin/unlink foo'                       'path-qualified unlink'
+  _rm_redirect_expect DENY '/opt/homebrew/bin/gshred foo'              'path-qualified gshred'
+  _rm_redirect_expect DENY './rm foo'                                  'relative path-qualified rm'
+  _rm_redirect_expect DENY 'a && /bin/rm b'                            'path-qualified rm after &&'
+  _rm_redirect_expect DENY 'env FOO=1 /bin/rm foo'                     'path-qualified rm after env assignments'
+  _rm_redirect_expect DENY '/bin/rm foo' 'path-qualified rm deny reason' \
+    'exact /bin/rm command for their own terminal' 'path-qualified deny reason says to hand the user the /bin/rm command'
+  _rm_redirect_expect PASS 'ls /bin/rm'                                'path-qualified rm as an argument'
+  _rm_redirect_expect PASS 'cat /bin/rm-notes.txt'                     'path containing rm as an argument'
+  _rm_redirect_expect PASS '/bin/ls /tmp/rm'                           'path-qualified non-rm command'
 
   # command -v/-V is a lookup, not an invocation — never execs anything.
   _rm_redirect_expect PASS 'command -v rm'
   _rm_redirect_expect PASS 'command -V gshred'
 
-  # A path-qualified word skips alias lookup, so quoting or escaping it
-  # changes nothing.
-  _rm_redirect_expect PASS '"/bin/rm" foo'              'quoted absolute path'
-  _rm_redirect_expect PASS '\/bin/rm foo'               'escaped absolute path'
+  # A path-qualified word skips alias lookup and denies; quoting or escaping
+  # it changes nothing.
+  _rm_redirect_expect DENY '"/bin/rm" foo'              'quoted absolute path'
+  _rm_redirect_expect DENY '\/bin/rm foo'               'escaped absolute path'
 
-  # fd/fdfind -x/-X/--exec/--exec-batch, PASS side: non-rm target and the
-  # /bin/-qualified escape.
+  # fd/fdfind -x/-X/--exec/--exec-batch, PASS side: non-rm target. A path-
+  # qualified target denies (2026-10-09).
   _rm_redirect_expect PASS 'fd -e tmp -x mv {} /tmp'    'fd -x with a non-rm target'
-  _rm_redirect_expect PASS 'fd -x /bin/rm'              'fd -x with the /bin/rm escape'
+  _rm_redirect_expect DENY 'fd -x /bin/rm'              'fd -x with a path-qualified rm target'
+  _rm_redirect_expect DENY 'fd -x sudo rm'              'fd -x with sudo before the rm target'
+  _rm_redirect_expect DENY 'fd -X /usr/bin/unlink'      'fd -X with a path-qualified unlink target'
+  _rm_redirect_expect DENY 'fd --exec env rm {}'        'fd --exec with a wrapper before the rm target'
+  _rm_redirect_expect PASS 'fd -x echo rm {}'           'fd -x with rm as an argument'
+  _rm_redirect_expect DENY 'fd -x /bin/rm' 'fd path-qualified deny reason' \
+    'exact command for their own terminal' 'fd path-qualified deny reason says to hand the user the command'
+
+  # find -exec/-execdir/-ok/-okdir: the target resolves through the wrapper
+  # walk and path-qualified words deny (2026-10-09).
+  _rm_redirect_expect DENY 'find . -execdir /usr/bin/unlink {} \;'  'find -execdir with a path-qualified unlink'
+  _rm_redirect_expect DENY 'find . -ok /bin/rm {} \;'               'find -ok with a path-qualified rm'
+  _rm_redirect_expect DENY 'find . -exec sudo rm {} +'              'find -exec with sudo before rm'
+  _rm_redirect_expect DENY 'find . -exec nice -n 5 rm {} \;'        'find -exec with a wrapper and flag before rm'
+  _rm_redirect_expect DENY 'find . -exec "/bin/rm" {} +'            'find -exec with a quoted path-qualified rm'
+  _rm_redirect_expect PASS 'find . -exec echo rm {} \;'             'find -exec with rm as an argument'
+  _rm_redirect_expect PASS 'find . -exec git rm {} \;'              'find -exec with git rm'
+  _rm_redirect_expect DENY 'find . -exec /bin/rm {} +' 'find path-qualified deny reason' \
+    'exact command for their own terminal' 'find path-qualified deny reason says to hand the user the command'
 
   # env -S is NOT a declared gap (2026-09-25): it splits its string argument
   # and execs the result, the same BYPASS class as `env rm f`, so it DENIES.
@@ -366,6 +408,69 @@ function run_rm_redirect {
   _rm_redirect_expect DENY $'su - someone <<EOF\nrm foo\nEOF'   'su heredoc body has no alias either'
   _rm_redirect_expect DENY $'$SHELL <<EOF\nrm foo\nEOF'         'dynamic $-word consumer fails toward scanning'
 
+  # sh/bash/zsh/dash/ksh -c strings (2026-10-09): the string is re-scanned as a
+  # command, at most RM_MAX_DEPTH (3) levels deep, and runs in a child shell
+  # with no alias table, so a bare rm inside it denies too.
+  _rm_redirect_expect DENY "bash -c 'rm foo'"                          'bash -c string with a bare rm'
+  _rm_redirect_expect DENY 'sh -c "rm foo"'                            'sh -c double-quoted string'
+  _rm_redirect_expect DENY "zsh -c 'ls; rm foo'"                       'zsh -c string, rm after a separator'
+  _rm_redirect_expect DENY "dash -c 'rm foo'"                          'dash -c'
+  _rm_redirect_expect DENY "ksh -c 'rm foo'"                           'ksh -c'
+  _rm_redirect_expect DENY "bash -lc 'rm foo'"                         'combined -lc flag'
+  _rm_redirect_expect DENY "bash --norc -c 'rm foo'"                   '-c after a long option'
+  _rm_redirect_expect DENY "bash -c 'rm foo' arg0"                     '-c string followed by arguments'
+  _rm_redirect_expect DENY "/bin/bash -c 'rm foo'"                     'path-qualified shell'
+  _rm_redirect_expect DENY "sudo bash -c 'rm foo'"                     'sudo before the shell'
+  _rm_redirect_expect DENY "env FOO=1 sh -c 'rm foo'"                  'env before the shell'
+  _rm_redirect_expect DENY "nohup bash -c 'rm foo'"                    'nohup before the shell'
+  _rm_redirect_expect DENY "xargs -I{} sh -c 'rm {}'"                  'xargs sh -c string'
+  _rm_redirect_expect DENY "bash -c 'find . -delete'"                  'find -delete inside a -c string'
+  _rm_redirect_expect DENY "bash -c 'git clean -fdx'"                  'git clean inside a -c string'
+  _rm_redirect_expect DENY "bash -c '/bin/rm foo'"                     'path-qualified rm inside a -c string'
+  _rm_redirect_expect DENY "bash -c 'sudo rm foo'"                     'sudo rm inside a -c string'
+  _rm_redirect_expect DENY "bash -c 'xargs rm'"                        'xargs rm inside a -c string'
+  _rm_redirect_expect DENY "bash -c \"bash -c 'rm foo'\""              'two levels of -c'
+  _rm_redirect_expect DENY "bash -c \"sh -c \\\"sh -c 'rm foo'\\\"\""  'three levels of -c, at the depth bound'
+  _rm_redirect_expect PASS "bash -c \"sh -c \\\"sh -c \\\\\\\"sh -c 'rm foo'\\\\\\\"\\\"\"" 'four levels of -c, past the depth bound, fails open'
+  _rm_redirect_expect DENY "bash -c 'rm foo' 'bar'; ls"               '-c string then another command'
+  _rm_redirect_expect PASS "bash -c 'echo hi'"                         'harmless -c string'
+  _rm_redirect_expect PASS "bash -c 'git rm foo'"                      'git rm inside a -c string'
+  _rm_redirect_expect PASS "bash -c 'echo rm'"                         'rm as an argument inside a -c string'
+  _rm_redirect_expect PASS 'bash script.sh rm'                         'a script argument, no -c'
+  _rm_redirect_expect PASS 'bash -c'                                   '-c with no string'
+  # A quoted string that runs on over several lines is one -c string.
+  _rm_redirect_expect DENY $'bash -c \'true\nrm foo\''                 'multi-line single-quoted -c string'
+  _rm_redirect_expect DENY $'bash -c "set -e\n  rm foo\n"'             'multi-line double-quoted -c string'
+  _rm_redirect_expect DENY $'sudo bash -c \'\nunlink foo\n\''          'multi-line -c string opened on an empty line'
+  _rm_redirect_expect PASS $'bash -c \'true\nls\n\''                   'multi-line -c string with no rm'
+  _rm_redirect_expect PASS $'git commit -m "a\nb rm"'                  'multi-line quoted text under a non-shell command'
+
+  # A quoted string is ONE word (2026-10-09), so spaces inside it no longer
+  # shift the walk: `-C "my dir"` skips one operand, `-name "a b"` is one word.
+  _rm_redirect_expect DENY 'git -C "my dir" clean -fdx'                'quoted operand with a space before clean'
+  _rm_redirect_expect DENY 'find . -name "a b" -delete'                'quoted find operand with a space'
+  _rm_redirect_expect PASS 'echo "rm foo"'                             'a quoted string holding rm is one non-rm word'
+  _rm_redirect_expect DENY 'env -S "rm foo"'                           'env -S string is split back into words'
+
+  # Wrappers caffeinate, arch, chronic, ionice and watch exec their target
+  # directly (2026-10-09), like nice and nohup.
+  _rm_redirect_expect DENY 'caffeinate rm foo'                         'caffeinate rm'
+  _rm_redirect_expect DENY 'caffeinate -t 5 rm foo'                    'caffeinate operand flag'
+  _rm_redirect_expect DENY 'arch -arm64 rm foo'                        'arch rm'
+  _rm_redirect_expect DENY 'arch -arch x86_64 rm foo'                  'arch -arch operand'
+  _rm_redirect_expect DENY 'chronic rm foo'                            'chronic rm'
+  _rm_redirect_expect DENY 'ionice -c 3 rm foo'                        'ionice operand flag'
+  _rm_redirect_expect DENY 'watch rm foo'                              'watch rm'
+  _rm_redirect_expect DENY 'watch -n 5 rm foo'                         'watch operand flag'
+  _rm_redirect_expect DENY 'watch -n 5 "rm foo"'                       'watch with the command as one string'
+  _rm_redirect_expect DENY 'caffeinate /bin/rm foo'                    'caffeinate before a path-qualified rm'
+  _rm_redirect_expect DENY 'caffeinate -i find . -delete'              'caffeinate before find -delete'
+  _rm_redirect_expect DENY $'caffeinate bash <<EOF\nrm foo\nEOF'       'caffeinate before a shell heredoc'
+  _rm_redirect_expect PASS 'caffeinate -t 5 ls'                        'caffeinate before a harmless command'
+  _rm_redirect_expect PASS 'watch -n 5 ls'                             'watch before a harmless command'
+  _rm_redirect_expect DENY 'caffeinate rm foo' 'caffeinate deny reason' \
+    'caffeinate rm' 'caffeinate is named in the deny reason'
+
   # A remote ssh command line is a declared gap (hook header, "Declared
   # gaps"): the remote alias table is invisible to the hook.
   _rm_redirect_expect PASS 'ssh host rm -rf /tmp/x'  'declared gap: a remote command line is not this shell'
@@ -423,15 +528,15 @@ function run_rm_redirect {
   fi
 
   # Case variants at a command position DENY: the alias is case-sensitive,
-  # the filesystem is not (2026-09-29). Path-qualified and non-command-position
-  # variants stay PASS.
+  # the filesystem is not (2026-09-29). A path-qualified variant denies too
+  # (2026-10-09); a non-command-position variant stays PASS.
   _rm_redirect_expect DENY 'RM foo'
   _rm_redirect_expect DENY 'Rm -rf foo'
   _rm_redirect_expect DENY 'UNLINK foo'
   _rm_redirect_expect DENY 'Shred foo'
   _rm_redirect_expect DENY 'a && RM b'                   'case variant after &&'
   _rm_redirect_expect DENY $'ls\nRM b'                   'case variant on a later line'
-  _rm_redirect_expect PASS '/bin/RM foo'                 'path-qualified case variant'
+  _rm_redirect_expect DENY '/bin/RM foo'                 'path-qualified case variant'
   _rm_redirect_expect PASS 'echo RM foo'                 'case variant as an argument'
   _rm_redirect_expect PASS 'RMDIR foo'                   'non-rm-family word in capitals'
 
@@ -440,7 +545,9 @@ function run_rm_redirect {
   local shape reason
   for shape in '\rm foo' 'RM foo' 'xargs rm' 'command rm foo' 'find . -delete' \
                'find . -exec rm {} +' 'fd -X rm' 'fd --exec rm' 'git clean -fdx' \
-               $'bash <<EOF\nrm x\nEOF' 'nocorrect \rm foo' 'env rm foo'; do
+               $'bash <<EOF\nrm x\nEOF' 'nocorrect \rm foo' 'env rm foo' \
+               '/bin/rm foo' '/usr/bin/unlink foo' 'sudo rm foo' 'doas find . -delete' \
+               'find . -exec /bin/rm {} +' 'fd -x /bin/rm' "bash -c 'rm foo'" 'watch rm foo'; do
     reason="$(_rm_redirect_run "${shape}" | jq -r '.hookSpecificOutput.permissionDecisionReason // empty')" || reason=''
     if [[ -n "${reason}" && "${reason}" != *$'\n'* && ${#reason} -le 120 \
           && "${reason}" == *': '* && "${reason}" == *. ]]; then

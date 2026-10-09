@@ -3,12 +3,13 @@
 #
 # Behavioural test for claude/hooks/md5-write-hook — the PreToolUse hook that DENIES
 # a write putting MD5 into a file. Feeds tool payloads as stdin JSON and
-# asserts the verdict: DENY for MD5 call sites in source; PASS for SHA-256,
-# MD5 in a comment, prose files, content naming the guard, and words that
-# merely contain md5.
+# asserts the verdict: DENY for MD5 call sites in source, including content that
+# names the old skip token (the hook has no override); PASS for SHA-256, MD5 in
+# a comment, prose files, and words that merely contain md5.
 #
-# The hook blocks, so a false positive costs work: three exemptions, no path
-# allowlist (a path list rots and would have to name this suite).
+# The hook blocks, so a false positive costs work: two exemptions (comments,
+# prose files), no path allowlist (a path list rots and would have to name this
+# suite).
 #
 # Run: ./test md5-write    (or ./test for the full suite)
 #
@@ -118,25 +119,33 @@ crypto.createHash("md5")' 'URL on one line, a real call on the next'
   _md5_write_expect PASS /x/NOTES.RST 'CC_MD5 appears here' 'rst, uppercase path'
   _md5_write_expect PASS /x/a.adoc 'hashlib.md5 is banned.' 'asciidoc'
 
-  # Exemption 3: content naming the guard exempts itself (how the hook and this
-  # suite avoid blocking themselves). Checked on the ORIGINAL content: the
-  # marker normally sits in a comment, and comments are stripped.
-  _md5_write_expect PASS /x/a.py '# MD5_GUARD_SKIP: vendor publishes md5 only
-h = hashlib.md5(d)' 'content naming the guard, in a comment'
+  # No override (2026-10-09): content that names the old skip token is judged
+  # like any other content. The token in a comment, in code and in a string
+  # all still deny.
+  _md5_write_expect DENY /x/a.py '# MD5_GUARD_SKIP: vendor publishes md5 only
+h = hashlib.md5(d)' 'skip token in a comment no longer exempts the content'
+  _md5_write_expect DENY /x/a.py 'MD5_GUARD_SKIP = 1
+h = hashlib.md5(d)' 'skip token in code no longer exempts the content'
+  _md5_write_expect DENY /x/a.sh 'MD5_GUARD_SKIP=1 md5sum f' 'skip token as a command prefix no longer exempts the content'
+  _md5_write_expect DENY /x/a.js 'const s = "MD5_GUARD_SKIP"; crypto.createHash("md5")' 'skip token in a string no longer exempts the content'
+  _md5_write_expect DENY /x/a.py '# MD5_GUARD_SKIP
+h = hashlib.md5(d)' 'skip token in an Edit payload no longer exempts the content' _md5_write_run_edit
+  _md5_write_expect DENY /x/a.ipynb '# MD5_GUARD_SKIP
+h = hashlib.md5(d)' 'skip token in a NotebookEdit payload no longer exempts the content' _md5_write_run_notebook
 
   # Words that merely contain md5 → PASS (the call-site match must stay narrow).
   _md5_write_expect PASS /x/a.py 'md5_path = "/tmp/x"' 'variable named md5_path'
   _md5_write_expect PASS /x/a.py 'p = "md5.txt"' 'filename containing md5'
   _md5_write_expect PASS /x/a.py 'def _md5_guard_split(s): pass' 'function name containing md5'
 
-  # Bypass exported in the hook's own environment (session-wide): any
-  # non-empty value exempts; an empty export exempts nothing.
+  # The old skip variable exported in the hook's own environment exempts
+  # nothing, set or empty (2026-10-09).
   local skip_out
   skip_out="$(_md5_write_run_skip 1 /x/a.py 'h = hashlib.md5(d)')"
-  if [[ "$(_hook_verdict "${skip_out}")" == PASS ]]; then
-    _pass "PASS: exported MD5_GUARD_SKIP=1 exempts the write"
+  if [[ "$(_hook_verdict "${skip_out}")" == DENY ]]; then
+    _pass "DENY: exported MD5_GUARD_SKIP=1 no longer exempts the write"
   else
-    _fail "exported MD5_GUARD_SKIP=1 did not exempt the write"
+    _fail "exported MD5_GUARD_SKIP=1 still exempts the write"
   fi
   skip_out="$(_md5_write_run_skip '' /x/a.py 'h = hashlib.md5(d)')"
   if [[ "$(_hook_verdict "${skip_out}")" == DENY ]]; then
@@ -178,10 +187,11 @@ h = hashlib.md5(d)' 'content naming the guard, in a comment'
   else
     _fail "deny reason does not say the write was blocked"
   fi
-  if [[ "${reason}" == *MD5_GUARD_SKIP* ]]; then
-    _pass "deny reason names the escape hatch"
+  if [[ "${reason}" == *"no agent override"* && "${reason}" == *"hand the user"* \
+     && "${reason}" != *MD5_GUARD_SKIP* ]]; then
+    _pass "deny reason says no agent override and names no skip token"
   else
-    _fail "deny reason does not name the escape hatch"
+    _fail "deny reason does not say no agent override, or still names MD5_GUARD_SKIP"
   fi
   out="$(_md5_write_run_notebook /x/a.ipynb 'h = hashlib.md5(d)')"
   reason="$(printf '%s' "${out}" | jq -er '.hookSpecificOutput.permissionDecisionReason' 2>/dev/null)" || reason=""
