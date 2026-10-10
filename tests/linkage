@@ -188,6 +188,32 @@ function _linkage_test_hooks_path {
   /bin/rm -rf "${fixture}"
 }
 
+function _linkage_foreign_bin_target {
+  # _bin_target_is_foreign: a regular file at a bin_files target belongs to
+  # another installation and must be left alone; a link or nothing is ours to
+  # (re)create. Sourced from bittersweet the same way as the bao migration.
+  (
+    local fixture
+    fixture="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/linkage-foreign.XXXXXX")" || return 1
+    trap '/bin/rm -rf -- "${fixture}"' EXIT
+    # shellcheck disable=SC1090,SC1091
+    source <(/usr/bin/awk '
+      /^function _bin_target_is_foreign / { block = 1 }
+      block { print }
+      /^}$/ { block = 0 }
+    ' "${SCRIPT_DIR}/bittersweet")
+    print '#!/bin/sh' > "${fixture}/copy"
+    /bin/chmod 755 "${fixture}/copy"
+    /bin/ln -s "${SCRIPT_DIR}/bin/dns" "${fixture}/link"
+    /bin/ln -s "${fixture}/nowhere" "${fixture}/dangling"
+    _bin_target_is_foreign "${fixture}/copy" || return 1          # regular file: foreign
+    ! _bin_target_is_foreign "${fixture}/link" || return 1        # our kind of link: not foreign
+    ! _bin_target_is_foreign "${fixture}/dangling" || return 1    # dangling link: not foreign
+    ! _bin_target_is_foreign "${fixture}/absent" || return 1      # nothing there: not foreign
+    return 0
+  )
+}
+
 function _linkage_bao_migration {
   (
     local fixture_home replacement legacy
@@ -242,6 +268,12 @@ function run_linkage {
     _pass "bao migration preserves legacy paths until an executable replacement exists"
   else
     _fail "bao migration removed an unready or unrelated installation"
+  fi
+
+  if _linkage_foreign_bin_target; then
+    _pass "install_scripts leaves a regular file at a bin target alone and relinks links or empty paths"
+  else
+    _fail "a regular file at a bin target would be replaced, or a link or empty path would be skipped"
   fi
 
   _linkage_test_hooks_path

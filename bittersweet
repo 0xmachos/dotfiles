@@ -760,6 +760,10 @@ function install_scripts {
   # chmod -h after ln: umask 077 makes lrwx------, which blocks readlink(2) for
   # non-root (XNU checks KAUTH_VNODE_READ_DATA on symlinks despite symlink(7)).
   for bin_file in "${bin_files[@]}"; do
+    if _bin_target_is_foreign "/usr/local/bin/${bin_file}"; then
+      echo "[ℹ️ ] Left /usr/local/bin/${bin_file} alone: a regular file from another installation, not a link"
+      continue
+    fi
     if sudo ln -sfn "${SCRIPT_DIR}/bin/${bin_file}" "/usr/local/bin/${bin_file}"; then
       sudo chmod -h 755 "/usr/local/bin/${bin_file}"
       echo "[✅] Successfully linked ${bin_file} to /usr/local/bin/${bin_file}"
@@ -1276,6 +1280,15 @@ function install_oversight {
   defaults write com.objective-see.OverSight startAtLogin  -bool true
 } 
 
+
+function _bin_target_is_foreign {
+  # True when $1 exists and is not a symlink: a regular file put there by
+  # another installation (2026-10-10: a host-specific copy of a tool with the
+  # same name, installed root-owned by a different deploy). `ln -sfn` would
+  # replace it with a link to the repo version, which is wrong for that host,
+  # so install_scripts leaves it alone and says so.
+  [[ -e "$1" && ! -L "$1" ]]
+}
 
 function _retire_bao_mcp_link {
   # Leaves regular files and links owned by another installation untouched.
