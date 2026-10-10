@@ -81,7 +81,6 @@ typeset -ra BITTERSWEET_SUBCOMMANDS=(
 typeset -ra LAUNCHAGENT_PLISTS=(
   com.0xmachos.jump-user
   com.0xmachos.imageio-oop
-  com.0xmachos.retrieval-metrics
   com.0xmachos.container-start
   com.0xmachos.scratch-sweep
 )

@@ -342,7 +342,7 @@ function _jump_test_launchd_program_outside_documents {
 
 # argv[0] is the exec target and must never sit under ~/Documents (the hard
 # failure above). Later arguments are payloads for an interpreter, e.g.
-# /bin/zsh -c '... retrieval-metrics.py': a READ, not an exec, so no 127. They
+# /bin/zsh -c '... script.py': a READ, not an exec, so no 127. They
 # rely on the interpreter's Documents grant and hang on an invisible consent
 # dialog when it resets. Reported, not failed: the /bin/zsh wrapper is
 # deliberate.
