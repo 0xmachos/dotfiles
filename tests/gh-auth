@@ -9,7 +9,8 @@
 #     signature is a Secure Enclave operation).
 #   push credential — gh token scopes within GH_AUTH_ALLOWED_SCOPES (repo,
 #     read:org, gist are gh's minimum; workflow pushes under
-#     .github/workflows/); credential.helper for github.com and
+#     .github/workflows/; write:packages kept 2026-10-10 as part of the
+#     token's standing scope set); credential.helper for github.com and
 #     gist.github.com is [blank, gh] per .config/git/config; no keychain
 #     internet password for either host (metadata only, secret never read);
 #     no token line in hosts.yml; no ~/.git-credentials or ~/.netrc.
@@ -27,7 +28,7 @@
 # shellcheck source=tests/lib
 
 # Any other scope fails, with the removal command in the message.
-readonly -a GH_AUTH_ALLOWED_SCOPES=(repo read:org gist workflow)
+readonly -a GH_AUTH_ALLOWED_SCOPES=(repo read:org gist workflow write:packages)
 
 function _gha_signing {
   _section "gh-auth — signing is Secretive-gated"
