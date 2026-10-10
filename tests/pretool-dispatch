@@ -717,7 +717,7 @@ function _ptd_settings_shape {
   # home directory and serves every Mac.
   local settings="${1:-${SCRIPT_DIR}/claude/settings.json}"
   # shellcheck disable=SC2088  # a literal ~: Claude Code expands it, not the shell
-  local moddirs='~/.claude/mods/pretool-prefilter:~/.claude/mods/git-sign-post:~/.claude/mods/session-title'
+  local moddirs='~/.claude/mods/pretool-prefilter:~/.claude/mods/git-sign-post:~/.claude/mods/session-title:~/.claude/mods/herdr-tab-title'
   _section "pretool-dispatch: settings registration shape"
 
   if [[ ! -f "${settings}" ]]; then
