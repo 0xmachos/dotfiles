@@ -19,6 +19,14 @@ mode = "off"
 name = "terminal"
 auto_switch = false
 
+# Status colours (red = blocked, yellow = working, teal = done, green = idle):
+# the terminal palette's dark ANSI values sat too close together.
+[theme.custom]
+red = "#ff5c5c"
+yellow = "#ffd166"
+teal = "#4ecdc4"
+green = "#7ee787"
+
 [update]
 channel = "preview"
 
@@ -47,12 +55,17 @@ tab_bar_right_separator = " · "
 [ui.toast]
 delivery = "terminal"
 
-# Agent rows follow each session's terminal title (Claude Code keeps it
-# updated), not a fixed directory name; the spaces panel names the workspace.
+# Agent rows: a bold state mark, the state word in the same colour, then the
+# session's terminal title (Claude Code keeps it updated); the spaces panel
+# names the workspace.
 [ui.sidebar.agents]
 row_gap = 1
 rows = [
-  [{ token = "state_icon" }, { token = "terminal_title_stripped", bold = true }],
+  [
+    { token = "state_icon", bold = true },
+    { token = "state_text", bold = true },
+    { token = "terminal_title_stripped", bold = true },
+  ],
 ]
 
 [ui.sidebar.spaces]
