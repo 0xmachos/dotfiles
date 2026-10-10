@@ -17,7 +17,10 @@
 #   - `token revoke -self` fires exactly once, on success and on kv failure;
 #   - a malformed field name aborts rather than reaching `eval`;
 #   - exit codes: 64 usage, 1 on every credential/login/read failure; kv is
-#     never read after a login failure, revoke never skipped after a kv one.
+#     never read after a login failure, revoke never skipped after a kv one;
+#   - exit 65 and no exec when a field would reach argv, as a $F or ${F}
+#     reference or a pasted literal of 8 or more characters (2026-10-10); a
+#     NAME="$F" prefix at the start of an argument passes and the child sees it.
 #
 # Run: ./test bao-mcp-env
 # ShellCheck: lint with `shellcheck --shell=bash tests/bao-mcp-env`.
@@ -27,7 +30,7 @@
 # shellcheck disable=SC2016,SC2329
 
 typeset -g BME_T='' BME_REC='' BME_HOME='' BME_CRED_DIR='' BME_BIN='' BME_FX=''
-typeset -g BME_RC=0
+typeset -g BME_RC=0 BME_CHILD='' BME_KEY_VALUE=''
 typeset -ga BME_EXTRA=()
 
 function _bme_setup {
@@ -357,6 +360,138 @@ function _bme_test_malformed_field {
   _bme_expect_not_out '^not a valid name=' "malformed field never exported"
 }
 
+# A child that records its start in the record dir and prints its environment.
+# A refusal case proves "the child never ran" by the absent marker.
+function _bme_write_child {
+  BME_CHILD="${BME_T}/child"
+  printf '%s\n' '#!/bin/sh' ": > \"${BME_REC}/child-ran\"" '/usr/bin/env' > "${BME_CHILD}"
+  zf_chmod 700 "${BME_CHILD}"
+}
+
+# One refusal case: <label> <field the message must name> <command and args...>.
+function _bme_expect_refused {
+  local label="$1" field="$2"
+  shift 2
+  _bme_run mcp/example-service "$@"
+  _bme_expect_rc 65 "${label}"
+  _bme_expect_err "bao-mcp-env: field ${field} would reach argv; pass it as an env prefix" "${label}: message names the field and the fix"
+  if [[ -s "${BME_T}/out" ]]; then
+    _fail "${label}: stdout is not empty"
+  else
+    _pass "${label}: stdout empty"
+  fi
+  if [[ -e "${BME_REC}/child-ran" ]]; then
+    _fail "${label}: the child ran despite the refusal"
+  else
+    _pass "${label}: the child never ran"
+  fi
+  if _bme_has "${BME_T}/err" "${BME_KEY_VALUE}"; then
+    _fail "${label}: the message echoes a field value"
+  else
+    _pass "${label}: the message does not echo the value"
+  fi
+  if [[ "$(_bme_calls)" == 3 ]] && _bme_has "${BME_REC}/argv.3" '^revoke$'; then
+    _pass "${label}: the token was revoked, exactly once"
+  else
+    _fail "${label}: expected login + kv + one revoke (3 bao calls), got $(_bme_calls)"
+  fi
+}
+
+# One passing case: <label> <command and args...>; the child must run.
+function _bme_expect_runs {
+  local label="$1"
+  shift
+  _bme_run mcp/example-service "$@"
+  _bme_expect_rc 0 "${label}"
+  if [[ -e "${BME_REC}/child-ran" ]]; then
+    _pass "${label}: the child ran"
+  else
+    _fail "${label}: the child did not run; stderr: $(/usr/bin/head -c 200 "${BME_T}/err")"
+  fi
+}
+
+function _bme_test_argv_refusal {
+  _section "bao-mcp-env: refuses a field that would reach argv"
+
+  _bme_write_creds
+  _bme_write_child
+  # Fixture values are obvious fakes. MCP_API_KEY holds 8 or more characters,
+  # MCP_PORT fewer. Neither name is special-cased by the tool.
+  BME_KEY_VALUE='fake-key-value-1'
+  printf '{"data":{"data":{"MCP_API_KEY":"%s","MCP_PORT":"8200"}}}' "${BME_KEY_VALUE}" > "${BME_T}/argv.json"
+  local json="FAKE_BAO_KV_JSON=${BME_T}/argv.json"
+  local child="${BME_CHILD}"
+
+  # Rule 1: a $F or ${F} reference in an argument.
+  BME_EXTRA=("${json}")
+  _bme_expect_refused "flag then \$F in a shell string" MCP_API_KEY \
+    /bin/sh -c "exec \"${child}\" -H x \"\$MCP_API_KEY\""
+  BME_EXTRA=("${json}")
+  _bme_expect_refused "positional \$F argument" MCP_API_KEY \
+    "${child}" '$MCP_API_KEY'
+  BME_EXTRA=("${json}")
+  _bme_expect_refused "\${F} form" MCP_API_KEY \
+    /bin/sh -c "exec \"${child}\" \"\${MCP_API_KEY}\""
+  BME_EXTRA=("${json}")
+  _bme_expect_refused "\${F:-x} form" MCP_API_KEY \
+    /bin/sh -c "exec \"${child}\" \"\${MCP_API_KEY:-x}\""
+  BME_EXTRA=("${json}")
+  _bme_expect_refused "a short field is still refused by reference, second field named" MCP_PORT \
+    "${child}" '--port=$MCP_PORT'
+  BME_EXTRA=("${json}")
+  _bme_expect_refused "prefix not at the start of the argument" MCP_API_KEY \
+    /bin/sh -c "exec env X=\"\$MCP_API_KEY\" \"${child}\""
+  BME_EXTRA=("${json}")
+  _bme_expect_refused "reference after a prefix" MCP_API_KEY \
+    /bin/sh -c "X=1 exec \"${child}\" \"\$MCP_API_KEY\""
+  BME_EXTRA=("${json}")
+  _bme_expect_refused "command substitution inside a prefix" MCP_API_KEY \
+    /bin/sh -c "X=\"\$(echo \"\$MCP_API_KEY\")\" exec \"${child}\""
+  BME_EXTRA=("${json}")
+  _bme_expect_refused "prefix whose quote does not close before the command" MCP_API_KEY \
+    /bin/sh -c "X=\"\$MCP_API_KEY exec \"${child}\""
+
+  # Rule 2: a pasted literal of 8 or more characters.
+  BME_EXTRA=("${json}")
+  _bme_expect_refused "literal value as an argument" MCP_API_KEY \
+    "${child}" "${BME_KEY_VALUE}"
+  BME_EXTRA=("${json}")
+  _bme_expect_refused "literal value inside a longer argument" MCP_API_KEY \
+    "${child}" "--key=${BME_KEY_VALUE}"
+  BME_EXTRA=("${json}")
+  _bme_expect_refused "literal value inside a prefix of a shell string" MCP_API_KEY \
+    /bin/sh -c "X='${BME_KEY_VALUE}' exec \"${child}\""
+
+  # Passing shapes.
+  BME_EXTRA=("${json}")
+  _bme_expect_runs "a value shorter than 8 characters as an argument is not refused" \
+    "${child}" 8200
+  BME_EXTRA=("${json}")
+  _bme_expect_runs "a longer variable name that starts with the field name (\$MCP_API_KEY_OTHER)" \
+    /bin/sh -c "exec \"${child}\" \"\$MCP_API_KEY_OTHER\""
+
+  BME_EXTRA=("${json}")
+  _bme_expect_runs "env prefix NAME=\"\$F\" exec prog" \
+    /bin/sh -c "API_ACCESS_TOKEN=\"\$MCP_API_KEY\" exec \"${child}\""
+  _bme_expect_out '^API_ACCESS_TOKEN=fake-key-value-1$' "env prefix: the child sees the prefix variable"
+  _bme_expect_out '^MCP_API_KEY=fake-key-value-1$' "env prefix: the child still gets the field itself"
+
+  BME_EXTRA=("${json}")
+  _bme_expect_runs "two env prefixes" \
+    /bin/sh -c "A=\"\$MCP_API_KEY\" B=\"\${MCP_API_KEY}\" exec \"${child}\""
+  _bme_expect_out '^A=fake-key-value-1$' "two prefixes: first reaches the child"
+  _bme_expect_out '^B=fake-key-value-1$' "two prefixes: second reaches the child"
+
+  BME_EXTRA=("${json}")
+  _bme_expect_runs "bare, single-quoted and double-quoted prefixes" \
+    /bin/sh -c "A=plain B='one \$MCP_API_KEY' C=\"\$MCP_API_KEY\" exec \"${child}\""
+  _bme_expect_out '^C=fake-key-value-1$' "mixed prefixes: the double-quoted one expands"
+
+  BME_EXTRA=("${json}")
+  _bme_expect_runs "prefix after leading blanks" \
+    /bin/sh -c "  API_ACCESS_TOKEN=\"\$MCP_API_KEY\"   exec \"${child}\""
+}
+
 function run_bao_mcp_env {
   if [[ ! -x "${SCRIPT_DIR}/bin/bao-mcp-env" || ! -x "${SCRIPT_DIR}/tests/fixtures/bao-mcp-env/fake-bao" ]]; then
     _skip "bao-mcp-env: bin/bao-mcp-env or its fake-bao fixture is missing"
@@ -375,5 +510,6 @@ function run_bao_mcp_env {
   _bme_test_kv_failure
   _bme_test_success
   _bme_test_malformed_field
+  _bme_test_argv_refusal
   _bme_teardown
 }

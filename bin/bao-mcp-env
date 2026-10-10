@@ -16,7 +16,26 @@
 # Re-authenticates every call (reusable SecretID). The token is revoked BEFORE
 # exec (an EXIT trap would die with the process image) and BAO_TOKEN unset, so
 # the command never inherits it.
+#
+# 2026-10-10: refuses (exit 65) to exec when any field of the secret would
+# reach the command's argv. ps(1) shows every process's argv to every local
+# user, so a field passed as an argument is readable for the process's whole
+# life; an environment variable is not. Two checks run over the command and
+# its arguments after the secret is read and the token is revoked, before the
+# eval and exec. (1) A `$F` or `${F}` reference to any field name F in an
+# argument is refused, after stripping NAME=VALUE assignment prefixes (bare,
+# "double" or 'single' quoted) from the START of that argument: the safe shape
+# is NAME="$F" exec prog ..., where the shell hands $F to prog as environment.
+# A prefix that is not at the start (`exec env X="$F" prog`) is refused. A
+# value holding command substitution is never stripped. (2) A field VALUE of 8
+# or more characters appearing as a substring of any argument (a pasted
+# literal) is refused. Shorter values (ports, short hosts) are skipped on
+# purpose: they would match ordinary text. Field names are not special-cased.
+# The message names the field and the fix, never the value.
 
+# SC2016: the single-quoted $ strings are literal patterns and a jq program.
+# SC2295: the blank set in the unquoted bracket pattern is deliberate.
+# shellcheck disable=SC2016,SC2295
 set -eu
 
 # Seams (tests/bao-mcp-env): BAO_MCP_ENV_BAO, BAO_MCP_ENV_JQ. CRED_DIR has
@@ -83,6 +102,91 @@ exports="$(printf '%s' "$secret_json" | "$JQ" -r '
     | if (.key | test("^[A-Za-z_][A-Za-z0-9_]*$")) then .
       else error("invalid env var name: \(.key)") end
     | "export \(.key)=\(.value | @sh)"')"
+
+# --- argv refusal (see header). Helper variables carry a _bme_ prefix: a
+# plain name could collide with a variable the caller exported, and the
+# assignment would then change what the child sees. The check runs before the
+# eval, so a field can never shadow a helper. -------------------------------
+_bme_nl='
+'
+_bme_tab="$(printf '\t')"
+
+_bme_refuse() {
+    echo "bao-mcp-env: field $1 would reach argv; pass it as an env prefix (NAME=\"\$$1\" exec ...)" >&2
+    exit 65
+}
+
+# Sets _bme_stripped to $1 without leading blanks and NAME=VALUE prefixes. A
+# prefix it cannot parse safely stays in place, so the caller errs toward
+# refusing.
+_bme_strip_assignments() {
+    _bme_s="$1"
+    while :; do
+        case "$_bme_s" in
+            ' '*|"$_bme_tab"*|"$_bme_nl"*) _bme_s="${_bme_s#?}"; continue ;;
+        esac
+        case "$_bme_s" in
+            [A-Za-z_]*=*) ;;
+            *) break ;;
+        esac
+        case "${_bme_s%%=*}" in *[!A-Za-z0-9_]*) break ;; esac
+        _bme_rest="${_bme_s#*=}"
+        case "$_bme_rest" in
+            \"*)
+                _bme_body="${_bme_rest#\"}"
+                case "$_bme_body" in *\"*) ;; *) break ;; esac
+                _bme_val="${_bme_body%%\"*}"
+                _bme_tail="${_bme_body#*\"}" ;;
+            \'*)
+                _bme_body="${_bme_rest#\'}"
+                case "$_bme_body" in *\'*) ;; *) break ;; esac
+                _bme_val="${_bme_body%%\'*}"
+                _bme_tail="${_bme_body#*\'}" ;;
+            *)
+                _bme_val="${_bme_rest%%[ ${_bme_tab}${_bme_nl}]*}"
+                _bme_tail="${_bme_rest#"$_bme_val"}" ;;
+        esac
+        case "$_bme_val" in *'$('*|*'`'*) break ;; esac
+        case "$_bme_tail" in
+            ''|' '*|"$_bme_tab"*|"$_bme_nl"*) ;;
+            *) break ;;
+        esac
+        _bme_s="$_bme_tail"
+    done
+    _bme_stripped="$_bme_s"
+}
+
+# True when $1 holds $2 as $F or ${F...}. A longer name ($FOO for field F) is
+# another variable and does not count.
+_bme_refs_field() {
+    for _bme_pre in '$' '${'; do
+        _bme_t="$1"
+        while :; do
+            case "$_bme_t" in *"$_bme_pre$2"*) ;; *) break ;; esac
+            _bme_t="${_bme_t#*"$_bme_pre$2"}"
+            case "$_bme_t" in
+                [A-Za-z0-9_]*) ;;
+                *) return 0 ;;
+            esac
+        done
+    done
+    return 1
+}
+
+_bme_names="$(printf '%s' "$secret_json" | "$JQ" -r '.data.data | keys[]')"
+for _bme_fld in $_bme_names; do
+    _bme_fval="$(printf '%s' "$secret_json" | "$JQ" -r --arg k "$_bme_fld" '.data.data[$k] | tostring')"
+    for _bme_arg in "$@"; do
+        _bme_strip_assignments "$_bme_arg"
+        if _bme_refs_field "$_bme_stripped" "$_bme_fld"; then
+            _bme_refuse "$_bme_fld"
+        fi
+        if [ "${#_bme_fval}" -ge 8 ]; then
+            case "$_bme_arg" in *"$_bme_fval"*) _bme_refuse "$_bme_fld" ;; esac
+        fi
+    done
+done
+
 eval "$exports"
 
 exec "$@"
