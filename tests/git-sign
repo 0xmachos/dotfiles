@@ -1226,5 +1226,38 @@ fatal: failed to write commit object'
   else
     _fail "chained command was reproduced with signing disabled"
   fi
+  # --- A refusal with no visible git word still fires (2026-10-10) ---
+  # A wrapper script or a quoted shell string hides the git command from the
+  # token scan; the refusal text in the failure is the signal instead.
+  local wrapped
+  wrapped="$(_gs_hook PostToolUseFailure 'sh .scratch/commit.sh' "${repo}" "${refusal_resp}")"
+  if [[ "${wrapped}" == *'NO ready-made retry'* && "${wrapped}" == *'inside a script or shell string'* \
+        && "${wrapped}" != *'.scratch/commit.sh'* ]]; then
+    _pass "refusal inside a wrapper script parks the work and hands off, never echoes the script"
+  else
+    _fail "wrapper-script refusal: ${wrapped}"
+  fi
+  wrapped="$(_gs_hook PostToolUseFailure 'sh -c "git commit -F msg"' "${repo}" "${refusal_resp}")"
+  if [[ "${wrapped}" == *'NO ready-made retry'* && "${wrapped}" == *'inside a script or shell string'* ]]; then
+    _pass "refusal inside a quoted shell string fires too"
+  else
+    _fail "quoted-shell-string refusal: ${wrapped}"
+  fi
+  if [[ "${wrapped}" == *'HYPOTHESIS, not yet measured'* ]]; then
+    _pass "cause 2 (poisoned prompt) is labelled a hypothesis"
+  else
+    _fail "cause 2 asserted as fact: ${wrapped}"
+  fi
+  wrapped="$(_gs_hook PostToolUseFailure 'scripts/commit-wave' "${repo}" \
+    'Couldn'"'"'t sign message (signer): communication with agent failed')"
+  if [[ "${wrapped}" == *'Retry only that git command'* && "${wrapped}" != *'commit-wave'* ]]; then
+    _pass "comm error inside a wrapper says retry only the git step"
+  else
+    _fail "wrapper comm error: ${wrapped}"
+  fi
+  _gs_expect PASS PostToolUseFailure 'sh .scratch/commit.sh' "${repo}" 'fatal: not a git repository' \
+    'wrapper failure with no signing text is left alone'
+  _gs_expect PASS PostToolUse 'sh .scratch/commit.sh' "${repo}" '[main abc1234] x' \
+    'wrapper success is left alone'
   /bin/rm -rf "${sandbox}"
 }
