@@ -2,8 +2,9 @@
 # git-sign-unpushed — re-sign the current branch's unpushed commits.
 #
 # Counterpart to claude/git-sign-hook: commits made while the screen was
-# locked are unsigned; run this inside the repo, screen unlocked, worktree
-# clean. Re-signing is a rewrite: every re-signed commit gets a new SHA. Only
+# locked are unsigned; run this inside the repo, screen unlocked. A dirty
+# tree is re-signed through a temporary worktree (2026-10-10), so a shared
+# checkout needs no stash. Re-signing is a rewrite: every re-signed commit gets a new SHA. Only
 # the UNPUSHED range is touched, so claude/git-sign-hook's push gate holds
 # pushes until this has run and no force-push is ever needed.
 #
@@ -169,13 +170,46 @@ function _resign_by_rebase {
   git log --format='  %h %s' "${RANGE[@]}"
 }
 
-function main {
-  git rev-parse --show-toplevel &>/dev/null || die "not inside a git repository"
-  git symbolic-ref -q HEAD >/dev/null || die "detached HEAD — check out a branch first"
-  if ! { git diff --quiet && git diff --cached --quiet; }; then
-    die "worktree not clean — commit or stash first (rebase refuses a dirty tree)"
+# A shared checkout is rarely clean (other sessions' edits sit in the tree)
+# and the rebase refuses a dirty tree, so re-sign in a throwaway worktree at
+# the same tip and move the branch with a compare-and-swap. The re-signed tip
+# has the same tree as the old one, so the dirty files and the shared index
+# are untouched. A failed run leaves the branch where it was.
+function _resign_in_worktree {
+  local branch="$1" old_tip new_tip wt rc=0
+  old_tip="$(git rev-parse HEAD)" || die "cannot read HEAD"
+  wt="$(mktemp -d "${TMPDIR:-${HOME}/Library/Caches}/git-sign-unpushed.XXXXXX")" \
+    || die "cannot create a temporary worktree directory"
+  echo "[ℹ️ ] worktree not clean — re-signing in a temporary worktree (${wt})"
+  git worktree add -q --detach "${wt}" "${old_tip}" \
+    || { rmdir "${wt}" 2>/dev/null; die "cannot add a temporary worktree"; }
+  ( cd "${wt}" && _resign_here ) || rc=$?
+  if (( rc == 0 )); then
+    new_tip="$(git -C "${wt}" rev-parse HEAD)" || rc=1
   fi
+  if (( rc == 0 )) && [[ "${new_tip}" != "${old_tip}" ]]; then
+    git update-ref -m "git-sign-unpushed: re-signed" "refs/heads/${branch}" "${new_tip}" "${old_tip}" \
+      || { rc=1; print -u2 "[❌] ${branch} moved during the re-sign — branch left untouched, run again"; }
+  fi
+  if [[ -d "${wt}/.git" || -f "${wt}/.git" ]]; then
+    git -C "${wt}" rebase --abort 2>/dev/null || true
+    git worktree remove --force "${wt}" 2>/dev/null || git worktree prune
+  fi
+  (( rc == 0 )) || exit "${rc}"
+}
 
+function main {
+  local branch
+  git rev-parse --show-toplevel &>/dev/null || die "not inside a git repository"
+  branch="$(git symbolic-ref -q --short HEAD)" || die "detached HEAD — check out a branch first"
+  if ! { git diff --quiet && git diff --cached --quiet; }; then
+    _resign_in_worktree "${branch}"
+    return 0
+  fi
+  _resign_here
+}
+
+function _resign_here {
   local revs
   revs="$(git rev-list "${RANGE[@]}")" || die "revision walk failed for unpushed range"
   if [[ -z "${revs}" ]]; then
