@@ -62,6 +62,10 @@ function _linkage_deployments {
     _harden() { :; }
     # shellcheck disable=SC2329
     get_sudo() { :; }
+    # The deployment walk records what install_scripts WOULD link; the live
+    # /usr/local/bin is not part of the fixture, so no target is foreign here.
+    # shellcheck disable=SC2329  # invoked by install_scripts under the walk
+    _bin_target_is_foreign() { return 1; }
     # shellcheck disable=SC2329
     chmod() { :; }
     # shellcheck disable=SC2329
