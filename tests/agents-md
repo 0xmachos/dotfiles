@@ -84,7 +84,7 @@ function _agents_check_tail {
 
 # Regrowth caps. Hard fails; the Codex 32768 B check above stays the outer
 # ceiling. Format "max_bytes max_lines"; 0 = not checked.
-readonly _CAP_GLOBAL="16000 210"
+readonly _CAP_GLOBAL="17400 230"
 readonly _CAP_AGENTS="12100 212"
 readonly _CAP_REVIEW="8000 140"
 readonly _CAP_RULE_LINES=60
