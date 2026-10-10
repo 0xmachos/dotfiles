@@ -369,7 +369,8 @@ function _gs_mod_shape {
     _pass "git-sign-post: no .catch on the registration (fail-open)"
   fi
   _gs_mod_has "const r = await next(e)" "acts after the command ran"
-  _gs_mod_has "if (!command.includes('git')) return r" "probe is the script's own case-sensitive git substring"
+  _gs_mod_has "if (!command.includes('git') && !signingFailure) return r" "probe is the script's own case-sensitive git substring, or a signing-failure text"
+  _gs_mod_has "agent refused operation|Couldn't sign message" "a wrapped signing failure reaches the script"
   _gs_mod_has "if (r?.deny !== undefined) return r" "a denied call runs no check"
   _gs_mod_has "const HOOK_REL = '/.claude/hooks/git-sign-hook'" "hook path is relative to HOME"
   _gs_mod_has "const home = await \$.env.get('HOME')" "HOME is read through \$.env"
@@ -1243,10 +1244,11 @@ fatal: failed to write commit object'
   else
     _fail "quoted-shell-string refusal: ${wrapped}"
   fi
-  if [[ "${wrapped}" == *'HYPOTHESIS, not yet measured'* ]]; then
-    _pass "cause 2 text carries its label"
+  if [[ "${wrapped}" == *'does NOT poison later requests'* \
+        && "${wrapped}" == *'HYPOTHESIS, still untested'* ]]; then
+    _pass "cause 2 text states the cancel and killed-client cases"
   else
-    _fail "cause 2 asserted as fact: ${wrapped}"
+    _fail "cause 2 wording: ${wrapped}"
   fi
   wrapped="$(_gs_hook PostToolUseFailure 'scripts/commit-wave' "${repo}" \
     'Couldn'"'"'t sign message (signer): communication with agent failed')"
