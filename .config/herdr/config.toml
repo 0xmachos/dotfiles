@@ -37,7 +37,7 @@ window_title = "{workspace} › {tab}"
 # The command runs on the herdr server every few seconds.
 tab_bar_right = [
   { type = "zoom" },
-  { type = "command", command = 'd="${HERDR_ACTIVE_PANE_CWD:-.}"; b=$(git --no-optional-locks -C "$d" branch --show-current 2>/dev/null); [ -n "$b" ] && echo "$b ~$(git --no-optional-locks -C "$d" status --porcelain 2>/dev/null | wc -l | tr -d " ")"', interval_seconds = 5, timeout_seconds = 2 },
+  { type = "command", command = 'd="${HERDR_ACTIVE_PANE_CWD:-.}"; n=-1; b=""; git --no-optional-locks -C "$d" status --porcelain=v1 --branch 2>/dev/null | { while IFS= read -r l; do n=$((n+1)); [ "$n" -eq 0 ] && b="${l#\#\# }"; done; case "$b" in "HEAD (no branch)"|"") ;; *) echo "${b%%...*} ~$n";; esac; }', interval_seconds = 15, timeout_seconds = 2 },
   { type = "datetime", format = "%H:%M" },
 ]
 tab_bar_right_separator = " · "
