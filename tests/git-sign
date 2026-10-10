@@ -1245,14 +1245,16 @@ fatal: failed to write commit object'
     _fail "quoted-shell-string refusal: ${wrapped}"
   fi
   if [[ "${wrapped}" == *'does NOT poison later requests'* \
-        && "${wrapped}" == *'HYPOTHESIS, still untested'* ]]; then
+        && "${wrapped}" == *'clears in seconds, not minutes'* \
+        && "${wrapped}" != *'HYPOTHESIS'* ]]; then
     _pass "cause 2 text states the cancel and killed-client cases"
   else
     _fail "cause 2 wording: ${wrapped}"
   fi
   wrapped="$(_gs_hook PostToolUseFailure 'scripts/commit-wave' "${repo}" \
     'Couldn'"'"'t sign message (signer): communication with agent failed')"
-  if [[ "${wrapped}" == *'Retry only that git command'* && "${wrapped}" != *'commit-wave'* ]]; then
+  if [[ "${wrapped}" == *'Retry only that git command'* && "${wrapped}" == *'Wait 20 seconds'* \
+        && "${wrapped}" != *'commit-wave'* ]]; then
     _pass "comm error inside a wrapper says retry only the git step"
   else
     _fail "wrapper comm error: ${wrapped}"
