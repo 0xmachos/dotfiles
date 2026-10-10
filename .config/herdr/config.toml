@@ -55,15 +55,18 @@ tab_bar_right_separator = " · "
 [ui.toast]
 delivery = "terminal"
 
-# Agent rows: a bold state mark, the state word in the same colour, then the
-# session's terminal title (Claude Code keeps it updated); the spaces panel
-# names the workspace.
+# Agent rows: a bold state mark, the state word in the same colour, the
+# session-wrap marker, then the session's terminal title (Claude Code keeps it
+# updated); the spaces panel names the workspace. The pane token `wrap` is
+# `wrapped` (purple) or `wrapped: N blocked` (orange), set when the wrap
+# finishes and cleared on the next prompt; an unset token takes no space.
 [ui.sidebar.agents]
 row_gap = 1
 rows = [
   [
     { token = "state_icon", bold = true },
     { token = "state_text", bold = true },
+    { token = "$wrap", bold = true, rules = [{ equals = "wrapped", fg = "#c792ea" }, { starts_with = "wrapped:", fg = "#ff9e64" }] },
     { token = "terminal_title_stripped", bold = true },
   ],
 ]
