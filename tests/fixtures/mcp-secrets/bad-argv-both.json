@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "b-header-and-expansion": {
+      "type": "stdio",
+      "command": "/usr/local/bin/bao-mcp-env",
+      "args": ["exa", "sh", "-c", "exec /opt/homebrew/bin/mcp-proxy --transport=streamablehttp -H x-api-key \"$EXA_API_KEY\" https://mcp.example.invalid/mcp"]
+    },
+    "b-url-expansion": {
+      "type": "stdio",
+      "command": "/usr/local/bin/bao-mcp-env",
+      "args": ["ha", "sh", "-c", "exec /opt/homebrew/bin/mcp-proxy --transport=streamablehttp \"$HA_URL\""]
+    }
+  }
+}

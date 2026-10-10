@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "h-http": {"type": "http", "url": "https://mcp.example.invalid/mcp", "headers": {"X-Api-Key": "plainvalue"}},
+    "h-sse": {"type": "sse", "url": "https://mcp.example.invalid/sse", "headers": {"X-Api-Key": "plainvalue"}},
+    "h-streamable": {"type": "streamable-http", "url": "https://mcp.example.invalid/mcp", "headers": {"X-Api-Key": "plainvalue"}},
+    "h-mixed": {"type": "http", "url": "https://mcp.example.invalid/mcp", "headers": {"A": "Bearer ${EXAMPLE_TOKEN}", "B": "plainvalue"}}
+  }
+}

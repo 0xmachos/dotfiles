@@ -35,7 +35,7 @@ typeset -g PTD_DISPATCHER=''
 typeset -g PTD_DIRS='' PTD_ROUTES='' PTD_HOOKS=''
 typeset -gi PTD_RC=0
 
-typeset -ga PTD_BASH=(md5-guard-hook gh-publish-hook git-bypass-hook muse-exec-hook rm-redirect-hook ssh-redirect-hook sudo-askpass-hook container-tmp-hook tmp-guard-hook)
+typeset -ga PTD_BASH=(md5-guard-hook gh-publish-hook git-bypass-hook muse-exec-hook rm-redirect-hook ssh-redirect-hook sudo-askpass-hook container-tmp-hook tmp-guard-hook mcp-secret-hook)
 typeset -ga PTD_ALL=("${PTD_BASH[@]}" md5-write-hook)
 
 function _ptd_bash {
@@ -317,11 +317,11 @@ function _ptd_fault_injection {
 
   _ptd_run "$(_ptd_write /x/a.txt body)"
   _ptd_expect PASS 'a Write call'
-  _ptd_eq "Write runs tmp-guard-hook then md5-write-hook only" "$(_ptd_marker)" 'tmp-guard-hook md5-write-hook'
+  _ptd_eq "Write runs tmp-guard-hook, md5-write-hook then mcp-secret-hook only" "$(_ptd_marker)" 'tmp-guard-hook md5-write-hook mcp-secret-hook'
 
   _ptd_run "$(jq -cn '{tool_name:"Edit", tool_input:{file_path:"/x/a", old_string:"a", new_string:"b"}, cwd:"/work"}')"
   _ptd_expect PASS 'an Edit call'
-  _ptd_eq "Edit runs tmp-guard-hook then md5-write-hook only" "$(_ptd_marker)" 'tmp-guard-hook md5-write-hook'
+  _ptd_eq "Edit runs tmp-guard-hook, md5-write-hook then mcp-secret-hook only" "$(_ptd_marker)" 'tmp-guard-hook md5-write-hook mcp-secret-hook'
 
   _ptd_run "$(jq -cn '{tool_name:"NotebookEdit", tool_input:{notebook_path:"/x/n.ipynb", new_source:"1"}, cwd:"/work"}')"
   _ptd_expect PASS 'a NotebookEdit call'
@@ -489,7 +489,7 @@ function _ptd_fault_injection {
   _ptd_expect PASS 'a startup file sets ksharrays, errexit and nounset'
   marker="$(_ptd_marker)"
   _ptd_in "the guards still see zsh default options" "${marker}" 'opts=offoffoffoff'
-  if [[ "${marker}" == *tmp-guard-hook ]]; then
+  if [[ "${marker}" == *"${PTD_BASH[-1]}" ]]; then
     _pass "the whole run completed under that startup file"
   else
     _fail "the whole run completed under that startup file — ""${marker}"
@@ -550,7 +550,7 @@ function _ptd_fault_injection {
   _ptd_new_box routes
   PTD_RC=0
   PTD_OUT="$(/bin/zsh "${PTD_BOX}/pretool-dispatch" --print-routes </dev/null 2>&1)" || PTD_RC=$?
-  if [[ ${PTD_RC} -eq 0 && "${PTD_OUT}" == "Bash: ${PTD_BASH[*]}"$'\nWrite: tmp-guard-hook md5-write-hook\nEdit: tmp-guard-hook md5-write-hook\nNotebookEdit: tmp-guard-hook' ]]; then
+  if [[ ${PTD_RC} -eq 0 && "${PTD_OUT}" == "Bash: ${PTD_BASH[*]}"$'\nWrite: tmp-guard-hook md5-write-hook mcp-secret-hook\nEdit: tmp-guard-hook md5-write-hook mcp-secret-hook\nNotebookEdit: tmp-guard-hook' ]]; then
     _pass "--print-routes prints one line per tool, guards in run order"
   else
     _fail "--print-routes prints one line per tool, guards in run order — ""${PTD_OUT}"
@@ -694,8 +694,8 @@ function _ptd_coverage {
   PTD_ROUTES="$("${SCRIPT_DIR}/claude/hooks/pretool-dispatch" --print-routes)"
   PTD_HOOKS="$(jq -r '.hooks.PreToolUse[]? | .matcher as $m | .hooks[]? | [($m // ""), .command] | @tsv' "${settings}")"
   _ptd_expect_reach Bash "${PTD_BASH[@]}"
-  _ptd_expect_reach Write tmp-guard-hook md5-write-hook
-  _ptd_expect_reach Edit tmp-guard-hook md5-write-hook
+  _ptd_expect_reach Write tmp-guard-hook md5-write-hook mcp-secret-hook
+  _ptd_expect_reach Edit tmp-guard-hook md5-write-hook mcp-secret-hook
   _ptd_expect_reach NotebookEdit tmp-guard-hook
   for g in "${PTD_ALL[@]}"; do
     if [[ -r "${SCRIPT_DIR}/claude/hooks/${g}" ]]; then

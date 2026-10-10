@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "u-key": {"type": "http", "url": "https://mcp.example.invalid/mcp?key=short"},
+    "u-token": {"type": "http", "url": "https://mcp.example.invalid/mcp?token=short"},
+    "u-apikey": {"type": "http", "url": "https://mcp.example.invalid/mcp?x=1&apikey=short"},
+    "u-api-underscore": {"type": "http", "url": "https://mcp.example.invalid/mcp?x=1&api_key=short"},
+    "u-access": {"type": "http", "url": "https://mcp.example.invalid/mcp?access_token=short"},
+    "u-upper": {"type": "http", "url": "https://mcp.example.invalid/mcp?KEY=short"},
+    "u-arg": {"command": "mcp-proxy", "args": ["https://mcp.example.invalid/mcp?token=short"]}
+  }
+}

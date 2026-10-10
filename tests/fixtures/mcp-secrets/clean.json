@@ -1,0 +1,46 @@
+{
+  "numStartups": 3,
+  "mcpServers": {
+    "plain": {
+      "type": "stdio",
+      "command": "/usr/local/bin/some-mcp",
+      "args": ["-y", "@scope/desk-utility-mcp-server", "--port", "8080", "-h"],
+      "env": {"LOG_LEVEL": "info", "TOKEN": "${EXAMPLE_TOKEN}"}
+    },
+    "keyed": {
+      "type": "stdio",
+      "command": "/usr/local/bin/bao-mcp-env",
+      "args": ["exa", "sh", "-c", "API_ACCESS_TOKEN=\"$EXA_API_KEY\" exec /opt/homebrew/bin/mcp-proxy --transport=streamablehttp https://mcp.example.invalid/mcp"]
+    },
+    "remote": {
+      "type": "http",
+      "url": "https://mcp.example.invalid/mcp",
+      "headers": {"Authorization": "Bearer ${EXAMPLE_TOKEN}"}
+    },
+    "bare-dollar": {"command": "some-mcp", "args": ["$HOME/x"]},
+    "location-vars": {"command": "uv", "args": ["run", "--directory", "${CLAUDE_PROJECT_DIR}/srv", "${HOME}/x"]},
+    "remote-open": {
+      "type": "sse",
+      "url": "https://mcp.example.invalid/sse"
+    }
+  },
+  "projects": {
+    "/work/scoped": {
+      "allowedTools": [],
+      "mcpServers": {
+        "two-assignments": {
+          "type": "stdio",
+          "command": "sh",
+          "args": ["-c", "LOG_LEVEL=info API_ACCESS_TOKEN=$EXA_API_KEY exec mcp-proxy https://mcp.example.invalid/mcp"]
+        },
+        "single-quoted": {
+          "type": "stdio",
+          "command": "/usr/bin/env",
+          "args": ["bash", "-c", "API_ACCESS_TOKEN='$X' exec mcp-proxy https://mcp.example.invalid/mcp"]
+        }
+      }
+    },
+    "/work/empty": {"mcpServers": {}},
+    "/work/none": {"allowedTools": []}
+  }
+}
