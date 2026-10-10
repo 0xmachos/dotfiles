@@ -551,14 +551,46 @@ function _git_sign_resign_cases {
     _gs_commit c1 '2026-02-02T11:00:00+00:00' '2026-03-02T11:00:00+00:00'
     _gs_commit c2 '2026-02-03T12:00:00+00:00' '2026-03-03T12:00:00+00:00'
   )
-  # --- Re-sign: dirty worktree refused ---
-  echo dirty >> "${repo}/f"
-  if (cd "${repo}" && env "${GS_ENV[@]}" "${SCRIPT_DIR}/bin/git-sign-unpushed" &>/dev/null); then
-    _fail "git-sign-unpushed ran on a dirty worktree"
+  # --- Re-sign: dirty worktree -> temporary worktree, dirty file untouched ---
+  # Own repo copy: the clean-path case below must still have something to sign.
+  local dsandbox drepo dout dtip_before dtip_after dn
+  dsandbox="$(mktemp -d "${TMPDIR}git-sign-dirty.XXXXXX")"
+  drepo="$(_gs_newrepo "${dsandbox}")"
+  (
+    export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+    cd "${drepo}" || exit 1
+    _gs_commit d1 '2026-02-02T11:00:00+00:00'
+    _gs_commit d2 '2026-02-03T12:00:00+00:00'
+    echo staged >> f && git add f
+    echo dirty >> f
+  )
+  dtip_before="$(env "${GS_ENV[@]}" git -C "${drepo}" rev-parse HEAD)"
+  if dout="$(cd "${drepo}" && env "${GS_ENV[@]}" "${SCRIPT_DIR}/bin/git-sign-unpushed" 2>&1)" \
+     && [[ "${dout}" == *'temporary worktree'* ]]; then
+    _pass "git-sign-unpushed re-signs a dirty worktree through a temporary worktree"
   else
-    _pass "git-sign-unpushed refuses a dirty worktree"
+    _fail "git-sign-unpushed on a dirty worktree: ${dout}"
   fi
-  (cd "${repo}" && git checkout -q -- f)
+  dn="$(cd "${drepo}" && export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null && _gs_unsigned_count)"
+  dtip_after="$(env "${GS_ENV[@]}" git -C "${drepo}" rev-parse HEAD)"
+  if [[ "${dn}" == "0" && "${dtip_after}" != "${dtip_before}" ]]; then
+    _pass "dirty-tree re-sign moved the branch to a signed tip"
+  else
+    _fail "dirty-tree re-sign: ${dn} unsigned, tip ${dtip_before:0:7} -> ${dtip_after:0:7}"
+  fi
+  if [[ "$(tail -1 "${drepo}/f")" == dirty ]] \
+     && ! env "${GS_ENV[@]}" git -C "${drepo}" diff --cached --quiet -- f \
+     && ! env "${GS_ENV[@]}" git -C "${drepo}" diff --quiet -- f; then
+    _pass "dirty-tree re-sign left the staged and unstaged edits in place"
+  else
+    _fail "dirty-tree re-sign changed the working file or the index"
+  fi
+  if [[ "$(env "${GS_ENV[@]}" git -C "${drepo}" worktree list | wc -l | tr -d ' ')" == 1 ]]; then
+    _pass "temporary worktree removed after the re-sign"
+  else
+    _fail "temporary worktree left behind: $(env "${GS_ENV[@]}" git -C "${drepo}" worktree list)"
+  fi
+  /bin/rm -rf "${dsandbox}"
 
   # --- Re-sign: signs the range, preserves dates, leaves the pushed base ---
   local before_dates after_dates after_committer n
