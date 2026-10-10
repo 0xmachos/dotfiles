@@ -476,10 +476,14 @@ fatal: failed to write commit object'
   else
     _fail "fallback context malformed: ${out}"
   fi
-  if [[ "${out}" == *'SecretAgent'* && "${out}" == *'ssh-add -l'* ]]; then
-    _pass "refusal diagnosis names the SecretAgent-wedged cause and its ssh-add -l check"
+  # The liveness probe is a timed one-byte sign: `ssh-add -l` listed the keys
+  # while every sign hung (2026-10-05) or failed (2026-10-09).
+  if [[ "${out}" == *'SecretAgent'* && "${out}" == *'ssh-keygen -Y sign'* \
+        && "${out}" == *'exit 142'* && "${out}" == *'exit 255'* \
+        && "${out}" != *'ssh-add -l'* ]]; then
+    _pass "refusal diagnosis names the SecretAgent-wedged cause and its timed ssh-keygen -Y sign probe, never ssh-add -l"
   else
-    _fail "refusal diagnosis missing the SecretAgent-wedged cause: ${out}"
+    _fail "refusal diagnosis missing the timed sign probe (or still names ssh-add -l): ${out}"
   fi
   # A tag failure gets tag recovery, never the commit recipe.
   out="$(_gs_hook PostToolUseFailure 'git tag -s -m x v2.0' "${repo}" "${refusal}")"
