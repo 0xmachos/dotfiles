@@ -240,6 +240,57 @@ function run_gh_publish {
   _gp_test_expect PASS "gh issue create -t t --body-file ${_gp_dir}/mentionok.md" \
     'backticked mention and email tolerated'
 
+  # A comment body that is exactly one `@dependabot <command>` line passes the
+  # bare-mention rule (backticks would make Dependabot ignore the command). The
+  # review sidecar, PII and wrap checks still apply; anything else still denies.
+  local _gp_dep
+  for _gp_dep in 'rebase' 'recreate' 'merge' 'squash and merge' 'cancel merge' \
+                 'reopen' 'close' 'ignore this dependency' \
+                 'ignore this major version'; do
+    printf '@dependabot %s\n' "${_gp_dep}" > "${_gp_dir}/dep.md"
+    _gp_test_review "${_gp_dir}/dep.md"
+    _gp_test_expect PASS "gh pr comment 2 -R o/r --body-file ${_gp_dir}/dep.md" \
+      "pr comment: a bare Dependabot command ${_gp_dep}"
+  done
+  printf '@dependabot rebase\n' > "${_gp_dir}/dep.md"
+  /bin/rm -f "${_gp_dir}/dep.md.reviewed"
+  _gp_test_expect DENY "gh pr comment 2 -R o/r --body-file ${_gp_dir}/dep.md" \
+    'a Dependabot command still needs its review sidecar'
+  _gp_test_review "${_gp_dir}/dep.md"
+  printf '\nEdited after review.\n' >> "${_gp_dir}/dep.md"
+  _gp_test_expect DENY "gh pr comment 2 -R o/r --body-file ${_gp_dir}/dep.md" \
+    'a Dependabot command with a stale sidecar still denies'
+  _gp_test_expect DENY "gh issue comment 2 -R o/r --body-file ${_gp_dir}/dep.md" \
+    'the Dependabot exemption is for pr comment only'
+  printf '@dependabot rebase\n' > "${_gp_dir}/dep.md"
+  _gp_test_review "${_gp_dir}/dep.md"
+  _gp_test_expect DENY "gh issue comment 2 -R o/r --body-file ${_gp_dir}/dep.md" \
+    'an issue comment with a Dependabot command still denies'
+  _gp_test_expect DENY "gh pr review 2 -R o/r --body-file ${_gp_dir}/dep.md" \
+    'a pr review with a Dependabot command still denies'
+  local _gp_depbad
+  # shellcheck disable=SC2016  # the backticks are literal fixture text
+  for _gp_depbad in '@dependabot rebase @octocat' \
+                    '@dependabot rebase\n@octocat thanks' \
+                    '@octocat rebase' \
+                    '@dependabot frobnicate' \
+                    '@dependabot rebase and also ping' \
+                    '@dependabot rebase\n\nthanks' \
+                    '@dependabot ignore this dependency @octocat' \
+                    'please @dependabot rebase' \
+                    '@dependabot rebase @dependabot rebase' \
+                    '@dependabot merge`touch x`'; do
+    printf '%b\n' "${_gp_depbad}" > "${_gp_dir}/depbad.md"
+    _gp_test_review "${_gp_dir}/depbad.md"
+    _gp_test_expect DENY "gh pr comment 2 -R o/r --body-file ${_gp_dir}/depbad.md" \
+      "pr comment: body ${_gp_depbad//\\n/ + } keeps the bare-mention rule"
+  done
+  # shellcheck disable=SC2016  # the backticks are literal fixture text
+  printf '`@dependabot rebase`\n' > "${_gp_dir}/dep.md"
+  _gp_test_review "${_gp_dir}/dep.md"
+  _gp_test_expect PASS "gh pr comment 2 -R o/r --body-file ${_gp_dir}/dep.md" \
+    'a backticked Dependabot mention is still allowed'
+
   {
     printf 'Log dump below.\n\n\x60\x60\x60\n'
     local i
@@ -680,6 +731,24 @@ function run_gh_publish {
   _gp_test_expect PASS 'gh issue view 5' 'gh issue view'
   _gp_test_expect PASS 'gh api repos/o/r/issues' 'gh api read'
   _gp_test_expect PASS 'gh search issues x' 'gh search is a read'
+  # gh api -f makes gh send a POST, so a search through it denies; the deny
+  # text names the two forms that pass (2026-10-10).
+  _gp_test_expect DENY "gh api search/repositories -f q='live activity'" \
+    'gh api search with -f is a POST and denies'
+  _gp_test_reason_has "gh api search/repositories -f q='live activity'" \
+    'gh api -X GET' 'the gh api -X GET read form'
+  _gp_test_reason_has "gh api search/repositories -f q='live activity'" \
+    'gh search' 'the gh search read form'
+  _gp_test_expect PASS "gh api -X GET search/repositories -f q='live activity' --jq '.items[0].full_name'" \
+    'gh api -X GET search with -f passes'
+  _gp_test_expect PASS "gh api search/repositories -X GET -f q='live activity'" \
+    'gh api search with a trailing -X GET passes'
+  _gp_test_expect PASS "gh search repos 'live activity' --json fullName --limit 5" \
+    'gh search repos passes'
+  _gp_test_expect DENY 'gh api -X POST search/repositories -f q=x' 'gh api -X POST still denies'
+  _gp_test_expect DENY 'gh api search/repositories -F q=x' 'gh api -F still denies'
+  _gp_test_expect DENY 'gh api search/repositories --input body.json' 'gh api --input still denies'
+  _gp_test_expect DENY 'gh api -X DELETE repos/o/r/issues/1' 'gh api -X DELETE still denies'
   # shellcheck disable=SC2016  # single-quoted literal fixture text, never expanded by this shell — it travels to jq --arg unmodified
   _gp_test_expect PASS 'git commit -m "gh issue create --body x"' \
     'quoted data in a non-opaque command stays data, not a command'
@@ -714,6 +783,53 @@ function run_gh_publish {
     'a single-quoted, inert $ does not trigger the backstop'
   _gp_test_expect PASS 'gh pr list | head' \
     'a real dispatched gh read piped to another command suppresses the backstop'
+
+  # Publish-shaped words in the arguments of a literal command are prose, not a
+  # call: only a segment that OPENS with the publish noun (or api, or a gh
+  # global flag) counts for the backstop and the variable-command-word check
+  # (2026-10-10). Adjacent denies below keep the dynamic spellings.
+  # shellcheck disable=SC2016  # single-quoted literal fixture text, never expanded by this shell — it travels to jq --arg unmodified
+  _gp_test_expect PASS 'for p in a b; do printf "%s\n" "$p"; done; echo "the issue close step"' \
+    'a for loop beside prose that names an issue verb'
+  # shellcheck disable=SC2016  # single-quoted literal fixture text, never expanded by this shell — it travels to jq --arg unmodified
+  _gp_test_expect PASS 'for p in docs/a.md .scratch/x.txt; do printf "%-50s " "$p"; git check-ignore -v "$p" 2>/dev/null || echo "NOT IGNORED"; done; grep -n "issue comment" docs/x.md' \
+    'a check-ignore loop beside a grep for an issue verb'
+  # shellcheck disable=SC2016  # single-quoted literal fixture text, never expanded by this shell — it travels to jq --arg unmodified
+  _gp_test_expect PASS 'python3 -c "print(1)" "issue comment" $HOME' \
+    'prose naming an issue verb in the arguments of a literal command'
+  # shellcheck disable=SC2016  # single-quoted literal fixture text, never expanded by this shell — it travels to jq --arg unmodified
+  _gp_test_expect PASS $'cd "$HOME/proj" && cat >> HANDOFF.md <<\'EOF\'\n### Addendum: upstream issue draft\nSee https://github.com/o/r/issues/841 and close the issue comment thread.\nEOF\ntail -n 2 HANDOFF.md' \
+    'a quoted heredoc append that mentions an issue URL'
+  # shellcheck disable=SC2016  # single-quoted literal fixture text, never expanded by this shell — it travels to jq --arg unmodified
+  _gp_test_expect PASS $'python3 - <<\'EOF\'\np = "docs/Plan.md"\ns = open(p).read()\nnew = "reported upstream as https://github.com/o/r/issues/841, issue comment pending"\nopen(p, "w").write(s.replace("old", new))\nEOF\ngit diff --stat -- "$HOME/x"' \
+    'a python heredoc edit that mentions an issue URL'
+  # shellcheck disable=SC2016  # single-quoted literal fixture text, never expanded by this shell — it travels to jq --arg unmodified
+  _gp_test_expect PASS '$EDITOR notes about "issue close"' \
+    'a variable command word whose arguments only mention an issue verb'
+  # shellcheck disable=SC2016  # single-quoted literal fixture text, never expanded by this shell — it travels to jq --arg unmodified
+  _gp_test_expect DENY '"$(echo gh)" -R o/r issue create -t t --body x' \
+    'a quoted command substitution then a global flag then the publish verb'
+  # shellcheck disable=SC2016  # single-quoted literal fixture text, never expanded by this shell — it travels to jq --arg unmodified
+  _gp_test_expect DENY '`echo gh` pr comment 1 --body x' \
+    'a backtick dynamic command word then the publish verb'
+  # shellcheck disable=SC2016  # single-quoted literal fixture text, never expanded by this shell — it travels to jq --arg unmodified
+  _gp_test_expect DENY 'sudo $(echo gh) api repos/o/r/issues -f title=x' \
+    'a wrapper then a dynamic command word then a gh api write'
+  # shellcheck disable=SC2016  # single-quoted literal fixture text, never expanded by this shell — it travels to jq --arg unmodified
+  _gp_test_expect DENY 'echo | $(echo gh) --repo o/r issue close 3' \
+    'a pipeline into a dynamic command word with a long global flag'
+  # shellcheck disable=SC2016  # single-quoted literal fixture text, never expanded by this shell — it travels to jq --arg unmodified
+  _gp_test_expect DENY '$G -R o/r issue create -t t --body x' \
+    'a variable command word then a global flag then the publish verb'
+  # shellcheck disable=SC2016  # single-quoted literal fixture text, never expanded by this shell — it travels to jq --arg unmodified
+  _gp_test_expect DENY 'x=$(echo gh); "$x" --repo=o/r pr merge 3' \
+    'a quoted variable command word then --repo=o/r then the publish verb'
+  # shellcheck disable=SC2016  # single-quoted literal fixture text, never expanded by this shell — it travels to jq --arg unmodified
+  _gp_test_expect DENY $'for g in gh; do $g issue edit 3; done' \
+    'a loop variable as the command word'
+  # shellcheck disable=SC2016  # single-quoted literal fixture text, never expanded by this shell — it travels to jq --arg unmodified
+  _gp_test_expect DENY $'cat > n.md <<EOF\nreport on $(date)\n$(echo gh) issue create -t t --body x\nEOF' \
+    'an unquoted heredoc body with a live substitution keeps the coarse match'
 
   # --- Quoted flags, joined -R, aliases, --attach, discussions (2026-09-25)
   # A quoted flag spelling must still match: de-quote BEFORE matching.

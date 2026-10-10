@@ -139,6 +139,27 @@ function run_git_bypass {
   _hbg_test_expect PASS 'git config user.name "A Name"' 'write to an unrelated key'
   _hbg_test_expect DENY 'git config hooks.pre-commit get' 'value that looks like a mode word still counts as the value'
 
+  # A redirection after a read is no value (2026-10-10): the repoVisibility
+  # lookup in a loop with 2>/dev/null denied as a write. A write with the same
+  # redirect, and a value that only reads like a redirection, still deny.
+  _hbg_test_expect PASS 'git config hooks.repoVisibility 2>/dev/null' 'config read with 2>/dev/null'
+  _hbg_test_expect PASS 'v=$(git -C "$d" config hooks.repoVisibility 2>/dev/null); echo "$v"' 'config read with a redirect inside a substitution'
+  _hbg_test_expect PASS 'git config --get hooks.repoVisibility >/dev/null 2>&1' '--get read with two redirects'
+  _hbg_test_expect PASS 'git config hooks.repoVisibility 2> /dev/null' 'config read with 2> and a separate target'
+  _hbg_test_expect PASS 'git config hooks.repoVisibility < /dev/null' 'config read with an input redirect'
+  _hbg_test_expect DENY 'git config hooks.repoVisibility x 2>/dev/null' 'config write then a redirect'
+  _hbg_test_expect DENY 'git config 2>/dev/null hooks.repoVisibility x' 'config write after a redirect'
+  _hbg_test_expect DENY 'git config --unset hooks.repoVisibility 2>/dev/null' '--unset then a redirect'
+  _hbg_test_expect DENY 'git config --add hooks.repoVisibility x 2>/dev/null' '--add then a redirect'
+  _hbg_test_expect DENY 'git config -e 2>/dev/null' '-e then a redirect'
+  _hbg_test_expect DENY 'git config -f /tmp/c hooks.repoVisibility x' '-f file write'
+  _hbg_test_expect DENY 'git config core.hooksPath /dev/null 2>&1' 'core.hooksPath write then 2>&1'
+  _hbg_test_expect DENY "git config core.hooksPath '2>/dev/null'" 'a single-quoted redirect-like value is a value'
+  _hbg_test_expect DENY 'git config core.hooksPath "2>/dev/null"' 'a double-quoted redirect-like value is a value'
+  _hbg_test_expect DENY 'git config core.hooksPath 2">"/dev/null' 'a quoted > inside a word is a value'
+  _hbg_test_expect DENY 'git config core.hooksPath \>x' 'an escaped > is a value'
+  _hbg_test_expect DENY "git config core.hooksPath \$'>x'" 'an ANSI-C quoted > is a value'
+
   # A literal double quote in the config key must not break the deny JSON
   # (an unescaped quote in permissionDecisionReason reads as INVALID).
   # shellcheck disable=SC2016
@@ -380,6 +401,30 @@ function run_git_bypass {
   _hbg_test_expect PASS 'HOME=/tmp/x npm test' 'HOME assigned, no git anywhere'
   _hbg_test_expect PASS 'TMPDIR=/tmp/x git status' 'TMPDIR is not a verdict seam'
   _hbg_test_expect PASS 'cd "$HOME" && git status' 'reading HOME is not assigning it'
+
+  # HOME and the git config redirects count on the git command itself, on the
+  # shell that runs a -c string with git in it, and as a bare assignment. They
+  # do not count on an unrelated command in the same line (2026-10-10).
+  _hbg_test_expect PASS $'/usr/bin/env -i HOME=$HOME USER=$USER PATH=/usr/bin /bin/zsh -il -c \'print hi\'; git show HEAD:.zshrc' 'env -i HOME= zsh probe beside a git read'
+  _hbg_test_expect PASS 'env -i HOME=$HOME zsh -c true; git status' 'env -i HOME= on a shell whose string has no git'
+  _hbg_test_expect PASS 'HOME=$HOME zsh -c "echo hi"; git log -1' 'HOME= prefix on a shell with no git in its string'
+  _hbg_test_expect PASS 'GIT_CONFIG_GLOBAL=/dev/null make; git status' 'GIT_CONFIG_GLOBAL on a non-git command'
+  _hbg_test_expect PASS 'XDG_CONFIG_HOME=/tmp/x npm test; git status' 'XDG_CONFIG_HOME on a non-git command'
+  _hbg_test_expect PASS 'env -u HOME zsh -c true; git status' 'env -u HOME on a non-git command'
+  _hbg_test_expect DENY 'env -i HOME=$HOME git show HEAD:.zshrc' 'the same env -i HOME= on git itself'
+  _hbg_test_expect DENY 'HOME=$HOME git show HEAD:.zshrc' 'HOME= prefix on git itself'
+  _hbg_test_expect DENY 'env HOME=/tmp/x git commit -m x' 'env HOME= then git'
+  _hbg_test_expect DENY 'env -i HOME=/tmp/x zsh -c "git commit -m x"' 'HOME= handed to a git inside a -c string'
+  _hbg_test_expect DENY 'HOME=/tmp/x sh -c "git commit -m x"' 'HOME= prefix on sh -c with git'
+  _hbg_test_expect DENY 'env -i HOME=/tmp/x zsh -c "bash -c \"git commit -m x\""' 'HOME= handed through two shells'
+  _hbg_test_expect DENY 'HOME=/tmp/x eval "git commit -m x"' 'HOME= prefix on eval with git'
+  _hbg_test_expect DENY $'HOME=/tmp/x bash <<\'EOF\'\ngit commit -m x\nEOF' 'HOME= prefix on a shell fed git by a heredoc'
+  _hbg_test_expect DENY "env -S 'HOME=/tmp/x git commit -m x'" 'HOME= inside env -S'
+  _hbg_test_expect DENY "env -i -S 'git commit -m x'" 'env -i drops HOME for an env -S string'
+  _hbg_test_expect DENY 'export HOME=/tmp/x; git status' 'exported HOME, git in a later segment'
+  _hbg_test_expect DENY 'git status; export HOME=/tmp/x' 'exported HOME, git in an earlier segment'
+  _hbg_test_expect DENY 'HOME=/tmp/x; git status' 'bare HOME assignment, then git'
+  _hbg_test_expect DENY 'GIT_SIGN_SKIP=1 make; git status' 'a skip variable on a non-git command still counts'
 
   # --- faked terminal --------------------------------------------------------
   _hbg_test_expect DENY 'script -q /dev/null git commit -m x' 'script'
