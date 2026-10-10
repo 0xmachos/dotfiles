@@ -1,0 +1,29 @@
+[mcp_servers.t-flag]
+command = "mcp-proxy"
+args = ["-H", "x-api-key", "abc", "https://mcp.example.invalid/mcp"]
+
+[mcp_servers.t-expand]
+command = "sh"
+args = ["-c", "exec mcp-proxy https://mcp.example.invalid/mcp $EXA_API_KEY"]
+
+[mcp_servers.t-multiline]
+command = "bao-mcp-env"
+args = [
+  "exa",
+  "sh",
+  "-c",
+  "exec mcp-proxy ${EXA_API_KEY}",
+]
+
+[mcp_servers.t-literal]
+command = "some-mcp"
+args = ["@SK@"]
+
+[mcp_servers.t-literal-env]
+command = "some-mcp"
+
+[mcp_servers.t-literal-env.env]
+KEY = "@ALNUM32@"
+
+[mcp_servers.t-url]
+url = "https://mcp.example.invalid/mcp?token=short"

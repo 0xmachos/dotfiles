@@ -1,0 +1,113 @@
+#!/opt/homebrew/opt/mcp-proxy/libexec/bin/python
+# bin/mcp-proxy-env
+#
+# mcp-proxy with its target URL read from the environment.
+#
+# Usage: mcp-proxy-env [--url-env NAME] [mcp-proxy args...]
+#   NAME defaults to MCP_PROXY_URL. The URL is appended as the last argument
+#   of an in-process mcp-proxy run.
+#
+# Design (2026-10-10):
+#   - mcp-proxy takes its target only as a positional argument, and ps(1)
+#     shows every argument of a process to every local user. A target whose
+#     path is the credential therefore cannot sit on a command line, and a
+#     client config that cannot expand environment variables in a URL cannot
+#     hold it either. This launcher keeps the URL in the environment and
+#     builds the argument list inside the process, so the kernel argv holds
+#     only this script's own arguments.
+#   - No child process is spawned: a child's argv would carry the URL again.
+#     The launcher sets sys.argv and calls mcp_proxy.__main__.main().
+#   - The shebang is the Homebrew formula's own venv interpreter, because
+#     mcp_proxy is importable only there. The opt path is stable across
+#     upgrades; the Cellar path is not. Only the standard library and
+#     mcp_proxy are used. The code runs on Python 3.11 or later.
+#   - The environment is left alone: same-user visibility of an environment
+#     variable is accepted. Only argv is protected.
+#   - Headers never go on the command line either. This launcher refuses
+#     -H, --headers and --header (and unambiguous abbreviations that argparse
+#     would accept); pass a bearer token as API_ACCESS_TOKEN instead.
+#   - An argument holding "://" is refused for the same reason: the URL
+#     comes from the environment only. No message prints the URL or the
+#     offending argument. An error raised by mcp-proxy is reported by type
+#     only, because a traceback may carry the URL.
+#
+# Exit codes: 0 and any exit code of mcp-proxy pass through; 64 usage error
+# (a URL or header in the arguments, a bad --url-env); 69 mcp_proxy cannot be
+# imported; 78 the URL variable is unset or empty; 1 other mcp-proxy failure.
+
+import os
+import re
+import sys
+
+EX_USAGE = 64
+EX_UNAVAILABLE = 69
+EX_CONFIG = 78
+DEFAULT_URL_ENV = "MCP_PROXY_URL"
+NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+HEADERS_LONG = "--headers"
+# argparse accepts any unambiguous prefix; "--he" also matches "--help".
+HEADERS_MIN_PREFIX = "--hea"
+
+
+def die(code, message):
+    sys.stderr.write("mcp-proxy-env: " + message + "\n")
+    sys.exit(code)
+
+
+def is_header_flag(arg):
+    if arg.startswith("-H"):
+        return True
+    if not arg.startswith("--"):
+        return False
+    name = arg.split("=", 1)[0]
+    return len(name) >= len(HEADERS_MIN_PREFIX) and HEADERS_LONG.startswith(name)
+
+
+def parse(argv):
+    """Return (url_env, passthrough). Exits 64 on a refused argument."""
+    url_env = DEFAULT_URL_ENV
+    passthrough = []
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--url-env":
+            if i + 1 >= len(argv):
+                die(EX_USAGE, "--url-env needs a variable name")
+            url_env = argv[i + 1]
+            i += 2
+            continue
+        if arg.startswith("--url-env="):
+            url_env = arg.split("=", 1)[1]
+            i += 1
+            continue
+        if is_header_flag(arg):
+            die(EX_USAGE, "headers are not allowed on the command line; use API_ACCESS_TOKEN")
+        if "://" in arg:
+            die(EX_USAGE, "a URL argument is not allowed; set the URL variable instead")
+        passthrough.append(arg)
+        i += 1
+    if not NAME_RE.match(url_env):
+        die(EX_USAGE, "--url-env needs a valid variable name")
+    return url_env, passthrough
+
+
+def main():
+    url_env, passthrough = parse(sys.argv[1:])
+    url = os.environ.get(url_env, "")
+    if not url:
+        die(EX_CONFIG, url_env + " is not set")
+    try:
+        from mcp_proxy.__main__ import main as proxy_main
+    except ImportError:
+        die(EX_UNAVAILABLE, "cannot import mcp_proxy")
+    sys.argv = ["mcp-proxy", *passthrough, url]
+    try:
+        proxy_main()
+    except KeyboardInterrupt:
+        sys.exit(130)
+    except Exception as exc:
+        die(1, "mcp-proxy failed (" + type(exc).__name__ + ")")
+
+
+if __name__ == "__main__":
+    main()

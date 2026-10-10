@@ -1,0 +1,271 @@
+#!/bin/zsh
+# dotfiles/tests/mcp-proxy-env
+#
+# Hermetic suite for bin/mcp-proxy-env: no network, no real mcp-proxy. The
+# script runs under the Homebrew venv interpreter with a fake mcp_proxy package
+# on PYTHONPATH (written into the per-run sandbox). The fake's
+# mcp_proxy.__main__.main() records sys.argv, the URL variable, and the
+# kernel argument line of its own process (ps), so the suite can show that the
+# URL reaches mcp-proxy without ever appearing in a process argument list.
+# The suite skips when the venv interpreter is absent (CI).
+#
+# Pins:
+#   - the URL is read from MCP_PROXY_URL (or --url-env NAME) and is the last
+#     argument; passthrough arguments keep their order;
+#   - the URL is never in argv positions before the last, and never in the
+#     ps argument line of the running process (no child process either);
+#   - unset or empty variable: exit 78, message names the variable;
+#   - a "://" argument, -H, --headers, --header (and the attached and
+#     abbreviated forms): exit 64 and mcp-proxy is never called;
+#   - nothing on stdout in any error case; no error text carries the URL or
+#     the refused argument; an mcp-proxy exception is reported by type only;
+#   - exit codes of mcp-proxy pass through; a missing mcp_proxy exits 69.
+#
+# Set MPE_BIN_OVERRIDE to run a scratch copy of the script (red-path checks).
+# Run: ./test mcp-proxy-env
+# ShellCheck: lint with `shellcheck --shell=bash tests/mcp-proxy-env`.
+# This file is sourced, not executed — chmod 644.
+#
+# shellcheck source=tests/lib
+# shellcheck disable=SC2016,SC2329,SC2015  # print never fails
+
+readonly MPE_PY='/opt/homebrew/opt/mcp-proxy/libexec/bin/python'
+
+typeset -g MPE_T='' MPE_BIN='' MPE_FAKE='' MPE_EMPTY='' MPE_REC='' MPE_OUT='' MPE_ERR=''
+typeset -g MPE_URL='' MPE_RC=0
+typeset -ga MPE_EXTRA=()
+
+function _mpe_setup {
+  zmodload -F zsh/files b:zf_rm b:zf_mkdir
+  MPE_T="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/mcp-proxy-env-test.XXXXXX")"
+  MPE_BIN="${MPE_BIN_OVERRIDE:-${SCRIPT_DIR}/bin/mcp-proxy-env}"
+  MPE_FAKE="${MPE_T}/fake"
+  MPE_EMPTY="${MPE_T}/empty"
+  MPE_REC="${MPE_T}/record.json"
+  MPE_OUT="${MPE_T}/out"
+  MPE_ERR="${MPE_T}/err"
+  # Synthetic capability URL, assembled at run time.
+  MPE_URL="https://ha.test/""cap-""xk7q"
+  zf_mkdir -p "${MPE_FAKE}/mcp_proxy" "${MPE_EMPTY}/mcp_proxy"
+  : > "${MPE_FAKE}/mcp_proxy/__init__.py"
+  : > "${MPE_EMPTY}/mcp_proxy/__init__.py"
+  cat > "${MPE_FAKE}/mcp_proxy/__main__.py" <<'PYEOF'
+import json
+import os
+import subprocess
+import sys
+
+
+def main():
+    name = os.environ.get("FAKE_URL_ENV", "MCP_PROXY_URL")
+    ps = subprocess.run(
+        ["/bin/ps", "-ww", "-o", "args=", "-p", str(os.getpid())],
+        capture_output=True, text=True,
+    ).stdout.strip()
+    with open(os.environ["FAKE_RECORD"], "w") as fh:
+        json.dump({"argv": sys.argv, "env_url": os.environ.get(name), "ps": ps}, fh)
+    mode = os.environ.get("FAKE_MODE", "")
+    if mode == "exit3":
+        sys.exit(3)
+    if mode == "raise":
+        raise RuntimeError(os.environ.get(name))
+PYEOF
+}
+
+function _mpe_teardown {
+  [[ -n "${MPE_T}" && -d "${MPE_T}" ]] && zf_rm -rf "${MPE_T}"
+  return 0
+}
+
+# Run the script under the venv interpreter. The environment starts empty
+# (env -i); extra pairs come from MPE_EXTRA, cleared afterwards. A PYTHONPATH
+# pair in MPE_EXTRA comes later on the command line and wins.
+function _mpe_run {
+  MPE_RC=0
+  zf_rm -f "${MPE_REC}"
+  /usr/bin/env -i \
+    PATH="/usr/bin:/bin" TMPDIR="${TMPDIR:-/tmp}" HOME="${MPE_T}" \
+    PYTHONPATH="${MPE_FAKE}" FAKE_RECORD="${MPE_REC}" \
+    "${MPE_EXTRA[@]}" \
+    "${MPE_PY}" "${MPE_BIN}" "$@" > "${MPE_OUT}" 2> "${MPE_ERR}" || MPE_RC=$?
+  MPE_EXTRA=()
+}
+
+# jq on the record; prints the result (empty when there is no record).
+function _mpe_rec {
+  [[ -f "${MPE_REC}" ]] || return 0
+  jq -c "$1" "${MPE_REC}"
+}
+
+function _mpe_called { [[ -f "${MPE_REC}" ]]; }
+
+# True when the file's contents contain the literal string.
+function _mpe_file_has {
+  local content
+  content="$(<"$1")"
+  [[ "${content}" == *"$2"* ]]
+}
+
+# _mpe_check <description> <0|1>
+function _mpe_check {
+  if [[ "$2" == 1 ]]; then _pass "$1"; else _fail "$1"; fi
+}
+
+# 1 when the record's argv equals the JSON array in $1.
+function _mpe_argv_is {
+  [[ "$(_mpe_rec '.argv')" == "$1" ]] && print 1 || print 0
+}
+
+# An error case: expected exit code, mcp-proxy never called, stdout empty,
+# stderr non-empty and holding neither the URL nor the offending argument ($3).
+function _mpe_expect_refusal {
+  local desc="$1" code="$2" bad="${3:-}" ok=1
+  [[ "${MPE_RC}" == "${code}" ]] || ok=0
+  _mpe_called && ok=0
+  [[ ! -s "${MPE_OUT}" ]] || ok=0
+  [[ -s "${MPE_ERR}" ]] || ok=0
+  _mpe_file_has "${MPE_ERR}" "${MPE_URL}" && ok=0
+  if [[ -n "${bad}" ]]; then _mpe_file_has "${MPE_ERR}" "${bad}" && ok=0; fi
+  if [[ "${ok}" == 1 ]]; then
+    _pass "${desc}"
+  else
+    _fail "${desc} (rc ${MPE_RC}, called=$(_mpe_called && print yes || print no), stderr: $(<"${MPE_ERR}"))"
+  fi
+  return 0
+}
+
+function _mpe_test_url_from_env {
+  _section "mcp-proxy-env: URL from the environment"
+  MPE_EXTRA=(MCP_PROXY_URL="${MPE_URL}")
+  _mpe_run --transport=streamablehttp
+  _mpe_check "default variable: exit 0" "$(( MPE_RC == 0 ))"
+  _mpe_check "default variable: argv is mcp-proxy, passthrough, URL" \
+    "$(_mpe_argv_is "[\"mcp-proxy\",\"--transport=streamablehttp\",\"${MPE_URL}\"]")"
+  _mpe_check "default variable: stdout empty" "$([[ ! -s "${MPE_OUT}" ]] && print 1 || print 0)"
+
+  MPE_EXTRA=(MCP_PROXY_URL="${MPE_URL}-default" OTHER_URL="${MPE_URL}")
+  _mpe_run --url-env OTHER_URL --transport=streamablehttp
+  _mpe_check "--url-env NAME reads that variable and strips the flag" \
+    "$(_mpe_argv_is "[\"mcp-proxy\",\"--transport=streamablehttp\",\"${MPE_URL}\"]")"
+
+  MPE_EXTRA=(MCP_PROXY_URL="${MPE_URL}-default" OTHER_URL="${MPE_URL}" FAKE_URL_ENV=OTHER_URL)
+  _mpe_run --url-env=OTHER_URL
+  _mpe_check "--url-env=NAME form reads that variable" \
+    "$(_mpe_argv_is "[\"mcp-proxy\",\"${MPE_URL}\"]")"
+
+  MPE_EXTRA=(MCP_PROXY_URL="${MPE_URL}")
+  _mpe_run --port 8080 --transport streamablehttp --no-verify-ssl --help
+  _mpe_check "passthrough keeps its order, URL last, --help is not refused" \
+    "$(_mpe_argv_is "[\"mcp-proxy\",\"--port\",\"8080\",\"--transport\",\"streamablehttp\",\"--no-verify-ssl\",\"--help\",\"${MPE_URL}\"]")"
+
+  MPE_EXTRA=(MCP_PROXY_URL="${MPE_URL}")
+  _mpe_run --transport=streamablehttp
+  _mpe_check "URL is in no argv position before the last" \
+    "$([[ "$(_mpe_rec '.argv[:-1] | map(contains("ha.test")) | any')" == false ]] && print 1 || print 0)"
+  _mpe_check "environment still holds the URL (left alone on purpose)" \
+    "$([[ "$(_mpe_rec '.env_url')" == "\"${MPE_URL}\"" ]] && print 1 || print 0)"
+  _mpe_check "ps argument line of the process has no URL and names the script" \
+    "$([[ "$(_mpe_rec '.ps | contains("ha.test") or contains("cap-")')" == false \
+        && "$(_mpe_rec '.ps')" == *"${MPE_BIN}"* ]] && print 1 || print 0)"
+
+  # The shebang itself: execute the script, not the interpreter.
+  MPE_RC=0
+  zf_rm -f "${MPE_REC}"
+  /usr/bin/env -i PATH="/usr/bin:/bin" HOME="${MPE_T}" PYTHONPATH="${MPE_FAKE}" \
+    FAKE_RECORD="${MPE_REC}" MCP_PROXY_URL="${MPE_URL}" \
+    "${MPE_BIN}" --transport=streamablehttp > "${MPE_OUT}" 2> "${MPE_ERR}" || MPE_RC=$?
+  _mpe_check "executing the script directly (shebang) works" \
+    "$([[ "${MPE_RC}" == 0 && "$(_mpe_rec '.argv[-1]')" == "\"${MPE_URL}\"" ]] && print 1 || print 0)"
+}
+
+function _mpe_test_unset {
+  _section "mcp-proxy-env: unset or empty URL variable"
+  MPE_EXTRA=()
+  _mpe_run --transport=streamablehttp
+  _mpe_expect_refusal "unset default variable: exit 78, mcp-proxy not called" 78
+  _mpe_check "unset default variable: message names MCP_PROXY_URL" \
+    "$([[ "$(<"${MPE_ERR}")" == 'mcp-proxy-env: MCP_PROXY_URL is not set' ]] && print 1 || print 0)"
+
+  MPE_EXTRA=(MCP_PROXY_URL=)
+  _mpe_run
+  _mpe_expect_refusal "empty default variable: exit 78" 78
+
+  MPE_EXTRA=(MCP_PROXY_URL="${MPE_URL}")
+  _mpe_run --url-env OTHER_URL
+  _mpe_expect_refusal "--url-env names an unset variable: exit 78" 78
+  _mpe_check "message names OTHER_URL, not the default" \
+    "$([[ "$(<"${MPE_ERR}")" == 'mcp-proxy-env: OTHER_URL is not set' ]] && print 1 || print 0)"
+}
+
+function _mpe_test_refusals {
+  _section "mcp-proxy-env: URL and header arguments are refused"
+  local arg
+  MPE_EXTRA=(MCP_PROXY_URL="${MPE_URL}")
+  _mpe_run "http://other.test/p"
+  _mpe_expect_refusal "positional URL: exit 64" 64 "other.test"
+  MPE_EXTRA=(MCP_PROXY_URL="${MPE_URL}")
+  _mpe_run --transport=streamablehttp "http://other.test/p"
+  _mpe_expect_refusal "positional URL after other arguments: exit 64" 64 "other.test"
+  MPE_EXTRA=(MCP_PROXY_URL="${MPE_URL}")
+  _mpe_run --some-flag=http://other.test/p
+  _mpe_expect_refusal "URL inside a flag value: exit 64" 64 "other.test"
+  MPE_EXTRA=()
+  _mpe_run "http://other.test/p"
+  _mpe_expect_refusal "positional URL with the variable unset: 64 comes first" 64 "other.test"
+
+  for arg in -H --headers --header -Hx-api-key --headers=Authorization --hea; do
+    MPE_EXTRA=(MCP_PROXY_URL="${MPE_URL}")
+    _mpe_run "${arg}" x-api-key secretvalue
+    _mpe_expect_refusal "${arg}: exit 64" 64 "secretvalue"
+  done
+
+  MPE_EXTRA=(MCP_PROXY_URL="${MPE_URL}")
+  _mpe_run --url-env
+  _mpe_expect_refusal "--url-env with no value: exit 64" 64
+  MPE_EXTRA=(MCP_PROXY_URL="${MPE_URL}")
+  _mpe_run --url-env 'BAD-NAME'
+  _mpe_expect_refusal "--url-env with an invalid name: exit 64" 64
+}
+
+function _mpe_test_proxy_outcomes {
+  _section "mcp-proxy-env: outcomes of mcp-proxy"
+  local ok=1
+  MPE_EXTRA=(MCP_PROXY_URL="${MPE_URL}" FAKE_MODE=exit3)
+  _mpe_run --transport=streamablehttp
+  _mpe_check "exit code of mcp-proxy passes through" "$(( MPE_RC == 3 ))"
+
+  MPE_EXTRA=(MCP_PROXY_URL="${MPE_URL}" FAKE_MODE=raise)
+  _mpe_run --transport=streamablehttp
+  [[ "${MPE_RC}" == 1 ]] || ok=0
+  [[ ! -s "${MPE_OUT}" ]] || ok=0
+  _mpe_file_has "${MPE_ERR}" RuntimeError || ok=0
+  _mpe_file_has "${MPE_ERR}" "${MPE_URL}" && ok=0
+  _mpe_file_has "${MPE_ERR}" "Traceback" && ok=0
+  _mpe_check "an exception is reported by type only, without the URL or a traceback" "${ok}"
+
+  MPE_EXTRA=(MCP_PROXY_URL="${MPE_URL}" PYTHONPATH="${MPE_EMPTY}")
+  _mpe_run --transport=streamablehttp
+  _mpe_expect_refusal "mcp_proxy not importable: exit 69" 69
+}
+
+function run_mcp_proxy_env {
+  if [[ ! -x "${MPE_PY}" ]]; then
+    _skip "mcp-proxy-env: ${MPE_PY} is missing (mcp-proxy not installed)"
+    return
+  fi
+  if [[ ! -r "${MPE_BIN_OVERRIDE:-${SCRIPT_DIR}/bin/mcp-proxy-env}" ]]; then
+    _skip "mcp-proxy-env: bin/mcp-proxy-env is missing"
+    return
+  fi
+  if ! command -v jq >/dev/null 2>&1; then
+    _skip "mcp-proxy-env: jq not installed"
+    return
+  fi
+
+  _mpe_setup
+  _mpe_test_url_from_env
+  _mpe_test_unset
+  _mpe_test_refusals
+  _mpe_test_proxy_outcomes
+  _mpe_teardown
+}

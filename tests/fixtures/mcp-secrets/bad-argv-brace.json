@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "c-stdio-flag-brace": {"type": "stdio", "command": "some-mcp", "args": ["--key-file", "${KEY_FILE}"]},
+    "c-port": {"command": "some-mcp", "args": ["--port", "${PORT}"]},
+    "c-no-type": {"command": "mcp-proxy", "args": ["--transport=streamablehttp", "${HA_URL}"]}
+  },
+  "projects": {
+    "/work/p": {"mcpServers": {"c-project": {"type": "stdio", "command": "some-mcp", "args": ["${TOKEN_VALUE}"]}}}
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "f-H": {"command": "mcp-proxy", "args": ["-H", "x-api-key", "abc", "https://mcp.example.invalid/mcp"]},
+    "f-header": {"command": "mcp-proxy", "args": ["--header", "x-api-key", "abc", "https://mcp.example.invalid/mcp"]},
+    "f-headers": {"command": "mcp-proxy", "args": ["--headers", "x-api-key", "abc", "https://mcp.example.invalid/mcp"]},
+    "f-api-key": {"command": "some-mcp", "args": ["--api-key", "abc"]},
+    "f-apikey": {"command": "some-mcp", "args": ["--apikey=abc"]},
+    "f-token": {"command": "some-mcp", "args": ["--token", "abc"]},
+    "f-bearer": {"command": "some-mcp", "args": ["--bearer", "abc"]},
+    "f-password": {"command": "some-mcp", "args": ["--password", "abc"]},
+    "f-in-shell": {"command": "sh", "args": ["-c", "exec mcp-proxy -H x-api-key abc https://mcp.example.invalid/mcp"]}
+  },
+  "projects": {
+    "/work/p": {"mcpServers": {"f-project": {"command": "some-mcp", "args": ["--token", "abc"]}}}
+  }
+}

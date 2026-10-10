@@ -1,0 +1,29 @@
+model = "example"
+
+[mcp_servers.plain]
+command = "/usr/local/bin/some-mcp"
+args = ["--stdio", "@scope/desk-utility-mcp-server"]
+
+[mcp_servers.plain.env]
+LOG_LEVEL = "info"
+
+[mcp_servers.keyed]
+command = "/usr/local/bin/bao-mcp-env"
+args = [
+  "exa",
+  "sh",
+  "-c",
+  'API_ACCESS_TOKEN="$EXA_API_KEY" exec /opt/homebrew/bin/mcp-proxy --transport=streamablehttp https://mcp.example.invalid/mcp',
+]
+
+[mcp_servers.keyed-basic]
+command = "sh"
+args = ["-c", "API_ACCESS_TOKEN=\"$EXA_API_KEY\" exec mcp-proxy https://mcp.example.invalid/mcp"]
+
+[mcp_servers.remote]
+url = "https://mcp.example.invalid/mcp"
+bearer_token_env_var = "EXAMPLE_TOKEN"
+
+# Outside every mcp_servers table: never scanned.
+[profiles.other]
+args = ["-H", "x-api-key", "$NOT_AN_MCP_ENTRY"]

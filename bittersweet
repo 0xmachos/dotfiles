@@ -743,7 +743,7 @@ function install_scripts {
   # scripts (jump-system, jump-user, scratch-sweep) are COPIED, not symlinked:
   # see the comment at each.
 
-  local -ar bin_files=(dns mdview npm-audit-check claude-session-audit git-sign-unpushed bao-mcp-env papercut spawnprof)
+  local -ar bin_files=(dns mdview npm-audit-check claude-session-audit git-sign-unpushed bao-mcp-env mcp-proxy-env papercut spawnprof)
   local -ar macos_script_bin_files=(c0design)
   
   if ! [[ -d "/usr/local/bin/" ]]; then 

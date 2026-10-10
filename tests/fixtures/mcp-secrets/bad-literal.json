@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "l-alnum-arg": {"command": "some-mcp", "args": ["@ALNUM32@"]},
+    "l-alnum-env": {"command": "some-mcp", "env": {"KEY": "@ALNUM32@"}},
+    "l-sk": {"command": "some-mcp", "args": ["@SK@"]},
+    "l-ghp": {"command": "some-mcp", "env": {"KEY": "@GHP@"}},
+    "l-gho": {"command": "some-mcp", "args": ["@GHO@"]},
+    "l-ghs": {"command": "some-mcp", "args": ["@GHS@"]},
+    "l-xoxb": {"command": "some-mcp", "args": ["@XOXB@"]},
+    "l-xoxp": {"command": "some-mcp", "args": ["@XOXP@"]},
+    "l-jwt": {"command": "some-mcp", "env": {"KEY": "@JWT@"}},
+    "l-header": {"type": "http", "url": "https://mcp.example.invalid/mcp", "headers": {"Authorization": "Bearer @GHP@ ${EXAMPLE_TOKEN}"}}
+  }
+}

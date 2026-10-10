@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "e-sh": {"command": "sh", "args": ["-c", "exec mcp-proxy https://mcp.example.invalid/mcp $EXA_API_KEY"]},
+    "e-brace": {"command": "sh", "args": ["-c", "exec mcp-proxy https://mcp.example.invalid/mcp ${EXA_API_KEY}"]},
+    "e-bash": {"command": "/bin/bash", "args": ["exec mcp-proxy https://mcp.example.invalid/mcp $EXA_API_KEY"]},
+    "e-wrapped": {"command": "/usr/local/bin/bao-mcp-env", "args": ["exa", "sh", "-c", "exec mcp-proxy \"$EXA_API_KEY\""]},
+    "e-after-prefix": {"command": "sh", "args": ["-c", "A=\"$X\" exec mcp-proxy \"$Y\""]},
+    "e-env-prefix-late": {"command": "sh", "args": ["-c", "exec env API_ACCESS_TOKEN=\"$X\" mcp-proxy https://mcp.example.invalid/mcp"]}
+  }
+}
