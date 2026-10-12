@@ -51,7 +51,7 @@ function muse {
           command muse "$@"
         return
         ;;
-      config|export|trace|skills|sandbox|schema|serve|session-message|auth|login|logout|init|plugins)
+      config|export|trace|model-profile|skills|voice|sandbox|schema|serve|session-message|mcp|auth|login|logout|init|plugins)
         command muse "$@"
         return
         ;;
