@@ -62,10 +62,8 @@ delivery = "system"
 # the state word in the state colour and the session-wrap marker under the
 # title. The pane token `wrap` is `wrapped` (purple) or `N blocked`
 # (orange), set when the wrap finishes and cleared on the next prompt; an
-# unset token takes no space. The `agent` token names the harness (muse,
-# codex) in blue; Herdr UI draws that harness's icon on the line holding
-# it, in the token's colour (muted grey when unset). Claude
-# rows below leave it out, so only a non-Claude agent carries a marker.
+# unset token takes no space. Any agent without its own layout below uses
+# these rows, with no harness marker.
 [ui.sidebar.agents]
 row_gap = 0
 rows = [
@@ -75,7 +73,6 @@ rows = [
   ],
   [
     { token = "state_text", bold = true },
-    { token = "agent", bold = true, fg = "#82aaff" },
     { token = "$wrap", bold = true, rules = [{ equals = "wrapped", fg = "#c792ea" }, { contains = "blocked", fg = "#ff9e64" }] },
   ],
 ]
@@ -91,6 +88,32 @@ claude = [
   ],
   [
     { token = "state_text", bold = true },
+    { token = "$wrap", bold = true, rules = [{ equals = "wrapped", fg = "#c792ea" }, { contains = "blocked", fg = "#ff9e64" }] },
+  ],
+]
+
+# Muse and Codex rows add the harness name after the state word: the `agent`
+# token, Meta blue for Muse and white for Codex. Herdr UI draws the
+# harness icon on the line holding that token, in the token's colour.
+muse = [
+  [
+    { token = "state_icon", bold = true },
+    { token = "terminal_title_stripped", bold = true },
+  ],
+  [
+    { token = "state_text", bold = true },
+    { token = "agent", bold = true, fg = "#0866ff" },
+    { token = "$wrap", bold = true, rules = [{ equals = "wrapped", fg = "#c792ea" }, { contains = "blocked", fg = "#ff9e64" }] },
+  ],
+]
+codex = [
+  [
+    { token = "state_icon", bold = true },
+    { token = "terminal_title_stripped", bold = true },
+  ],
+  [
+    { token = "state_text", bold = true },
+    { token = "agent", bold = true, fg = "#ffffff" },
     { token = "$wrap", bold = true, rules = [{ equals = "wrapped", fg = "#c792ea" }, { contains = "blocked", fg = "#ff9e64" }] },
   ],
 ]
