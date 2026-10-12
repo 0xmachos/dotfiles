@@ -14,6 +14,7 @@ function jump {
   local -r XPROTECT_APP="/Library/Apple/System/Library/CoreServices/XProtect.app/Contents/MacOS/XProtect"
   local -r CLAUDE_BINARY="${HOME}/.local/bin/claude"
   local -r MUSE_BINARY="${HOME}/.local/bin/muse"
+  local -r HERDR_BINARY="${HOME}/.local/bin/herdr"
 
   # rc accumulates step failures so `jump && …` gets an honest status. Advisory
   # checks (brew doctor, the IIO reminder) and absent binaries do not set it.
@@ -126,6 +127,27 @@ function jump {
     echo "[❌] IIOEnableOOP not set in launchd — GUI apps parsing images in-process"
     echo "    Run: launchctl setenv IIOEnableOOP 1"
     echo "    Or:  bittersweet launchagents"
+  fi
+
+
+  ## herdr ##
+  # Last on purpose: `herdr update --handoff` restarts the herdr server. When
+  # the live handoff fails, every pane restarts, this one too if jump runs in
+  # herdr, and an agent mid-turn stops. So it warns and asks first: only y
+  # runs it, any other key (or no terminal) skips. With no new build, herdr
+  # prints "already up to date" and restarts nothing. launchd jump-user only
+  # checks (check_herdr_update).
+  if [[ -x "${HERDR_BINARY}" ]]; then
+    echo "[⚠️ ] herdr update restarts the herdr server ($("${HERDR_BINARY}" --version 2>&1))."
+    echo "    If the live handoff fails, every pane restarts and agents mid-turn stop."
+    if read -r -q "?[🐄] Update herdr now? [y/N] "; then
+      echo
+      echo "[🐄] Updating herdr..."
+      "${HERDR_BINARY}" update --handoff || rc=1
+    else
+      echo
+      echo "[⏭️ ] Skipped herdr update"
+    fi
   fi
 
   return "${rc}"
