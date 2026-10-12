@@ -131,22 +131,28 @@ function jump {
 
 
   ## herdr ##
-  # Last on purpose: `herdr update --handoff` restarts the herdr server. When
-  # the live handoff fails, every pane restarts, this one too if jump runs in
-  # herdr, and an agent mid-turn stops. So it warns and asks first: only y
-  # runs it, any other key (or no terminal) skips. With no new build, herdr
-  # prints "already up to date" and restarts nothing. launchd jump-user only
-  # checks (check_herdr_update).
+  # Last on purpose: a herdr update can stop the herdr server, which exits
+  # every pane process, this one too if jump runs in herdr. Plain update, not
+  # --handoff: a handed-off server loses its macOS responsible app (upstream
+  # herdrdev/herdr#808), so 1Password CLI and Local Network access break in
+  # its panes. herdr asks before it stops a server, and refuses to run inside
+  # a herdr pane (HERDR_ENV=1), so jump skips there. Only y runs it; any other
+  # key (or no terminal) skips. With no new build herdr prints "already up to
+  # date". launchd jump-user only checks (check_herdr_update).
   if [[ -x "${HERDR_BINARY}" ]]; then
-    echo "[⚠️ ] herdr update restarts the herdr server ($("${HERDR_BINARY}" --version 2>&1))."
-    echo "    If the live handoff fails, every pane restarts and agents mid-turn stop."
-    if read -r -q "?[🐄] Update herdr now? [y/N] "; then
-      echo
-      echo "[🐄] Updating herdr..."
-      "${HERDR_BINARY}" update --handoff || rc=1
+    if [[ "${HERDR_ENV:-}" == "1" ]]; then
+      echo "[⏭️ ] Skipped herdr update: herdr cannot update from inside a herdr pane. Run jump in Ghostty."
     else
-      echo
-      echo "[⏭️ ] Skipped herdr update"
+      echo "[⚠️ ] herdr update may stop the herdr server ($("${HERDR_BINARY}" --version 2>&1))."
+      echo "    Stopping it exits every pane process, and agents mid-turn stop. herdr asks first."
+      if read -r -q "?[🐄] Update herdr now? [y/N] "; then
+        echo
+        echo "[🐄] Updating herdr..."
+        "${HERDR_BINARY}" update || rc=1
+      else
+        echo
+        echo "[⏭️ ] Skipped herdr update"
+      fi
     fi
   fi
 

@@ -105,7 +105,7 @@ function check_herdr_update {
       return 0
     else
       tag="UPDATE"; rc=0
-      detail="installed ${installed}, preview ${latest[1,12]}. Run 'herdr update' by hand when no agent is mid-turn: every pane may restart."
+      detail="installed ${installed}, preview ${latest[1,12]}. Run 'herdr update' by hand, outside herdr, when no agent is mid-turn: a server stop exits every pane process."
     fi
   fi
 
