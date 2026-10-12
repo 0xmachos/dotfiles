@@ -368,8 +368,17 @@ function run_pre_compact_hooks {
   else
     _fail "state: files appeared under the read-only store"
   fi
-  _pch_run pre-compact-state "${pl}" -u HOME -u PRE_COMPACT_STORE
-  _pch_quiet "state: HOME and store both unset"
+  # HOME is set empty, not unset: zsh fills an unset HOME from the user
+  # database at start, which would reach the real store.
+  _pch_run pre-compact-state "${pl}" HOME= -u PRE_COMPACT_STORE
+  _pch_quiet "state: HOME empty and store unset"
+  # Default store path, composed under a sandbox HOME.
+  _pch_run pre-compact-state "${pl}" "HOME=${pch_sb}/home" -u PRE_COMPACT_STORE
+  if [[ -f "${pch_sb}/home/Library/Caches/tint/_tools/pre-compact/${sid}.state" ]]; then
+    _pass "state: default store is under HOME"
+  else
+    _fail "state: default store path not used"
+  fi
   _pch_run pre-compact-state "${pl}" PRE_COMPACT_STORE=relative/store
   _pch_quiet "state: relative store path is refused"
   if [[ ! -e "${SCRIPT_DIR}/relative/store" && ! -e "${PWD}/relative/store" ]]; then
