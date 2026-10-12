@@ -594,11 +594,10 @@ function install_dotfiles {
   _symlink "${SCRIPT_DIR}/.config/uv/uv.toml" "${HOME}/.config/uv/uv.toml"
 
   # herdr: link config.toml only, never the directory (herdr keeps its socket,
-  # session state, machine identity and push registries beside it). herdr's own
-  # writes go through the link (std::fs::write; the integration installer
-  # resolves symlinks first — verified from source 2026-09-29). The binary is
-  # installer-managed at ~/.local/bin/herdr (the fork's installer only writes
-  # under $HOME).
+  # session state and logs beside it). herdr's own writes go through the link
+  # (std::fs::write; the integration installer resolves symlinks first —
+  # verified in source 2026-09-29). The binary comes from the Homebrew
+  # formula (.extra/Brewfile), not from this script.
   _symlink "${SCRIPT_DIR}/.config/herdr/config.toml" "${HOME}/.config/herdr/config.toml"
 
   # npm hardcodes ~/.npmrc

@@ -322,6 +322,18 @@ function run_herdr_notify_detail {
   _hnd_run "$(_hnd_notif permission_prompt)" HERDR_NOTIFY_DETAIL_BIN="${_HND_BOX}/nope"
   _hnd_quiet "missing bin"
 
+  # 11a. no test seam: the hook uses herdr's own HERDR_BIN_PATH
+  _hnd_reset
+  _hnd_run "$(_hnd_notif permission_prompt 'via bin path')" \
+    HERDR_NOTIFY_DETAIL_BIN= HERDR_BIN_PATH="${_HND_FAKE}"
+  _hnd_quiet "HERDR_BIN_PATH"
+  _hnd_eq "HERDR_BIN_PATH: posts once" 1 "$(_hnd_posts)"
+  _hnd_reset
+  _hnd_run "$(_hnd_notif permission_prompt)" \
+    HERDR_NOTIFY_DETAIL_BIN= HERDR_BIN_PATH="${_HND_BOX}/nope"
+  _hnd_quiet "missing HERDR_BIN_PATH"
+  _hnd_eq "missing HERDR_BIN_PATH: no post" 0 "$(_hnd_posts)"
+
   # 11b. internal failure (state dir cannot be created) still exits 0, silent
   _hnd_reset
   _hnd_run "$(_hnd_perm_bash 'ls')" CLAUDE_CODE_TMPDIR=/dev/null/nope

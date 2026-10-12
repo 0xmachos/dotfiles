@@ -76,51 +76,6 @@ function run_vulns_scan {
   return "${rc}"
 }
 
-# Check only, never install: `herdr update` restarts the server that holds
-# every pane, and when its live handoff fails every pane restarts, so the
-# update stays a step the user runs by hand. The fork's preview manifest names
-# the build `herdr update` would install; a different commit logs [UPDATE]
-# with both commits. $2 and $3 are test fixture commands; main passes none.
-function check_herdr_update {
-  local herdr_binary="$1"
-  local curl_binary="${2:-/usr/bin/curl}" plutil_binary="${3:-/usr/bin/plutil}"
-  local -r manifest_url="https://raw.githubusercontent.com/jerryfane/herdr/master/distribution/preview.json"
-  local -r commit_re='\(([0-9a-f]{7,40})\)' full_re='^[0-9a-f]{40}$'
-  local version installed manifest latest tag detail rc
-
-  if ! version=$("${herdr_binary}" --version 2>&1); then
-    tag="FAIL"; rc=1; detail="herdr --version failed: ${version}"
-  elif ! [[ "${version}" =~ ${commit_re} ]]; then
-    tag="FAIL"; rc=1; detail="no commit in herdr --version output: ${version}"
-  else
-    # shellcheck disable=SC2154  # zsh sets match from =~
-    installed="${match[1]}"
-    if ! manifest=$("${curl_binary}" -fsSL --proto '=https' --max-time 30 "${manifest_url}" 2>&1); then
-      tag="FAIL"; rc=1; detail="cannot fetch ${manifest_url}: ${manifest}"
-    elif ! latest=$("${plutil_binary}" -extract commit raw -o - - <<< "${manifest}" 2>&1) \
-        || ! [[ "${latest}" =~ ${full_re} ]]; then
-      tag="FAIL"; rc=1; detail="no commit in ${manifest_url}"
-    elif [[ "${latest}" == "${installed}"* ]]; then
-      logger -t "com.0xmachos.jump" "[OK] herdr update check"
-      return 0
-    else
-      tag="UPDATE"; rc=0
-      detail="installed ${installed}, preview ${latest[1,12]}. Run 'herdr update' by hand, outside herdr, when no agent is mid-turn: a server stop exits every pane process."
-    fi
-  fi
-
-  logger -t "com.0xmachos.jump" "[${tag}] herdr update check"
-  # Same silent-redirect hazard as run_and_log (see there).
-  if ! {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [${tag}] herdr update check"
-    echo "${detail}"
-    echo ""
-  } >> "${LOG_FILE}" 2>/dev/null; then
-    logger -t "com.0xmachos.jump" "[FAIL] cannot write ${LOG_FILE} — herdr update check detail lost"
-  fi
-  return "${rc}"
-}
-
 # The upgrade step: brew_upgrade_selected (sourced above) under run_and_log.
 # An undefined function is a [FAIL], never a fallback to a bare `brew upgrade`.
 function run_brew_upgrade {
@@ -229,14 +184,6 @@ function main {
   if [[ -x "${MUSE_BINARY}" ]]; then
     run_and_log "muse update" \
       /usr/bin/env MUSE_LAUNCHER_INSTALL=1 MUSE_LOGIN=0 "${MUSE_BINARY}" || rc=1
-  fi
-
-  ## herdr ##
-  # Fork installer's own location (~/.local/bin). Check only: see
-  # check_herdr_update.
-  local -r HERDR_BINARY="${HOME}/.local/bin/herdr"
-  if [[ -x "${HERDR_BINARY}" ]]; then
-    check_herdr_update "${HERDR_BINARY}" || rc=1
   fi
 
   ## Local extras (gitignored, sourced if present) ##

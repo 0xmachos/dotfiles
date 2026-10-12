@@ -433,96 +433,6 @@ function _jump_test_run_and_log_unwritable {
   done
 }
 
-# check_herdr_update with fixture herdr and curl (real plutil): it only ever
-# calls `herdr --version`, matches the manifest commit, and fails closed.
-function _jump_test_herdr_update {
-  _section "herdr update check (fixtures, never installs)"
-
-  local fixture
-  fixture="$(mktemp -d "${TMPDIR}test-jump-herdr.XXXXXX")"
-  cat > "${fixture}/herdr" <<'MOCK'
-#!/bin/zsh
-print -r -- "$*" >> "${JUMP_TEST_HERDR_CALLS}"
-print -r -- "${JUMP_TEST_VERSION}"
-exit "${JUMP_TEST_VERSION_STATUS}"
-MOCK
-  cat > "${fixture}/curl" <<'MOCK'
-#!/bin/zsh
-[[ "${@[-1]}" == https://* ]] || exit 3
-print -r -- "${JUMP_TEST_MANIFEST}"
-exit "${JUMP_TEST_CURL_STATUS}"
-MOCK
-  zf_chmod 700 "${fixture}/herdr" "${fixture}/curl"
-
-  local -r same=7da9d07b4d4dc40d3af63af1ecbf20c07f4a2bfd
-  local -r newer=1111111b4d4dc40d3af63af1ecbf20c07f4a2bfd
-  # name|version|version status|manifest|curl status|rc|tag|log file written
-  local -a cases=(
-    "current|herdr 0.9.3 (7da9d07)|0|{\"commit\":\"${same}\"}|0|0|OK|no"
-    "newer|herdr 0.9.3 (7da9d07)|0|{\"commit\":\"${newer}\"}|0|0|UPDATE|yes"
-    "version fails|boom|1|{\"commit\":\"${same}\"}|0|1|FAIL|yes"
-    "no commit in version|herdr 0.9.3|0|{\"commit\":\"${same}\"}|0|1|FAIL|yes"
-    "fetch fails|herdr 0.9.3 (7da9d07)|0||22|1|FAIL|yes"
-    "manifest without commit|herdr 0.9.3 (7da9d07)|0|{\"build\":1}|0|1|FAIL|yes"
-    "short manifest commit|herdr 0.9.3 (7da9d07)|0|{\"commit\":\"7da9d07\"}|0|1|FAIL|yes"
-    "not json|herdr 0.9.3 (7da9d07)|0|<html>|0|1|FAIL|yes"
-  )
-  local entry name version version_status manifest curl_status want_rc want_tag want_file actual
-  local -a f
-  # shellcheck disable=SC2034  # read by the zsh (@s:|:) split below
-  for entry in "${cases[@]}"; do
-    # shellcheck disable=SC2296  # zsh (@s:|:) split
-    f=("${(@s:|:)entry}")
-    name="${f[1]}" version="${f[2]}" version_status="${f[3]}" manifest="${f[4]}"
-    curl_status="${f[5]}" want_rc="${f[6]}" want_tag="${f[7]}" want_file="${f[8]}"
-    : > "${fixture}/calls"
-    : > "${fixture}/logger"
-    zf_rm -f "${fixture}/jump.log"
-    # shellcheck disable=SC1090,SC1091,SC2034,SC2329
-    actual=$(
-      set +e
-      eval "${_JUMP_BODY[bin/jump-user]}"
-      LOG_FILE="${fixture}/jump.log"
-      export JUMP_TEST_HERDR_CALLS="${fixture}/calls"
-      export JUMP_TEST_VERSION="${version}" JUMP_TEST_VERSION_STATUS="${version_status}"
-      export JUMP_TEST_MANIFEST="${manifest}" JUMP_TEST_CURL_STATUS="${curl_status}"
-      logger() { print -r -- "$*" >> "${fixture}/logger"; }
-      check_herdr_update "${fixture}/herdr" "${fixture}/curl" >/dev/null 2>&1
-      print -r -- "$?"
-    )
-    if [[ "${actual}" == "${want_rc}" ]]; then
-      _pass "herdr ${name}: returns ${want_rc}"
-    else
-      _fail "herdr ${name}: returned ${actual}, want ${want_rc}"
-    fi
-    if _jump_log_has "${fixture}/logger" "*\[${want_tag}\] herdr update check"; then
-      _pass "herdr ${name}: logs [${want_tag}]"
-    else
-      _fail "herdr ${name}: no [${want_tag}] logger line ($(<"${fixture}/logger"))"
-    fi
-    if [[ "${want_file}" == yes ]] && _jump_log_has "${fixture}/jump.log" "*\[${want_tag}\] herdr update check"; then
-      _pass "herdr ${name}: writes detail to jump.log"
-    elif [[ "${want_file}" == no && ! -e "${fixture}/jump.log" ]]; then
-      _pass "herdr ${name}: writes nothing to jump.log"
-    else
-      _fail "herdr ${name}: jump.log state wrong (want written=${want_file})"
-    fi
-    if [[ "$(<"${fixture}/calls")" == --version ]]; then
-      _pass "herdr ${name}: calls only herdr --version"
-    else
-      _fail "herdr ${name}: herdr called with '$(<"${fixture}/calls")'"
-    fi
-    if [[ "${name}" == newer ]]; then
-      if _jump_log_has "${fixture}/jump.log" "installed 7da9d07, preview 1111111b4d4d*"; then
-        _pass "herdr newer: jump.log names both commits"
-      else
-        _fail "herdr newer: jump.log lacks both commits"
-      fi
-    fi
-  done
-  zf_rm -rf "${fixture}"
-}
-
 function run_jump {
   # Builtin rm and chmod: the zf_ prefix leaves the external commands alone.
   zmodload -F zsh/files b:zf_rm b:zf_chmod
@@ -535,7 +445,6 @@ function run_jump {
   _jump_test_log_file
   _jump_test_run_and_log
   _jump_test_run_and_log_unwritable
-  _jump_test_herdr_update
   _jump_test_launchd_not_in_symlink_array
   _jump_test_launchd_program_outside_documents
   _jump_test_launchd_payloads_under_documents
