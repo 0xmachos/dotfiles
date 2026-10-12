@@ -398,6 +398,14 @@ function _sl_identity {
   _sl_expect_has "Fable xhigh: coloured, ↑" "$(_sl_line 1)" "${_SL_MAGENTA}▲▲ xhigh ↑${RESET}"
   _sl_run 140 "$(_sl_json "${fable} | .effort.level = \"max\"")"
   _sl_expect_has "Fable max: red, ↑" "$(_sl_line 1)" "${RED}▲▲▲ max ↑${RESET}"
+  local sonnet55='.model = {id: "claude-sonnet-5-5", display_name: "Sonnet 5.5"}'
+  local haiku55='.model = {id: "claude-haiku-5-5", display_name: "Haiku 5.5"}'
+  _sl_run 140 "$(_sl_json "${sonnet55} | .effort.level = \"medium\"")"
+  _sl_expect_has "Sonnet 5.5 medium is its default: dim" "$(_sl_line 1)" "${_SL_DIM}◆ med${RESET}"
+  _sl_run 140 "$(_sl_json "${sonnet55} | .effort.level = \"high\"")"
+  _sl_expect_has "Sonnet 5.5 high: coloured, ↑" "$(_sl_line 1)" "${_SL_MAGENTA}▲ high ↑${RESET}"
+  _sl_run 140 "$(_sl_json "${haiku55} | .effort.level = \"medium\"")"
+  _sl_expect_has "Haiku 5.5 medium is its default: dim" "$(_sl_line 1)" "${_SL_DIM}◆ med${RESET}"
 
   _sl_run 140 "$(_sl_json "${opus}")"
   _sl_expect_eq "no effort field → no badge; model → Opus" "$(_sl_plain "$(_sl_line 1)")" "work Opus"
@@ -617,6 +625,17 @@ function _sl_expired {
   _sl_run 140 "$(_sl_json "${_SL_EXPIRED} | .model = {id: \"claude-haiku-4-5\", display_name: \"Haiku 4.5\"}")"
   _sl_expect_eq "expired: Haiku price" "$(_sl_plain "$(_sl_line 2)")" \
     "142K tokens to Haiku Med is £0.28"
+  # Haiku 5.5: $0.10/MTok up to 100K tokens, $0.50/MTok above (× 2, 1h write)
+  local haiku55='.model = {id: "claude-haiku-5-5", display_name: "Haiku 5.5"}'
+  _sl_run 140 "$(_sl_json "${_SL_EXPIRED} | ${haiku55}")"
+  _sl_expect_eq "expired: Haiku 5.5 over 100K at the long-context price" \
+    "$(_sl_plain "$(_sl_line 2)")" "142K tokens to Haiku Med is £0.14"
+  _sl_run 140 "$(_sl_json "${_SL_EXPIRED} | ${haiku55} | .prompt_cache.recache_tokens_if_cold = 100000")"
+  _sl_expect_eq "expired: Haiku 5.5 at exactly 100K at the base price" \
+    "$(_sl_plain "$(_sl_line 2)")" "100K tokens to Haiku Med is £0.02"
+  _sl_run 140 "$(_sl_json "${_SL_EXPIRED} | ${haiku55} | .prompt_cache.recache_tokens_if_cold = 100001")"
+  _sl_expect_eq "expired: Haiku 5.5 one token over 100K at the long-context price" \
+    "$(_sl_plain "$(_sl_line 2)")" "100K tokens to Haiku Med is £0.10"
   _sl_run 140 "$(_sl_json "${_SL_EXPIRED} | .model = {id: \"claude-new-9\", display_name: \"New\"}")"
   _sl_expect_eq "expired: unknown model → tokens only" "$(_sl_plain "$(_sl_line 2)")" \
     "142K tokens to New Med"
