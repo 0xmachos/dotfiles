@@ -1,0 +1,293 @@
+#!/bin/zsh
+# dotfiles/tests/herdr-harness-marker
+#
+# Test for .config/herdr/plugins/harness-marker/harness-marker, the herdr plugin
+# command that sets the display-only pane token `harness` to Muse or Codex on
+# agent panes of that harness and clears it on every other pane that holds one.
+# It reads `herdr agent list` through $HERDR_BIN_PATH, parses it with jq and
+# calls `herdr pane report-metadata` only where a pane's token differs.
+#
+# Every case runs the script as a child process with a clean environment
+# (env -i) against a fake herdr binary in a sandbox, passed through
+# HERDR_BIN_PATH. The fake prints the canned `agent list` JSON from a fixture
+# file and appends every other argv line to a calls log. The real jq runs; the
+# jq-missing case points HARNESS_MARKER_JQ at a path that does not exist. The
+# real HOME, the real herdr binary and the live herdr socket are never used.
+#
+# Error paths assert exit 1, a `harness-marker:` stderr line and zero
+# report-metadata calls (the script fails closed). One failing report-metadata
+# call sets exit 1 but the loop still reaches the other panes.
+#
+# HERDR_HARNESS_MARKER_TEST_SCRIPT=<path> runs the suite against another copy
+# of the script (a mutation check on a scratch copy).
+#
+# Run: ./test herdr-harness-marker
+#
+# ShellCheck: lint with `shellcheck --shell=bash tests/herdr-harness-marker`.
+# This file is sourced, not executed — chmod 644.
+#
+# shellcheck source=tests/lib
+
+typeset -g _HHM_SCRIPT='' _HHM_BOX='' _HHM_FAKE='' _HHM_JQ=/opt/homebrew/bin/jq
+typeset -g _HHM_OUT='' _HHM_ERR=''
+typeset -gi _HHM_RC=0 _HHM_USE_BIN=1
+
+readonly _HHM_SRC='plugin:local.harness-marker'
+
+function _hhm_setup {
+  # Sandbox (private mktemp -d under $TMPDIR) and the fake herdr.
+  local base="${TMPDIR:-/tmp}"
+  base="${base%/}"
+  _HHM_BOX="$(/usr/bin/mktemp -d "${base}/herdr-harness-marker.XXXXXX")"
+  _HHM_FAKE="${_HHM_BOX}/fake-herdr"
+  /bin/mkdir -p "${_HHM_BOX}/home" "${_HHM_BOX}/data"
+  cat > "${_HHM_FAKE}" <<'EOF'
+#!/bin/zsh
+# Fake herdr: `agent list` prints the fixture (or fails); every other call is
+# logged. FAKE_FAIL_PANE makes report-metadata for that pane exit 1 after it
+# logs the call.
+if [[ $1 == agent && $2 == list ]]; then
+  if [[ -n ${FAKE_LIST_FAIL:-} ]]; then
+    print -u2 -- "fake herdr: agent list failed"
+    exit 3
+  fi
+  /bin/cat "${FAKE_DIR}/agents.json"
+  exit 0
+fi
+print -r -- "$*" >> "${FAKE_DIR}/calls.log"
+if [[ $1 == pane && $2 == report-metadata && -n ${FAKE_FAIL_PANE:-} && $3 == "${FAKE_FAIL_PANE:-}" ]]; then
+  exit 1
+fi
+exit 0
+EOF
+  /bin/chmod 755 "${_HHM_FAKE}"
+}
+
+function _hhm_run {
+  # _hhm_run <agents-json> [VAR=value ...]: run the script with a clean env;
+  # later assignments override the defaults. _HHM_USE_BIN=0 leaves
+  # HERDR_BIN_PATH unset. Sets _HHM_OUT, _HHM_ERR, _HHM_RC; resets the calls log.
+  local json="$1"
+  shift
+  local errf="${_HHM_BOX}/stderr"
+  local -a bin=()
+  (( _HHM_USE_BIN )) && bin=("HERDR_BIN_PATH=${_HHM_FAKE}")
+  : > "${_HHM_BOX}/data/calls.log"
+  print -r -- "${json}" > "${_HHM_BOX}/data/agents.json"
+  _HHM_RC=0
+  _HHM_OUT="$(env -i PATH=/usr/bin:/bin HOME="${_HHM_BOX}/home" \
+    "${bin[@]}" FAKE_DIR="${_HHM_BOX}/data" \
+    "$@" /bin/zsh "${_HHM_SCRIPT}" 2>"${errf}")" || _HHM_RC=$?
+  _HHM_ERR="$(< "${errf}")"
+}
+
+function _hhm_calls {
+  # All logged non-list calls, one per line (trailing newline stripped).
+  print -r -- "$(< "${_HHM_BOX}/data/calls.log")"
+}
+
+function _hhm_set {
+  # _hhm_set <pane> <label>: the expected set call line.
+  print -r -- "pane report-metadata $1 --source ${_HHM_SRC} --token harness=$2"
+}
+
+function _hhm_clear {
+  # _hhm_clear <pane>: the expected clear call line.
+  print -r -- "pane report-metadata $1 --source ${_HHM_SRC} --clear-token harness"
+}
+
+function _hhm_eq {
+  # _hhm_eq <name> <expected> <actual>
+  if [[ "$2" == "$3" ]]; then
+    _pass "$1"
+  else
+    _fail "$1 — expected [$2] got [$3]"
+  fi
+}
+
+function _hhm_ok {
+  # Success run: exit 0, empty stdout and stderr.
+  _hhm_eq "$1: exit 0" 0 "${_HHM_RC}"
+  _hhm_eq "$1: stdout empty" "" "${_HHM_OUT}"
+  _hhm_eq "$1: stderr empty" "" "${_HHM_ERR}"
+}
+
+function _hhm_fails {
+  # _hhm_fails <name> <message-fragment>: exit 1, a `harness-marker:` stderr
+  # line holding the fragment, and no report-metadata call.
+  _hhm_eq "$1: exit 1" 1 "${_HHM_RC}"
+  if [[ "${_HHM_ERR}" == *"harness-marker: "*"$2"* ]]; then
+    _pass "$1: stderr says $2"
+  else
+    _fail "$1: stderr says $2 — got [${_HHM_ERR}]"
+  fi
+  _hhm_eq "$1: stdout empty" "" "${_HHM_OUT}"
+  _hhm_eq "$1: no report-metadata call" "" "$(_hhm_calls)"
+}
+
+function _hhm_agents {
+  # _hhm_agents <agent-json>...: wrap agent objects in the herdr reply shape.
+  local IFS=,
+  print -r -- '{"id":"x","result":{"agents":['"$*"']}}'
+}
+
+function run_herdr_harness_marker {
+  _section "herdr harness-marker plugin"
+
+  _HHM_SCRIPT="${HERDR_HARNESS_MARKER_TEST_SCRIPT:-${SCRIPT_DIR}/.config/herdr/plugins/harness-marker/harness-marker}"
+
+  if [[ ! -f "${_HHM_SCRIPT}" ]]; then
+    _fail "harness-marker script absent: ${_HHM_SCRIPT}"
+    return 0
+  fi
+  if [[ ! -x "${_HHM_JQ}" ]]; then
+    _skip "${_HHM_JQ} absent — the script needs Homebrew jq"
+    return 0
+  fi
+
+  _hhm_setup
+  if [[ -z "${_HHM_BOX}" || ! -d "${_HHM_BOX}" ]]; then
+    _fail "could not create a sandbox for the suite"
+    return 0
+  fi
+
+  local nl=$'\n'
+  local a_claude='{"pane_id":"w1:p1","agent":"claude"}'
+  local a_muse='{"pane_id":"w1:p2","agent":"muse"}'
+  local a_codex_ok='{"pane_id":"w1:p3","agent":"codex","tokens":{"harness":"Codex"}}'
+  local a_claude_stale='{"pane_id":"w1:p4","agent":"claude","tokens":{"harness":"Muse"}}'
+  local json
+
+  # 1. mixed list: only the two panes that differ are written
+  json="$(_hhm_agents "${a_claude}" "${a_muse}" "${a_codex_ok}" "${a_claude_stale}")"
+  _hhm_run "${json}"
+  _hhm_ok "mixed"
+  _hhm_eq "mixed: set Muse on muse pane, clear stale claude pane" \
+    "$(_hhm_set w1:p2 Muse)${nl}$(_hhm_clear w1:p4)" "$(_hhm_calls)"
+
+  # 2. already reconciled: no writes
+  json="$(_hhm_agents \
+    '{"pane_id":"w1:p1","agent":"claude"}' \
+    '{"pane_id":"w1:p2","agent":"muse","tokens":{"harness":"Muse"}}' \
+    "${a_codex_ok}")"
+  _hhm_run "${json}"
+  _hhm_ok "reconciled"
+  _hhm_eq "reconciled: no calls" "" "$(_hhm_calls)"
+
+  # 3. empty agents array
+  _hhm_run '{"id":"x","result":{"agents":[]}}'
+  _hhm_ok "empty list"
+  _hhm_eq "empty list: no calls" "" "$(_hhm_calls)"
+
+  # 3b. codex pane with no token gets Codex
+  _hhm_run "$(_hhm_agents '{"pane_id":"w2:p1","agent":"codex"}')"
+  _hhm_ok "codex unmarked"
+  _hhm_eq "codex unmarked: set Codex" "$(_hhm_set w2:p1 Codex)" "$(_hhm_calls)"
+
+  # 4. muse pane holding the wrong token
+  _hhm_run "$(_hhm_agents '{"pane_id":"w1:p2","agent":"muse","tokens":{"harness":"Codex"}}')"
+  _hhm_ok "muse wrong token"
+  _hhm_eq "muse wrong token: set Muse" "$(_hhm_set w1:p2 Muse)" "$(_hhm_calls)"
+
+  # 5. unknown agent kind without a token
+  _hhm_run "$(_hhm_agents '{"pane_id":"w1:p5","agent":"opencode"}')"
+  _hhm_ok "unknown kind"
+  _hhm_eq "unknown kind: no calls" "" "$(_hhm_calls)"
+
+  # 5b. unknown kind that holds a token is cleared; a pane with no agent field too
+  _hhm_run "$(_hhm_agents \
+    '{"pane_id":"w1:p5","agent":"opencode","tokens":{"harness":"Muse"}}' \
+    '{"pane_id":"w1:p6","tokens":{"harness":"Codex"}}')"
+  _hhm_ok "unknown kind with token"
+  _hhm_eq "unknown kind with token: cleared" \
+    "$(_hhm_clear w1:p5)${nl}$(_hhm_clear w1:p6)" "$(_hhm_calls)"
+
+  # 6. error paths: fail closed, one stderr line, no write
+  json="$(_hhm_agents "${a_muse}")"
+
+  _HHM_USE_BIN=0
+  _hhm_run "${json}"
+  _HHM_USE_BIN=1
+  _hhm_fails "HERDR_BIN_PATH unset" "HERDR_BIN_PATH is not an executable"
+
+  /bin/cp "${_HHM_FAKE}" "${_HHM_BOX}/not-exec"
+  /bin/chmod 644 "${_HHM_BOX}/not-exec"
+  _hhm_run "${json}" HERDR_BIN_PATH="${_HHM_BOX}/not-exec"
+  _hhm_fails "HERDR_BIN_PATH not executable" "HERDR_BIN_PATH is not an executable"
+
+  _hhm_run "${json}" HERDR_BIN_PATH="${_HHM_BOX}/nope"
+  _hhm_fails "HERDR_BIN_PATH missing" "HERDR_BIN_PATH is not an executable"
+
+  _hhm_run "${json}" HARNESS_MARKER_JQ="${_HHM_BOX}/no-such-jq"
+  _hhm_fails "jq missing" "jq not found at ${_HHM_BOX}/no-such-jq"
+
+  _hhm_run "${json}" FAKE_LIST_FAIL=1
+  _hhm_fails "agent list fails" "herdr agent list failed"
+
+  _hhm_run 'this is {not json'
+  _hhm_fails "invalid JSON" "cannot parse herdr agent list"
+
+  # jq prints nothing for empty input: no END sentinel, so the list is truncated.
+  _hhm_run ''
+  _hhm_fails "empty output" "truncated agent list"
+
+  _hhm_run '{"id":"x","result":{"other":[]}}'
+  _hhm_fails "no .result.agents" "cannot parse herdr agent list"
+
+  _hhm_run '{"id":"x","result":{"agents":{"pane_id":"w1:p2","agent":"muse"}}}'
+  _hhm_fails ".result.agents not an array" "cannot parse herdr agent list"
+
+  _hhm_run "$(_hhm_agents '{"pane_id":5,"agent":"muse"}')"
+  _hhm_fails "non-string pane_id" "cannot parse herdr agent list"
+
+  _hhm_run "$(_hhm_agents '{"pane_id":"w1:p2","agent":7}')"
+  _hhm_fails "non-string agent" "cannot parse herdr agent list"
+
+  _hhm_run "$(_hhm_agents '{"pane_id":"w1:p2","agent":"muse","tokens":{"harness":["Muse"]}}')"
+  _hhm_fails "non-string token" "cannot parse herdr agent list"
+
+  _hhm_run "$(_hhm_agents '{"pane_id":"w1:p2\u0000x","agent":"muse"}')"
+  _hhm_fails "NUL in pane_id" "cannot parse herdr agent list"
+
+  _hhm_run "$(_hhm_agents '{"pane_id":"w1:p2","agent":"mu\u0000se"}')"
+  _hhm_fails "NUL in agent" "cannot parse herdr agent list"
+
+  _hhm_run "$(_hhm_agents '{"pane_id":"w1:p2","agent":"muse","tokens":{"harness":"Mu\u0000se"}}')"
+  _hhm_fails "NUL in token" "cannot parse herdr agent list"
+
+  # 6b. one bad entry blocks writes for the good ones before it (all or nothing)
+  _hhm_run "$(_hhm_agents "${a_muse}" '{"pane_id":5,"agent":"muse"}')"
+  _hhm_fails "bad entry after good entry" "cannot parse herdr agent list"
+
+  # 7. a failing report-metadata sets exit 1 but the loop continues
+  _hhm_run "$(_hhm_agents \
+    '{"pane_id":"w1:p2","agent":"muse"}' \
+    '{"pane_id":"w1:p3","agent":"codex"}' \
+    "${a_claude_stale}")" FAKE_FAIL_PANE=w1:p2
+  _hhm_eq "report-metadata fails: exit 1" 1 "${_HHM_RC}"
+  _hhm_eq "report-metadata fails: stdout empty" "" "${_HHM_OUT}"
+  _hhm_eq "report-metadata fails: later panes still written" \
+    "$(_hhm_set w1:p2 Muse)${nl}$(_hhm_set w1:p3 Codex)${nl}$(_hhm_clear w1:p4)" "$(_hhm_calls)"
+
+  # 8. newline inside a token: a different value, so the script writes. This
+  # proves NUL framing: newline framing would split or trim the value.
+  _hhm_run "$(_hhm_agents '{"pane_id":"w1:p2","agent":"muse","tokens":{"harness":"Mu\nse"}}')"
+  _hhm_ok "newline in token"
+  _hhm_eq "newline in token: set Muse" "$(_hhm_set w1:p2 Muse)" "$(_hhm_calls)"
+
+  # 8b. trailing newline on an otherwise matching token is also different
+  _hhm_run "$(_hhm_agents '{"pane_id":"w1:p2","agent":"muse","tokens":{"harness":"Muse\n"}}')"
+  _hhm_ok "trailing newline in token"
+  _hhm_eq "trailing newline in token: set Muse" "$(_hhm_set w1:p2 Muse)" "$(_hhm_calls)"
+
+  # 8c. a newline-only token on a plain pane is a token to clear, and the
+  # field after it keeps its place
+  _hhm_run "$(_hhm_agents \
+    '{"pane_id":"w1:p1","agent":"claude","tokens":{"harness":"\n"}}' \
+    "${a_muse}")"
+  _hhm_ok "newline-only token"
+  _hhm_eq "newline-only token: clear, then next pane set" \
+    "$(_hhm_clear w1:p1)${nl}$(_hhm_set w1:p2 Muse)" "$(_hhm_calls)"
+
+  /bin/rm -rf "${_HHM_BOX}"
+}

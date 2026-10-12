@@ -600,6 +600,16 @@ function install_dotfiles {
   # formula (.extra/Brewfile), not from this script.
   _symlink "${SCRIPT_DIR}/.config/herdr/config.toml" "${HOME}/.config/herdr/config.toml"
 
+  # herdr plugins run from the repo: `herdr plugin link` records the path in
+  # herdr's own registry (linking again is a no-op). Skipped without herdr.
+  if [[ -n "$(whence -p herdr)" ]]; then
+    local plugin_dir
+    for plugin_dir in "${SCRIPT_DIR}"/.config/herdr/plugins/*(/N); do
+      herdr plugin link "${plugin_dir}" > /dev/null \
+        || echo "[⚠️ ] herdr plugin link failed: ${plugin_dir:t}"
+    done
+  fi
+
   # npm hardcodes ~/.npmrc
   _symlink "${SCRIPT_DIR}/.config/npm/.npmrc" "${HOME}/.npmrc"
 

@@ -1,0 +1,83 @@
+#!/bin/zsh
+# harness-marker: herdr plugin command (herdr-plugin.toml beside it).
+#
+# Sets the display-only pane token `harness` to Muse or Codex on each agent
+# pane of that harness, and clears it on every other agent pane. The sidebar
+# agent rows in config.toml show `$harness`, which names the harness without
+# the `agent` token: Herdr UI draws a harness icon beside that token.
+#
+# Each run reconciles every agent from one `herdr agent list`, so repeated or
+# overlapping runs converge, and it writes only where a pane's token differs.
+# herdr keeps pane tokens in memory only, so the startup hook restores them.
+# It fails closed: an unreadable agent list writes nothing.
+#
+# herdr runs plugin commands with HERDR_BIN_PATH set to its own binary; jq is
+# an absolute path because the server's PATH is not the login shell's.
+# Add a harness here and give it a colour rule on `$harness` in config.toml.
+
+set -euo pipefail
+umask 077
+
+readonly SOURCE=plugin:local.harness-marker
+readonly JQ=${HARNESS_MARKER_JQ:-/opt/homebrew/bin/jq}
+
+# Agent ID (herdr's canonical kind) -> label in REPLY; empty = no marker.
+harness_label() {
+  case $1 in
+    muse) REPLY=Muse ;;
+    codex) REPLY=Codex ;;
+    *) REPLY= ;;
+  esac
+}
+
+die() {
+  print -u2 -- "harness-marker: $1"
+  exit 1
+}
+
+# One NUL-terminated field per value: pane, agent, current token, per agent,
+# then an END sentinel that proves jq finished the whole list.
+read_agents() {
+  local herdr=$1 json
+  json=$("$herdr" agent list) || die "herdr agent list failed"
+  REPLY=$("$JQ" -j '
+    .result.agents
+    | if type != "array" then error("no agent list") else . end
+    | map([.pane_id, (.agent // ""), (.tokens.harness // "")])
+    | if any(.[][]; type != "string" or contains("\u0000"))
+      then error("bad agent field") else . end
+    | ((map(map(. + "\u0000") | add) | add) // "") + "END"
+  ' <<< "$json") || die "cannot parse herdr agent list"
+}
+
+main() {
+  local herdr=${HERDR_BIN_PATH:-}
+  [[ -n $herdr && -x $herdr ]] || die "HERDR_BIN_PATH is not an executable"
+  [[ -x $JQ ]] || die "jq not found at $JQ"
+
+  read_agents "$herdr"
+  local -a f
+  # shellcheck disable=SC2296 # zsh (@0) splits on NUL and keeps empty fields
+  f=("${(@0)REPLY}")
+  if [[ ${f[-1]} != END ]] || (( ($#f - 1) % 3 != 0 )); then
+    die "truncated agent list"
+  fi
+
+  local i pane agent have rc=0
+  for (( i = 1; i < $#f; i += 3 )); do
+    pane=${f[i]} agent=${f[i+1]} have=${f[i+2]}
+    [[ -n $pane ]] || continue
+    harness_label "$agent"
+    [[ $REPLY == "$have" ]] && continue
+    if [[ -n $REPLY ]]; then
+      "$herdr" pane report-metadata "$pane" --source "$SOURCE" \
+        --token "harness=$REPLY" > /dev/null || rc=1
+    else
+      "$herdr" pane report-metadata "$pane" --source "$SOURCE" \
+        --clear-token harness > /dev/null || rc=1
+    fi
+  done
+  return $rc
+}
+
+main "$@"

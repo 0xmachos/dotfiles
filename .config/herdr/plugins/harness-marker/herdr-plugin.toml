@@ -1,0 +1,23 @@
+# Local herdr plugin, linked from the repo by `bittersweet dotfiles`. It runs
+# one reconcile script on server startup, on every pane.agent_detected event
+# and as an action: herdr plugin action invoke reconcile --plugin
+# local.harness-marker.
+id = "local.harness-marker"
+name = "Harness marker"
+version = "0.1.0"
+min_herdr_version = "0.9.3"
+description = "Set the harness pane token on Muse and Codex agent panes"
+platforms = ["macos"]
+
+[[startup]]
+command = ["./harness-marker"]
+
+[[events]]
+on = "pane.agent_detected"
+command = ["./harness-marker"]
+
+[[actions]]
+id = "reconcile"
+title = "Reconcile harness markers"
+contexts = ["global"]
+command = ["./harness-marker"]

@@ -72,6 +72,9 @@ function _linkage_deployments {
     mkdir() { :; }
     # shellcheck disable=SC2329
     git() { _linkage_record "${SCRIPT_DIR}/.githooks"; }
+    # Records each plugin dir install_dotfiles links; never the live registry.
+    # shellcheck disable=SC2329
+    herdr() { [[ "$1 $2" == "plugin link" ]] && _linkage_record "$3"; return 0; }
     # shellcheck disable=SC2329
     _install_git_exclude() { _linkage_record "${SCRIPT_DIR}/.extra_gitexclude"; }
     # shellcheck disable=SC2329
