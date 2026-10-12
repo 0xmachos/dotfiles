@@ -529,11 +529,12 @@ function run_pre_compact_hooks {
   else
     _fail "resume: a note under the cap was truncated (${#out})"
   fi
-  # A file over 2 MB is pointed at, not read.
-  /bin/dd if=/dev/zero of="${lstore}/${sid}.md" bs=1048576 count=3 2> /dev/null
+  # A file over 100 KB is pointed at, not read. NUL bytes: a read would strip
+  # them to an empty body and print no truncation line.
+  /bin/dd if=/dev/zero of="${lstore}/${sid}.md" bs=1024 count=200 2> /dev/null
   _pch_run compact-resume "${pl}" "PRE_COMPACT_STORE=${lstore}"
   if (( ${#out} <= 9000 )) && [[ "${out}" == *"[note truncated at 9000 characters; read the full file: ${lstore}/${sid}.md]" ]]; then
-    _pass "resume: a note over 2 MB is not read, only pointed at"
+    _pass "resume: a note over 100 KB is not read, only pointed at"
   else
     _fail "resume: oversize note output wrong (${#out} characters)"
   fi
