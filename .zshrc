@@ -24,11 +24,17 @@ INITIAL_DIR="${HOME}"
 
 ### $PATH Exports ###
 
+# -U on both names of each tied pair: zsh applies the flag only to the name
+# that is assigned, and this file writes both the scalars and the arrays.
+typeset -U PATH path FPATH fpath
+
+# The PATH test checks position, not presence: a nested login shell's
+# path_helper moves inherited Homebrew dirs behind /usr/bin.
 if [[ -x "/opt/homebrew/bin/brew" && (
   "${HOMEBREW_PREFIX:-}" != "/opt/homebrew" ||
   "${HOMEBREW_CELLAR:-}" != "/opt/homebrew/Cellar" ||
   "${HOMEBREW_REPOSITORY:-}" != "/opt/homebrew" ||
-  ":${PATH}:" != *":/opt/homebrew/bin:"*
+  ${path[(ie)/opt/homebrew/bin]} -gt ${path[(ie)/usr/bin]}
 ) ]]; then
   # Static copy of `brew shellenv zsh` (Homebrew 2026-10): running brew here
   # costs a bash process tree on every new terminal. Re-diff after brew upgrades.
@@ -40,7 +46,8 @@ if [[ -x "/opt/homebrew/bin/brew" && (
   export FPATH
   export PATH="/opt/homebrew/bin:/opt/homebrew/sbin${PATH+:$PATH}"
   [ -z "${MANPATH-}" ] || { export MANPATH="${MANPATH%"${MANPATH##*[!:]}"}"; export MANPATH=":${MANPATH#"${MANPATH%%[!:]*}"}"; }
-  export INFOPATH="/opt/homebrew/share/info:${INFOPATH:-}"
+  [[ ":${INFOPATH:-}:" == *":/opt/homebrew/share/info:"* ]] ||
+    export INFOPATH="/opt/homebrew/share/info:${INFOPATH:-}"
 fi
 
 
