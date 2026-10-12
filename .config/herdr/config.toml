@@ -50,10 +50,12 @@ tab_bar_right = [
 ]
 tab_bar_right_separator = " · "
 
-# Ask Ghostty (OSC 9/777) for a macOS notification when a background agent
-# needs attention or finishes; the other modes are in-app toasts and system.
+# macOS notifications when a background agent needs attention or finishes.
+# Herdr UI posts them as itself (Notification Center, a click opens the pane);
+# a TUI client asks the OS directly. The other modes are herdr (in-app toasts),
+# terminal (OSC 9/777 to the outer terminal) and off.
 [ui.toast]
-delivery = "terminal"
+delivery = "system"
 
 # Agent rows: a bold state mark, the state word in the same colour, the
 # session-wrap marker, then the session's terminal title (Claude Code keeps it
