@@ -76,6 +76,21 @@ rows = [
   ],
 ]
 
+# Claude rows show the pane label instead: the herdr-tab-title mod sets it to
+# the session title shortened to fit the Herdr UI sidebar width. A pane with
+# no label shows no title, so other agents keep the rows above.
+[ui.sidebar.agents.rows_by_agent]
+claude = [
+  [
+    { token = "state_icon", bold = true },
+    { token = "pane", bold = true },
+  ],
+  [
+    { token = "state_text", bold = true },
+    { token = "$wrap", bold = true, rules = [{ equals = "wrapped", fg = "#c792ea" }, { contains = "blocked", fg = "#ff9e64" }] },
+  ],
+]
+
 [ui.sidebar.spaces]
 row_gap = 0
 rows = [
