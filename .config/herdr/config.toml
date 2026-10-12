@@ -63,7 +63,8 @@ delivery = "system"
 # title. The pane token `wrap` is `wrapped` (purple) or `N blocked`
 # (orange), set when the wrap finishes and cleared on the next prompt; an
 # unset token takes no space. The `agent` token names the harness (muse,
-# codex); Herdr UI draws that harness's icon on the line holding it. Claude
+# codex) in blue; Herdr UI draws that harness's icon on the line holding
+# it, in the token's colour (muted grey when unset). Claude
 # rows below leave it out, so only a non-Claude agent carries a marker.
 [ui.sidebar.agents]
 row_gap = 0
@@ -74,7 +75,7 @@ rows = [
   ],
   [
     { token = "state_text", bold = true },
-    { token = "agent", bold = true },
+    { token = "agent", bold = true, fg = "#82aaff" },
     { token = "$wrap", bold = true, rules = [{ equals = "wrapped", fg = "#c792ea" }, { contains = "blocked", fg = "#ff9e64" }] },
   ],
 ]
