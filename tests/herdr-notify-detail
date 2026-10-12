@@ -91,7 +91,8 @@ function _hnd_arg {
 }
 
 function _hnd_file {
-  print -r -- "${_HND_BOX}/tmp/herdr-notify/$1"
+  # _hnd_file <session> [kind]: the saved detail file (kind perm or ask).
+  print -r -- "${_HND_BOX}/tmp/herdr-notify/$1.${2:-perm}"
 }
 
 function _hnd_eq {
@@ -354,6 +355,22 @@ function run_herdr_notify_detail {
   _hnd_run "$(_hnd_notif permission_prompt)" HERDR_PANE_ID='w1;rm'
   _hnd_eq "prefix bad pane id: body" "Bash: ls" "$(_hnd_arg 5)"
   _hnd_eq "prefix bad pane id: no pane get" 0 "$(grep -c '^pane' "${_HND_BOX}/log/calls.log" || true)"
+
+  # 12b. kinds stay separate: an answered prompt's detail never labels
+  # a different kind of prompt
+  _hnd_reset
+  _hnd_run "$(_hnd_perm_bash 'answered fast')"
+  _hnd_run "$(_hnd_notif elicitation_dialog 'form message')"
+  _hnd_quiet "cross perm->elicitation"
+  _hnd_eq "cross perm->elicitation: body is message" "form message" "$(_hnd_arg 5)"
+  _hnd_chk "cross perm->elicitation: perm detail kept" -f "$(_hnd_file "${sid}" perm)"
+  _hnd_reset
+  _hnd_run '{"session_id":"'"${sid}"'","hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Pick one?","header":"P","options":[],"multiSelect":false}]}}'
+  _hnd_chk "ask: saved under ask" -f "$(_hnd_file "${sid}" ask)"
+  _hnd_run "$(_hnd_notif permission_prompt 'perm message')"
+  _hnd_quiet "cross ask->perm"
+  _hnd_eq "cross ask->perm: body is message" "perm message" "$(_hnd_arg 5)"
+  _hnd_chk "cross ask->perm: ask detail kept" -f "$(_hnd_file "${sid}" ask)"
 
   # 13. sessions stay separate
   _hnd_reset
