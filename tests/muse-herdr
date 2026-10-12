@@ -1,0 +1,469 @@
+#!/bin/zsh
+# dotfiles/tests/muse-herdr
+#
+# Test for .config/muse/hooks/muse-herdr, the Muse Code hook and shell helper
+# that gives a Muse pane in herdr the sidebar `wrap` token and session
+# identity. The script finds its pane from the HERDR_* words in an ancestor's
+# `ps -E` output (Muse clears the hook environment), checks with
+# `herdr pane get` that the pane's agent is muse, null or absent, and then
+# calls `herdr pane report-metadata` or `herdr pane report-agent-session`.
+#
+# Every case runs the script as a child process with a clean environment
+# (env -i) against a fake herdr and a fake ps in a sandbox, both passed as
+# argv (--herdr-bin, --ps-bin, --start-pid), the script's own test seams. The
+# fake herdr appends every argv line to a calls log and prints canned
+# `pane get` JSON from a fixture file. The fake ps prints per-pid command and
+# parent-pid lines from fixture files and logs each call. The real jq runs.
+# The real HOME, the real herdr binary and the live herdr socket are never
+# used.
+#
+# Each case asserts the calls log exactly, an empty stdout and exit 0. The
+# suite skips when the script is absent (the path is gitignored, so a clean
+# clone and CI do not have it).
+#
+# MUSE_HERDR_TEST_SCRIPT=<path> runs the suite against another copy of the
+# script (a mutation check on a scratch copy).
+#
+# Run: ./test muse-herdr
+#
+# ShellCheck: lint with `shellcheck --shell=bash tests/muse-herdr`.
+# This file is sourced, not executed — chmod 644.
+#
+# File-level disables: SC2076 and SC2154 (zsh `=~` fills `$match`; the quoted
+# pattern is a regex in zsh), SC2296 (zsh `(@f)` flag), SC2016 (the `$(x)` pane
+# shape is a literal fixture) and SC2079 (zsh `(( ))` does floating point).
+# shellcheck disable=SC2076,SC2154,SC2296,SC2016,SC2079
+#
+# shellcheck source=tests/lib
+
+typeset -g _MH_SCRIPT='' _MH_BOX='' _MH_FAKE='' _MH_FPS='' _MH_JQ=/opt/homebrew/bin/jq
+typeset -g _MH_OUT='' _MH_ERR=''
+typeset -gi _MH_RC=0 _MH_USE_BIN=1
+typeset -ga _MH_ENV=()
+
+readonly _MH_PANE='w33:p2'
+
+function _mh_setup {
+  # Sandbox (private mktemp -d under $TMPDIR), the fake herdr and the fake ps.
+  local base="${TMPDIR:-/tmp}"
+  base="${base%/}"
+  _MH_BOX="$(/usr/bin/mktemp -d "${base}/muse-herdr.XXXXXX")"
+  _MH_FAKE="${_MH_BOX}/fake-herdr"
+  _MH_FPS="${_MH_BOX}/fake-ps"
+  /bin/mkdir -p "${_MH_BOX}/home" "${_MH_BOX}/tmp" "${_MH_BOX}/data"
+  cat > "${_MH_FAKE}" <<'FEOF'
+#!/bin/zsh
+# Fake herdr: every call is logged. `pane get` prints the fixture, fails
+# (FAKE_GET_FAIL) or hangs (FAKE_GET_HANG); other calls print a JSON reply.
+print -r -- "$*" >> "${FAKE_DIR}/calls.log"
+if [[ $1 == pane && $2 == get ]]; then
+  [[ -z ${FAKE_GET_HANG:-} ]] || exec /bin/sleep 30
+  if [[ -n ${FAKE_GET_FAIL:-} ]]; then
+    print -u2 -- "fake herdr: pane get failed"
+    exit 1
+  fi
+  /bin/cat "${FAKE_DIR}/pane.json"
+  exit 0
+fi
+print -r -- '{"id":"x","result":{"type":"ok"}}'
+exit 0
+FEOF
+  cat > "${_MH_FPS}" <<'FEOF'
+#!/bin/zsh
+# Fake ps: `-E -ww -o command= -p PID` prints cmd.PID, `-o ppid= -p PID`
+# prints ppid.PID. Calls are logged; a missing fixture fails like a dead pid.
+print -r -- "$*" >> "${FAKE_DIR}/ps.log"
+if [[ $1 == -E ]]; then
+  f="${FAKE_DIR}/cmd.$6"
+else
+  f="${FAKE_DIR}/ppid.$4"
+fi
+[[ -f $f ]] || exit 1
+/bin/cat "$f"
+FEOF
+  /bin/chmod 755 "${_MH_FAKE}" "${_MH_FPS}"
+}
+
+function _mh_chain {
+  # _mh_chain <env-words>: process chain 100 -> 90 -> 80 -> 1. Pid 80 (the
+  # "Muse" process) holds the environment words; the others hold none.
+  local d="${_MH_BOX}/data"
+  local -a old=("${d}"/{cmd,ppid}.*(N))
+  if (( ${#old} )); then /bin/rm -f -- "${old[@]}"; fi
+  print -r -- "/bin/zsh -c hook-runner" > "${d}/cmd.100"
+  print -r -- "90" > "${d}/ppid.100"
+  print -r -- "muse --flag value" > "${d}/cmd.90"
+  print -r -- "80" > "${d}/ppid.90"
+  print -r -- "$1" > "${d}/cmd.80"
+  print -r -- "1" > "${d}/ppid.80"
+}
+
+function _mh_run {
+  # _mh_run <pane-json> <stdin> [script-args...]: run the script with a clean
+  # env plus _MH_ENV. _MH_USE_BIN=0 leaves --herdr-bin off. Sets _MH_OUT,
+  # _MH_ERR, _MH_RC; resets the calls and ps logs.
+  local json="$1" input="$2"
+  shift 2
+  local errf="${_MH_BOX}/stderr"
+  local -a opts=(--ps-bin "${_MH_FPS}" --start-pid 100)
+  (( _MH_USE_BIN )) && opts=(--herdr-bin "${_MH_FAKE}" "${opts[@]}")
+  : > "${_MH_BOX}/data/calls.log"
+  : > "${_MH_BOX}/data/ps.log"
+  print -r -- "${json}" > "${_MH_BOX}/data/pane.json"
+  _MH_RC=0
+  _MH_OUT="$(env -i PATH=/usr/bin:/bin HOME="${_MH_BOX}/home" \
+    TMPDIR="${_MH_BOX}/tmp/" FAKE_DIR="${_MH_BOX}/data" \
+    "${_MH_ENV[@]}" /bin/zsh "${_MH_SCRIPT}" "${opts[@]}" "$@" \
+    <<< "${input}" 2>"${errf}")" || _MH_RC=$?
+  _MH_ERR="$(< "${errf}")"
+}
+
+function _mh_calls {
+  # All logged herdr calls, one per line (trailing newline stripped).
+  print -r -- "$(< "${_MH_BOX}/data/calls.log")"
+}
+
+function _mh_eq {
+  # _mh_eq <name> <expected> <actual>
+  if [[ "$2" == "$3" ]]; then
+    _pass "$1"
+  else
+    _fail "$1 — expected [$2] got [$3]"
+  fi
+}
+
+function _mh_ok {
+  # Quiet success: exit 0, empty stdout.
+  _mh_eq "$1: exit 0" 0 "${_MH_RC}"
+  _mh_eq "$1: stdout empty" "" "${_MH_OUT}"
+}
+
+function _mh_get {
+  print -r -- "pane get ${1:-${_MH_PANE}}"
+}
+
+function _mh_clear {
+  print -r -- "pane report-metadata ${1:-${_MH_PANE}} --source user:wrap --clear-token wrap"
+}
+
+function _mh_json {
+  # _mh_json <agent-json-fragment> [wrap]: a `pane get` reply. The fragment is
+  # the `"agent":...` part, or empty for no agent field.
+  local agent="$1" wrap="${2:-}" tokens=''
+  [[ -z ${wrap} ]] || tokens=',"tokens":{"wrap":"'"${wrap}"'","harness":"Muse"}'
+  [[ -z ${agent} ]] || agent="${agent},"
+  print -r -- '{"id":"x","result":{"pane":{'"${agent}"'"pane_id":"w33:p2"'"${tokens}"'}}}'
+}
+
+function _mh_hook {
+  # _mh_hook <event> [session_id] [source]: hook stdin JSON.
+  local sid=''
+  [[ -z ${2:-} ]] || sid=',"session_id":"'"$2"'"'
+  local src=''
+  [[ -z ${3:-} ]] || src=',"source":"'"$3"'"'
+  print -r -- '{"hook_event_name":"'"$1"'"'"${sid}${src}"',"cwd":"/x","transcript_path":null}'
+}
+
+function _mh_session_ok {
+  # _mh_session_ok <name> <session-line> <sid> <source>: the report-agent-session
+  # line holds fixed fields and a plausible millisecond --seq.
+  local name="$1" line="$2" sid="$3" src="$4" want seq
+  [[ ${line} =~ ' --seq ([0-9]+) ' ]] && seq="${match[1]}" || seq=0
+  if (( seq > 1700000000000 )); then
+    _pass "${name}: --seq is a millisecond time"
+  else
+    _fail "${name}: --seq is a millisecond time — got [${line}]"
+  fi
+  want="pane report-agent-session ${_MH_PANE} --source local:muse-herdr --agent muse --seq ${seq} --agent-session-id ${sid}"
+  [[ -z ${src} ]] || want+=" --session-start-source ${src}"
+  _mh_eq "${name}: session line" "${want}" "${line}"
+}
+
+function run_muse_herdr {
+  _section "muse-herdr hook"
+
+  _MH_SCRIPT="${MUSE_HERDR_TEST_SCRIPT:-${SCRIPT_DIR}/.config/muse/hooks/muse-herdr}"
+
+  if [[ ! -f "${_MH_SCRIPT}" ]]; then
+    _skip "muse-herdr script absent (gitignored): ${_MH_SCRIPT}"
+    return 0
+  fi
+  if [[ ! -x "${_MH_JQ}" ]]; then
+    _skip "${_MH_JQ} absent — the script needs Homebrew jq"
+    return 0
+  fi
+
+  _mh_setup
+  if [[ -z "${_MH_BOX}" || ! -d "${_MH_BOX}" ]]; then
+    _fail "could not create a sandbox for the suite"
+    return 0
+  fi
+
+  local nl=$'\n' sid=01234567-89ab-cdef-0123-456789abcdef
+  local muse wrapped nested
+  muse="$(_mh_json '"agent":"muse"')"
+  wrapped="$(_mh_json '"agent":"muse"' wrapped)"
+  nested="$(_mh_json '"agent":"claude"' wrapped)"
+  local env_ok="muse HERDR_ENV=1 HERDR_PANE_ID=${_MH_PANE} HERDR_BIN_PATH=${_MH_FAKE} TERM=x"
+  _MH_ENV=()
+  _mh_chain "${env_ok}"
+
+  # 1. wrap N sets the token with the ttl and the user:wrap source
+  _mh_run "${muse}" "" wrap 0
+  _mh_ok "wrap 0"
+  _mh_eq "wrap 0: sets wrapped" \
+    "$(_mh_get)${nl}pane report-metadata ${_MH_PANE} --source user:wrap --token wrap=wrapped --ttl-ms 86400000" \
+    "$(_mh_calls)"
+  _mh_eq "wrap 0: stderr empty" "" "${_MH_ERR}"
+  _mh_run "${muse}" "" wrap 3
+  _mh_ok "wrap 3"
+  _mh_eq "wrap 3: sets 3 blocked" \
+    "$(_mh_get)${nl}pane report-metadata ${_MH_PANE} --source user:wrap --token wrap=3 blocked --ttl-ms 86400000" \
+    "$(_mh_calls)"
+  _mh_run "${muse}" "" wrap 07
+  _mh_eq "wrap 07: sets 7 blocked" \
+    "$(_mh_get)${nl}pane report-metadata ${_MH_PANE} --source user:wrap --token wrap=7 blocked --ttl-ms 86400000" \
+    "$(_mh_calls)"
+
+  # 2. bad N: one muse-herdr: stderr line, no herdr call, exit 0
+  local bad
+  for bad in 100 x -1 '3 4' ''; do
+    _mh_run "${muse}" "" wrap "${bad}"
+    _mh_ok "wrap [${bad}]"
+    _mh_eq "wrap [${bad}]: no herdr call" "" "$(_mh_calls)"
+    if [[ "${_MH_ERR}" == "muse-herdr: "* && "${_MH_ERR}" != *"${nl}"* ]]; then
+      _pass "wrap [${bad}]: one muse-herdr: stderr line"
+    else
+      _fail "wrap [${bad}]: one muse-herdr: stderr line — got [${_MH_ERR}]"
+    fi
+  done
+  _mh_run "${muse}" "" wrap
+  _mh_ok "wrap (no N)"
+  _mh_eq "wrap (no N): no herdr call" "" "$(_mh_calls)"
+  if [[ "${_MH_ERR}" == "muse-herdr: "* ]]; then
+    _pass "wrap (no N): muse-herdr: stderr line"
+  else
+    _fail "wrap (no N): muse-herdr: stderr line — got [${_MH_ERR}]"
+  fi
+
+  # 3. UserPromptSubmit clears a set wrap token, and writes nothing otherwise
+  _mh_run "${wrapped}" "$(_mh_hook UserPromptSubmit)" hook
+  _mh_ok "prompt with wrap"
+  _mh_eq "prompt with wrap: one clear call" "$(_mh_get)${nl}$(_mh_clear)" "$(_mh_calls)"
+  _mh_run "${muse}" "$(_mh_hook UserPromptSubmit)" hook
+  _mh_ok "prompt without wrap"
+  _mh_eq "prompt without wrap: get only" "$(_mh_get)" "$(_mh_calls)"
+
+  # 4. SessionStart: clear plus report-agent-session
+  _mh_run "${wrapped}" "$(_mh_hook SessionStart "${sid}" startup)" hook
+  _mh_ok "session start"
+  local -a lines
+  lines=("${(@f)$(_mh_calls)}")
+  _mh_eq "session start: three calls" 3 "${#lines}"
+  _mh_eq "session start: get" "$(_mh_get)" "${lines[1]}"
+  _mh_eq "session start: clear" "$(_mh_clear)" "${lines[2]}"
+  _mh_session_ok "session start" "${lines[3]:-}" "${sid}" startup
+  # no wrap token: just the session report; no source: no start-source flag
+  _mh_run "${muse}" "$(_mh_hook SessionStart "${sid}")" hook
+  _mh_ok "session start, no wrap, no source"
+  lines=("${(@f)$(_mh_calls)}")
+  _mh_eq "session start, no wrap: two calls" 2 "${#lines}"
+  _mh_session_ok "session start, no wrap" "${lines[2]:-}" "${sid}" ''
+  # a source with characters outside [a-z_-] is dropped, not passed on
+  _mh_run "${muse}" "$(_mh_hook SessionStart "${sid}" 'Start;1')" hook
+  lines=("${(@f)$(_mh_calls)}")
+  _mh_session_ok "session start, odd source" "${lines[2]:-}" "${sid}" ''
+  _mh_run "${muse}" "$(_mh_hook SessionStart "${sid}" resume_x-y)" hook
+  lines=("${(@f)$(_mh_calls)}")
+  _mh_session_ok "session start, resume_x-y" "${lines[2]:-}" "${sid}" resume_x-y
+
+  # 5. bad session ids: no report-agent-session (a set wrap token still clears)
+  local badsid
+  for badsid in '../x' '' 'abc' 'zzzzzzzz' 'abcdef12\n' "$(printf 'a%.0s' {1..65})"; do
+    _mh_run "${wrapped}" "$(_mh_hook SessionStart "${badsid}" startup)" hook
+    _mh_ok "bad session id [${badsid}]"
+    _mh_eq "bad session id [${badsid}]: no session report" \
+      "$(_mh_get)${nl}$(_mh_clear)" "$(_mh_calls)"
+  done
+  _mh_run "${muse}" '{"hook_event_name":"SessionStart","session_id":7,"source":"startup"}' hook
+  _mh_eq "non-string session id: no session report" "$(_mh_get)" "$(_mh_calls)"
+
+  # 6. nested guard: another agent's pane gets no write call
+  _mh_run "${nested}" "$(_mh_hook UserPromptSubmit)" hook
+  _mh_ok "nested prompt"
+  _mh_eq "nested prompt: get only" "$(_mh_get)" "$(_mh_calls)"
+  _mh_run "${nested}" "$(_mh_hook SessionStart "${sid}" startup)" hook
+  _mh_ok "nested session start"
+  _mh_eq "nested session start: get only" "$(_mh_get)" "$(_mh_calls)"
+  _mh_run "${nested}" "" wrap 3
+  _mh_ok "nested wrap"
+  _mh_eq "nested wrap: get only" "$(_mh_get)" "$(_mh_calls)"
+  if [[ "${_MH_ERR}" == "muse-herdr: "* ]]; then
+    _pass "nested wrap: muse-herdr: stderr line"
+  else
+    _fail "nested wrap: muse-herdr: stderr line — got [${_MH_ERR}]"
+  fi
+
+  # 7. agent null or absent: writes proceed
+  local variant
+  for variant in '"agent":null' ''; do
+    _mh_run "$(_mh_json "${variant}" wrapped)" "$(_mh_hook UserPromptSubmit)" hook
+    _mh_ok "agent [${variant:-absent}] prompt"
+    _mh_eq "agent [${variant:-absent}]: clear" "$(_mh_get)${nl}$(_mh_clear)" "$(_mh_calls)"
+    _mh_run "$(_mh_json "${variant}")" "" wrap 2
+    _mh_eq "agent [${variant:-absent}]: wrap sets" \
+      "$(_mh_get)${nl}pane report-metadata ${_MH_PANE} --source user:wrap --token wrap=2 blocked --ttl-ms 86400000" \
+      "$(_mh_calls)"
+  done
+  _mh_run "$(_mh_json '"agent":"codex"' wrapped)" "$(_mh_hook UserPromptSubmit)" hook
+  _mh_eq "agent codex: get only" "$(_mh_get)" "$(_mh_calls)"
+
+  # 8. no pane in the chain: no herdr call
+  _mh_chain "muse TERM=x HOME=/x"
+  _mh_run "${wrapped}" "$(_mh_hook UserPromptSubmit)" hook
+  _mh_ok "no pane, hook"
+  _mh_eq "no pane, hook: no herdr call" "" "$(_mh_calls)"
+  _mh_run "${wrapped}" "" wrap 3
+  _mh_ok "no pane, wrap"
+  _mh_eq "no pane, wrap: no herdr call" "" "$(_mh_calls)"
+  if [[ "${_MH_ERR}" == "muse-herdr: "* ]]; then
+    _pass "no pane, wrap: muse-herdr: stderr line"
+  else
+    _fail "no pane, wrap: muse-herdr: stderr line — got [${_MH_ERR}]"
+  fi
+
+  # 9. pane two levels up; the LAST HERDR_PANE_ID word wins
+  _mh_chain "muse HERDR_PANE_ID=w9:p9 --flag HERDR_ENV=1 HERDR_PANE_ID=${_MH_PANE} TERM=x"
+  _mh_run "${wrapped}" "$(_mh_hook UserPromptSubmit)" hook
+  _mh_ok "ancestor chain"
+  _mh_eq "ancestor chain: last pane word wins" "$(_mh_get)${nl}$(_mh_clear)" "$(_mh_calls)"
+  # the walk stops at the first process that holds a pane id
+  _mh_chain "muse HERDR_PANE_ID=${_MH_PANE}"
+  print -r -- "muse HERDR_PANE_ID=w1:p1" > "${_MH_BOX}/data/cmd.90"
+  _mh_run "${wrapped}" "$(_mh_hook UserPromptSubmit)" hook
+  _mh_eq "ancestor chain: nearest process wins" "$(_mh_get w1:p1)${nl}$(_mh_clear w1:p1)" "$(_mh_calls)"
+  # more than 8 levels up: not found
+  local i
+  _mh_chain "muse HERDR_PANE_ID=${_MH_PANE}"
+  for (( i = 100; i > 90; i-- )); do
+    print -r -- "$(( i - 1 ))" > "${_MH_BOX}/data/ppid.${i}"
+    print -r -- "plain" > "${_MH_BOX}/data/cmd.${i}"
+  done
+  print -r -- "plain" > "${_MH_BOX}/data/cmd.90"
+  print -r -- "89" > "${_MH_BOX}/data/ppid.90"
+  for (( i = 89; i > 80; i-- )); do
+    print -r -- "$(( i - 1 ))" > "${_MH_BOX}/data/ppid.${i}"
+    print -r -- "plain" > "${_MH_BOX}/data/cmd.${i}"
+  done
+  _mh_run "${wrapped}" "$(_mh_hook UserPromptSubmit)" hook
+  _mh_eq "ancestor chain: depth capped at 8" "" "$(_mh_calls)"
+  # the walk stops at pid 1: pid 1 is never read
+  _mh_chain "muse"
+  print -r -- "1" > "${_MH_BOX}/data/ppid.80"
+  print -r -- "init HERDR_PANE_ID=${_MH_PANE}" > "${_MH_BOX}/data/cmd.1"
+  _mh_run "${wrapped}" "$(_mh_hook UserPromptSubmit)" hook
+  _mh_eq "ancestor chain: pid 1 not read" "" "$(_mh_calls)"
+  # the herdr binary comes from the same process when --herdr-bin is absent
+  _mh_chain "${env_ok}"
+  _MH_USE_BIN=0
+  _mh_run "${wrapped}" "$(_mh_hook UserPromptSubmit)" hook
+  _MH_USE_BIN=1
+  _mh_eq "HERDR_BIN_PATH from the ancestor env" "$(_mh_get)${nl}$(_mh_clear)" "$(_mh_calls)"
+
+  # 9b. a headless `muse exec` ancestor: hook mode makes no herdr call, and
+  # a bare `exec` elsewhere in the chain does not count
+  _mh_chain "muse-bin exec --prompt-file p HERDR_ENV=1 HERDR_PANE_ID=${_MH_PANE}"
+  _mh_run "${wrapped}" "$(_mh_hook SessionStart "${sid}" startup)" hook
+  _mh_ok "headless exec: session start"
+  _mh_eq "headless exec: session start, no herdr call" "" "$(_mh_calls)"
+  _mh_run "${wrapped}" "$(_mh_hook UserPromptSubmit)" hook
+  _mh_eq "headless exec: prompt, no herdr call" "" "$(_mh_calls)"
+  _mh_chain "muse HERDR_PANE_ID=${_MH_PANE}"
+  print -r -- "/bin/zsh -c exec hook-runner" > "${_MH_BOX}/data/cmd.100"
+  _mh_run "${wrapped}" "$(_mh_hook UserPromptSubmit)" hook
+  _mh_eq "exec word below the Muse process: not headless" \
+    "$(_mh_get)${nl}$(_mh_clear)" "$(_mh_calls)"
+  _mh_chain "${env_ok}"
+
+  # 10. invalid pane id shapes: no herdr call
+  local shape
+  for shape in ';rm' 'w1:p1;rm' 'w1' 'p2' 'w1:p' 'w:p1' '$(x)' 'w1:p1/../x'; do
+    _mh_chain "muse HERDR_PANE_ID=${shape}"
+    _mh_run "${wrapped}" "$(_mh_hook UserPromptSubmit)" hook
+    _mh_ok "ancestor pane [${shape}]"
+    _mh_eq "ancestor pane [${shape}]: no herdr call" "" "$(_mh_calls)"
+    _mh_chain "${env_ok}"
+    _MH_ENV=("HERDR_PANE_ID=${shape}")
+    _mh_run "${wrapped}" "" wrap 3
+    _MH_ENV=()
+    _mh_eq "own-env pane [${shape}]: no herdr call" "" "$(_mh_calls)"
+  done
+
+  # 11. pane get fails or errors: no write call
+  _mh_chain "${env_ok}"
+  _MH_ENV=(FAKE_GET_FAIL=1)
+  _mh_run "${wrapped}" "$(_mh_hook UserPromptSubmit)" hook
+  _mh_ok "pane get exits 1, hook"
+  _mh_eq "pane get exits 1, hook: get only" "$(_mh_get)" "$(_mh_calls)"
+  _mh_run "${wrapped}" "" wrap 3
+  _mh_ok "pane get exits 1, wrap"
+  _mh_eq "pane get exits 1, wrap: get only" "$(_mh_get)" "$(_mh_calls)"
+  _MH_ENV=()
+  local errjson
+  for errjson in \
+    '{"error":{"code":"pane_not_found","message":"no pane"}}' \
+    '{"id":"x","error":{"code":"x"},"result":{"pane":{"agent":"muse","tokens":{"wrap":"wrapped"}}}}' \
+    '{"id":"x","result":{}}' 'not json' '' '[]'; do
+    _mh_run "${errjson}" "$(_mh_hook UserPromptSubmit)" hook
+    _mh_ok "pane get reply [${errjson}], hook"
+    _mh_eq "pane get reply [${errjson}], hook: get only" "$(_mh_get)" "$(_mh_calls)"
+    _mh_run "${errjson}" "" wrap 3
+    _mh_ok "pane get reply [${errjson}], wrap"
+    _mh_eq "pane get reply [${errjson}], wrap: get only" "$(_mh_get)" "$(_mh_calls)"
+  done
+
+  # 12. garbage stdin and unknown events: no herdr write
+  local garbage
+  for garbage in 'this is {not json' '' '[1,2]' '"str"' 'null' '{}' \
+    '{"hook_event_name":7}' '{"hook_event_name":"PreToolUse"}' \
+    '{"hook_event_name":"Stop","session_id":"01234567-89ab-cdef-0123-456789abcdef"}'; do
+    _mh_run "${wrapped}" "${garbage}" hook
+    _mh_ok "stdin [${garbage}]"
+    _mh_eq "stdin [${garbage}]: no herdr call" "" "$(_mh_calls)"
+  done
+
+  # 13. own-env HERDR_PANE_ID wins over the ancestor walk, and skips ps
+  _mh_chain "${env_ok}"
+  _MH_ENV=(HERDR_PANE_ID=w5:p5)
+  _mh_run "${wrapped}" "$(_mh_hook UserPromptSubmit)" hook
+  _MH_ENV=()
+  _mh_ok "own env pane"
+  _mh_eq "own env pane: used" "$(_mh_get w5:p5)${nl}$(_mh_clear w5:p5)" "$(_mh_calls)"
+  _mh_eq "own env pane: ps not called" "" "$(< "${_MH_BOX}/data/ps.log")"
+  # own HERDR_BIN_PATH is used when --herdr-bin is absent
+  _MH_ENV=(HERDR_PANE_ID=w5:p5 "HERDR_BIN_PATH=${_MH_FAKE}")
+  _MH_USE_BIN=0
+  _mh_run "${wrapped}" "$(_mh_hook UserPromptSubmit)" hook
+  _MH_USE_BIN=1
+  _MH_ENV=()
+  _mh_eq "own env bin: used" "$(_mh_get w5:p5)${nl}$(_mh_clear w5:p5)" "$(_mh_calls)"
+
+  # 14. the 3 s cap: a hung herdr call is killed, and nothing is written
+  local t0="${EPOCHREALTIME}" elapsed
+  _MH_ENV=(FAKE_GET_HANG=1)
+  _mh_run "${wrapped}" "$(_mh_hook UserPromptSubmit)" hook
+  _MH_ENV=()
+  elapsed=$(( EPOCHREALTIME - t0 ))
+  _mh_ok "hung herdr"
+  _mh_eq "hung herdr: get only" "$(_mh_get)" "$(_mh_calls)"
+  if (( elapsed >= 2.5 && elapsed < 8 )); then
+    _pass "hung herdr: killed after about 3 s"
+  else
+    _fail "hung herdr: killed after about 3 s — took ${elapsed} s"
+  fi
+
+  # 15. no leftover scratch directories
+  _mh_eq "scratch directory removed" "" "$(/bin/ls -A "${_MH_BOX}/tmp")"
+
+  /bin/rm -rf "${_MH_BOX}"
+}
