@@ -1,0 +1,366 @@
+#!/bin/zsh
+# dotfiles/tests/herdr-notify-detail
+#
+# Test for claude/hooks/herdr-notify-detail, the async hook that posts a herdr
+# notification saying what Claude Code waits for. The hook saves a one-line
+# detail on PermissionRequest and PreToolUse (AskUserQuestion, ExitPlanMode),
+# then posts it on a later Notification event, or falls back to the hook's own
+# message when the detail is missing or older than 120 seconds.
+#
+# Every case runs the hook with a clean environment (env -i) against a fake
+# herdr binary, through the hook's HERDR_NOTIFY_DETAIL_BIN seam, and with its
+# state under a sandbox set through CLAUDE_CODE_TMPDIR. The real HOME and the
+# real herdr binary are never used. The fake logs every call and rejects
+# --opt=value arguments with "unknown option", as the real binary does.
+# Every case asserts exit status 0 with empty stdout and stderr.
+#
+# HERDR_NOTIFY_DETAIL_TEST_HOOK=<path> runs the suite against another copy of
+# the hook (a mutation check on a scratch copy).
+#
+# Run: ./test herdr-notify-detail
+#
+# ShellCheck: lint with `shellcheck --shell=bash tests/herdr-notify-detail`.
+# This file is sourced, not executed — chmod 644.
+#
+# shellcheck source=tests/lib
+# shellcheck disable=SC2016
+# SC2016: the hostile-text fixture must not expand; the hook must carry it as
+# one argv element.
+
+typeset -g _HND_HOOK='' _HND_BOX='' _HND_FAKE=''
+typeset -g _HND_OUT='' _HND_ERR=''
+typeset -gi _HND_RC=0
+# UUID-shaped fixtures are joined at runtime so the pre-commit PII scan stays quiet.
+typeset -g _HND_SID="11111111-2222-3333-4444-"'555555555555'
+typeset -g _HND_SID2="aaaaaaaa-bbbb-cccc-dddd-"'eeeeeeeeeeee'
+
+function _hnd_setup {
+  # Sandbox (private mktemp -d under $TMPDIR) and the fake herdr.
+  local base="${TMPDIR:-/tmp}"
+  # :A resolves the /var symlink once, so sandbox paths are canonical.
+  _HND_BOX="$(/usr/bin/mktemp -d "${base:A}/herdr-notify-detail.XXXXXX")"
+  _HND_FAKE="${_HND_BOX}/fake-herdr"
+  /bin/mkdir -p "${_HND_BOX}/home" "${_HND_BOX}/tmp"
+  cat > "${_HND_FAKE}" <<'EOF'
+#!/bin/zsh
+# Fake herdr: log every call; answer pane get and workspace get from env.
+print -r -- "$*" >> "${FAKE_LOG}/calls.log"
+# Real herdr rejects --opt=value forms ("unknown option").
+for a in "$@"; do [[ $a == --*=* ]] && { print -r -- "unknown option: $a" >&2; exit 2; }; done
+if [[ $1 == notification ]]; then
+  { print -r -- "--CALL--"; printf '%s\n' "$@"; } >> "${FAKE_LOG}/post.log"
+elif [[ $1 == pane && ${FAKE_PANE_JSON:-} != "" ]]; then
+  print -r -- "$FAKE_PANE_JSON"
+elif [[ $1 == workspace && ${FAKE_WS_JSON:-} != "" ]]; then
+  print -r -- "$FAKE_WS_JSON"
+fi
+exit 0
+EOF
+  /bin/chmod 755 "${_HND_FAKE}"
+}
+
+function _hnd_reset {
+  /bin/rm -rf "${_HND_BOX}/log" "${_HND_BOX}/tmp"
+  /bin/mkdir -p "${_HND_BOX}/log" "${_HND_BOX}/tmp"
+  : > "${_HND_BOX}/log/post.log"
+  : > "${_HND_BOX}/log/calls.log"
+}
+
+function _hnd_run {
+  # _hnd_run <json> [VAR=value ...]: run the hook with a clean env; later
+  # assignments override the defaults. Sets _HND_OUT, _HND_ERR, _HND_RC.
+  local json="$1"
+  shift
+  local errf="${_HND_BOX}/stderr"
+  _HND_RC=0
+  _HND_OUT="$(env -i PATH=/usr/bin:/bin HOME="${_HND_BOX}/home" \
+    HERDR_ENV=1 HERDR_PANE_ID=w1:p1 \
+    CLAUDE_CODE_TMPDIR="${_HND_BOX}/tmp" \
+    HERDR_NOTIFY_DETAIL_BIN="${_HND_FAKE}" FAKE_LOG="${_HND_BOX}/log" \
+    "$@" /bin/zsh "${_HND_HOOK}" <<< "${json}" 2>"${errf}")" || _HND_RC=$?
+  _HND_ERR="$(< "${errf}")"
+}
+
+function _hnd_posts {
+  grep -c -- '--CALL--' "${_HND_BOX}/log/post.log" || true
+}
+
+function _hnd_arg {
+  # nth argv element (1 = "notification") of the first post.
+  sed -n "$(( $1 + 1 ))p" "${_HND_BOX}/log/post.log"
+}
+
+function _hnd_file {
+  print -r -- "${_HND_BOX}/tmp/herdr-notify/$1"
+}
+
+function _hnd_eq {
+  # _hnd_eq <name> <expected> <actual>
+  if [[ "$2" == "$3" ]]; then
+    _pass "$1"
+  else
+    _fail "$1 — expected [$2] got [$3]"
+  fi
+}
+
+function _hnd_chk {
+  # _hnd_chk <name> <test args...>: pass when the builtin test succeeds.
+  local name="$1"
+  shift
+  if test "$@"; then
+    _pass "${name}"
+  else
+    _fail "${name}"
+  fi
+}
+
+function _hnd_quiet {
+  # Every case: exit 0, empty stdout and stderr.
+  _hnd_eq "$1: exit 0" 0 "${_HND_RC}"
+  _hnd_eq "$1: stdout empty" "" "${_HND_OUT}"
+  _hnd_eq "$1: stderr empty" "" "${_HND_ERR}"
+}
+
+function _hnd_perm_bash {
+  print -r -- '{"session_id":"'"${_HND_SID}"'","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"'"$1"'","description":"d"}}'
+}
+
+function _hnd_notif {
+  # _hnd_notif <type> [message] [session]
+  print -r -- '{"session_id":"'"${3:-${_HND_SID}}"'","hook_event_name":"Notification","notification_type":"'"$1"'","message":"'"${2:-Claude needs your permission}"'"}'
+}
+
+function run_herdr_notify_detail {
+  _section "herdr notify-detail hook"
+
+  _HND_HOOK="${HERDR_NOTIFY_DETAIL_TEST_HOOK:-${SCRIPT_DIR}/claude/hooks/herdr-notify-detail}"
+
+  # claude/ is gitignored and synced out of band: absent hook = skip.
+  if [[ ! -f "${_HND_HOOK}" ]]; then
+    _skip "claude/hooks/herdr-notify-detail absent — claude/ not yet synced to this machine"
+    return 0
+  fi
+
+  # Count characters, not bytes, in the length cases below. Scoped to this
+  # function; the hook sets its own locale.
+  local -x LC_ALL=
+  local -x LC_CTYPE=UTF-8
+
+  _hnd_setup
+  if [[ -z "${_HND_BOX}" || ! -d "${_HND_BOX}" ]]; then
+    _fail "could not create a sandbox for the suite"
+    return 0
+  fi
+
+  local sid="${_HND_SID}" sid2="${_HND_SID2}"
+  local long body bad t
+
+  # 1. not in herdr
+  _hnd_reset
+  _hnd_run "$(_hnd_perm_bash 'ls')" HERDR_ENV=0
+  _hnd_run "$(_hnd_notif permission_prompt)" HERDR_ENV=0
+  _hnd_quiet "not in herdr"
+  _hnd_eq "not in herdr: no post" 0 "$(_hnd_posts)"
+  _hnd_chk "not in herdr: no file" ! -e "$(_hnd_file "${sid}")"
+
+  # 2. subagent
+  _hnd_reset
+  _hnd_run '{"session_id":"'"${sid}"'","hook_event_name":"PermissionRequest","agent_id":"a1","agent_type":"x","tool_name":"Bash","tool_input":{"command":"ls"}}'
+  _hnd_quiet "subagent save"
+  _hnd_chk "subagent: no file" ! -e "$(_hnd_file "${sid}")"
+  _hnd_run '{"session_id":"'"${sid}"'","hook_event_name":"Notification","agent_id":"a1","notification_type":"permission_prompt","message":"m"}'
+  _hnd_quiet "subagent notify"
+  _hnd_eq "subagent: no post" 0 "$(_hnd_posts)"
+
+  # 3. Bash permission then notification
+  _hnd_reset
+  _hnd_run "$(_hnd_perm_bash 'git status')"
+  _hnd_quiet "perm save"
+  _hnd_chk "perm: file exists" -f "$(_hnd_file "${sid}")"
+  _hnd_eq "perm: file mode" 600 "$(/usr/bin/stat -f %Lp "$(_hnd_file "${sid}")")"
+  _hnd_eq "perm: dir mode" 700 "$(/usr/bin/stat -f %Lp "${_HND_BOX}/tmp/herdr-notify")"
+  _hnd_eq "perm: no post yet" 0 "$(_hnd_posts)"
+  _hnd_run "$(_hnd_notif permission_prompt)"
+  _hnd_quiet "perm notify"
+  _hnd_eq "perm: one post" 1 "$(_hnd_posts)"
+  _hnd_eq "perm: arg notification" notification "$(_hnd_arg 1)"
+  _hnd_eq "perm: arg show" show "$(_hnd_arg 2)"
+  _hnd_eq "perm: title" "Claude: needs you" "$(_hnd_arg 3)"
+  _hnd_eq "perm: body" "Bash: git status" "$(_hnd_arg 5)"
+  _hnd_eq "perm: sound flag" "--sound" "$(_hnd_arg 6)"
+  _hnd_eq "perm: sound none" none "$(_hnd_arg 7)"
+  _hnd_chk "perm: file removed" ! -e "$(_hnd_file "${sid}")"
+  _hnd_eq "perm: no stray temp" "" "$(ls -A "${_HND_BOX}/tmp/herdr-notify")"
+
+  # 4. no saved detail -> message
+  _hnd_reset
+  _hnd_run "$(_hnd_notif permission_prompt 'Needs approval for X')"
+  _hnd_quiet "no detail"
+  _hnd_eq "no detail: one post" 1 "$(_hnd_posts)"
+  _hnd_eq "no detail: body is message" "Needs approval for X" "$(_hnd_arg 5)"
+
+  # 5. stale detail -> message, file removed
+  _hnd_reset
+  _hnd_run "$(_hnd_perm_bash 'old command')"
+  /usr/bin/touch -t 202001010000 "$(_hnd_file "${sid}")"
+  _hnd_run "$(_hnd_notif permission_prompt 'fresh message')"
+  _hnd_quiet "stale"
+  _hnd_eq "stale: body is message" "fresh message" "$(_hnd_arg 5)"
+  _hnd_chk "stale: file removed" ! -e "$(_hnd_file "${sid}")"
+
+  # 5b. three minutes old -> stale under the 2-minute limit
+  _hnd_reset
+  _hnd_run "$(_hnd_perm_bash 'three minute command')"
+  /usr/bin/touch -t "$(/bin/date -v-180S +%Y%m%d%H%M.%S)" "$(_hnd_file "${sid}")"
+  _hnd_run "$(_hnd_notif permission_prompt 'newer message')"
+  _hnd_quiet "stale 3m"
+  _hnd_eq "stale 3m: body is message" "newer message" "$(_hnd_arg 5)"
+
+  # 6. AskUserQuestion with 2 questions, then elicitation_dialog
+  _hnd_reset
+  _hnd_run '{"session_id":"'"${sid}"'","hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Which database?","header":"DB","options":[{"label":"a","description":"b"}],"multiSelect":false},{"question":"Which cache?","header":"C","options":[],"multiSelect":false}]}}'
+  _hnd_quiet "ask save"
+  _hnd_run "$(_hnd_notif elicitation_dialog)"
+  _hnd_quiet "ask notify"
+  _hnd_eq "ask: body" "Which database? +1 more" "$(_hnd_arg 5)"
+
+  # 6b. AskUserQuestion with one question, ExitPlanMode, other PreToolUse
+  _hnd_reset
+  _hnd_run '{"session_id":"'"${sid}"'","hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Proceed?","header":"P","options":[],"multiSelect":false}]}}'
+  _hnd_run "$(_hnd_notif agent_needs_input)"
+  _hnd_eq "ask one: body" "Proceed?" "$(_hnd_arg 5)"
+  _hnd_reset
+  _hnd_run '{"session_id":"'"${sid}"'","hook_event_name":"PreToolUse","tool_name":"ExitPlanMode","tool_input":{"plan":"p"}}'
+  _hnd_run "$(_hnd_notif elicitation_url_dialog)"
+  _hnd_quiet "plan"
+  _hnd_eq "plan: body" "Plan ready for review" "$(_hnd_arg 5)"
+  _hnd_reset
+  _hnd_run '{"session_id":"'"${sid}"'","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"ls"}}'
+  _hnd_chk "other PreToolUse: no file" ! -e "$(_hnd_file "${sid}")"
+
+  # 6c. file and url tools, unknown tool
+  _hnd_reset
+  _hnd_run '{"session_id":"'"${sid}"'","hook_event_name":"PermissionRequest","tool_name":"Edit","tool_input":{"file_path":"/a/b.txt"}}'
+  _hnd_run "$(_hnd_notif permission_prompt)"
+  _hnd_eq "Edit body" "Edit: /a/b.txt" "$(_hnd_arg 5)"
+  _hnd_reset
+  _hnd_run '{"session_id":"'"${sid}"'","hook_event_name":"PermissionRequest","tool_name":"WebFetch","tool_input":{"url":"https://example.com/x"}}'
+  _hnd_run "$(_hnd_notif permission_prompt)"
+  _hnd_eq "WebFetch body" "WebFetch: https://example.com/x" "$(_hnd_arg 5)"
+  _hnd_reset
+  _hnd_run '{"session_id":"'"${sid}"'","hook_event_name":"PermissionRequest","tool_name":"mcp__srv__tool","tool_input":{"q":"x"}}'
+  _hnd_run "$(_hnd_notif permission_prompt)"
+  _hnd_eq "mcp body" "mcp__srv__tool" "$(_hnd_arg 5)"
+
+  # 7. control characters, escape sequences, long command
+  _hnd_reset
+  _hnd_run '{"session_id":"'"${sid}"'","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"echo \u001b[31mred\u001b[0m\n\tline2\u0007  \u001b]0;evil title\u0007end"}}'
+  _hnd_run "$(_hnd_notif permission_prompt)"
+  _hnd_quiet "control"
+  _hnd_eq "control: body" "Bash: echo red line2 end" "$(_hnd_arg 5)"
+  _hnd_reset
+  long="$(printf 'x%.0s' {1..500})"
+  _hnd_run "$(_hnd_perm_bash "${long}")"
+  _hnd_run "$(_hnd_notif permission_prompt)"
+  _hnd_quiet "long"
+  body="$(_hnd_arg 5)"
+  _hnd_eq "long: length" 160 "${#body}"
+  _hnd_eq "long: ends with ellipsis" "…" "${body[-1]}"
+  _hnd_eq "long: starts Bash:" "Bash: xxx" "${body[1,9]}"
+  # message fallback is sanitised too
+  _hnd_reset
+  _hnd_run '{"session_id":"'"${sid}"'","hook_event_name":"Notification","notification_type":"permission_prompt","message":"a\u001b[1mb\u0001c\nd"}'
+  _hnd_quiet "message sanitise"
+  _hnd_eq "message sanitise: body" "ab c d" "$(_hnd_arg 5)"
+  # hostile text stays one argv element
+  _hnd_reset
+  _hnd_run "$(_hnd_perm_bash '$(touch pwned); `id` ; -x --sound request')"
+  _hnd_run "$(_hnd_notif permission_prompt)"
+  _hnd_eq "hostile: one post" 1 "$(_hnd_posts)"
+  _hnd_eq "hostile: body" 'Bash: $(touch pwned); `id` ; -x --sound request' "$(_hnd_arg 5)"
+  _hnd_eq "hostile: sound still none" none "$(_hnd_arg 7)"
+
+  # 8. bad session ids
+  _hnd_reset
+  for bad in '../x' '../../etc/passwd' 'not-a-uuid' ''; do
+    _hnd_run '{"session_id":"'"${bad}"'","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"ls"}}'
+    _hnd_quiet "bad sid [${bad}] save"
+    _hnd_run '{"session_id":"'"${bad}"'","hook_event_name":"Notification","notification_type":"permission_prompt","message":"m"}'
+    _hnd_quiet "bad sid [${bad}] notify"
+  done
+  _hnd_eq "bad sid: no post" 0 "$(_hnd_posts)"
+  _hnd_eq "bad sid: nothing written" "" "$(find "${_HND_BOX}/tmp" -type f 2>/dev/null)"
+  _hnd_chk "bad sid: nothing at sandbox/x" ! -e "${_HND_BOX}/x"
+  _hnd_chk "bad sid: nothing at tmp/x" ! -e "${_HND_BOX}/tmp/x"
+
+  # 9. other notification types and events
+  _hnd_reset
+  _hnd_run "$(_hnd_perm_bash 'ls')"
+  for t in idle_prompt auth_success agent_completed elicitation_complete quota_auto_resume_x; do
+    _hnd_run "$(_hnd_notif "${t}")"
+    _hnd_quiet "type ${t}"
+  done
+  _hnd_eq "other types: no post" 0 "$(_hnd_posts)"
+  _hnd_chk "other types: detail kept" -f "$(_hnd_file "${sid}")"
+  _hnd_run '{"session_id":"'"${sid}"'","hook_event_name":"Stop"}'
+  _hnd_quiet "other event"
+  _hnd_eq "other event: no post" 0 "$(_hnd_posts)"
+
+  # 10. malformed JSON, empty input
+  _hnd_reset
+  _hnd_run 'this is {not json'
+  _hnd_quiet "malformed"
+  _hnd_run '{"session_id":"'"${sid}"'","hook_event_name":'
+  _hnd_quiet "truncated"
+  _hnd_run ''
+  _hnd_quiet "empty"
+  _hnd_eq "malformed: no post" 0 "$(_hnd_posts)"
+
+  # 11. binary not executable / missing
+  _hnd_reset
+  _hnd_run "$(_hnd_notif permission_prompt)" HERDR_NOTIFY_DETAIL_BIN="${_HND_BOX}/nope"
+  _hnd_quiet "missing bin"
+
+  # 11b. internal failure (state dir cannot be created) still exits 0, silent
+  _hnd_reset
+  _hnd_run "$(_hnd_perm_bash 'ls')" CLAUDE_CODE_TMPDIR=/dev/null/nope
+  _hnd_quiet "unwritable state dir"
+  _hnd_run "$(_hnd_notif permission_prompt 'm')" CLAUDE_CODE_TMPDIR=/dev/null/nope
+  _hnd_quiet "unwritable state dir notify"
+  _hnd_eq "unwritable state dir: body is message" "m" "$(_hnd_arg 5)"
+
+  # 11c. unreadable detail file: an unexpected failure still exits 0, silent
+  _hnd_reset
+  _hnd_run "$(_hnd_perm_bash 'ls')"
+  /bin/chmod 000 "$(_hnd_file "${sid}")"
+  _hnd_run "$(_hnd_notif permission_prompt 'm')"
+  _hnd_eq "unreadable detail: exit 0" 0 "${_HND_RC}"
+  _hnd_eq "unreadable detail: stdout empty" "" "${_HND_OUT}"
+
+  # 12. workspace prefix
+  _hnd_reset
+  _hnd_run "$(_hnd_perm_bash 'ls')"
+  _hnd_run "$(_hnd_notif permission_prompt)" \
+    'FAKE_PANE_JSON={"id":"x","result":{"pane":{"pane_id":"w1:p1","workspace_id":"w1"}}}' \
+    'FAKE_WS_JSON={"id":"x","result":{"workspace":{"label":"dotfiles","workspace_id":"w1"}}}'
+  _hnd_quiet "prefix"
+  _hnd_eq "prefix: body" "dotfiles · Bash: ls" "$(_hnd_arg 5)"
+  _hnd_reset
+  _hnd_run "$(_hnd_perm_bash 'ls')"
+  _hnd_run "$(_hnd_notif permission_prompt)" 'FAKE_PANE_JSON=garbage'
+  _hnd_eq "prefix bad pane json: body" "Bash: ls" "$(_hnd_arg 5)"
+  _hnd_reset
+  _hnd_run "$(_hnd_perm_bash 'ls')"
+  _hnd_run "$(_hnd_notif permission_prompt)" HERDR_PANE_ID='w1;rm'
+  _hnd_eq "prefix bad pane id: body" "Bash: ls" "$(_hnd_arg 5)"
+  _hnd_eq "prefix bad pane id: no pane get" 0 "$(grep -c '^pane' "${_HND_BOX}/log/calls.log" || true)"
+
+  # 13. sessions stay separate
+  _hnd_reset
+  _hnd_run "$(_hnd_perm_bash 'cmd-one')"
+  _hnd_run "$(_hnd_notif permission_prompt m "${sid2}")"
+  _hnd_eq "other session: message" "m" "$(_hnd_arg 5)"
+  _hnd_chk "other session: first detail kept" -f "$(_hnd_file "${sid}")"
+
+  /bin/rm -rf "${_HND_BOX}"
+}
