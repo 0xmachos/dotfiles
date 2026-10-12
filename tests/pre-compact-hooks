@@ -1,0 +1,632 @@
+#!/bin/zsh
+# dotfiles/tests/pre-compact-hooks
+#
+# Pins claude/hooks/pre-compact-state (PreCompact: writes a machine snapshot
+# into a shared store) and claude/hooks/compact-resume (SessionStart:compact:
+# prints framed pointers to that snapshot and to a resume note). Feeds payload
+# JSON on stdin and asserts stdout, stderr, exit status and the store contents
+# directly; the hooks emit no hookSpecificOutput verdict, so _hook_verdict is
+# not used.
+#
+# Every run points the hooks at a sandbox store through PRE_COMPACT_STORE and
+# at a sandbox ceiling for git discovery. The git fixtures are throwaway repos
+# under the sandbox: GIT_CONFIG_GLOBAL and GIT_CONFIG_SYSTEM are /dev/null so
+# no machine hook or signing config applies, and fixture commits pass
+# `-c commit.gpgsign=false` with a fixed test identity. That is a fixture, not
+# a hook bypass; it never touches a real repo.
+#
+# Run: ./test pre-compact-hooks
+# ShellCheck: lint with `shellcheck --shell=bash tests/pre-compact-hooks`.
+# Sourced, not executed — chmod 644.
+#
+# shellcheck source=tests/lib
+
+function _pch_run {
+  # Run hook $1 with stdin $2; $3... are VAR=value or -u VAR, applied in order.
+  # Sets the caller's out, err and rc, and counts runs and non-zero exits.
+  local hook="$1" payload="$2"
+  shift 2
+  rc=0
+  # shellcheck disable=SC2034  # out, err are read by the caller
+  out="$(
+    # shellcheck disable=SC2030  # subshell-local on purpose
+    typeset -x GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+    typeset -x GIT_CEILING_DIRECTORIES="${pch_sb}" PRE_COMPACT_STORE="${pch_store}"
+    while (( $# > 0 )); do
+      case "$1" in
+        -u) unset "$2"; shift 2 ;;
+        *) typeset -x "${1%%=*}=${1#*=}"; shift ;;
+      esac
+    done
+    printf '%s' "${payload}" | /bin/zsh "${SCRIPT_DIR}/claude/hooks/${hook}" 2>"${pch_errfile}"
+  )" || rc=$?
+  # shellcheck disable=SC2034
+  err="$(<"${pch_errfile}")"
+  (( pch_runs += 1 ))
+  (( rc == 0 )) || (( pch_nonzero += 1 ))
+}
+
+function _pch_pl {
+  # PreCompact payload into the caller's `pl`: $1 session id, $2 cwd, $3 extra
+  # JSON members (with a leading comma).
+  # shellcheck disable=SC2034  # pl is read by the caller
+  pl='{"session_id":"'"$1"'","transcript_path":"'"${pch_tp}"'","cwd":"'"$2"'","trigger":"auto"'"${3:-}"'}'
+}
+
+function _pch_rpl {
+  # SessionStart payload into `pl`: $1 source, $2 session id, $3 transcript
+  # path, $4 extra JSON members (with a leading comma).
+  # shellcheck disable=SC2034  # pl is read by the caller
+  pl='{"source":"'"$1"'","session_id":"'"$2"'","transcript_path":"'"$3"'"'"${4:-}"'}'
+}
+
+function _pch_quiet {
+  # Assert the last run printed nothing on stdout and stderr, labelled $1.
+  if [[ -z "${out}" && -z "${err}" && "${rc}" -eq 0 ]]; then
+    _pass "$1: no stdout, no stderr, exit 0"
+  else
+    _fail "$1: expected silence and exit 0, got rc=${rc} out='${out}' err='${err}'"
+  fi
+}
+
+function _pch_touch {
+  # Set mtime of $2 to the London wall-clock time $1 (touch -t form).
+  TZ=Europe/London /usr/bin/touch -t "$1" "$2"
+}
+
+function _pch_readstate {
+  # Read the snapshot of session $1 into the caller's `st`, with a trailing
+  # newline so every key line can be matched as "\nkey: value\n".
+  # shellcheck disable=SC2034  # st is read by the caller
+  st=""
+  [[ -f "${pch_store}/$1.state" ]] || return 0
+  st="$(<"${pch_store}/$1.state")"$'\n'
+}
+
+function _pch_git {
+  # Run git in repo $1 with the fixture environment; $2... are git arguments.
+  local repo="$1"
+  shift
+  (
+    unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+    # shellcheck disable=SC2031  # separate subshell, set on purpose
+    export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+    /usr/bin/git -C "${repo}" -c user.name=Test -c user.email=test@example.invalid \
+      -c commit.gpgsign=false "$@" > /dev/null 2>&1 < /dev/null
+  )
+}
+
+function run_pre_compact_hooks {
+  _section "Pre-compact state and compact-resume hooks"
+
+  # Hooks absent (clean clone, claude/ not synced): skip, not a regression.
+  if [[ ! -f "${SCRIPT_DIR}/claude/hooks/pre-compact-state" || ! -f "${SCRIPT_DIR}/claude/hooks/compact-resume" ]]; then
+    _skip "claude/hooks/pre-compact-state or compact-resume absent — claude/ not yet synced to this machine"
+    return 0
+  fi
+
+  local pch_sb pch_io pch_store pch_errfile pch_tp pch_runs=0 pch_nonzero=0
+  local out err rc pl st l n want
+  pch_sb="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/pre-compact-hooks-test.XXXXXX")"
+  pch_io="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/pre-compact-hooks-io.XXXXXX")"
+  pch_errfile="${pch_io}/stderr.txt"
+  pch_store="${pch_sb}/store"
+  pch_tp="${pch_sb}/transcript.jsonl"
+  printf 'one\ntwo\nthree\n' > "${pch_tp}"
+  mkdir -p "${pch_sb}/nogit"
+  local sid="abcdef12-test-0001"
+  local long200 pad70 pad79 pad99 pad2000 pad20000
+  # shellcheck disable=SC2296  # (l:N::c:): left-pad an empty string to N characters
+  long200="${(l:200::a:)${:-}}" pad70="${(l:70::z:)${:-}}" pad79="${(l:79::n:)${:-}}" pad99="${(l:99::n:)${:-}}" pad2000="${(l:2000::q:)${:-}}" pad20000="${(l:20000::n:)${:-}}"
+  local -a keys=(written_utc trigger cwd transcript_path transcript_lines git_branch git_head git_op)
+  local k bad_label
+
+  # --- 1. pre-compact-state: writes the snapshot, silent ------------------
+  _pch_pl "${sid}" "${pch_sb}/nogit"
+  _pch_run pre-compact-state "${pl}"
+  _pch_quiet "state: normal run"
+  if [[ -f "${pch_store}/${sid}.state" ]]; then
+    _pch_readstate "${sid}"
+    want=""
+    for k in "${keys[@]}"; do
+      [[ $'\n'"${st}" == *$'\n'"${k}: "* ]] || want="${want} ${k}"
+    done
+    if [[ -z "${want}" ]]; then
+      _pass "state: every key present"
+    else
+      _fail "state: keys missing:${want}"
+    fi
+    if [[ "${st%%$'\n'*}" =~ ^written_utc:\ [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
+      _pass "state: written_utc is an ISO UTC stamp"
+    else
+      _fail "state: written_utc malformed: ${st%%$'\n'*}"
+    fi
+    if [[ "${st}" == *$'\n'"trigger: auto"$'\n'* && "${st}" == *$'\n'"transcript_lines: 3"$'\n'* \
+          && "${st}" == *$'\n'"transcript_path: ${pch_tp}"$'\n'* && "${st}" == *$'\n'"cwd: ${pch_sb}/nogit"$'\n'* ]]; then
+      _pass "state: trigger, cwd, transcript path and line count recorded"
+    else
+      _fail "state: field values wrong: ${st}"
+    fi
+    if [[ "$(/usr/bin/stat -f %Lp "${pch_store}/${sid}.state")" == "600" && "$(/usr/bin/stat -f %Lp "${pch_store}")" == "700" ]]; then
+      _pass "state: file mode 600, store mode 700"
+    else
+      _fail "state: unexpected modes"
+    fi
+  else
+    _fail "state: ${sid}.state was not written"
+  fi
+
+  # --- 2. agent_id: no write, no output -----------------------------------
+  _pch_pl "agentsid-0001" "${pch_sb}/nogit" ',"agent_id":"sub-1"'
+  _pch_run pre-compact-state "${pl}"
+  _pch_quiet "state: agent_id present"
+  if [[ ! -e "${pch_store}/agentsid-0001.state" ]]; then
+    _pass "state: agent_id present writes no file"
+  else
+    _fail "state: agent_id present still wrote a file"
+  fi
+
+  # --- 3. bad session ids: nothing written anywhere -----------------------
+  local -a before after
+  # shellcheck disable=SC2206  # zsh glob qualifiers (DN) and **/ recursion
+  before=("${pch_sb}"/**/*(DN))
+  local bad
+  local -a bad_ids=('../evil' 'a/b' '' "${long200}" 'abc' 'abcdefgh/../x' 'abcdefgh\nzzzz' 'abcdefgh.state' 'abcdefg ')
+  for bad in "${bad_ids[@]}"; do
+    _pch_pl "${bad}" "${pch_sb}/nogit"
+    _pch_run pre-compact-state "${pl}"
+    bad_label="${bad//\\/}"
+    _pch_quiet "state: bad session id '${bad_label:0:20}'"
+  done
+  # shellcheck disable=SC2206
+  after=("${pch_sb}"/**/*(DN))
+  if [[ "${before[*]}" == "${after[*]}" && ! -e "${pch_sb}/evil.state" ]]; then
+    _pass "state: bad session ids create no file anywhere in the sandbox"
+  else
+    _fail "state: bad session ids changed the sandbox: before=${#before[@]} after=${#after[@]}"
+  fi
+
+  # --- 4. git: not a repo, repo with changes, in-progress operations -------
+  /bin/rm -f "${pch_store}/${sid}.state"
+  _pch_pl "${sid}" "${pch_sb}/nogit"
+  _pch_run pre-compact-state "${pl}"
+  _pch_readstate "${sid}"
+  if [[ "${st}" == *$'\n'"git_branch: none"$'\n'* && "${st}" == *$'\n'"git_head: none"$'\n'* \
+        && "${st}" == *$'\n'"git_op: none"$'\n'* && "${st}" != *"git_status:"* ]]; then
+    _pass "state: a directory outside a repo gives git_branch none and no git_status"
+  else
+    _fail "state: non-repo git fields wrong: ${st}"
+  fi
+
+  local repo="${pch_sb}/repo" head_short i
+  mkdir -p "${repo}"
+  _pch_git "${repo}" init -q -b main
+  print -r -- base > "${repo}/tracked"
+  _pch_git "${repo}" add tracked
+  _pch_git "${repo}" commit -q -m base
+  head_short="$(cd "${repo}" && GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null /usr/bin/git rev-parse --short HEAD 2> /dev/null)" || head_short=""
+  for i in {1..3}; do print -r -- x > "${repo}/f${i}"; done
+  /bin/rm -f "${pch_store}/${sid}.state"
+  _pch_pl "${sid}" "${repo}"
+  _pch_run pre-compact-state "${pl}"
+  _pch_readstate "${sid}"
+  if [[ -n "${head_short}" && "${st}" == *$'\n'"git_branch: main"$'\n'* && "${st}" == *$'\n'"git_head: ${head_short}"$'\n'* \
+        && "${st}" == *$'\n'"git_status:"$'\n'"  ## main"* && "${st}" == *$'\n'"  ?? f1"$'\n'* && "${st}" != *"more)"* ]]; then
+    _pass "state: repo branch, head and a short status listed, no truncation line"
+  else
+    _fail "state: small repo fields wrong (head='${head_short}'): ${st}"
+  fi
+
+  for i in {4..40}; do print -r -- x > "${repo}/f${i}"; done
+  /bin/rm -f "${pch_store}/${sid}.state"
+  _pch_run pre-compact-state "${pl}"
+  _pch_readstate "${sid}"
+  n=0
+  # shellcheck disable=SC2296,SC2206,SC2066  # (@f): split the file into lines
+  for l in "${(@f)st}"; do
+    [[ "${l}" == "  ?? f"* ]] && (( n += 1 ))
+  done
+  if (( n == 30 )) && [[ "${st}" == *$'\n'"  ... (10 more)"$'\n'* && "${st}" == *$'\n'"  ## main"$'\n'* ]]; then
+    _pass "state: 40 changed files give 30 file lines and '... (10 more)'"
+  else
+    _fail "state: 40-file listing wrong (${n} file lines): ${st}"
+  fi
+  if (( ${#st} <= 3100 )); then
+    _pass "state: body stays near the 3,000 byte cap (${#st})"
+  else
+    _fail "state: body is ${#st} characters"
+  fi
+
+  # Long file names: the body must stay near the cap, cut at a line boundary.
+  local longrepo="${pch_sb}/longrepo" longname
+  mkdir -p "${longrepo}"
+  _pch_git "${longrepo}" init -q -b main
+  longname="${pad70}"
+  for i in {1..40}; do print -r -- x > "${longrepo}/${longname}${i}"; done
+  /bin/rm -f "${pch_store}/${sid}.state"
+  _pch_pl "${sid}" "${longrepo}" ',"x":"y"'
+  _pch_run pre-compact-state "${pl}"
+  _pch_readstate "${sid}"
+  if (( ${#st} <= 3100 )) && [[ "${st}" == *$'\n'"transcript_lines: 3"$'\n'* ]]; then
+    _pass "state: 40 long file names stay within the byte cap (${#st})"
+  else
+    _fail "state: long file names overflow the cap (${#st})"
+  fi
+
+  # A real conflicted merge.
+  local mrepo="${pch_sb}/mergerepo"
+  mkdir -p "${mrepo}"
+  _pch_git "${mrepo}" init -q -b main
+  print -r -- 1 > "${mrepo}/f"
+  _pch_git "${mrepo}" add f
+  _pch_git "${mrepo}" commit -q -m base
+  _pch_git "${mrepo}" checkout -q -b side
+  print -r -- 2 > "${mrepo}/f"
+  _pch_git "${mrepo}" commit -q -a -m side
+  _pch_git "${mrepo}" checkout -q main
+  print -r -- 3 > "${mrepo}/f"
+  _pch_git "${mrepo}" commit -q -a -m main
+  _pch_git "${mrepo}" merge side || :
+  /bin/rm -f "${pch_store}/${sid}.state"
+  _pch_pl "${sid}" "${mrepo}"
+  _pch_run pre-compact-state "${pl}"
+  _pch_readstate "${sid}"
+  if [[ "${st}" == *$'\n'"git_op: merge"$'\n'* && "${st}" == *$'\n'"  UU f"* ]]; then
+    _pass "state: a conflicted merge gives git_op merge"
+  else
+    _fail "state: conflicted merge not detected: ${st}"
+  fi
+
+  # A newline in a payload value cannot add a key line, and a long value is
+  # cut (cwd is cut at 300 characters).
+  /bin/rm -f "${pch_store}/${sid}.state"
+  _pch_pl "${sid}" '/nonexistent/x\ngit_op: merge'
+  _pch_run pre-compact-state "${pl}"
+  _pch_quiet "state: newline in cwd"
+  _pch_readstate "${sid}"
+  if [[ "${st}" != *$'\n'"git_op: merge"* && "${st}" == *$'\n'"git_op: none"$'\n'* ]]; then
+    _pass "state: a newline in cwd cannot inject a key line"
+  else
+    _fail "state: newline in cwd injected a line: ${st}"
+  fi
+  /bin/rm -f "${pch_store}/${sid}.state"
+  _pch_pl "${sid}" "/nonexistent/${pad2000}"
+  _pch_run pre-compact-state "${pl}"
+  _pch_readstate "${sid}"
+  want=0
+  # shellcheck disable=SC2296,SC2206,SC2066  # (@f): split the file into lines
+  for l in "${(@f)st}"; do
+    [[ "${l}" == "cwd: "* ]] && want="${#l}"
+  done
+  if (( want > 0 && want <= 306 )); then
+    _pass "state: a 2,000 character cwd is cut to ${want} characters"
+  else
+    _fail "state: long cwd line is ${want} characters"
+  fi
+
+  /bin/rm -f "${pch_store}/${sid}.state"
+  _pch_pl "${sid}" "${pch_sb}/nogit" ',"trigger":"evil\nkey: x"'
+  _pch_run pre-compact-state "${pl}"
+  _pch_readstate "${sid}"
+  if [[ "${st}" == *$'\n'"trigger: unknown"$'\n'* && "${st}" != *$'\n'"key: x"* ]]; then
+    _pass "state: an unknown trigger value is recorded as 'unknown'"
+  else
+    _fail "state: unknown trigger not normalised: ${st}"
+  fi
+
+  # Each marker, on an unborn repository (no commits: head none, branch named).
+  local mk="${pch_sb}/markrepo" gd marker op
+  mkdir -p "${mk}"
+  _pch_git "${mk}" init -q -b trunk
+  gd="${mk}/.git"
+  local -a ops=('dir:rebase-merge|rebase' 'dir:rebase-apply|rebase' 'file:MERGE_HEAD|merge' 'file:CHERRY_PICK_HEAD|cherry-pick' 'file:REVERT_HEAD|revert' 'file:BISECT_LOG|bisect')
+  local op_case
+  for op_case in "${ops[@]}"; do
+    marker="${op_case%%|*}"
+    op="${op_case##*|}"
+    if [[ "${marker}" == dir:* ]]; then mkdir -p "${gd}/${marker#dir:}"; else : > "${gd}/${marker#file:}"; fi
+    /bin/rm -f "${pch_store}/${sid}.state"
+    _pch_pl "${sid}" "${mk}"
+    _pch_run pre-compact-state "${pl}"
+    _pch_readstate "${sid}"
+    if [[ "${st}" == *$'\n'"git_op: ${op}"$'\n'* && "${st}" == *$'\n'"git_branch: trunk"$'\n'* && "${st}" == *$'\n'"git_head: none"$'\n'* ]]; then
+      _pass "state: ${marker#*:} gives git_op ${op}"
+    else
+      _fail "state: ${marker#*:} not detected as ${op}: ${st}"
+    fi
+    /bin/rm -rf "${gd:?}/${marker#*:}"
+  done
+
+  # --- 5. invalid JSON, empty stdin, non-object: silent, no file ----------
+  /bin/rm -f "${pch_store}/${sid}.state"
+  local bad_payload
+  local -a bad_payloads=('' 'not json' '{"session_id":' '[1,2]' 'null' '{}' '{"session_id":"abcdef12-test-0001"')
+  for bad_payload in "${bad_payloads[@]}"; do
+    _pch_run pre-compact-state "${bad_payload}"
+    _pch_quiet "state: payload '${bad_payload:0:24}'"
+  done
+  if [[ ! -e "${pch_store}/${sid}.state" ]]; then
+    _pass "state: invalid payloads write no file"
+  else
+    _fail "state: an invalid payload wrote a file"
+  fi
+
+  # --- 6. unwritable store, unset HOME: silent, exit 0 ---------------------
+  _pch_pl "${sid}" "${pch_sb}/nogit"
+  print -r -- x > "${pch_sb}/afile"
+  _pch_run pre-compact-state "${pl}" "PRE_COMPACT_STORE=${pch_sb}/afile/inner"
+  _pch_quiet "state: store parent is a file"
+  mkdir -p "${pch_sb}/ro"
+  chmod 500 "${pch_sb}/ro"
+  _pch_run pre-compact-state "${pl}" "PRE_COMPACT_STORE=${pch_sb}/ro"
+  _pch_quiet "state: store directory is read-only"
+  _pch_run pre-compact-state "${pl}" "PRE_COMPACT_STORE=${pch_sb}/ro/inner"
+  _pch_quiet "state: store cannot be created under a read-only directory"
+  chmod 700 "${pch_sb}/ro"
+  if [[ -z "$(print -r -- "${pch_sb}"/ro/**/*(DN))" ]]; then
+    _pass "state: nothing written into the read-only store"
+  else
+    _fail "state: files appeared under the read-only store"
+  fi
+  _pch_run pre-compact-state "${pl}" -u HOME -u PRE_COMPACT_STORE
+  _pch_quiet "state: HOME and store both unset"
+  _pch_run pre-compact-state "${pl}" PRE_COMPACT_STORE=relative/store
+  _pch_quiet "state: relative store path is refused"
+  if [[ ! -e "${SCRIPT_DIR}/relative/store" && ! -e "${PWD}/relative/store" ]]; then
+    _pass "state: relative store path created nothing"
+  else
+    _fail "state: relative store path created a directory"
+  fi
+
+  # --- 7. prune: older than 30 days goes, newer stays ----------------------
+  local pstore="${pch_sb}/prune"
+  mkdir -p "${pstore}"
+  print -r -- old > "${pstore}/oldsession-0001.state"
+  print -r -- old > "${pstore}/oldsession-0001.md"
+  print -r -- new > "${pstore}/newsession-0001.md"
+  /usr/bin/touch -t 202001010000 "${pstore}/oldsession-0001.state" "${pstore}/oldsession-0001.md"
+  _pch_pl "${sid}" "${pch_sb}/nogit"
+  _pch_run pre-compact-state "${pl}" "PRE_COMPACT_STORE=${pstore}"
+  _pch_quiet "state: prune run"
+  if [[ ! -e "${pstore}/oldsession-0001.state" && ! -e "${pstore}/oldsession-0001.md" \
+        && -e "${pstore}/newsession-0001.md" && -e "${pstore}/${sid}.state" ]]; then
+    _pass "state: files older than 30 days pruned, newer files and the new snapshot kept"
+  else
+    _fail "state: prune result wrong: $(print -r -- "${pstore}"/*(DN))"
+  fi
+
+  # --- 8. compact-resume: silent sources and subagents ----------------------
+  local rstore="${pch_sb}/full"
+  mkdir -p "${rstore}"
+  _pch_pl "${sid}" "${pch_sb}/nogit"
+  _pch_run pre-compact-state "${pl}" "PRE_COMPACT_STORE=${rstore}"
+  printf 'RESUME-ONE\nRESUME-TWO\n\nRESUME-FOUR\n' > "${rstore}/${sid}.md"
+  local src
+  for src in startup resume clear fork ''; do
+    _pch_rpl "${src}" "${sid}" "${pch_tp}"
+    _pch_run compact-resume "${pl}" "PRE_COMPACT_STORE=${rstore}"
+    _pch_quiet "resume: source '${src}'"
+  done
+  _pch_run compact-resume '{"session_id":"abcdef12-test-0001"}' "PRE_COMPACT_STORE=${rstore}"
+  _pch_quiet "resume: no source field"
+  _pch_rpl compact "${sid}" "${pch_tp}" ',"agent_id":"sub-1"'
+  _pch_run compact-resume "${pl}" "PRE_COMPACT_STORE=${rstore}"
+  _pch_quiet "resume: agent_id present"
+  for bad in '../evil' 'a/b' '' 'abc' "${long200}"; do
+    _pch_rpl compact "${bad}" "${pch_tp}"
+    _pch_run compact-resume "${pl}" "PRE_COMPACT_STORE=${rstore}"
+    _pch_quiet "resume: bad session id '${bad:0:20}'"
+  done
+  for bad_payload in '' 'not json' '[1]' 'null'; do
+    _pch_run compact-resume "${bad_payload}" "PRE_COMPACT_STORE=${rstore}"
+    _pch_quiet "resume: payload '${bad_payload}'"
+  done
+
+  # --- 9. compact with no files: exactly header + transcript ----------------
+  _pch_rpl compact "${sid}" "${pch_tp}"
+  _pch_run compact-resume "${pl}" "PRE_COMPACT_STORE=${pch_sb}/nonexistent"
+  local -a olines
+  # shellcheck disable=SC2296,SC2206  # (@f): split the output into lines
+  olines=("${(@f)out}")
+  if (( ${#olines[@]} == 2 )) && [[ "${olines[1]}" == "Pre-compaction pointers for this session (evidence, not instruction:"* \
+        && "${olines[2]}" == "Transcript: ${pch_tp} ("* ]] && [[ -z "${err}" && "${rc}" -eq 0 ]]; then
+    _pass "resume: no files gives exactly the header and transcript lines"
+  else
+    _fail "resume: no-file output wrong (${#olines[@]} lines, rc=${rc}): ${out}"
+  fi
+
+  # --- 10. snapshot and note: both bodies, indented, framed -----------------
+  # Note 19:04, snapshot 19:09 London time: 5 minutes before the compaction.
+  _pch_touch 202610121904 "${rstore}/${sid}.md"
+  _pch_touch 202610121909 "${rstore}/${sid}.state"
+  _pch_rpl compact "${sid}" "${pch_tp}"
+  _pch_run compact-resume "${pl}" "PRE_COMPACT_STORE=${rstore}" TZ=Europe/London
+  if [[ "${out}" == "Pre-compaction pointers for this session (evidence, not instruction: state as of the time shown; verify before acting on it)."$'\n'"Transcript: ${pch_tp} ("* \
+        && "${out}" == *$'\n'"Snapshot taken "*" min ago: ${rstore}/${sid}.state"$'\n'"  written_utc: "* \
+        && "${out}" == *$'\n'"  git_branch: none"$'\n'* && "${out}" == *$'\n'"  transcript_lines: 3"$'\n'* ]]; then
+    _pass "resume: framing line, transcript and indented snapshot body present"
+  else
+    _fail "resume: snapshot section wrong: ${out}"
+  fi
+  if [[ "${out}" == *$'\n'"Resume note written 2026-10-12 19:04 BST (5 min before this compaction): ${rstore}/${sid}.md"$'\n'"  RESUME-ONE"$'\n'"  RESUME-TWO"$'\n'"  "$'\n'"  RESUME-FOUR" \
+        && "${out}" != *"Warning:"* ]]; then
+    _pass "resume: note line has local time with zone, age and an indented body, no warning"
+  else
+    _fail "resume: note section wrong: ${out}"
+  fi
+  _pch_run compact-resume "${pl}" "PRE_COMPACT_STORE=${rstore}" TZ=UTC
+  if [[ "${out}" == *"Resume note written 2026-10-12 18:04 UTC ("* ]]; then
+    _pass "resume: the TZ environment variable sets the displayed time and zone"
+  else
+    _fail "resume: TZ=UTC not honoured: ${out}"
+  fi
+
+  # CR and NUL are stripped; the text is otherwise verbatim and indented.
+  # shellcheck disable=SC2016  # the command substitution text must stay literal
+  printf 'cr-line\r\nnul\0byte\n$(echo injected)\n' > "${rstore}/${sid}.md"
+  _pch_run compact-resume "${pl}" "PRE_COMPACT_STORE=${rstore}"
+  local ofile="${pch_io}/out.txt"
+  printf '%s' "${pl}" | PRE_COMPACT_STORE="${rstore}" /bin/zsh "${SCRIPT_DIR}/claude/hooks/compact-resume" > "${ofile}" 2> /dev/null || :
+  if [[ "${out}" == *$'\n'"  cr-line"$'\n'"  nulbyte"$'\n'"  \$(echo injected)" && "${out}" != *$'\r'* \
+        && "$(/usr/bin/od -An -c "${ofile}")" != *'\0'* ]]; then
+    _pass "resume: CR and NUL stripped, note content printed verbatim and not interpreted"
+  else
+    _fail "resume: CR/NUL handling wrong: ${out}"
+  fi
+
+  # A symlinked note is ignored.
+  /bin/rm -f "${rstore}/${sid}.md"
+  print -r -- SECRET-TARGET > "${pch_sb}/linktarget"
+  ln -s "${pch_sb}/linktarget" "${rstore}/${sid}.md"
+  _pch_run compact-resume "${pl}" "PRE_COMPACT_STORE=${rstore}"
+  if [[ "${out}" != *SECRET-TARGET* && "${out}" != *"Resume note"* && "${out}" == *"Snapshot taken"* ]]; then
+    _pass "resume: a symlinked note is ignored"
+  else
+    _fail "resume: a symlinked note was followed: ${out}"
+  fi
+  /bin/rm -f "${rstore}/${sid}.md"
+
+  # Snapshot only: no resume note line.
+  _pch_run compact-resume "${pl}" "PRE_COMPACT_STORE=${rstore}"
+  if [[ "${out}" == *"Snapshot taken"* && "${out}" != *"Resume note"* ]]; then
+    _pass "resume: snapshot without a note prints only the snapshot section"
+  else
+    _fail "resume: snapshot-only output wrong: ${out}"
+  fi
+
+  # --- 11. size cap ---------------------------------------------------------
+  local lstore="${pch_sb}/large" line99 j big
+  mkdir -p "${lstore}"
+  line99="${pad99}"
+  big=""
+  # shellcheck disable=SC2034  # j only counts iterations
+  for j in {1..200}; do big+="${line99}"$'\n'; done
+  print -rn -- "${big}" > "${lstore}/${sid}.md"
+  _pch_rpl compact "${sid}" "${pch_tp}"
+  _pch_run compact-resume "${pl}" "PRE_COMPACT_STORE=${lstore}"
+  if (( ${#out} <= 9000 )) && [[ "${out}" == *$'\n'"  [note truncated at 9000 characters; read the full file: ${lstore}/${sid}.md]" \
+        && "${out}" == *$'\n'"  ${line99}"$'\n'* ]]; then
+    _pass "resume: a 20,000 character note is cut at a line boundary within 9,000 characters (${#out})"
+  else
+    _fail "resume: large note output wrong (${#out} characters)"
+  fi
+  # One 20,000 character line cannot be cut inside the line.
+  print -rn -- "${pad20000}" > "${lstore}/${sid}.md"
+  _pch_run compact-resume "${pl}" "PRE_COMPACT_STORE=${lstore}"
+  if (( ${#out} <= 9000 )) && [[ "${out}" == *"[note truncated at 9000 characters; read the full file: ${lstore}/${sid}.md]" ]]; then
+    _pass "resume: a single 20,000 character line stays within the cap"
+  else
+    _fail "resume: single long line output wrong (${#out} characters)"
+  fi
+  # A note under the cap prints whole, with no truncation line.
+  big=""
+  # shellcheck disable=SC2034  # j only counts iterations
+  for j in {1..100}; do big+="${pad79}"$'\n'; done
+  print -rn -- "${big}" > "${lstore}/${sid}.md"
+  _pch_run compact-resume "${pl}" "PRE_COMPACT_STORE=${lstore}"
+  if (( ${#out} <= 9000 )) && [[ "${out}" != *"truncated"* ]]; then
+    _pass "resume: an 8,000 character note prints whole (${#out})"
+  else
+    _fail "resume: a note under the cap was truncated (${#out})"
+  fi
+  # A file over 2 MB is pointed at, not read.
+  /bin/dd if=/dev/zero of="${lstore}/${sid}.md" bs=1048576 count=3 2> /dev/null
+  _pch_run compact-resume "${pl}" "PRE_COMPACT_STORE=${lstore}"
+  if (( ${#out} <= 9000 )) && [[ "${out}" == *"[note truncated at 9000 characters; read the full file: ${lstore}/${sid}.md]" ]]; then
+    _pass "resume: a note over 2 MB is not read, only pointed at"
+  else
+    _fail "resume: oversize note output wrong (${#out} characters)"
+  fi
+  # An oversize snapshot is capped at 5,000 characters and leaves room for the note.
+  big=""
+  # shellcheck disable=SC2034  # j only counts iterations
+  for j in {1..200}; do big+="${line99}"$'\n'; done
+  print -rn -- "${big}" > "${lstore}/${sid}.state"
+  printf 'NOTE-AFTER-BIG-STATE\n' > "${lstore}/${sid}.md"
+  _pch_run compact-resume "${pl}" "PRE_COMPACT_STORE=${lstore}"
+  if (( ${#out} <= 9000 )) && [[ "${out}" == *"[snapshot truncated at 5000 characters;"* && "${out}" == *$'\n'"  NOTE-AFTER-BIG-STATE" ]]; then
+    _pass "resume: an oversize snapshot is capped and the note still prints (${#out})"
+  else
+    _fail "resume: oversize snapshot output wrong (${#out} characters)"
+  fi
+
+  # --- 12. stale-note warning ------------------------------------------------
+  local sstore="${pch_sb}/stale"
+  mkdir -p "${sstore}"
+  print -r -- "written_utc: x" > "${sstore}/${sid}.state"
+  print -r -- "the note" > "${sstore}/${sid}.md"
+  _pch_rpl compact "${sid}" "${pch_tp}"
+  _pch_touch 202610122004 "${sstore}/${sid}.state"
+  _pch_touch 202610121904 "${sstore}/${sid}.md"
+  _pch_run compact-resume "${pl}" "PRE_COMPACT_STORE=${sstore}" TZ=Europe/London
+  if [[ "${out}" == *$'\n'"Warning: the resume note is 60 min older than the snapshot; work after the note is only in the summary."$'\n'"  the note" \
+        && "${out}" == *"(60 min before this compaction)"* ]]; then
+    _pass "resume: a note 60 min older than the snapshot adds the warning"
+  else
+    _fail "resume: stale warning missing: ${out}"
+  fi
+  _pch_touch 202610121959 "${sstore}/${sid}.md"
+  _pch_run compact-resume "${pl}" "PRE_COMPACT_STORE=${sstore}" TZ=Europe/London
+  if [[ "${out}" != *"Warning:"* && "${out}" == *"(5 min before this compaction)"* ]]; then
+    _pass "resume: a note 5 min older than the snapshot adds no warning"
+  else
+    _fail "resume: warning shown for a fresh note: ${out}"
+  fi
+  _pch_touch 202610121934 "${sstore}/${sid}.md"
+  _pch_run compact-resume "${pl}" "PRE_COMPACT_STORE=${sstore}" TZ=Europe/London
+  if [[ "${out}" != *"Warning:"* ]]; then
+    _pass "resume: exactly 30 min older adds no warning"
+  else
+    _fail "resume: warning at exactly 30 min: ${out}"
+  fi
+  _pch_touch 202610121933 "${sstore}/${sid}.md"
+  _pch_run compact-resume "${pl}" "PRE_COMPACT_STORE=${sstore}" TZ=Europe/London
+  if [[ "${out}" == *"Warning: the resume note is 31 min older"* ]]; then
+    _pass "resume: 31 min older adds the warning"
+  else
+    _fail "resume: no warning at 31 min: ${out}"
+  fi
+  # No snapshot: no warning, age measured to now.
+  /bin/rm -f "${sstore}/${sid}.state"
+  _pch_run compact-resume "${pl}" "PRE_COMPACT_STORE=${sstore}" TZ=Europe/London
+  if [[ "${out}" != *"Warning:"* && "${out}" != *"Snapshot"* && "${out}" == *"Resume note written 2026-10-12 19:33 BST ("*" min before this compaction): "* ]]; then
+    _pass "resume: a note without a snapshot prints no warning and no snapshot section"
+  else
+    _fail "resume: note-only output wrong: ${out}"
+  fi
+
+  # --- 13. missing transcript path --------------------------------------------
+  local tcase
+  for tcase in "${pch_sb}/no-such.jsonl" 'relative/t.jsonl' ''; do
+    _pch_rpl compact "${sid}" "${tcase}"
+    _pch_run compact-resume "${pl}" "PRE_COMPACT_STORE=${pch_sb}/nonexistent"
+    if [[ "${out}" == *$'\n'"Transcript: unknown ("* && "${rc}" -eq 0 ]]; then
+      _pass "resume: transcript path '${tcase##*/}' gives Transcript: unknown"
+    else
+      _fail "resume: transcript path '${tcase}' not reported as unknown: ${out}"
+    fi
+  done
+  _pch_run compact-resume '{"source":"compact","session_id":"abcdef12-test-0001"}' "PRE_COMPACT_STORE=${pch_sb}/nonexistent"
+  if [[ "${out}" == *$'\n'"Transcript: unknown ("* ]]; then
+    _pass "resume: no transcript_path field gives Transcript: unknown"
+  else
+    _fail "resume: missing transcript_path field wrong: ${out}"
+  fi
+
+  # --- 14. every run exited 0 ---------------------------------------------------
+  if (( pch_runs > 0 && pch_nonzero == 0 )); then
+    _pass "both hooks exited 0 on all ${pch_runs} runs"
+  else
+    _fail "hooks exited non-zero on ${pch_nonzero} of ${pch_runs} runs"
+  fi
+
+  # --- hooks are executable (the settings registration runs them directly) -------
+  if [[ -x "${SCRIPT_DIR}/claude/hooks/pre-compact-state" && -x "${SCRIPT_DIR}/claude/hooks/compact-resume" ]]; then
+    _pass "both hooks are executable"
+  else
+    _fail "a hook lacks the executable bit"
+  fi
+
+  chmod -R u+rwx "${pch_sb}" 2> /dev/null || :
+  /bin/rm -rf "${pch_sb}" "${pch_io}"
+}
