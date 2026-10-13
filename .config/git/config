@@ -41,3 +41,8 @@
 [credential "https://gist.github.com"]
 	helper =
 	helper = !/opt/homebrew/bin/gh auth git-credential
+
+[include]
+	path = "~/Library/Application Support/git/signing.inc"
+	# Per-Mac git signing route (the agent signer, 2026-10-13). The file is
+	# untracked and exists on the MBP only; git skips a missing include.
