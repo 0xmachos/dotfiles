@@ -1514,17 +1514,18 @@ function zsh_compinit_fix {
 
 function open_system_preferences_mdm_profile {
   # Since macOS Big Sur (11) /usr/bin/profiles cannot install .mobileconfig
-  # profiles; they go in via System Preferences > Profiles, semi-automated here.
+  # profiles; they go in via System Settings > General > Device Management,
+  # semi-automated here: open queues each file as a downloaded profile.
   #   See: https://www.alansiu.net/2021/01/06/semi-automating-profile-installation-in-big-sur/
 
   for profile in "${SCRIPT_DIR}"/profiles/*.mobileconfig; do
-    if ! open "/System/Library/PreferencePanes/Profiles.prefPane" "${profile:?}"; then
-      echo "[❌] Failed to open System Preferences > Profiles with ${profile:?}"
+    if ! open "${profile:?}"; then
+      echo "[❌] Failed to open ${profile:?}"
       return 1
     fi
 
     profile_name=$(basename "${profile}")
-    echo "[⚠️ ] Go to System Preferences > Profiles and install ${profile_name}"
+    echo "[⚠️ ] Queued ${profile_name}: install it in System Settings > General > Device Management"
   done
 
 }
