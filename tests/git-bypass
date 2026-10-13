@@ -606,6 +606,53 @@ function run_git_bypass {
   fi
   /bin/rm -rf "${zd}"
 
+  # --- git log and git push in one command ------------------------------------
+  _hbg_test_expect DENY 'git log origin/main..HEAD && git push' 'log && push'
+  _hbg_test_expect DENY 'git push && git log origin/main..HEAD' 'push && log (reverse order)'
+  _hbg_test_expect DENY 'git log -1; git push origin main' 'log ; push'
+  _hbg_test_expect DENY 'git log -1 || git push' 'log || push'
+  _hbg_test_expect DENY 'git log --oneline | cat; git push' 'log piped, then push'
+  _hbg_test_expect DENY $'git log -3\ngit push' 'log newline push'
+  _hbg_test_expect DENY 'git -C repo log -1 && git -c k=v push' 'log and push after -C and -c prefixes'
+  _hbg_test_expect DENY '/usr/bin/git --no-pager log && git push' 'path-qualified git and --no-pager'
+  _hbg_test_expect DENY "sh -c 'git log -1 && git push'" 'log and push inside sh -c'
+  _hbg_test_expect DENY 'bash -c "git log -1; git push"' 'log and push inside bash -c'
+  _hbg_test_expect DENY "eval 'git log -1 && git push'" 'log and push inside eval'
+  _hbg_test_expect DENY 'git log -1 && echo done && git status && git push' 'log and push with other git commands between'
+  _hbg_test_expect DENY 'git log -1 && (git push)' 'push in a subshell'
+  _hbg_test_expect DENY 'if git log -1; then git push; fi' 'log and push in if/then'
+  _hbg_test_expect DENY 'git commit -m "$(git log -1 --format=%s)" && git push' 'log in a substitution, push outside'
+  _hbg_test_expect DENY 'git log -1 | head -1 && git push --force-with-lease' 'log and a flagged push'
+  _hbg_test_reason 'git log and git push in one command: run the log alone, read it, then push.' \
+    'git log origin/main..HEAD && git push' 'log-then-push reason'
+  _hbg_test_expect PASS 'git log' 'bare git log'
+  _hbg_test_expect PASS 'git log origin/main..HEAD' 'git log with a range'
+  _hbg_test_expect PASS 'git log --oneline -5 | head -3' 'git log piped'
+  _hbg_test_expect PASS 'git -C repo log -1' 'git -C then log'
+  _hbg_test_expect PASS 'git push' 'bare git push'
+  _hbg_test_expect PASS 'git push origin main' 'git push with remote and ref'
+  _hbg_test_expect PASS 'git push --force-with-lease origin main' 'git push with flags'
+  _hbg_test_expect PASS 'git -C repo push' 'git -C then push'
+  _hbg_test_expect PASS 'git push && git push' 'two pushes'
+  _hbg_test_expect PASS 'git fetch && git push' 'fetch && push'
+  _hbg_test_expect PASS 'git status && git push' 'status && push'
+  _hbg_test_expect PASS 'git push && git status' 'push && status'
+  _hbg_test_expect PASS 'git log -1; git log -2' 'two logs'
+  _hbg_test_expect PASS 'git diff origin/main..HEAD --stat && git push' 'diff && push'
+  _hbg_test_expect PASS 'git show HEAD && git push' 'show && push'
+  _hbg_test_expect PASS 'git push && cat internals/log.md' 'push, then a path ending in log.md'
+  _hbg_test_expect PASS 'cat internals/log.md && git push' 'path ending in log.md, then push'
+  _hbg_test_expect PASS 'git push && cat CHANGELOG.md' 'push and a changelog word'
+  _hbg_test_expect PASS 'git push && git changelog' 'push and a changelog subcommand'
+  _hbg_test_expect PASS 'git push && tail -n 5 /var/log/system.log' 'push and a log path'
+  _hbg_test_expect PASS 'git push && /usr/bin/log show --last 1m' 'push and the unified log tool'
+  _hbg_test_expect PASS 'git push && echo "git log"' 'git log inside a quoted echo'
+  _hbg_test_expect PASS 'git log -1 && echo "git push"' 'git push inside a quoted echo'
+  _hbg_test_expect PASS 'echo git log; git push' 'git log as echo arguments'
+  _hbg_test_expect PASS 'git commit -m "git log then git push"' 'both words in a commit message'
+  _hbg_test_expect PASS 'git log --grep="git push"' 'git push inside a log flag value'
+  _hbg_test_expect PASS $'git push\n# git log' 'git log in a comment'
+
   # --- malformed / non-Bash payloads must fail open, never block -----------
   if [[ -z "$(printf '%s' '{}' | /bin/zsh "${SCRIPT_DIR}/claude/hooks/git-bypass-hook")" ]]; then
     _pass "fail-open: payload with no command allowed through"
