@@ -1,0 +1,22 @@
+#!/usr/bin/env zsh
+# dotfiles/.functions/herdr_tab_chpwd
+#
+# chpwd hook, registered in .zshrc. After a directory change in an interactive
+# shell inside a herdr pane, it runs the shell-tab plugin's `reconcile` action
+# so the tab name follows the directory. herdr fires no event on `cd`, so this
+# is the only trigger. The plugin owns the label; this function only asks.
+#
+# Gates: an interactive shell only (the tool shells of Claude Code, Codex and
+# Muse are not interactive and `cd` on every call), HERDR_ENV and HERDR_PANE_ID
+# set, and HERDR_BIN_PATH executable. The call runs in the background, capped
+# at 1 s like the herdr call in .zshrc, so a slow server never delays the
+# prompt. The hook always returns 0.
+
+function herdr_tab_chpwd {
+  [[ -o interactive ]] || return 0
+  [[ -n "${HERDR_ENV:-}" && -n "${HERDR_PANE_ID:-}" && -x "${HERDR_BIN_PATH:-}" ]] || return 0
+  # The subshell keeps zsh from printing a job notice at the prompt.
+  ( /usr/bin/perl -e 'alarm 1; exec @ARGV' "${HERDR_BIN_PATH}" \
+      plugin action invoke reconcile --plugin local.shell-tab >/dev/null 2>&1 & )
+  return 0
+}

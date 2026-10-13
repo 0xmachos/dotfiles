@@ -2,18 +2,25 @@
 # shell-tab: herdr plugin command (herdr-plugin.toml beside it).
 #
 # Names a tab `shell` while no pane in it runs an agent, so the Herdr UI tab
-# strip reads `shell` instead of a bare number. When an agent appears in a
-# tab named `shell`, the tab gets its number back, so the herdr-tab-title mod
-# can take it (its guard accepts a bare number). A tab whose label is neither
-# a bare number nor `shell` is a title or a hand name and is never touched: a
-# titled Claude tab whose session exited keeps its title.
+# strip reads `shell` instead of a bare number. Inside a repo or under $HOME
+# the name adds the first pane's directory, relative to the repo root (else
+# $HOME) and at most two levels deep: `shell claude`, `shell claude/mods`.
+# When an agent appears in a tab named `shell` or `shell <dir>`, the tab gets
+# its number back, so the herdr-tab-title mod can take it (its guard accepts a
+# bare number). A tab whose label is none of a bare number, `shell` or
+# `shell <dir>` is a title or a hand name and is never touched: a titled
+# Claude tab whose session exited keeps its title. A hand name that starts
+# with `shell ` is read as ours.
 #
 # Each run reconciles every tab from one `herdr tab list` and one `herdr pane
 # list` (every workspace: neither call takes --workspace), so repeated or
 # overlapping runs converge, and it renames only where a label differs. The
 # agent test is the pane's `agent` field, the same source as the sidebar
 # agent rows; a tab's own `agent_status` cannot tell a live agent from an
-# exited one. It fails closed: an unreadable list renames nothing.
+# exited one. The directory is the pane's `foreground_cwd` (herdr reads it
+# from the process at query time), else `cwd`. herdr fires no event on `cd`:
+# the zsh chpwd hook in .functions/herdr_tab_chpwd runs the `reconcile`
+# action. It fails closed: an unreadable list renames nothing.
 #
 # `tab rename` sets a custom name that herdr never clears, so a tab this
 # plugin has touched stays custom-labelled even after it gets its number
@@ -29,6 +36,10 @@ umask 077
 
 readonly SHELL_LABEL=shell
 readonly JQ=${SHELL_TAB_JQ:-/opt/homebrew/bin/jq}
+# `shell`, or `shell` and a directory.
+readonly OWN_LABEL='^shell( .+)?$'
+# Directory levels shown after `shell`.
+readonly DEPTH=2
 
 die() {
   print -u2 -- "shell-tab: $1"
@@ -51,7 +62,7 @@ read_list() {
   " <<< "$json") || die "cannot parse herdr $what list"
 }
 
-# split_fields <width>: REPLY (NUL-framed) into the array f, checked.
+# split_fields <width> <name>: REPLY (NUL-framed) into the array f, checked.
 split_fields() {
   local -i width=$1
   # shellcheck disable=SC2296 # zsh (@0) splits on NUL and keeps empty fields
@@ -59,6 +70,33 @@ split_fields() {
   if [[ ${f[-1]} != END ]] || (( ($#f - 1) % width != 0 )); then
     die "truncated $2 list"
   fi
+}
+
+# shell_label <cwd>: REPLY is the label for a tab with no agent. The root is
+# the nearest ancestor holding `.git` (a directory, or a file in a linked
+# worktree), else $HOME. A directory outside the root, a relative path or a
+# path with a newline gives the bare name.
+shell_label() {
+  local cwd=$1 dir root=
+  REPLY=$SHELL_LABEL
+  [[ $cwd == /* && $cwd != *$'\n'* ]] || return 0
+  dir=$cwd
+  while [[ -n $dir && $dir != / ]]; do
+    if [[ -e $dir/.git ]]; then
+      root=$dir
+      break
+    fi
+    dir=${dir:h}
+  done
+  if [[ -z $root && ${HOME:-} == /?* ]]; then
+    root=${HOME%/}
+  fi
+  [[ -n $root && $cwd == "$root"/?* ]] || return 0
+  local -a parts
+  # shellcheck disable=SC2296,SC2034 # zsh (s:/:) splits on /; parts is read below
+  parts=("${(@s:/:)${cwd#"$root"/}}")
+  # shellcheck disable=SC2296 # zsh (j:/:) joins with /
+  REPLY="$SHELL_LABEL ${(j:/:)parts[1,DEPTH]}"
 }
 
 main() {
@@ -69,17 +107,23 @@ main() {
   local -a f
   local -i i
 
-  # Panes: tab id, agent. A tab holds an agent when any pane in it names one.
-  read_list "$herdr" pane panes '[(.tab_id // ""), (.agent // "")]'
-  split_fields 2 pane
-  local -A has_agent
-  for (( i = 1; i < $#f; i += 2 )); do
+  # Panes: tab id, agent, cwd. A tab holds an agent when any pane in it names
+  # one. A tab's directory is the one its first listed pane reports.
+  read_list "$herdr" pane panes \
+    '[(.tab_id // ""), (.agent // ""), (.foreground_cwd // .cwd // "")]'
+  split_fields 3 pane
+  local -A has_agent tab_cwd
+  for (( i = 1; i < $#f; i += 3 )); do
+    [[ -n ${f[i]} ]] || continue
     # shellcheck disable=SC2034 # zsh ${+has_agent[...]} reads it below
-    [[ -n ${f[i]} && -n ${f[i+1]} ]] && has_agent[${f[i]}]=1
+    [[ -n ${f[i+1]} ]] && has_agent[${f[i]}]=1
+    # shellcheck disable=SC2034 # zsh ${tab_cwd[...]} reads it below
+    [[ -n ${f[i+2]} && -z ${tab_cwd[${f[i]}]:-} ]] && tab_cwd[${f[i]}]=${f[i+2]}
   done
 
   # Tabs: tab id, label, number.
-  read_list "$herdr" tab tabs '[.tab_id, (.label // ""), (.number | if type == "number" then tostring else error("bad tab number") end)]'
+  read_list "$herdr" tab tabs \
+    '[.tab_id, (.label // ""), (.number | if type == "number" then tostring else error("bad tab number") end)]'
   split_fields 3 tab
 
   local tab label number want rc=0
@@ -87,13 +131,15 @@ main() {
     tab=${f[i]} label=${f[i+1]} number=${f[i+2]}
     [[ -n $tab ]] || continue
     if (( ${+has_agent[$tab]} )); then
-      [[ $label == "$SHELL_LABEL" ]] || continue
+      [[ $label =~ $OWN_LABEL ]] || continue
       [[ $number =~ ^[1-9][0-9]*$ ]] || continue
       want=$number
     else
-      [[ $label =~ ^[0-9]+$ ]] || continue
-      want=$SHELL_LABEL
+      [[ $label =~ ^[0-9]+$ || $label =~ $OWN_LABEL ]] || continue
+      shell_label "${tab_cwd[$tab]:-}"
+      want=$REPLY
     fi
+    [[ $want == "$label" ]] && continue
     "$herdr" tab rename "$tab" "$want" > /dev/null || rc=1
   done
   return $rc

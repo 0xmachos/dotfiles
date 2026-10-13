@@ -2,11 +2,13 @@
 # one reconcile script on server startup, on the events that add or remove
 # an agent from a tab, and as an action: herdr plugin action invoke reconcile
 # --plugin local.shell-tab. Not on tab.renamed (its own renames would loop).
+# herdr fires no event on `cd`: the zsh chpwd hook in .functions/herdr_tab_chpwd
+# runs the action after each directory change.
 id = "local.shell-tab"
 name = "Shell tab"
-version = "0.1.0"
+version = "0.2.0"
 min_herdr_version = "0.9.3"
-description = "Name a tab shell while no pane in it runs an agent"
+description = "Name a tab shell, plus its directory, while no pane in it runs an agent"
 platforms = ["macos"]
 
 [[startup]]

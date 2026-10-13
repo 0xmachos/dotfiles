@@ -251,3 +251,7 @@ if [[ -d "${INITIAL_DIR}" && ${_initial_dir_cd} -eq 1 ]]; then
   cd "${INITIAL_DIR}"
 fi
 unset _initial_dir_cd
+
+# herdr fires no event on cd: ask the shell-tab plugin to rename the tab after
+# each one (.functions/herdr_tab_chpwd). Registered after the initial cd.
+chpwd_functions+=(herdr_tab_chpwd)

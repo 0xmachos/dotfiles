@@ -2,15 +2,19 @@
 # dotfiles/tests/herdr-shell-tab
 #
 # Test for .config/herdr/plugins/shell-tab/shell-tab, the herdr plugin command
-# that names a tab `shell` while no pane in it runs an agent, and gives a tab
-# named `shell` its number back once a pane in it runs one. It reads `herdr
+# that names a tab `shell` (plus its first pane's directory, two levels at most,
+# relative to the repo root else $HOME) while no pane in it runs an agent, and
+# gives a tab named `shell` or `shell <dir>` its number back once a pane in it
+# runs one. It reads `herdr
 # pane list` and `herdr tab list` through $HERDR_BIN_PATH, parses both with jq
 # and calls `herdr tab rename` only where a label differs.
 #
 # Every case runs the script as a child process with a clean environment
 # (env -i) against a fake herdr binary in a sandbox, passed through
 # HERDR_BIN_PATH. The fake prints the canned `pane list` and `tab list` JSON
-# from two fixture files and appends every other argv line to a calls log.
+# from two fixture files and appends every other call to a calls log, one line
+# per call with the arguments joined by `|` (a label with a space stays one
+# argument).
 # The real jq runs; the jq-missing case points SHELL_TAB_JQ at a path that
 # does not exist. The real HOME, the real herdr binary and the live herdr
 # socket are never used.
@@ -40,6 +44,11 @@ function _hst_setup {
   _HST_BOX="$(/usr/bin/mktemp -d "${base}/herdr-shell-tab.XXXXXX")"
   _HST_FAKE="${_HST_BOX}/fake-herdr"
   /bin/mkdir -p "${_HST_BOX}/home" "${_HST_BOX}/data"
+  # Directories the label cases use: a repo, a linked worktree (`.git` is a
+  # file), a plain directory under HOME and one outside HOME.
+  /bin/mkdir -p "${_HST_BOX}/home/repo/.git" "${_HST_BOX}/home/repo/a/b/c" \
+    "${_HST_BOX}/home/wt/sub" "${_HST_BOX}/home/plain/x/y" "${_HST_BOX}/elsewhere/q"
+  : > "${_HST_BOX}/home/wt/.git"
   cat > "${_HST_FAKE}" <<'FAKE'
 #!/bin/zsh
 # Fake herdr: `pane list` and `tab list` print their fixture (or fail when
@@ -53,7 +62,7 @@ if [[ $2 == list && ( $1 == pane || $1 == tab ) ]]; then
   /bin/cat "${FAKE_DIR}/${1}s.json"
   exit 0
 fi
-print -r -- "$*" >> "${FAKE_DIR}/calls.log"
+print -r -- "${(j:|:)@}" >> "${FAKE_DIR}/calls.log"
 if [[ $1 == tab && $2 == rename && -n ${FAKE_FAIL_TAB:-} && $3 == "${FAKE_FAIL_TAB:-}" ]]; then
   exit 1
 fi
@@ -88,7 +97,7 @@ function _hst_calls {
 
 function _hst_rename {
   # _hst_rename <tab> <label>: the expected rename call line.
-  print -r -- "tab rename $1 $2"
+  print -r -- "tab|rename|$1|$2"
 }
 
 function _hst_eq {
@@ -118,6 +127,17 @@ function _hst_fails {
   fi
   _hst_eq "$1: stdout empty" "" "${_HST_OUT}"
   _hst_eq "$1: no rename call" "" "$(_hst_calls)"
+}
+
+function _hst_at {
+  # _hst_at <name> <label> <cwd> <want>: one tab with no agent whose pane is in
+  # <cwd>. <want> is the label the plugin writes, or empty for no rename.
+  local name="$1" label="$2" cwd="$3" want="$4" expect=''
+  [[ -n "${want}" ]] && expect="$(_hst_rename w1:t2 "${want}")"
+  _hst_run "$(_hst_panes "{\"pane_id\":\"w1:p2\",\"tab_id\":\"w1:t2\",\"foreground_cwd\":\"${cwd}\"}")" \
+    "$(_hst_tabs "{\"tab_id\":\"w1:t2\",\"label\":\"${label}\",\"number\":2}")"
+  _hst_ok "${name}"
+  _hst_eq "${name}: calls" "${expect}" "$(_hst_calls)"
 }
 
 function _hst_panes {
@@ -230,6 +250,47 @@ function run_herdr_shell_tab {
   _hst_ok "tabless pane"
   _hst_eq "tabless pane: tab is shell" "$(_hst_rename w1:t1 shell)" "$(_hst_calls)"
 
+  # 6d. the directory: the label adds the first pane's directory relative to
+  # the repo root (else $HOME), two levels at most
+  local home="${_HST_BOX}/home" repo="${_HST_BOX}/home/repo"
+  _hst_at "dir: repo root" 2 "${repo}" shell
+  _hst_at "dir: one level" 2 "${repo}/a" "shell a"
+  _hst_at "dir: two levels" 2 "${repo}/a/b" "shell a/b"
+  _hst_at "dir: three levels cut to two" 2 "${repo}/a/b/c" "shell a/b"
+  _hst_at "dir: label already right" "shell a" "${repo}/a" ""
+  _hst_at "dir: back to the root" "shell a" "${repo}" shell
+  _hst_at "dir: label follows a move" "shell a" "${repo}/z" "shell z"
+  _hst_at "dir: linked worktree" 2 "${home}/wt/sub" "shell sub"
+  _hst_at "dir: under HOME, no repo" 2 "${home}/plain/x/y" "shell plain/x"
+  _hst_at "dir: HOME itself" 2 "${home}" shell
+  _hst_at "dir: outside the root and HOME" 2 "${_HST_BOX}/elsewhere/q" shell
+  _hst_at "dir: relative path" 2 "foo/bar" shell
+  _hst_at "dir: titled tab" "Mine" "${repo}/a" ""
+  _hst_at "dir: prefix without a space is a title" "shellx" "${repo}/a" ""
+  _hst_at "dir: shell with a trailing space is a title" "shell " "${repo}/a" ""
+
+  # 6e. a spaced label is one argument; foreground_cwd wins over cwd, cwd
+  # stands in when it is absent, the first listed pane gives the directory
+  _hst_run "$(_hst_panes "{\"pane_id\":\"w1:p2\",\"tab_id\":\"w1:t2\",\"foreground_cwd\":\"${repo}/a\",\"cwd\":\"${repo}/b\"}")" \
+    "$(_hst_tabs "${t_shell}")"
+  _hst_ok "foreground_cwd wins"
+  _hst_eq "foreground_cwd wins: one argument" "tab|rename|w1:t2|shell a" "$(_hst_calls)"
+  _hst_run "$(_hst_panes "{\"pane_id\":\"w1:p2\",\"tab_id\":\"w1:t2\",\"cwd\":\"${repo}/b\"}")" \
+    "$(_hst_tabs "${t_shell}")"
+  _hst_ok "cwd fallback"
+  _hst_eq "cwd fallback: used" "tab|rename|w1:t2|shell b" "$(_hst_calls)"
+  _hst_run "$(_hst_panes "{\"pane_id\":\"w1:p2\",\"tab_id\":\"w1:t2\",\"foreground_cwd\":\"${repo}/a\"}" \
+                         "{\"pane_id\":\"w1:p3\",\"tab_id\":\"w1:t2\",\"foreground_cwd\":\"${repo}/b\"}")" \
+    "$(_hst_tabs "${t_shell}")"
+  _hst_ok "two panes"
+  _hst_eq "two panes: first listed pane" "tab|rename|w1:t2|shell a" "$(_hst_calls)"
+
+  # 6f. a tab named `shell <dir>` with an agent gets its number back
+  _hst_run "$(_hst_panes '{"pane_id":"w1:p2","tab_id":"w1:t2","agent":"claude","foreground_cwd":"/x"}')" \
+    "$(_hst_tabs '{"tab_id":"w1:t2","label":"shell a/b","number":2}')"
+  _hst_ok "shell dir with agent"
+  _hst_eq "shell dir with agent: number" "$(_hst_rename w1:t2 2)" "$(_hst_calls)"
+
   # 7. error paths: fail closed, one stderr line, no rename
   panes="$(_hst_panes "${p_shell}")"
   tabs="$(_hst_tabs "${t_shell}")"
@@ -301,6 +362,12 @@ function run_herdr_shell_tab {
 
   _hst_run "$(_hst_panes '{"pane_id":"w1:p2","tab_id":"w1:t2","agent":"mu\u0000se"}')" "${tabs}"
   _hst_fails "NUL in agent" "cannot parse herdr pane list"
+
+  _hst_run "$(_hst_panes '{"pane_id":"w1:p2","tab_id":"w1:t2","foreground_cwd":7}')" "${tabs}"
+  _hst_fails "non-string cwd" "cannot parse herdr pane list"
+
+  _hst_run "$(_hst_panes '{"pane_id":"w1:p2","tab_id":"w1:t2","foreground_cwd":"/a\u0000b"}')" "${tabs}"
+  _hst_fails "NUL in cwd" "cannot parse herdr pane list"
 
   # 7b. one bad entry blocks renames for the good ones (all or nothing)
   _hst_run "${panes}" "$(_hst_tabs "${t_shell}" '{"tab_id":5,"label":"3","number":3}')"

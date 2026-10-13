@@ -1,0 +1,183 @@
+#!/bin/zsh
+# dotfiles/tests/herdr-tab-chpwd
+#
+# Test for .functions/herdr_tab_chpwd, the chpwd hook that runs the shell-tab
+# plugin's `reconcile` action after a directory change in an interactive shell
+# inside a herdr pane.
+#
+# Every case runs a child zsh with a clean environment (env -i) against a fake
+# herdr binary in a sandbox, passed through HERDR_BIN_PATH. The fake appends
+# its arguments (joined by `|`) to a calls log. The hook runs the call in the
+# background, so a case that expects a call waits for the log. A case that
+# expects none waits as long as a call would take, then checks the log is
+# empty. The shell is interactive (`zsh -f -i -c`) unless the case tests the
+# gate. The real HOME, the real herdr binary and the live herdr socket are
+# never used.
+#
+# HERDR_TAB_CHPWD_TEST_FUNC=<path> runs the suite against another copy of the
+# function (a mutation check on a scratch copy).
+#
+# Run: ./test herdr-tab-chpwd
+#
+# ShellCheck: lint with `shellcheck --shell=bash tests/herdr-tab-chpwd`.
+# This file is sourced, not executed — chmod 644.
+#
+# shellcheck source=tests/lib
+
+typeset -g _HTC_BOX='' _HTC_FAKE='' _HTC_FUNC=''
+typeset -g _HTC_RC=0 _HTC_ELAPSED=0
+
+readonly _HTC_WANT='plugin|action|invoke|reconcile|--plugin|local.shell-tab'
+
+function _htc_setup {
+  local base="${TMPDIR:-/tmp}"
+  base="${base%/}"
+  _HTC_BOX="$(/usr/bin/mktemp -d "${base}/herdr-tab-chpwd.XXXXXX")"
+  _HTC_FAKE="${_HTC_BOX}/fake-herdr"
+  /bin/mkdir -p "${_HTC_BOX}/home"
+  cat > "${_HTC_FAKE}" <<'FAKE'
+#!/bin/zsh
+# Fake herdr: log the call, sleep FAKE_SLEEP seconds, log `done` to a second
+# file (it never gets there if the caller kills it first) and exit FAKE_RC.
+print -r -- "${(j:|:)@}" >> "${FAKE_LOG}"
+[[ -z ${FAKE_SLEEP:-} ]] || /bin/sleep "${FAKE_SLEEP}"
+print done >> "${FAKE_LOG}.done"
+exit "${FAKE_RC:-0}"
+FAKE
+  /bin/chmod 755 "${_HTC_FAKE}"
+}
+
+function _htc_run {
+  # _htc_run <i|n> [VAR=value ...]: source the function in a child zsh (`i`
+  # interactive, `n` not), call it, and record the exit status (_HTC_RC) and the
+  # milliseconds the call took (_HTC_ELAPSED). The defaults give a herdr pane;
+  # a later VAR= overrides it and VAR=- removes it.
+  local mode="$1"
+  shift
+  : > "${_HTC_BOX}/calls.log"
+  local -a env_args=(
+    HOME="${_HTC_BOX}/home" PATH=/usr/bin:/bin
+    HERDR_ENV=1 HERDR_PANE_ID=w1:p1 HERDR_BIN_PATH="${_HTC_FAKE}"
+    FAKE_LOG="${_HTC_BOX}/calls.log"
+  )
+  local -a zflags=(-f)
+  [[ "${mode}" == i ]] && zflags+=(-i)
+  local arg
+  for arg in "$@"; do
+    if [[ "${arg}" == *=- ]]; then
+      # shellcheck disable=SC2296 # zsh ${(@)array:#pattern} drops matches
+      env_args=("${(@)env_args:#${arg%=-}=*}")
+    else
+      env_args+=("${arg}")
+    fi
+  done
+  local out
+  _HTC_RC=0
+  # shellcheck disable=SC2016 # the child zsh expands these
+  out="$(/usr/bin/env -i "${env_args[@]}" /bin/zsh "${zflags[@]}" -c '
+    zmodload zsh/datetime zsh/mathfunc
+    source "$1"
+    start=$EPOCHREALTIME
+    herdr_tab_chpwd
+    rc=$?
+    print -r -- "$rc $(( int((EPOCHREALTIME - start) * 1000) ))"
+  ' _ "${_HTC_FUNC}" 2>&1)" || _HTC_RC=$?
+  _HTC_ELAPSED="${out##* }"
+  [[ "${out%% *}" == 0 ]] || _HTC_RC=1
+}
+
+function _htc_calls {
+  # Wait up to 1 s for a background call, then print the log.
+  local -i tries=0
+  while [[ ! -s "${_HTC_BOX}/calls.log" ]] && (( tries++ < 20 )); do
+    /bin/sleep 0.05
+  done
+  print -r -- "$(< "${_HTC_BOX}/calls.log")"
+}
+
+function _htc_quiet {
+  # Wait as long as a call would take, then print the log (empty when none).
+  /bin/sleep 0.3
+  print -r -- "$(< "${_HTC_BOX}/calls.log")"
+}
+
+function _htc_eq {
+  if [[ "$2" == "$3" ]]; then
+    _pass "$1"
+  else
+    _fail "$1 — expected [$2] got [$3]"
+  fi
+}
+
+function run_herdr_tab_chpwd {
+  _section "herdr tab chpwd hook"
+
+  _HTC_FUNC="${HERDR_TAB_CHPWD_TEST_FUNC:-${SCRIPT_DIR}/.functions/herdr_tab_chpwd}"
+  if [[ ! -f "${_HTC_FUNC}" ]]; then
+    _fail "herdr_tab_chpwd absent: ${_HTC_FUNC}"
+    return 0
+  fi
+
+  _htc_setup
+  if [[ -z "${_HTC_BOX}" || ! -d "${_HTC_BOX}" ]]; then
+    _fail "could not create a sandbox for the suite"
+    return 0
+  fi
+
+  # 1. interactive shell in a herdr pane: one reconcile call, exit 0
+  _htc_run i
+  _htc_eq "interactive pane: reconcile call" "${_HTC_WANT}" "$(_htc_calls)"
+  _htc_eq "interactive pane: exit 0" 0 "${_HTC_RC}"
+
+  # 2. the gate: a non-interactive shell (a tool shell) makes no call
+  _htc_run n
+  _htc_eq "non-interactive: no call" "" "$(_htc_quiet)"
+  _htc_eq "non-interactive: exit 0" 0 "${_HTC_RC}"
+
+  # 3. outside a herdr pane: no call, exit 0
+  _htc_run i HERDR_ENV=-
+  _htc_eq "HERDR_ENV unset: no call" "" "$(_htc_quiet)"
+  _htc_eq "HERDR_ENV unset: exit 0" 0 "${_HTC_RC}"
+
+  _htc_run i HERDR_PANE_ID=-
+  _htc_eq "HERDR_PANE_ID unset: no call" "" "$(_htc_quiet)"
+  _htc_eq "HERDR_PANE_ID unset: exit 0" 0 "${_HTC_RC}"
+
+  _htc_run i HERDR_BIN_PATH=-
+  _htc_eq "HERDR_BIN_PATH unset: no call" "" "$(_htc_quiet)"
+  _htc_eq "HERDR_BIN_PATH unset: exit 0" 0 "${_HTC_RC}"
+
+  _htc_run i HERDR_BIN_PATH="${_HTC_BOX}/nope"
+  _htc_eq "HERDR_BIN_PATH missing: no call" "" "$(_htc_quiet)"
+  _htc_eq "HERDR_BIN_PATH missing: exit 0" 0 "${_HTC_RC}"
+
+  /bin/cp "${_HTC_FAKE}" "${_HTC_BOX}/not-exec"
+  /bin/chmod 644 "${_HTC_BOX}/not-exec"
+  _htc_run i HERDR_BIN_PATH="${_HTC_BOX}/not-exec"
+  _htc_eq "HERDR_BIN_PATH not executable: no call" "" "$(_htc_quiet)"
+  _htc_eq "HERDR_BIN_PATH not executable: exit 0" 0 "${_HTC_RC}"
+
+  # 4. a failing herdr never fails the hook
+  _htc_run i FAKE_RC=1
+  _htc_eq "herdr fails: call made" "${_HTC_WANT}" "$(_htc_calls)"
+  _htc_eq "herdr fails: hook exit 0" 0 "${_HTC_RC}"
+
+  # 5. a slow herdr never delays the prompt: the hook returns at once, and the
+  # 1 s cap kills a call that outlasts it (`done` is never written)
+  /bin/rm -f "${_HTC_BOX}/calls.log.done"
+  _htc_run i FAKE_SLEEP=1.5
+  _htc_eq "slow herdr: call made" "${_HTC_WANT}" "$(_htc_calls)"
+  if [[ "${_HTC_ELAPSED}" =~ ^[0-9]+$ ]] && (( _HTC_ELAPSED < 500 )); then
+    _pass "slow herdr: hook returned in under 500 ms"
+  else
+    _fail "slow herdr: hook took [${_HTC_ELAPSED}] ms"
+  fi
+  /bin/sleep 1.8
+  if [[ ! -e "${_HTC_BOX}/calls.log.done" ]]; then
+    _pass "slow herdr: the 1 s cap killed the call"
+  else
+    _fail "slow herdr: the call ran past the 1 s cap"
+  fi
+
+  /bin/rm -rf "${_HTC_BOX}"
+}
