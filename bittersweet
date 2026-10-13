@@ -507,9 +507,7 @@ function install_dotfiles {
     "${SCRIPT_DIR}/claude/settings.json"
     "${SCRIPT_DIR}/claude/global-claude.md"
     "${SCRIPT_DIR}/.config/1Password/ssh/agent.toml"
-    "${SCRIPT_DIR}/.codex/config.toml"
     "${SCRIPT_DIR}/.codex/rules/default.rules"
-    "${SCRIPT_DIR}/.codex/hooks.json"
     # Per-host rules files are named after private machines: a glob, never
     # literal names.
     "${SCRIPT_DIR}"/claude/hosts/*.md
@@ -567,8 +565,7 @@ function install_dotfiles {
   # npm hardcodes ~/.npmrc
   _symlink "${SCRIPT_DIR}/.config/npm/.npmrc" "${HOME}/.npmrc"
 
-  _symlink "${SCRIPT_DIR}/.codex/config.toml" "${HOME}/.codex/config.toml"
-
+  # ~/.codex/config.toml is Codex's own file (its trust ledger): never link it.
   # Codex reads ~/.codex/rules/*.rules as its own layer, apart from config.toml;
   # its `forbidden` prefix_rules are the only SSH guard that survives
   # --dangerously-bypass-approvals-and-sandbox.
