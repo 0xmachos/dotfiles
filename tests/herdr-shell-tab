@@ -1,0 +1,326 @@
+#!/bin/zsh
+# dotfiles/tests/herdr-shell-tab
+#
+# Test for .config/herdr/plugins/shell-tab/shell-tab, the herdr plugin command
+# that names a tab `shell` while no pane in it runs an agent, and gives a tab
+# named `shell` its number back once a pane in it runs one. It reads `herdr
+# pane list` and `herdr tab list` through $HERDR_BIN_PATH, parses both with jq
+# and calls `herdr tab rename` only where a label differs.
+#
+# Every case runs the script as a child process with a clean environment
+# (env -i) against a fake herdr binary in a sandbox, passed through
+# HERDR_BIN_PATH. The fake prints the canned `pane list` and `tab list` JSON
+# from two fixture files and appends every other argv line to a calls log.
+# The real jq runs; the jq-missing case points SHELL_TAB_JQ at a path that
+# does not exist. The real HOME, the real herdr binary and the live herdr
+# socket are never used.
+#
+# Error paths assert exit 1, a `shell-tab:` stderr line and zero rename calls
+# (the script fails closed). One failing rename sets exit 1 but the loop still
+# reaches the other tabs.
+#
+# HERDR_SHELL_TAB_TEST_SCRIPT=<path> runs the suite against another copy of
+# the script (a mutation check on a scratch copy).
+#
+# Run: ./test herdr-shell-tab
+#
+# ShellCheck: lint with `shellcheck --shell=bash tests/herdr-shell-tab`.
+# This file is sourced, not executed — chmod 644.
+#
+# shellcheck source=tests/lib
+
+typeset -g _HST_SCRIPT='' _HST_BOX='' _HST_FAKE='' _HST_JQ=/opt/homebrew/bin/jq
+typeset -g _HST_OUT='' _HST_ERR=''
+typeset -gi _HST_RC=0 _HST_USE_BIN=1
+
+function _hst_setup {
+  # Sandbox (private mktemp -d under $TMPDIR) and the fake herdr.
+  local base="${TMPDIR:-/tmp}"
+  base="${base%/}"
+  _HST_BOX="$(/usr/bin/mktemp -d "${base}/herdr-shell-tab.XXXXXX")"
+  _HST_FAKE="${_HST_BOX}/fake-herdr"
+  /bin/mkdir -p "${_HST_BOX}/home" "${_HST_BOX}/data"
+  cat > "${_HST_FAKE}" <<'FAKE'
+#!/bin/zsh
+# Fake herdr: `pane list` and `tab list` print their fixture (or fail when
+# FAKE_FAIL_LIST names the subcommand); every other call is logged.
+# FAKE_FAIL_TAB makes `tab rename` for that tab exit 1 after it logs the call.
+if [[ $2 == list && ( $1 == pane || $1 == tab ) ]]; then
+  if [[ ${FAKE_FAIL_LIST:-} == "$1" ]]; then
+    print -u2 -- "fake herdr: $1 list failed"
+    exit 3
+  fi
+  /bin/cat "${FAKE_DIR}/${1}s.json"
+  exit 0
+fi
+print -r -- "$*" >> "${FAKE_DIR}/calls.log"
+if [[ $1 == tab && $2 == rename && -n ${FAKE_FAIL_TAB:-} && $3 == "${FAKE_FAIL_TAB:-}" ]]; then
+  exit 1
+fi
+exit 0
+FAKE
+  /bin/chmod 755 "${_HST_FAKE}"
+}
+
+function _hst_run {
+  # _hst_run <panes-json> <tabs-json> [VAR=value ...]: run the script with a
+  # clean env; later assignments override the defaults. _HST_USE_BIN=0 leaves
+  # HERDR_BIN_PATH unset. Sets _HST_OUT, _HST_ERR, _HST_RC; resets the log.
+  local panes="$1" tabs="$2"
+  shift 2
+  local errf="${_HST_BOX}/stderr"
+  local -a bin=()
+  (( _HST_USE_BIN )) && bin=("HERDR_BIN_PATH=${_HST_FAKE}")
+  : > "${_HST_BOX}/data/calls.log"
+  print -r -- "${panes}" > "${_HST_BOX}/data/panes.json"
+  print -r -- "${tabs}" > "${_HST_BOX}/data/tabs.json"
+  _HST_RC=0
+  _HST_OUT="$(env -i PATH=/usr/bin:/bin HOME="${_HST_BOX}/home" \
+    "${bin[@]}" FAKE_DIR="${_HST_BOX}/data" \
+    "$@" /bin/zsh "${_HST_SCRIPT}" 2>"${errf}")" || _HST_RC=$?
+  _HST_ERR="$(< "${errf}")"
+}
+
+function _hst_calls {
+  # All logged non-list calls, one per line (trailing newline stripped).
+  print -r -- "$(< "${_HST_BOX}/data/calls.log")"
+}
+
+function _hst_rename {
+  # _hst_rename <tab> <label>: the expected rename call line.
+  print -r -- "tab rename $1 $2"
+}
+
+function _hst_eq {
+  # _hst_eq <name> <expected> <actual>
+  if [[ "$2" == "$3" ]]; then
+    _pass "$1"
+  else
+    _fail "$1 — expected [$2] got [$3]"
+  fi
+}
+
+function _hst_ok {
+  # Success run: exit 0, empty stdout and stderr.
+  _hst_eq "$1: exit 0" 0 "${_HST_RC}"
+  _hst_eq "$1: stdout empty" "" "${_HST_OUT}"
+  _hst_eq "$1: stderr empty" "" "${_HST_ERR}"
+}
+
+function _hst_fails {
+  # _hst_fails <name> <message-fragment>: exit 1, a `shell-tab:` stderr line
+  # holding the fragment, and no rename call.
+  _hst_eq "$1: exit 1" 1 "${_HST_RC}"
+  if [[ "${_HST_ERR}" == *"shell-tab: "*"$2"* ]]; then
+    _pass "$1: stderr says $2"
+  else
+    _fail "$1: stderr says $2 — got [${_HST_ERR}]"
+  fi
+  _hst_eq "$1: stdout empty" "" "${_HST_OUT}"
+  _hst_eq "$1: no rename call" "" "$(_hst_calls)"
+}
+
+function _hst_panes {
+  # _hst_panes <pane-json>...: wrap pane objects in the herdr reply shape.
+  local IFS=,
+  print -r -- '{"id":"x","result":{"panes":['"$*"']}}'
+}
+
+function _hst_tabs {
+  # _hst_tabs <tab-json>...: wrap tab objects in the herdr reply shape.
+  local IFS=,
+  print -r -- '{"id":"x","result":{"tabs":['"$*"']}}'
+}
+
+function run_herdr_shell_tab {
+  _section "herdr shell-tab plugin"
+
+  _HST_SCRIPT="${HERDR_SHELL_TAB_TEST_SCRIPT:-${SCRIPT_DIR}/.config/herdr/plugins/shell-tab/shell-tab}"
+
+  if [[ ! -f "${_HST_SCRIPT}" ]]; then
+    _fail "shell-tab script absent: ${_HST_SCRIPT}"
+    return 0
+  fi
+  if [[ ! -x "${_HST_JQ}" ]]; then
+    _skip "${_HST_JQ} absent — the script needs Homebrew jq"
+    return 0
+  fi
+
+  _hst_setup
+  if [[ -z "${_HST_BOX}" || ! -d "${_HST_BOX}" ]]; then
+    _fail "could not create a sandbox for the suite"
+    return 0
+  fi
+
+  local nl=$'\n'
+  local p_claude='{"pane_id":"w1:p1","tab_id":"w1:t1","agent":"claude"}'
+  local p_shell='{"pane_id":"w1:p2","tab_id":"w1:t2"}'
+  local p_null='{"pane_id":"w1:p3","tab_id":"w1:t3","agent":null}'
+  local p_muse='{"pane_id":"w1:p4","tab_id":"w1:t4","agent":"muse"}'
+  local t_claude='{"tab_id":"w1:t1","label":"1","number":1}'
+  local t_shell='{"tab_id":"w1:t2","label":"2","number":2}'
+  local t_null='{"tab_id":"w1:t3","label":"3","number":3}'
+  local t_muse='{"tab_id":"w1:t4","label":"shell","number":4}'
+  local panes tabs
+
+  # 1. mixed: numbered tabs with no agent become shell; a shell tab with an
+  # agent gets its number; a numbered tab with an agent stays
+  panes="$(_hst_panes "${p_claude}" "${p_shell}" "${p_null}" "${p_muse}")"
+  tabs="$(_hst_tabs "${t_claude}" "${t_shell}" "${t_null}" "${t_muse}")"
+  _hst_run "${panes}" "${tabs}"
+  _hst_ok "mixed"
+  _hst_eq "mixed: two to shell, one back to its number" \
+    "$(_hst_rename w1:t2 shell)${nl}$(_hst_rename w1:t3 shell)${nl}$(_hst_rename w1:t4 4)" \
+    "$(_hst_calls)"
+
+  # 2. already reconciled: no renames
+  _hst_run "$(_hst_panes "${p_claude}" "${p_shell}")" \
+    "$(_hst_tabs "${t_claude}" '{"tab_id":"w1:t2","label":"shell","number":2}')"
+  _hst_ok "reconciled"
+  _hst_eq "reconciled: no calls" "" "$(_hst_calls)"
+
+  # 3. empty lists
+  _hst_run '{"id":"x","result":{"panes":[]}}' '{"id":"x","result":{"tabs":[]}}'
+  _hst_ok "empty lists"
+  _hst_eq "empty lists: no calls" "" "$(_hst_calls)"
+
+  # 4. a titled tab is never touched, with or without an agent
+  _hst_run "$(_hst_panes "${p_claude}" "${p_shell}")" \
+    "$(_hst_tabs '{"tab_id":"w1:t1","label":"Traefik change","number":1}' \
+                 '{"tab_id":"w1:t2","label":"Mine","number":2}')"
+  _hst_ok "titled tabs"
+  _hst_eq "titled tabs: no calls" "" "$(_hst_calls)"
+
+  # 4b. a label that only looks numeric is a title
+  _hst_run "$(_hst_panes "${p_shell}")" \
+    "$(_hst_tabs '{"tab_id":"w1:t2","label":"2a","number":2}' \
+                 '{"tab_id":"w1:t5","label":"-1","number":5}' \
+                 '{"tab_id":"w1:t6","label":"","number":6}')"
+  _hst_ok "near-numeric labels"
+  _hst_eq "near-numeric labels: no calls" "" "$(_hst_calls)"
+
+  # 5. the number written back is tab.number, not the stale label
+  _hst_run "$(_hst_panes '{"pane_id":"w1:p9","tab_id":"w1:t5","agent":"codex"}')" \
+    "$(_hst_tabs '{"tab_id":"w1:t5","label":"shell","number":5}')"
+  _hst_ok "number back"
+  _hst_eq "number back: tab.number" "$(_hst_rename w1:t5 5)" "$(_hst_calls)"
+
+  # 5b. a shell tab with an agent but a bad number is left alone
+  _hst_run "$(_hst_panes '{"pane_id":"w1:p9","tab_id":"w1:t5","agent":"codex"}')" \
+    "$(_hst_tabs '{"tab_id":"w1:t5","label":"shell","number":0}')"
+  _hst_ok "bad number"
+  _hst_eq "bad number: no calls" "" "$(_hst_calls)"
+
+  # 6. two panes, one agent: the tab holds an agent
+  _hst_run "$(_hst_panes '{"pane_id":"w1:p1","tab_id":"w1:t1"}' \
+                         '{"pane_id":"w1:p2","tab_id":"w1:t1","agent":"claude"}')" \
+    "$(_hst_tabs "${t_claude}")"
+  _hst_ok "split tab"
+  _hst_eq "split tab: no calls" "" "$(_hst_calls)"
+
+  # 6b. a tab with no pane in the list yet is a shell tab
+  _hst_run "$(_hst_panes "${p_claude}")" \
+    "$(_hst_tabs "${t_claude}" '{"tab_id":"w1:t7","label":"7","number":7}')"
+  _hst_ok "paneless tab"
+  _hst_eq "paneless tab: shell" "$(_hst_rename w1:t7 shell)" "$(_hst_calls)"
+
+  # 6c. a pane with no tab id names no tab
+  _hst_run "$(_hst_panes '{"pane_id":"w1:p1","agent":"claude"}')" \
+    "$(_hst_tabs "${t_claude}")"
+  _hst_ok "tabless pane"
+  _hst_eq "tabless pane: tab is shell" "$(_hst_rename w1:t1 shell)" "$(_hst_calls)"
+
+  # 7. error paths: fail closed, one stderr line, no rename
+  panes="$(_hst_panes "${p_shell}")"
+  tabs="$(_hst_tabs "${t_shell}")"
+
+  _HST_USE_BIN=0
+  _hst_run "${panes}" "${tabs}"
+  _HST_USE_BIN=1
+  _hst_fails "HERDR_BIN_PATH unset" "HERDR_BIN_PATH is not an executable"
+
+  /bin/cp "${_HST_FAKE}" "${_HST_BOX}/not-exec"
+  /bin/chmod 644 "${_HST_BOX}/not-exec"
+  _hst_run "${panes}" "${tabs}" HERDR_BIN_PATH="${_HST_BOX}/not-exec"
+  _hst_fails "HERDR_BIN_PATH not executable" "HERDR_BIN_PATH is not an executable"
+
+  _hst_run "${panes}" "${tabs}" HERDR_BIN_PATH="${_HST_BOX}/nope"
+  _hst_fails "HERDR_BIN_PATH missing" "HERDR_BIN_PATH is not an executable"
+
+  _hst_run "${panes}" "${tabs}" SHELL_TAB_JQ="${_HST_BOX}/no-such-jq"
+  _hst_fails "jq missing" "jq not found at ${_HST_BOX}/no-such-jq"
+
+  _hst_run "${panes}" "${tabs}" FAKE_FAIL_LIST=pane
+  _hst_fails "pane list fails" "herdr pane list failed"
+
+  _hst_run "${panes}" "${tabs}" FAKE_FAIL_LIST=tab
+  _hst_fails "tab list fails" "herdr tab list failed"
+
+  _hst_run 'this is {not json' "${tabs}"
+  _hst_fails "invalid pane JSON" "cannot parse herdr pane list"
+
+  _hst_run "${panes}" 'this is {not json'
+  _hst_fails "invalid tab JSON" "cannot parse herdr tab list"
+
+  # jq prints nothing for empty input: no END sentinel, so the list is truncated.
+  _hst_run '' "${tabs}"
+  _hst_fails "empty pane output" "truncated pane list"
+
+  _hst_run "${panes}" ''
+  _hst_fails "empty tab output" "truncated tab list"
+
+  _hst_run '{"id":"x","result":{"other":[]}}' "${tabs}"
+  _hst_fails "no .result.panes" "cannot parse herdr pane list"
+
+  _hst_run "${panes}" '{"id":"x","result":{"other":[]}}'
+  _hst_fails "no .result.tabs" "cannot parse herdr tab list"
+
+  _hst_run "${panes}" '{"id":"x","result":{"tabs":{"tab_id":"w1:t2","label":"2","number":2}}}'
+  _hst_fails ".result.tabs not an array" "cannot parse herdr tab list"
+
+  _hst_run "$(_hst_panes '{"pane_id":"w1:p2","tab_id":5}')" "${tabs}"
+  _hst_fails "non-string pane tab_id" "cannot parse herdr pane list"
+
+  _hst_run "$(_hst_panes '{"pane_id":"w1:p2","tab_id":"w1:t2","agent":7}')" "${tabs}"
+  _hst_fails "non-string agent" "cannot parse herdr pane list"
+
+  _hst_run "${panes}" "$(_hst_tabs '{"tab_id":5,"label":"2","number":2}')"
+  _hst_fails "non-string tab_id" "cannot parse herdr tab list"
+
+  _hst_run "${panes}" "$(_hst_tabs '{"tab_id":"w1:t2","label":["2"],"number":2}')"
+  _hst_fails "non-string label" "cannot parse herdr tab list"
+
+  _hst_run "${panes}" "$(_hst_tabs '{"tab_id":"w1:t2","label":"2"}')"
+  _hst_fails "missing number" "cannot parse herdr tab list"
+
+  _hst_run "${panes}" "$(_hst_tabs '{"tab_id":"w1:t2\u0000x","label":"2","number":2}')"
+  _hst_fails "NUL in tab_id" "cannot parse herdr tab list"
+
+  _hst_run "${panes}" "$(_hst_tabs '{"tab_id":"w1:t2","label":"2\u0000","number":2}')"
+  _hst_fails "NUL in label" "cannot parse herdr tab list"
+
+  _hst_run "$(_hst_panes '{"pane_id":"w1:p2","tab_id":"w1:t2","agent":"mu\u0000se"}')" "${tabs}"
+  _hst_fails "NUL in agent" "cannot parse herdr pane list"
+
+  # 7b. one bad entry blocks renames for the good ones (all or nothing)
+  _hst_run "${panes}" "$(_hst_tabs "${t_shell}" '{"tab_id":5,"label":"3","number":3}')"
+  _hst_fails "bad entry after good entry" "cannot parse herdr tab list"
+
+  # 8. a failing rename sets exit 1 but the loop continues
+  _hst_run "$(_hst_panes "${p_shell}" "${p_null}" "${p_muse}")" \
+    "$(_hst_tabs "${t_shell}" "${t_null}" "${t_muse}")" FAKE_FAIL_TAB=w1:t2
+  _hst_eq "rename fails: exit 1" 1 "${_HST_RC}"
+  _hst_eq "rename fails: stdout empty" "" "${_HST_OUT}"
+  _hst_eq "rename fails: later tabs still renamed" \
+    "$(_hst_rename w1:t2 shell)${nl}$(_hst_rename w1:t3 shell)${nl}$(_hst_rename w1:t4 4)" \
+    "$(_hst_calls)"
+
+  # 9. a newline inside a label is not a bare number and not `shell`
+  _hst_run "$(_hst_panes "${p_shell}" "${p_muse}")" \
+    "$(_hst_tabs '{"tab_id":"w1:t2","label":"2\n","number":2}' \
+                 '{"tab_id":"w1:t4","label":"shell\n","number":4}')"
+  _hst_ok "newline in label"
+  _hst_eq "newline in label: no calls" "" "$(_hst_calls)"
+
+  /bin/rm -rf "${_HST_BOX}"
+}

@@ -1,0 +1,103 @@
+#!/bin/zsh
+# shell-tab: herdr plugin command (herdr-plugin.toml beside it).
+#
+# Names a tab `shell` while no pane in it runs an agent, so the Herdr UI tab
+# strip reads `shell` instead of a bare number. When an agent appears in a
+# tab named `shell`, the tab gets its number back, so the herdr-tab-title mod
+# (or a later herdr-gpui that names unnamed tabs after their agent) can take
+# it. A tab whose label is neither a bare number nor `shell` is a title or a
+# hand name and is never touched: a titled Claude tab whose session exited
+# keeps its title.
+#
+# Each run reconciles every tab from one `herdr tab list` and one `herdr pane
+# list` (every workspace: neither call takes --workspace), so repeated or
+# overlapping runs converge, and it renames only where a label differs. The
+# agent test is the pane's `agent` field, the same source as the sidebar
+# agent rows; a tab's own `agent_status` cannot tell a live agent from an
+# exited one. It fails closed: an unreadable list renames nothing.
+#
+# `tab rename` sets a custom name that herdr never clears, so a tab this
+# plugin has touched stays custom-labelled even after it gets its number
+# back. Nothing in this config shows that flag: the sidebar rows do not use
+# the `tab` token. The number written back is `tab.number`, not the old
+# label: a stock label is the number at creation and can lag the current one.
+#
+# herdr runs plugin commands with HERDR_BIN_PATH set to its own binary; jq is
+# an absolute path because the server's PATH is not the login shell's.
+
+set -euo pipefail
+umask 077
+
+readonly SHELL_LABEL=shell
+readonly JQ=${SHELL_TAB_JQ:-/opt/homebrew/bin/jq}
+
+die() {
+  print -u2 -- "shell-tab: $1"
+  exit 1
+}
+
+# One NUL-terminated field per value, then an END sentinel that proves jq
+# finished the whole list. Every field is checked as a NUL-free string.
+# read_list <herdr> <subcommand> <jq-path> <jq-row-expression>
+read_list() {
+  local herdr=$1 what=$2 key=$3 row=$4 json
+  json=$("$herdr" "$what" list) || die "herdr $what list failed"
+  REPLY=$("$JQ" -j --arg key "$key" "
+    .result[\$key]
+    | if type != \"array\" then error(\"no $what list\") else . end
+    | map($row)
+    | if any(.[][]; type != \"string\" or contains(\"\\u0000\"))
+      then error(\"bad $what field\") else . end
+    | ((map(map(. + \"\\u0000\") | add) | add) // \"\") + \"END\"
+  " <<< "$json") || die "cannot parse herdr $what list"
+}
+
+# split_fields <width>: REPLY (NUL-framed) into the array f, checked.
+split_fields() {
+  local -i width=$1
+  # shellcheck disable=SC2296 # zsh (@0) splits on NUL and keeps empty fields
+  f=("${(@0)REPLY}")
+  if [[ ${f[-1]} != END ]] || (( ($#f - 1) % width != 0 )); then
+    die "truncated $2 list"
+  fi
+}
+
+main() {
+  local herdr=${HERDR_BIN_PATH:-}
+  [[ -n $herdr && -x $herdr ]] || die "HERDR_BIN_PATH is not an executable"
+  [[ -x $JQ ]] || die "jq not found at $JQ"
+
+  local -a f
+  local -i i
+
+  # Panes: tab id, agent. A tab holds an agent when any pane in it names one.
+  read_list "$herdr" pane panes '[(.tab_id // ""), (.agent // "")]'
+  split_fields 2 pane
+  local -A has_agent
+  for (( i = 1; i < $#f; i += 2 )); do
+    # shellcheck disable=SC2034 # zsh ${+has_agent[...]} reads it below
+    [[ -n ${f[i]} && -n ${f[i+1]} ]] && has_agent[${f[i]}]=1
+  done
+
+  # Tabs: tab id, label, number.
+  read_list "$herdr" tab tabs '[.tab_id, (.label // ""), (.number | if type == "number" then tostring else error("bad tab number") end)]'
+  split_fields 3 tab
+
+  local tab label number want rc=0
+  for (( i = 1; i < $#f; i += 3 )); do
+    tab=${f[i]} label=${f[i+1]} number=${f[i+2]}
+    [[ -n $tab ]] || continue
+    if (( ${+has_agent[$tab]} )); then
+      [[ $label == "$SHELL_LABEL" ]] || continue
+      [[ $number =~ ^[1-9][0-9]*$ ]] || continue
+      want=$number
+    else
+      [[ $label =~ ^[0-9]+$ ]] || continue
+      want=$SHELL_LABEL
+    fi
+    "$herdr" tab rename "$tab" "$want" > /dev/null || rc=1
+  done
+  return $rc
+}
+
+main "$@"
