@@ -72,6 +72,7 @@ typeset -ra BITTERSWEET_SUBCOMMANDS=(
   'completions:Regenerate .completions/_bittersweet from BITTERSWEET_SUBCOMMANDS'
   'okf-index:Regenerate internals/index.md from OKF concept frontmatter'
   'test:Run test suite'
+  'deploy:Run the local deploy steps (completions, defaults, dotfiles, scripts, sudotouch, compinit, launchagents)'
   'hailmary:Run every function in order'
 )
 ### END Subcommand SOT ###
@@ -1714,6 +1715,20 @@ function main {
     test)
       shift
       "${SCRIPT_DIR}/test" "$@"
+      ;;
+    deploy)
+      # The install-free subset of hailmary, in hailmary's order. completions
+      # goes first: it needs neither sudo nor brew and only rewrites a tracked
+      # file. A failing step stops the rest (set -e).
+      _generate_bittersweet_completion "${SCRIPT_DIR}/.completions/_bittersweet"
+      echo "[✅] Regenerated ${SCRIPT_DIR}/.completions/_bittersweet"
+      write_defaults
+      install_dotfiles
+      install_scripts
+      enable_touchid_sudo
+      zsh_compinit_fix
+      install_launchagents
+      load_launchagents
       ;;
     hailmary)
       # Order matters: system config (no dependencies), security tools (curl +
