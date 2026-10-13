@@ -28,7 +28,7 @@
 # Bypass (2026-09-25): `git push --no-verify` (silent, git's own, cannot be
 # refused from a hook) skips everything. Loud: GIT_SIGN_SKIP=1 skips the
 # signature layer ONLY; PII_HOOK_BYPASS=1 (pii-scan's) skips the PII layers
-# while gitleaks still runs; MSG_POLICY_SKIP=1 skips Layers 3 and 4 only. All
+# while gitleaks still runs; MSG_POLICY_SKIP=1 skips Layers 3, 3b and 4 only. All
 # three are honoured ONLY with a controlling terminal, tested by a pii-scan
 # --check-terminal subprocess (as commit-msg does). From an agent's tool call
 # the variable is ignored, the layer still runs, and one refusal line names
@@ -42,7 +42,9 @@
 # `Claude-Session:` trailer, no empty commit (one parent, same tree), no body
 # over `hooks.maxBodyWords` words (default 120). Layer 4: pii-scan over the
 # tracked tree of every pushed tip, catching a value that predates its
-# denylist pattern (./test pii-tree covers the same at test time).
+# denylist pattern (./test pii-tree covers the same at test time). Layer 3b
+# (2026-10-13): no plan, target date or open-decision wording in the added
+# lines of *.md and *.txt files; plans belong in the gitignored TODOs.md.
 #
 # ShellCheck: lint with `shellcheck --shell=bash .config/git/hooks/pre-push`.
 
@@ -336,6 +338,53 @@ if (( public_repo && ${#outgoing} )); then
   fi
 fi
 
+# --- Layer 3b: public-repository plan-wording gate --------------------------
+
+# A public doc states current facts. A plan, a target date or an open decision
+# belongs in the gitignored TODOs.md or internals/. Scans the ADDED lines of
+# *.md and *.txt files in every outgoing commit; one `git log -p` for the whole
+# range, parsed with pure zsh matches (no pipeline). Wording only: the match
+# catches phrasing, the written rule catches intent. Code comments are not
+# scanned (a `TODO:` there is common). MSG_POLICY_SKIP skips it with Layer 3.
+if (( public_repo && ${#outgoing} )); then
+  plan_diff="$(mktemp "${TMPDIR:-/tmp}/pii-push-plan.XXXXXX")"
+  trap '/bin/rm -f "${msgs:-}" "${plan_diff}"' EXIT
+  # shellcheck disable=SC2296  # ${(F)…} newline-join, zsh flag syntax --shell=bash cannot parse
+  git log --no-walk=unsorted --stdin -p -U0 --format='commit %H' \
+    <<< "${(F)outgoing}" -- '*.md' '*.txt' > "${plan_diff}" 2>/dev/null || {
+      print -u2 "[❌] pre-push: could not read the outgoing diffs for the plan-wording scan; refusing to push."
+      exit 1
+    }
+  typeset plan_re='(^|[^[:alnum:]])(planned|to do|todo|roadmap|next steps?|future work):|decide whether|ideally by|medium[- ]term|planned for|plans? to |target (date|month)|target:|(target|by) (mid-?)?(january|february|march|april|may|june|july|august|september|october|november|december) 20[0-9][0-9]'
+  typeset -a plan_hits=()
+  typeset plan_sha plan_file plan_line plan_low
+  while IFS= read -r plan_line || [[ -n "${plan_line}" ]]; do
+    case "${plan_line}" in
+      "commit "*) plan_sha="${plan_line#commit }"; continue ;;
+      "+++ b/"*) plan_file="${plan_line#+++ b/}"; continue ;;
+      "+++ "*|"--- "*) continue ;;
+      "+"*) ;;
+      *) continue ;;
+    esac
+    # shellcheck disable=SC2296  # ${(L)…} lower-case flag, zsh syntax --shell=bash cannot parse
+    plan_low="${(L)plan_line[2,-1]}"
+    if [[ "${plan_low}" =~ ${plan_re} ]]; then
+      plan_hits+=("${plan_sha[1,9]} ${plan_file}: ${plan_line[2,90]}")
+    fi
+  done < "${plan_diff}"
+  if (( ${#plan_hits} )); then
+    print -u2 "[❌] pre-push: ${#plan_hits} added line(s) in tracked docs read as a plan, a target date or an open decision (public repo):"
+    typeset ph
+    for ph in "${plan_hits[@]}"; do
+      print -u2 "       ${ph}"
+    done
+    print -u2 "     A public doc states current facts only. Put plans and open decisions in TODOs.md or internals/."
+    print -u2 "     Rewrite the commit (rebase -i), then push again. Nothing has been published."
+    print -u2 "     Override (the user, in their OWN terminal): MSG_POLICY_SKIP=1 git push …"
+    exit 1
+  fi
+fi
+
 # --- Layer 4: public-repository tracked-tree scan ---------------------------
 
 # Per-repo deferral for a public repo whose tracked files predate the denylist:
@@ -349,7 +398,7 @@ fi
 if (( public_repo && tree_scan_on && ${#tips} )); then
   tree_tmp="$(mktemp -d "${TMPDIR:-/tmp}/pii-push-tree.XXXXXX")"
   tree_scan="$(mktemp "${TMPDIR:-/tmp}/pii-push-treescan.XXXXXX")"
-  trap '/bin/rm -rf "${tree_tmp}" "${tree_scan}" "${msgs:-}"' EXIT
+  trap '/bin/rm -rf "${tree_tmp}" "${tree_scan}" "${msgs:-}" "${plan_diff:-}"' EXIT
   typeset tip tpath tar_file
   for tip in "${tips[@]}"; do
     /usr/bin/find "${tree_tmp:?}" -mindepth 1 -delete

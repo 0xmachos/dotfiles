@@ -2,9 +2,10 @@
 # dotfiles/tests/message-policy
 #
 # Hermetic suite for the public-repo message policy (added 2026-09-22):
-# pre-push Layer 3 (trailers, empty commits, long bodies), Layer 4 (tracked-
-# tree PII scan of every pushed tip), commit-msg fast feedback, and the shared
-# repo-visibility resolver. Each case runs in a throwaway repo whose
+# pre-push Layer 3 (trailers, empty commits, long bodies), Layer 3b (plan
+# wording in tracked docs), Layer 4 (tracked-tree PII scan of every pushed
+# tip), commit-msg fast feedback, and the shared repo-visibility resolver.
+# Each case runs in a throwaway repo whose
 # core.hooksPath holds copies of the global hooks: no pre-commit scanner, no
 # real denylist. PII_HOOK_PATTERNS points at a fixture list and
 # REPO_VISIBILITY_FORCE fixes visibility per call; public cases must block,
@@ -277,6 +278,36 @@ exit 1' > "${sb}/gh-broken"
 
   _mp_commit "${repo}" $'Add a file\n\nOne short line about what changed.' a.txt
   _mp_push_expect ALLOWED 'short body' "${repo}" public
+  _mp_reset_to_remote "${repo}"
+
+  # --- pre-push Layer 3b: plan wording in tracked docs ---
+  print -r -- '* Planned: run a service for this Mac, target December 2026.' >> "${repo}/notes.md"
+  _mp_commit "${repo}" 'Add a notes file' notes.md
+  _mp_push_expect BLOCKED 'doc line with Planned: and a target month' "${repo}" public
+  _mp_push_expect BLOCKED 'doc line with a plan, visibility unknown counts as public' "${repo}" unknown
+  _mp_push_expect ALLOWED 'doc line with a plan, private repo' "${repo}" private
+  _mp_push_expect_tty ALLOWED 'doc line with a plan, MSG_POLICY_SKIP=1 (with a terminal)' "${repo}" public MSG_POLICY_SKIP=1
+  _mp_push_expect_notty BLOCKED 'doc line with a plan, MSG_POLICY_SKIP=1 is refused without a terminal' "${repo}" public \
+    'ignored: no controlling terminal' MSG_POLICY_SKIP=1
+  _mp_reset_to_remote "${repo}"
+
+  local plan_line
+  for plan_line in '* To do: decide whether to move the job.' 'Ideally by mid december we ship it.' \
+                   'Roadmap: three steps.' 'Done by March 2027.' 'Medium-term we host it ourselves.'; do
+    print -r -- "${plan_line}" >> "${repo}/notes.md"
+    _mp_commit "${repo}" 'Add a notes file' notes.md
+    _mp_push_expect BLOCKED "doc plan wording: ${plan_line}" "${repo}" public
+    _mp_reset_to_remote "${repo}"
+  done
+
+  print -r -- 'Removed from the profile on 2026-10-13: the payload key.' >> "${repo}/notes.md"
+  _mp_commit "${repo}" 'Add a notes file' notes.md
+  _mp_push_expect ALLOWED 'doc line stating a dated fact' "${repo}" public
+  _mp_reset_to_remote "${repo}"
+
+  print -r -- '# TODO: planned work, target December 2026' >> "${repo}/script.sh"
+  _mp_commit "${repo}" 'Add a script' script.sh
+  _mp_push_expect ALLOWED 'plan wording in a code file is not scanned' "${repo}" public
   _mp_reset_to_remote "${repo}"
 
   # --- pre-push Layer 4: tracked-tree scan ---
