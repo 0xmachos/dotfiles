@@ -12,6 +12,8 @@
 # base pair; hostb no twin; hostc from a relative glob Include; hosth from a
 # tilde Include; hostd/hoste/hostf extra pairs; hostg-claude with no bare
 # hostg; hostw* a wildcard Host line paired with a real hostw-claude.
+# hosta-herdr an app alias beside hosta-claude (DENY); hostb-herdr with no
+# hostb-claude (PASS).
 #
 # Run: ./test ssh-redirect
 # ShellCheck: lint with `shellcheck --shell=bash tests/ssh-redirect`.
@@ -135,6 +137,14 @@ function run_ssh_redirect {
 
   # A -claude twin with no bare host behind it: declared gap, PASS.
   _ssh_redirect_expect PASS 'ssh hostg'
+
+  # App alias: X-herdr denies to X-claude only when both are declared.
+  _ssh_redirect_expect DENY 'ssh hosta-herdr' '-herdr alias beside a -claude twin'
+  _ssh_redirect_expect DENY 'ssh -o BatchMode=yes hosta-herdr true' '-herdr alias with options'
+  _ssh_redirect_expect DENY 'scp f hosta-herdr:/x' '-herdr alias as an scp operand'
+  _ssh_redirect_expect PASS 'ssh hostb-herdr' '-herdr alias with no -claude twin'
+  _ssh_redirect_expect PASS 'ssh hostd-herdr' '-herdr name never declared, -claude twin exists'
+  _ssh_redirect_expect PASS 'ssh tail-hosta-herdr' 'no tail- form for an app alias'
 
   # No twin → PASS.
   _ssh_redirect_expect PASS 'ssh hostb'
@@ -370,6 +380,12 @@ function run_ssh_redirect {
   else
     _fail "tail- alias deny text unexpected: ${SSHR_T_OUT}"
   fi
+  _ssh_redirect_run 'ssh hosta-herdr'
+  if [[ "$(jq -r .hookSpecificOutput.permissionDecisionReason <<< "${SSHR_T_OUT}")" == "hosta-herdr is Herdr.app's SSH alias: use hosta-claude instead." ]]; then
+    _pass "deny text for a -herdr alias names Herdr.app and the -claude twin"
+  else
+    _fail "-herdr alias deny text unexpected: ${SSHR_T_OUT}"
+  fi
 
   # Loop-twice regressions: many segments, substitutions and option letters
   # must still print one JSON object (deny) or nothing (pass), never a stray
@@ -384,7 +400,7 @@ function run_ssh_redirect {
   local pair twin
   for pair in 'hosta:hosta-claude' 'tail-hosta:hosta-claude' 'hostc:hostc-claude' \
               'tail-hostc:hostc-claude' 'hostd:hostd-claude' 'hoste:hoste-claude' \
-              'hostf:hostf-claude' 'hosth:hosth-claude'; do
+              'hostf:hostf-claude' 'hosth:hosth-claude' 'hosta-herdr:hosta-claude'; do
     twin="${pair#*:}"
     _ssh_redirect_run "ssh ${pair%%:*}"
     if [[ "${SSHR_T_OUT}" == *"use ${twin} instead."* ]]; then
