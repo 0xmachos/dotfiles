@@ -4,10 +4,9 @@
 # Names a tab `shell` while no pane in it runs an agent, so the Herdr UI tab
 # strip reads `shell` instead of a bare number. When an agent appears in a
 # tab named `shell`, the tab gets its number back, so the herdr-tab-title mod
-# (or a later herdr-gpui that names unnamed tabs after their agent) can take
-# it. A tab whose label is neither a bare number nor `shell` is a title or a
-# hand name and is never touched: a titled Claude tab whose session exited
-# keeps its title.
+# can take it (its guard accepts a bare number). A tab whose label is neither
+# a bare number nor `shell` is a title or a hand name and is never touched: a
+# titled Claude tab whose session exited keeps its title.
 #
 # Each run reconciles every tab from one `herdr tab list` and one `herdr pane
 # list` (every workspace: neither call takes --workspace), so repeated or
