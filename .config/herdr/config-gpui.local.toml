@@ -42,6 +42,8 @@ hide_providers = [
 # Symbol status marks scale with this size; the dot mark is a fixed 8 px.
 [sidebar]
 size = 14
+# Selecting a space washes its whole host group and dims the other hosts.
+select = "group-dim"
 
 # No status bar. Terminal > Toggle Status Bar shows it for the session. While
 # hidden, its connection message, prefix and resize badges show nowhere else.
