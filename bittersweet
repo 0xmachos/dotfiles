@@ -345,10 +345,6 @@ function write_defaults {
   defaults write com.apple.menuextra.clock DateFormat -string "EEE d MMM  HH:mm"
   # Clock: Set format to Sun 26 Nov 16:00 
 
-  defaults write com.apple.mail PreferPlainText -bool true
-  # Mail: Force emails to be opened in plain text
-  # Default: defaults write com.apple.mail PreferPlainText -bool false
-
   defaults write com.apple.ActivityMonitor IconType -int 5
   # Activity Monitor: Set dock icon to "Show CPU Usage"
   # Default: n/a
@@ -360,34 +356,6 @@ function write_defaults {
   defaults write com.apple.desktopservices DSDontWriteNetworkStores -bool true
   # SMB: Don't write .DS_Store files on SMB shares
   # Default: defaults write com.apple.desktopservices DSDontWriteNetworkStores -bool false
-
-  defaults write com.aone.keka SUAutomaticallyUpdate -bool false
-  # Keka: Disable Sparkle auto-updater (managed by Homebrew)
-  # Default: -bool true
-
-  defaults write com.aone.keka RemoveIncompleteExtraction -bool true
-  # Keka: Clean up partial extractions on failure
-  # Default: -bool false
-
-  defaults write com.aone.keka ApplyQuarantineAfterExtraction -bool true
-  # Keka: Preserve com.apple.quarantine on extracted files (Gatekeeper)
-  # Default: -bool true
-
-  defaults write com.aone.keka ZipUsingAES -bool true
-  # Keka: Use AES-256 for ZIP encryption instead of weak ZipCrypto
-  # Default: -bool true
-
-  defaults write com.aone.keka ExcludeMacForks -bool true
-  # Keka: Strip __MACOSX and ._ files when creating archives
-  # Default: -bool true
-
-  defaults write com.aone.keka VerifyCompression -bool true
-  # Keka: Verify archive integrity after creation
-  # Default: -bool true
-
-  defaults write com.aone.keka Encryption -bool true
-  # Keka: Enable encryption option by default for new archives
-  # Default: -bool true
 }
 
 

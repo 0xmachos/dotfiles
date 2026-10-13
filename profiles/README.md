@@ -103,6 +103,27 @@ with several domains applies only one of them.
 profile needs no other wiring.
 
 
+## `machos.dotfiles.apps`
+
+Configures sandboxed apps (Mail and Keka). `defaults write` fails on these
+unless the calling app has Full Disk Access, so the values come from managed
+preferences.
+
+### Payloads
+
+Each payload uses ManagedPreferences (`mcx_preference_settings`), `Forced`, and
+holds one preference domain.
+
+* `com.apple.mail`
+  * `PreferPlainText` = `true`
+* `com.aone.keka`
+  * `SUAutomaticallyUpdate` = `false` (Homebrew updates the app)
+  * `RemoveIncompleteExtraction`, `ApplyQuarantineAfterExtraction`,
+    `ZipUsingAES`, `ExcludeMacForks`, `VerifyCompression`, `Encryption` = `true`
+
+`Forced` locks these values in the app's own settings window.
+
+
 # Removed and not to be added
 
 See [`to-be-managed.md`](to-be-managed.md) for settings removed from these

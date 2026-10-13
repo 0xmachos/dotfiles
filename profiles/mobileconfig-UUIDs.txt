@@ -42,3 +42,17 @@ com.machos.dotfiles.textedit = C5A686A4-8FD3-45AC-9037-7FA25D1CCAFB
 ## Payloads
 
 com.machos.dotfiles.TextEdit = D3C062E8-78BC-474D-B6A0-E4A5D699943A
+
+
+# machos.dotfiles.apps.mobileconfig
+
+## Profile
+
+com.machos.dotfiles.apps = 658F3244-9B29-4D68-B57F-3A4E6D6BC8BC
+
+
+## Payloads
+
+com.machos.dotfiles.Mail = 38825BEB-FF05-430D-AFA3-7090FDFCE3AB
+
+com.machos.dotfiles.Keka = 26F967B3-8A1D-43F3-BECE-A2053C738386

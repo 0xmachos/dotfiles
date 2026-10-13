@@ -1,0 +1,148 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+
+<plist version="1">
+  <dict>
+
+    <!-- Profile Metadata -->
+    <!-- https://developer.apple.com/documentation/devicemanagement/toplevel -->
+    <key>PayloadUUID</key>
+      <string>658F3244-9B29-4D68-B57F-3A4E6D6BC8BC</string>
+    <key>PayloadType</key>
+      <string>Configuration</string>
+    <key>PayloadOrganization</key>
+      <string>0xmachos</string>
+    <key>PayloadIdentifier</key>
+      <string>com.machos.dotfiles.apps</string>
+    <key>PayloadDisplayName</key>
+      <string>0xmachos Dotfiles Apps Profile</string>
+    <key>PayloadDescription</key>
+      <string>Configures sandboxed apps just the way I like them</string>
+    <key>PayloadVersion</key>
+      <integer>1</integer>
+    <key>PayloadEnabled</key>
+      <true/>
+    <key>PayloadRemovalDisallowed</key>
+      <true/>
+    <key>PayloadScope</key>
+      <string>System</string>
+    <key>TargetDeviceType</key>
+      <integer>5</integer>
+      <!-- 5 = Mac -->
+
+
+    <key>PayloadContent</key>
+    <array>
+
+      <!-- Mail Configuration -->
+      <!-- Sandboxed app: `defaults write` needs Full Disk Access, a managed preference does not. -->
+      <!-- One preference domain per ManagedClient.preferences payload: macOS applies only one of several. -->
+      <dict>
+        <key>PayloadUUID</key>
+          <string>38825BEB-FF05-430D-AFA3-7090FDFCE3AB</string>
+        <key>PayloadType</key>
+          <string>com.apple.ManagedClient.preferences</string>
+        <key>PayloadOrganization</key>
+          <string>0xmachos</string>
+        <key>PayloadIdentifier</key>
+          <string>com.machos.dotfiles.Mail</string>
+        <key>PayloadDisplayName</key>
+          <!-- Populates the Description field (all payloads) -->
+          <string>Configure Mail just the way I like it</string>
+
+        <key>PayloadEnabled</key>
+          <true/>
+
+        <key>PayloadVersion</key>
+          <integer>1</integer>
+
+        <key>PayloadContent</key>
+        <dict>
+          <key>com.apple.mail</key>
+            <dict>
+              <key>Forced</key>
+              <array>
+                <dict>
+                  <key>mcx_preference_settings</key>
+                  <dict>
+
+                    <!-- Open emails in plain text. Default: false -->
+                    <key>PreferPlainText</key>
+                      <true/>
+
+                  </dict>
+                </dict>
+              </array>
+            </dict>
+        </dict>
+      </dict>
+
+
+      <!-- Keka Configuration -->
+      <dict>
+        <key>PayloadUUID</key>
+          <string>26F967B3-8A1D-43F3-BECE-A2053C738386</string>
+        <key>PayloadType</key>
+          <string>com.apple.ManagedClient.preferences</string>
+        <key>PayloadOrganization</key>
+          <string>0xmachos</string>
+        <key>PayloadIdentifier</key>
+          <string>com.machos.dotfiles.Keka</string>
+        <key>PayloadDisplayName</key>
+          <!-- Populates the Description field (all payloads) -->
+          <string>Configure Keka just the way I like it</string>
+
+        <key>PayloadEnabled</key>
+          <true/>
+
+        <key>PayloadVersion</key>
+          <integer>1</integer>
+
+        <key>PayloadContent</key>
+        <dict>
+          <key>com.aone.keka</key>
+            <dict>
+              <key>Forced</key>
+              <array>
+                <dict>
+                  <key>mcx_preference_settings</key>
+                  <dict>
+
+                    <!-- Disable the Sparkle auto-updater (managed by Homebrew). Default: true -->
+                    <key>SUAutomaticallyUpdate</key>
+                      <false/>
+
+                    <!-- Clean up partial extractions on failure. Default: false -->
+                    <key>RemoveIncompleteExtraction</key>
+                      <true/>
+
+                    <!-- Keep com.apple.quarantine on extracted files (Gatekeeper). Default: true -->
+                    <key>ApplyQuarantineAfterExtraction</key>
+                      <true/>
+
+                    <!-- AES-256 for ZIP encryption instead of weak ZipCrypto. Default: true -->
+                    <key>ZipUsingAES</key>
+                      <true/>
+
+                    <!-- Strip __MACOSX and ._ files when creating archives. Default: true -->
+                    <key>ExcludeMacForks</key>
+                      <true/>
+
+                    <!-- Verify archive integrity after creation. Default: true -->
+                    <key>VerifyCompression</key>
+                      <true/>
+
+                    <!-- Enable the encryption option by default for new archives. Default: true -->
+                    <key>Encryption</key>
+                      <true/>
+
+                  </dict>
+                </dict>
+              </array>
+            </dict>
+        </dict>
+      </dict>
+
+    </array>
+  </dict>
+</plist>
