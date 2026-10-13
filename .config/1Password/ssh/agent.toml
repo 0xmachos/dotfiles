@@ -14,3 +14,6 @@ vault = "homelab"
 item = "claude-ssh"
 vault = "homelab"
 
+[[ssh-keys]]
+item = "herdr-ssh"
+vault = "homelab"
