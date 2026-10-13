@@ -135,6 +135,18 @@ See [`to-be-managed.md`](to-be-managed.md) for settings removed from these
 profiles because macOS 27 deprecated or stopped honouring the payload.
 
 
+# Checking an installed profile
+
+`defaults read` does not show managed values. Read them the way an app does, and ask whether a profile forces them:
+
+```
+osascript -l JavaScript -e "ObjC.import('Foundation'); const u = \$.NSUserDefaults.alloc.initWithSuiteName(\$('com.apple.TextEdit')); ObjC.unwrap(u.objectForKey(\$('RichText'))) + ' forced=' + u.objectIsForcedForKey(\$('RichText'))"
+```
+
+This proves the preferences service serves the value. It does not prove a sandboxed app acts on it: open the app and
+look. `bittersweet mdmprofile` opens one profile at a time, because System Settings keeps one queued profile.
+
+
 # Linting
 
 ```
