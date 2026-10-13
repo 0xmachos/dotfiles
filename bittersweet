@@ -324,14 +324,6 @@ function write_defaults {
 
   echo "[🍺] Writing system & application defaults"
 
-  defaults write com.apple.TextEdit RichText -bool false
-  # TextEdit: Use Plain Text Mode as Default
-  # Default: com.apple.TextEdit RichText -bool true
-
-  defaults write com.apple.TextEdit TabWidth -int 4
-  # TextEdit: Set tab width to 4 spaces
-  # Default: n/a
-
   defaults write -g NSNavPanelExpandedStateForSaveMode -bool true
   defaults write -g NSNavPanelExpandedStateForSaveMode2 -bool true
   # Save Panel: Show expanded version 

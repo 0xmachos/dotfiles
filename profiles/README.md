@@ -24,10 +24,6 @@
 Configures settings related to security. 
 
 ### Payloads
-* [`com.apple.SoftwareUpdate`](https://developer.apple.com/documentation/devicemanagement/softwareupdate)
-  * Enable all automatic updates
-  * Disable beta installation
-  * Allow Normal users to install updates
 * [`com.apple.security.firewall`](https://developer.apple.com/documentation/devicemanagement/firewall)
   * Enable firewall and enable brief level logging 
 * [`com.apple.screensaver`](https://developer.apple.com/documentation/devicemanagement/screensaver)
@@ -85,6 +81,32 @@ Configures settings related to behaviour.
 ### Payloads
 * `com.apple.AppleMultitouchTrackpad`
   * Enable Three Finger Drag
+
+
+## `machos.dotfiles.textedit`
+
+Configures TextEdit. TextEdit is sandboxed, so `defaults write` fails unless the
+calling app has Full Disk Access. This profile sets the values through the
+managed preferences layer instead, with no container access.
+
+### Payload
+
+This payload uses ManagedPreferences (`mcx_preference_settings`), `Forced`.
+It holds one preference domain. A `com.apple.ManagedClient.preferences` payload
+with several domains applies only one of them.
+
+* `com.apple.TextEdit`
+  * `RichText` = `false` (Plain Text mode for new documents)
+  * `TabWidth` = `4`
+
+`bittersweet mdmprofile` opens every `profiles/*.mobileconfig` file, so a new
+profile needs no other wiring.
+
+
+# Removed and not to be added
+
+See [`to-be-managed.md`](to-be-managed.md) for settings removed from these
+profiles because macOS 27 deprecated or stopped honouring the payload.
 
 
 # Linting

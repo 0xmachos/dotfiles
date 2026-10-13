@@ -40,53 +40,6 @@
     <array>
 
 
-      <!-- Automatic Updates Configuration -->
-      <!-- https://developer.apple.com/documentation/devicemanagement/softwareupdate -->
-      <dict>
-        <key>PayloadUUID</key>
-          <string>20AC0536-250F-460B-9264-108CDAE2D296</string>
-        <key>PayloadType</key>
-          <string>com.apple.SoftwareUpdate</string>
-        <key>PayloadOrganization</key>
-          <string>0xmachos</string>
-        <key>PayloadIdentifier</key>
-          <string>com.machos.dotfiles.SoftwareUpdate</string>
-        <key>PayloadDisplayName</key>
-          <!-- Populates the Description field (all payloads) -->
-          <string>Enable all automatic update options, disable installing pre release macOS versions</string>
-        
-        <key>PayloadVersion</key>
-          <integer>1</integer>
-        
-        <key>PayloadEnabled</key>
-          <true/>
-
-        <key>AllowPreReleaseInstallation</key>
-          <false/>
-
-        <key>AutomaticallyInstallAppUpdates</key>
-          <true/>
-
-        <key>AutomaticallyInstallMacOSUpdates</key>
-          <true/>
-
-        <key>AutomaticCheckEnabled</key>
-          <true/>
-        
-        <key>AutomaticDownload</key>
-          <true/>
-        
-        <key>ConfigDataInstall</key>
-          <true/>
-        
-        <key>CriticalUpdateInstall</key>
-          <true/>
-
-        <key>restrict-software-update-require-admin-to-install</key>
-          <false/>
-      </dict>
-
-
       <!-- Firewall Configuration -->
       <!-- https://developer.apple.com/documentation/devicemanagement/firewall -->
       <!-- "Automatically allow signed downloaded software" and "Automatically allow built-in software" are unsupported but forced ON by this payload. -->

@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+
+<plist version="1">
+  <dict>
+
+    <!-- Profile Metadata -->
+    <!-- https://developer.apple.com/documentation/devicemanagement/toplevel -->
+    <key>PayloadUUID</key>
+      <string>C5A686A4-8FD3-45AC-9037-7FA25D1CCAFB</string>
+    <key>PayloadType</key>
+      <string>Configuration</string>
+    <key>PayloadOrganization</key>
+      <string>0xmachos</string>
+    <key>PayloadIdentifier</key>
+      <string>com.machos.dotfiles.textedit</string>
+    <key>PayloadDisplayName</key>
+      <string>0xmachos Dotfiles TextEdit Profile</string>
+    <key>PayloadDescription</key>
+      <string>Configures TextEdit just the way I like it</string>
+    <key>PayloadVersion</key>
+      <integer>1</integer>
+    <key>PayloadEnabled</key>
+      <true/>
+    <key>PayloadRemovalDisallowed</key>
+      <true/>
+    <key>PayloadScope</key>
+      <string>System</string>
+    <key>TargetDeviceType</key>
+      <integer>5</integer>
+      <!-- 5 = Mac -->
+
+
+    <key>PayloadContent</key>
+    <array>
+
+      <!-- TextEdit Configuration -->
+      <!-- TextEdit is sandboxed, so `defaults write` needs Full Disk Access for the calling app. -->
+      <!-- A managed preference reaches the app through cfprefsd with no container access. -->
+      <!-- One preference domain per ManagedClient.preferences payload: macOS applies only one of several. -->
+      <dict>
+        <key>PayloadUUID</key>
+          <string>D3C062E8-78BC-474D-B6A0-E4A5D699943A</string>
+        <key>PayloadType</key>
+          <string>com.apple.ManagedClient.preferences</string>
+        <key>PayloadOrganization</key>
+          <string>0xmachos</string>
+        <key>PayloadIdentifier</key>
+          <string>com.machos.dotfiles.TextEdit</string>
+        <key>PayloadDisplayName</key>
+          <!-- Populates the Description field (all payloads) -->
+          <string>Configure TextEdit just the way I like it</string>
+
+        <key>PayloadEnabled</key>
+          <true/>
+
+        <key>PayloadVersion</key>
+          <integer>1</integer>
+
+        <key>PayloadContent</key>
+        <dict>
+          <key>com.apple.TextEdit</key>
+            <dict>
+              <key>Forced</key>
+              <array>
+                <dict>
+                  <key>mcx_preference_settings</key>
+                  <dict>
+
+                    <!-- Plain Text mode for new documents. Default: true (Rich Text) -->
+                    <key>RichText</key>
+                      <false/>
+
+                    <!-- Tab width of 4 spaces. Default: n/a -->
+                    <key>TabWidth</key>
+                      <integer>4</integer>
+
+                  </dict>
+                </dict>
+              </array>
+            </dict>
+        </dict>
+      </dict>
+    </array>
+  </dict>
+</plist>
