@@ -14,6 +14,8 @@
 #      case, a benign pass, the dispatched reason against the standalone one,
 #      and the exec count of one pass and one deny run (xtrace, counted in a
 #      sandbox copy whose guard stderr is left on the trace).
+#      A Monitor call (a shell command, like Bash) takes the Bash guard list and
+#      its guards see HOOK_PRE_TOOL=Bash.
 #   3. Coverage invariant: the guards reachable per tool from the settings
 #      file's PreToolUse entries and the prefilter mod in env, expanding the
 #      dispatcher through --print-routes.
@@ -40,6 +42,10 @@ typeset -ga PTD_ALL=("${PTD_BASH[@]}" md5-write-hook)
 
 function _ptd_bash {
   jq -cn --arg c "$1" '{tool_name:"Bash", tool_input:{command:$c}, cwd:"/work"}'
+}
+
+function _ptd_monitor {
+  jq -cn --arg c "$1" '{tool_name:"Monitor", tool_input:{description:"watch", timeout_ms:60000, command:$c}, cwd:"/work"}'
 }
 
 function _ptd_write {
@@ -195,6 +201,23 @@ function _ptd_real_deny {
   fi
 }
 
+function _ptd_monitor_as_bash {
+  # $1 = command, $2 = label, remaining args = VAR=value pairs. The real
+  # dispatcher must give a Monitor call the same DENY verdict as the Bash call.
+  local cmd="$1" label="$2" bash_out bash_rc
+  shift 2
+  _ptd_real "$(_ptd_bash "${cmd}")" "$@"
+  bash_out="${PTD_OUT}"
+  bash_rc=${PTD_RC}
+  _ptd_real "$(_ptd_monitor "${cmd}")" "$@"
+  if [[ "${bash_rc}" -eq 0 && "$(_hook_verdict "${bash_out}")" == DENY \
+        && ${PTD_RC} -eq 0 && "$(_hook_verdict "${PTD_OUT}")" == DENY && "${PTD_OUT}" == "${bash_out}" ]]; then
+    _pass "DENY: Monitor ${label} (same verdict as Bash)"
+  else
+    _fail "Monitor ${label} — Bash gave $(_hook_verdict "${bash_out}"), Monitor gave $(_hook_verdict "${PTD_OUT}") exit ${PTD_RC}: ${PTD_OUT:0:160}"
+  fi
+}
+
 function _ptd_real_pass {
   local payload="$1" label="$2"
   shift 2
@@ -256,7 +279,7 @@ function _ptd_reach {
   local tool="$1" m cmd base dir
   # shellcheck disable=SC2066,SC2296  # zsh (@s.:.) splits the path list inside the quotes
   for dir in "${(@s.:.)PTD_DIRS}"; do
-    [[ "${dir:t}" == pretool-prefilter ]] && _ptd_routes_for "${tool}"
+    [[ "${dir:t}" == pretool-prefilter ]] && _ptd_mod_registers "${tool}" && _ptd_routes_for "${tool}"
   done
   while IFS=$'\t' read -r m cmd; do
     [[ -n "${cmd}" ]] || continue
@@ -270,6 +293,16 @@ function _ptd_reach {
       print -r -- "${base}"
     fi
   done <<< "${PTD_HOOKS}"
+}
+
+function _ptd_mod_registers {
+  # $1 = tool. True when the prefilter mod's source registers a tool.call
+  # hook for that tool. A dispatcher route is reachable only through such a
+  # registration, so a route row with no registration counts as unreached.
+  local src="${SCRIPT_DIR}/claude/mods/pretool-prefilter/hooks/register.ts" text
+  [[ -r "${src}" ]] || return 1
+  text="$(<"${src}")"
+  [[ "${text}" == *"{ tool: '${1}' }"* ]]
 }
 
 function _ptd_expect_reach {
@@ -314,6 +347,14 @@ function _ptd_fault_injection {
   else
     _fail "a clean run wrote to stderr: $(<"${PTD_BOX}/stderr")"
   fi
+
+  _ptd_run "$(_ptd_monitor 'echo hi')"
+  _ptd_expect PASS 'a Monitor call with nine passing stubs'
+  _ptd_eq "Monitor runs the nine Bash guards in the listed order" "$(_ptd_marker)" "${PTD_BASH[*]}"
+
+  _ptd_run "$(jq -cn '{tool_name:"Monitor", tool_input:{description:"watch", timeout_ms:60000, ws:{url:"wss://h.example/s"}}, cwd:"/work"}')"
+  _ptd_expect PASS 'a Monitor call with a ws and no command'
+  _ptd_eq "a ws-only Monitor call still runs the nine Bash guards" "$(_ptd_marker)" "${PTD_BASH[*]}"
 
   _ptd_run "$(_ptd_write /x/a.txt body)"
   _ptd_expect PASS 'a Write call'
@@ -539,6 +580,14 @@ function _ptd_fault_injection {
   _ptd_run "$(_ptd_bash $'echo a\nls "b c"\n\n')" "PTD_BOX_OUT=${PTD_BOX}/seam.out"
   _ptd_eq "the Bash command arrives intact with trailing newlines removed" "$(<"${PTD_BOX}/seam.out")" $'Bash|echo a\nls "b c"||/work|'
 
+  # A Monitor command reaches its guards as a Bash command.
+  _ptd_new_box seam-monitor
+  # shellcheck disable=SC2016  # the stub's own text
+  _ptd_stub md5-guard-hook 'print -rn -- "${HOOK_PRE_TOOL}|${HOOK_PRE_COMMAND}|${HOOK_PRE_PATH}|${HOOK_PRE_CWD}|" > "${PTD_BOX_OUT}"; print -rn -- "$(cat)" > "${PTD_BOX_OUT}.stdin"'
+  _ptd_run "$(_ptd_monitor $'echo a\nls "b c"\n\n')" "PTD_BOX_OUT=${PTD_BOX}/seam.out"
+  _ptd_eq "a Monitor command arrives as the Bash tool with trailing newlines removed" "$(<"${PTD_BOX}/seam.out")" $'Bash|echo a\nls "b c"||/work|'
+  _ptd_in "the payload a stub reads still names the Monitor tool" "$(<"${PTD_BOX}/seam.out.stdin")" '"tool_name":"Monitor"'
+
   # No environment can redirect the guard directory.
   _ptd_new_box env-override
   zf_mkdir -p "${PTD_BOX}/elsewhere"
@@ -550,7 +599,7 @@ function _ptd_fault_injection {
   _ptd_new_box routes
   PTD_RC=0
   PTD_OUT="$(/bin/zsh "${PTD_BOX}/pretool-dispatch" --print-routes </dev/null 2>&1)" || PTD_RC=$?
-  if [[ ${PTD_RC} -eq 0 && "${PTD_OUT}" == "Bash: ${PTD_BASH[*]}"$'\nWrite: tmp-guard-hook md5-write-hook mcp-secret-hook\nEdit: tmp-guard-hook md5-write-hook mcp-secret-hook\nNotebookEdit: tmp-guard-hook' ]]; then
+  if [[ ${PTD_RC} -eq 0 && "${PTD_OUT}" == "Bash: ${PTD_BASH[*]}"$'\nMonitor: '"${PTD_BASH[*]}"$'\nWrite: tmp-guard-hook md5-write-hook mcp-secret-hook\nEdit: tmp-guard-hook md5-write-hook mcp-secret-hook\nNotebookEdit: tmp-guard-hook' ]]; then
     _pass "--print-routes prints one line per tool, guards in run order"
   else
     _fail "--print-routes prints one line per tool, guards in run order — ""${PTD_OUT}"
@@ -597,6 +646,20 @@ function _ptd_real_guards {
   _ptd_expect DENY 'Edit whose new text calls MD5 (md5-write-hook)'
 
   _ptd_real_pass "$(_ptd_bash 'ls -la')" 'ls -la through every Bash guard'
+
+  # Monitor: a command like Bash's, through every Bash guard. gh-publish,
+  # mcp-secret and tmp-guard act only on the Bash tool, so those cases
+  # prove the dispatcher hands them Bash.
+  local key_flag='--to'
+  key_flag+='ken=abc'
+  _ptd_real_deny git-bypass-hook "$(_ptd_monitor 'git commit --no-verify -m x')" 'git commit --no-verify: give the user the exact command' 'git-bypass-hook: Monitor git commit --no-verify'
+  _ptd_monitor_as_bash 'git commit --no-verify -m x' 'git commit --no-verify (git-bypass-hook)'
+  _ptd_monitor_as_bash 'md5 file.txt' 'md5 file.txt (md5-guard-hook)'
+  _ptd_monitor_as_bash 'echo hi > /tmp/x' 'redirect into /tmp (tmp-guard-hook)'
+  _ptd_monitor_as_bash "claude mcp add exa ${key_flag} -- prog" 'claude mcp add with a key flag (mcp-secret-hook)'
+  _ptd_monitor_as_bash "${gh_word} issue create -t t --body \"inline body\"" 'inline --body (gh-publish-hook)' "${gh_env[@]}"
+  _ptd_real_pass "$(_ptd_monitor 'tail -f /var/log/system.log')" 'a benign Monitor command through every Bash guard'
+  _ptd_real_pass "$(jq -cn '{tool_name:"Monitor", tool_input:{description:"w", timeout_ms:1000, ws:{url:"wss://h.example/s"}}}')" 'a ws-only Monitor call'
   _ptd_real_pass "$(_ptd_write /x/a.py 'print(1)')" 'a benign Write'
   _ptd_real_pass "$(_ptd_write /x/notes.md "docs may say ${md5_call}")" 'an MD5 mention in a prose file'
   _ptd_real "$(jq -cn '{tool_name:"Read", tool_input:{file_path:"/tmp/x"}}')"
@@ -696,6 +759,11 @@ function _ptd_coverage {
   _ptd_expect_reach Bash "${PTD_BASH[@]}"
   _ptd_expect_reach Write tmp-guard-hook md5-write-hook mcp-secret-hook
   _ptd_expect_reach Edit tmp-guard-hook md5-write-hook mcp-secret-hook
+  if _ptd_mod_registers Monitor; then
+    _ptd_expect_reach Monitor "${PTD_BASH[@]}"
+  else
+    _skip "coverage: Monitor is not registered by the prefilter mod yet (the dispatcher row is live; copy the new mod, TODOs.md)"
+  fi
   _ptd_expect_reach NotebookEdit tmp-guard-hook
   for g in "${PTD_ALL[@]}"; do
     if [[ -r "${SCRIPT_DIR}/claude/hooks/${g}" ]]; then
