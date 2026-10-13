@@ -1,0 +1,56 @@
+# Herdr UI overrides, symlinked to ~/.config/herdr/config-gpui.local.toml by
+# `bittersweet dotfiles`. Saved changes reload automatically in every window.
+# Unset keys inherit the managed config-gpui.toml beside it; tables merge key
+# by key. The app writes through the link (it canonicalises the path, then
+# persists a temp file onto the target), so a Settings edit shows as a tracked
+# diff.
+
+# Rounded rows at the TUI-like density: 8 px of row chrome, against 20 px for
+# "comfortable-rounded". Only the comfortable layouts show PR change counts;
+# "compact-rounded" is 4 px.
+layout = "normal-rounded"
+theme = "light:Catppuccin Latte,dark:Arcoiris"
+# Status marks and dim labels at 4.5:1 against the chrome.
+contrast = "high"
+show_system_load = false
+agent_checkpoints = false
+show_listening_ports = false
+confirm_close_tab = true
+confirm_close_pane = false
+
+[usage]
+show = false
+# Every provider, so the GUI runs no usage probes at all: show = false only
+# hides the numbers (penso/herdr-gpui#176). Regenerate from config-gpui.toml.
+hide_providers = [
+  "abacus", "aiand", "aixy", "alibaba", "alibabatokenplan", "amp",
+  "antigravity", "atlascloud", "augment", "azureopenai", "bedrock",
+  "bifrost", "chutes", "claude", "clawrouter", "clinepass", "codebuff",
+  "coderabbit", "codex", "commandcode", "copilot", "cursor", "deepgram",
+  "deepinfra", "deepseek", "devin", "devpass", "doubao", "elevenlabs",
+  "factory", "fireworks", "gemini", "gitkraken", "grok", "groq", "helmcode",
+  "huggingface", "hyper", "ibmbob", "jetbrains", "kilo", "kimi", "kiro",
+  "litellm", "llmman", "llmproxy", "longcat", "manus", "mimo", "minimax",
+  "mistral", "moonshot", "muse", "neuralwatt", "notion", "nous", "ollama",
+  "openai", "opencode", "opencodego", "openrouter", "perplexity", "pi",
+  "poe", "qoder", "qwencloud", "raycast", "replicate", "sakana", "stepfun",
+  "sub2api", "synthetic", "t3chat", "typesafe", "v0", "venice", "vercel",
+  "vertexai", "warp", "wayfinder", "windsurf", "xai", "xkiro", "zai", "zed",
+  "zenmux", "zoommate",
+]
+
+# Symbol status marks scale with this size; the dot mark is a fixed 8 px.
+[sidebar]
+size = 14
+
+# No status bar. Terminal > Toggle Status Bar shows it for the session. While
+# hidden, its connection message, prefix and resize badges show nowhere else.
+[status_bar]
+show = false
+
+# Shows the hidden status bar for this session.
+[keybindings]
+toggle_status_bar = "cmd-ctrl-b"
+
+[backdrop]
+opacity = 1.0

@@ -545,12 +545,15 @@ function install_dotfiles {
 
   _symlink "${SCRIPT_DIR}/.config/uv/uv.toml" "${HOME}/.config/uv/uv.toml"
 
-  # herdr: link config.toml only, never the directory (herdr keeps its socket,
+  # herdr: link the two config files only, never the directory (herdr keeps its socket,
   # session state and logs beside it). herdr's own writes go through the link
   # (std::fs::write; the integration installer resolves symlinks first —
   # verified in source 2026-09-29). The binary comes from the Homebrew
   # formula (.extra/Brewfile), not from this script.
   _symlink "${SCRIPT_DIR}/.config/herdr/config.toml" "${HOME}/.config/herdr/config.toml"
+  # Herdr UI overrides: the app canonicalises the path before it persists a
+  # temp file onto it, so its Settings writes go through the link too.
+  _symlink "${SCRIPT_DIR}/.config/herdr/config-gpui.local.toml" "${HOME}/.config/herdr/config-gpui.local.toml"
 
   # herdr plugins run from the repo: `herdr plugin link` records the path in
   # herdr's own registry (linking again is a no-op). Skipped without herdr.

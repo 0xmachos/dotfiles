@@ -48,6 +48,10 @@ tab_bar_right_separator = " · "
 [ui.toast]
 delivery = "system"
 
+# No "copied to clipboard" flash after a selection; Herdr UI follows this too.
+[ui.toast.clipboard]
+enabled = false
+
 # Agent rows, two lines with no gap between agents: a bold state mark and the
 # session's terminal title (Claude Code keeps it updated) at full width, then
 # the state word in the state colour and the session-wrap marker under the
