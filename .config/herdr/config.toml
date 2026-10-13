@@ -1,19 +1,13 @@
 onboarding = false
 # herdr config — symlinked to ~/.config/herdr/config.toml by `bittersweet
 # dotfiles`. Only this file is linked; herdr keeps its socket, session.json,
-# session-backups/, machine.json, push registries and guest audit log beside
-# it, none of it for the repo.
+# session snapshots, logs and plugin state beside it, none of it for the repo.
+# The binary is the Homebrew formula (upstream herdrdev/herdr since 2026-10-12).
 #
 # herdr edits this file itself (onboarding, theme, sound, toast, integrations)
 # with std::fs::write, and its integration installer resolves symlinks before
-# replacing, so both write through the link (source read 2026-09-29, fork
-# commit 4e6bacf). Expect a tracked-file diff after the first run.
-
-# Remote push defaults to a third-party relay ("auto" falls back to it when no
-# APNs key is configured; none is here) that sees notification text in
-# transit. Off until that is an explicit decision (2026-09-29); "relay" opts in.
-[push]
-mode = "off"
+# replacing, so both write through the link (source read 2026-09-29). Expect a
+# tracked-file diff after a UI edit.
 
 [theme]
 name = "terminal"
@@ -26,9 +20,6 @@ red = "#ff5c5c"
 yellow = "#ffd166"
 teal = "#4ecdc4"
 green = "#7ee787"
-
-[update]
-channel = "preview"
 
 [ui]
 status_indicators = "symbols"
