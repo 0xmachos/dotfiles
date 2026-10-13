@@ -706,6 +706,68 @@ function _ptd_coverage {
   done
 }
 
+function _ptd_dirs_ok {
+  # $1 = a CLAUDE_CODE_PLUGIN_DIRS value. True when it starts with the
+  # prefilter mod then the git-sign-post mod, and every further entry is
+  # `~/.claude/mods/<name>`, all joined by `:`. The leading `~` is literal:
+  # Claude Code expands it, not the shell.
+  local re='^~/\.claude/mods/pretool-prefilter:~/\.claude/mods/git-sign-post(:~/\.claude/mods/[A-Za-z0-9_-]+)*$'
+  [[ "${1-}" =~ ${re} ]] || return 1
+  # No entry twice: a repeated mod would load twice.
+  # shellcheck disable=SC2296  # zsh split flag
+  local -a entries=("${(@s.:.)1}")
+  # shellcheck disable=SC2296  # zsh unique flag
+  local -a uniq=("${(@u)entries}")
+  (( ${#entries} == ${#uniq} ))
+}
+
+function _ptd_dirs_cases {
+  # Checks _ptd_dirs_ok on fixed values, so the rule stays strict when the
+  # live list gains or loses a mod. Each bad value must be refused.
+  # shellcheck disable=SC2088  # literal ~: Claude Code expands it, not the shell
+  local pre='~/.claude/mods/pretool-prefilter' sign='~/.claude/mods/git-sign-post'
+  # shellcheck disable=SC2088  # literal ~
+  local extra='~/.claude/mods/session-title'
+  local v
+  for v in "${pre}:${sign}" "${pre}:${sign}:${extra}" "${pre}:${sign}:${extra}:~/.claude/mods/herdr-tab-title"; do
+    if _ptd_dirs_ok "${v}"; then
+      _pass "shape rule accepts: ${v}"
+    else
+      _fail "shape rule refuses a valid value: ${v}"
+    fi
+  done
+  # shellcheck disable=SC2016  # a literal $HOME is the bad value
+  local home_var='$HOME/.claude/mods'
+  local abs='/Users/someone/.claude/mods'
+  _ptd_dirs_refused empty ''
+  _ptd_dirs_refused prefilter-only "${pre}"
+  _ptd_dirs_refused sign-only "${sign}"
+  _ptd_dirs_refused sign-missing "${pre}:${extra}"
+  _ptd_dirs_refused prefilter-missing "${sign}:${extra}"
+  _ptd_dirs_refused swapped "${sign}:${pre}"
+  _ptd_dirs_refused guards-late "${extra}:${pre}:${sign}"
+  _ptd_dirs_refused home-var "${home_var}/pretool-prefilter:${home_var}/git-sign-post"
+  _ptd_dirs_refused absolute "${abs}/pretool-prefilter:${abs}/git-sign-post"
+  _ptd_dirs_refused extra-home-var "${pre}:${sign}:${home_var}/session-title"
+  _ptd_dirs_refused extra-absolute "${pre}:${sign}:${abs}/session-title"
+  _ptd_dirs_refused extra-wrong-dir "${pre}:${sign}:~/.claude/other/session-title"
+  _ptd_dirs_refused extra-nested "${pre}:${sign}:~/.claude/mods/a/b"
+  _ptd_dirs_refused trailing-colon "${pre}:${sign}:"
+  _ptd_dirs_refused empty-entry "${pre}:${sign}::${extra}"
+  _ptd_dirs_refused prefix-glued "${pre}x:${sign}"
+  _ptd_dirs_refused duplicate-guard "${pre}:${sign}:${pre}"
+  _ptd_dirs_refused duplicate-extra "${pre}:${sign}:${extra}:${extra}"
+}
+
+function _ptd_dirs_refused {
+  # $1 = case name, $2 = a bad CLAUDE_CODE_PLUGIN_DIRS value.
+  if _ptd_dirs_ok "${2}"; then
+    _fail "shape rule accepts a bad value (${1}): '${2}'"
+  else
+    _pass "shape rule refuses (${1})"
+  fi
+}
+
 function _ptd_settings_shape {
   # $1 = settings file (default: the repo copy). Pins the registration shape
   # after the 2026-10-03 switch: the mods carry the guards, so env loads the
@@ -716,8 +778,6 @@ function _ptd_settings_shape {
   # `~` (Claude Code expands it there, not `$HOME`), so the file names no
   # home directory and serves every Mac.
   local settings="${1:-${SCRIPT_DIR}/claude/settings.json}"
-  # shellcheck disable=SC2088  # a literal ~: Claude Code expands it, not the shell
-  local moddirs='~/.claude/mods/pretool-prefilter:~/.claude/mods/git-sign-post:~/.claude/mods/session-title:~/.claude/mods/herdr-tab-title'
   _section "pretool-dispatch: settings registration shape"
 
   if [[ ! -f "${settings}" ]]; then
@@ -742,11 +802,12 @@ function _ptd_settings_shape {
 
   local dirs
   dirs="$(jq -r '.env.CLAUDE_CODE_PLUGIN_DIRS // "ABSENT"' "${settings}")"
-  if [[ "${dirs}" == "${moddirs}" ]]; then
-    _pass "shape: env.CLAUDE_CODE_PLUGIN_DIRS loads the prefilter and git-sign-post mods"
+  if _ptd_dirs_ok "${dirs}"; then
+    _pass "shape: env.CLAUDE_CODE_PLUGIN_DIRS loads the prefilter and git-sign-post mods first"
   else
-    _fail "shape: env.CLAUDE_CODE_PLUGIN_DIRS is '${dirs}', expected '${moddirs}'"
+    _fail "shape: env.CLAUDE_CODE_PLUGIN_DIRS is '${dirs}', expected the prefilter and git-sign-post mods first, then only ~/.claude/mods/<name> entries"
   fi
+  _ptd_dirs_cases
 
   local base stray=()
   while IFS= read -r base; do
