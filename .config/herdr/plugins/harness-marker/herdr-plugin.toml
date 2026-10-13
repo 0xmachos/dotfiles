@@ -4,7 +4,7 @@
 # local.harness-marker.
 id = "local.harness-marker"
 name = "Harness marker"
-version = "0.1.0"
+version = "0.2.0"
 min_herdr_version = "0.9.3"
 description = "Set the harness pane token on Muse and Codex agent panes"
 platforms = ["macos"]
