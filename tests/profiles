@@ -1,0 +1,139 @@
+#!/bin/zsh
+# dotfiles/tests/profiles
+#
+# Structural checks on profiles/*.mobileconfig that plutil -lint cannot make:
+#   1. Every PayloadUUID is unique across all profiles (a repeated UUID makes
+#      two profiles claim one payload).
+#   2. Every PayloadIdentifier is unique across all profiles and payloads.
+#   3. profiles/mobileconfig-UUIDs.txt lists every UUID in use and nothing else.
+#   4. A com.apple.ManagedClient.preferences payload holds exactly one
+#      preference domain (macOS applies only one of several, with no error).
+#
+# Run: ./test profiles
+# ShellCheck: lint with `shellcheck --shell=bash tests/profiles`.
+# This file is sourced, not executed — chmod 644.
+#
+# shellcheck source=tests/lib
+# shellcheck disable=SC2296,SC2034,SC2206  # zsh parameter flags; shellcheck has no zsh mode
+
+# _profiles_scan DIR
+#   Fills the globals _PROFILES_UUIDS ("UUID<TAB>where"), _PROFILES_IDS
+#   ("identifier<TAB>where") and _PROFILES_MCX ("where<TAB>domain count").
+function _profiles_scan {
+  local dir="$1" file count i key uuid ident ptype domains
+  local -a domain_list
+  typeset -ga _PROFILES_UUIDS=() _PROFILES_IDS=() _PROFILES_MCX=()
+
+  while IFS= read -r file; do
+    # Profile level.
+    for key in PayloadUUID PayloadIdentifier; do
+      if ! /usr/bin/plutil -extract "${key}" raw -o - "${file}" >/dev/null 2>&1; then
+        _fail "${file:t}: missing top-level ${key}"
+      fi
+    done
+    uuid="$(/usr/bin/plutil -extract PayloadUUID raw -o - "${file}" 2>/dev/null)" || uuid=""
+    ident="$(/usr/bin/plutil -extract PayloadIdentifier raw -o - "${file}" 2>/dev/null)" || ident=""
+    [[ -n "${uuid}" ]] && _PROFILES_UUIDS+=("${(U)uuid}"$'\t'"${file:t} (profile)")
+    [[ -n "${ident}" ]] && _PROFILES_IDS+=("${ident}"$'\t'"${file:t} (profile)")
+
+    # Payload level.
+    count="$(/usr/bin/plutil -extract PayloadContent raw -o - "${file}" 2>/dev/null)" || count=0
+    for (( i = 0; i < count; i++ )); do
+      uuid="$(/usr/bin/plutil -extract "PayloadContent.${i}.PayloadUUID" raw -o - "${file}" 2>/dev/null)" || uuid=""
+      ident="$(/usr/bin/plutil -extract "PayloadContent.${i}.PayloadIdentifier" raw -o - "${file}" 2>/dev/null)" || ident=""
+      ptype="$(/usr/bin/plutil -extract "PayloadContent.${i}.PayloadType" raw -o - "${file}" 2>/dev/null)" || ptype=""
+      [[ -n "${uuid}" ]] && _PROFILES_UUIDS+=("${(U)uuid}"$'\t'"${file:t} payload ${i}")
+      [[ -n "${ident}" ]] && _PROFILES_IDS+=("${ident}"$'\t'"${file:t} payload ${i}")
+      if [[ "${ptype}" == "com.apple.ManagedClient.preferences" ]]; then
+        # raw on a dictionary prints one key per line.
+        domains="$(/usr/bin/plutil -extract "PayloadContent.${i}.PayloadContent" raw -o - "${file}" 2>/dev/null)" || domains=""
+        domain_list=( ${(f)domains} )
+        _PROFILES_MCX+=("${file:t} payload ${i}"$'\t'"${#domain_list}")
+      fi
+    done
+  done < <(/usr/bin/find "${dir}" -maxdepth 1 -type f -name "*.mobileconfig" | /usr/bin/sort)
+}
+
+# _profiles_dupes ENTRY...  (entries are "value<TAB>where")
+#   Prints one line per value that occurs more than once.
+function _profiles_dupes {
+  local -A first count
+  local entry value where
+  for entry in "$@"; do
+    value="${entry%%$'\t'*}"
+    where="${entry#*$'\t'}"
+    (( count[${value}] += 1 ))
+    first[${value}]+="${first[${value}]:+, }${where}"
+  done
+  for value in ${(k)count}; do
+    (( count[${value}] > 1 )) && print -r -- "${value} (${first[${value}]})"
+  done
+  return 0
+}
+
+function run_profiles {
+  _section "Profiles"
+
+  # PROFILES_TEST_DIR lets this suite check a scratch copy of the profiles.
+  local dir="${PROFILES_TEST_DIR:-${SCRIPT_DIR}/profiles}"
+  _profiles_scan "${dir}"
+
+  if (( ${#_PROFILES_UUIDS} == 0 )); then
+    _skip "no profiles found"
+    return 0
+  fi
+
+  local dupes
+  dupes="$(_profiles_dupes "${_PROFILES_UUIDS[@]}")"
+  if [[ -z "${dupes}" ]]; then
+    _pass "every PayloadUUID is unique"
+  else
+    _fail "repeated PayloadUUID: ${dupes//$'\n'/; }"
+  fi
+
+  dupes="$(_profiles_dupes "${_PROFILES_IDS[@]}")"
+  if [[ -z "${dupes}" ]]; then
+    _pass "every PayloadIdentifier is unique"
+  else
+    _fail "repeated PayloadIdentifier: ${dupes//$'\n'/; }"
+  fi
+
+  # mobileconfig-UUIDs.txt parity, both directions.
+  local list="${dir}/mobileconfig-UUIDs.txt" listed_raw
+  local -a listed in_use
+  local entry u
+  listed_raw="$(/usr/bin/grep -Eio '[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}' "${list}" 2>/dev/null)" || listed_raw=""
+  listed=( ${(U)${(f)listed_raw}} )
+  for entry in "${_PROFILES_UUIDS[@]}"; do
+    in_use+=("${entry%%$'\t'*}")
+  done
+  local -a missing stale
+  for u in "${in_use[@]}"; do
+    (( ${listed[(Ie)${u}]} )) || missing+=("${u}")
+  done
+  for u in "${listed[@]}"; do
+    (( ${in_use[(Ie)${u}]} )) || stale+=("${u}")
+  done
+  if (( ${#missing} == 0 )); then
+    _pass "mobileconfig-UUIDs.txt lists every UUID in use"
+  else
+    _fail "UUIDs in use but not in mobileconfig-UUIDs.txt: ${(j:, :)missing}"
+  fi
+  if (( ${#stale} == 0 )); then
+    _pass "mobileconfig-UUIDs.txt lists no unused UUID"
+  else
+    _fail "UUIDs in mobileconfig-UUIDs.txt but not in any profile: ${(j:, :)stale}"
+  fi
+
+  # One preference domain per ManagedClient.preferences payload.
+  local where n
+  for entry in "${_PROFILES_MCX[@]}"; do
+    where="${entry%%$'\t'*}"
+    n="${entry#*$'\t'}"
+    if [[ "${n}" == "1" ]]; then
+      _pass "${where}: one preference domain"
+    else
+      _fail "${where}: ${n} preference domains (macOS applies only one)"
+    fi
+  done
+}

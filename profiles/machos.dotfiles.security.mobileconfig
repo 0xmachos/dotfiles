@@ -132,13 +132,13 @@
       </dict>
 
 
-    <!-- Terminal Secure Keyboard Entry-->
-    <!-- https://developer.apple.com/documentation/devicemanagement/systempolicycontrol -->
+    <!-- Terminal Secure Keyboard Entry -->
+    <!-- Payload type is com.apple.Terminal (capital T), the spelling Fleet and the CIS profiles use. -->
       <dict>
         <key>PayloadUUID</key>
           <string>6B4D24E0-6446-47B4-A4CC-C682DCAB6735</string>
         <key>PayloadType</key>
-          <string>com.apple.terminal</string>        
+          <string>com.apple.Terminal</string>
         <key>PayloadOrganization</key>
           <string>0xmachos</string>
         <key>PayloadIdentifier</key>
@@ -147,6 +147,9 @@
           <string>Enable Terminal Secure Keyboard Entry</string>
         <key>PayloadVersion</key>
           <integer>1</integer>
+
+        <key>PayloadEnabled</key>
+          <true/>
         
         <key>SecureKeyboardEntry</key>
           <true/>

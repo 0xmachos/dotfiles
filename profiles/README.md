@@ -2,7 +2,7 @@
 
 * Initially based on "[Enable automatic macOS and App Store updates on macOS Catalina with a profile](https://derflounder.wordpress.com/2019/10/10/enable-automatic-macos-and-app-store-updates-on-macos-catalina-with-a-profile/)" by [Rich Trouton](https://github.com/rtrouton)
 * Install logic based on "[Semi-automating profile installation in Big Sur](https://www.alansiu.net/2021/01/06/semi-automating-profile-installation-in-big-sur/)" by [aysiu](https://github.com/aysiu)
-	* See: function [`open_system_prefernces_mdm_profile`](https://github.com/0xmachos/dotfiles/blob/ad4adc5da7ec6b39af4d6d0ba8ba0356b1022946/bittersweet#L1009-L1025) in [`bittersweet`](https://github.com/0xmachos/dotfiles/blob/master/bittersweet)
+	* See: function [`open_system_preferences_mdm_profile`](https://github.com/0xmachos/dotfiles/blob/ad4adc5da7ec6b39af4d6d0ba8ba0356b1022946/bittersweet#L1009-L1025) in [`bittersweet`](https://github.com/0xmachos/dotfiles/blob/master/bittersweet)
 
 
 # Documentation
@@ -30,7 +30,7 @@ Configures settings related to security.
   * Enable ask for password after 5 seconds 
 * [`com.apple.systempolicy.control`](https://developer.apple.com/documentation/devicemanagement/systempolicycontrol)
   * Enable Gatekeeper and allow apps from Identified Developers 
-* `com.apple.terminal`
+* `com.apple.Terminal`
   * Enable Terminal Secure Keyboard Entry
 * `com.apple.Safari`
   * Disable Safari Auto Open "Safe" Downloads 
@@ -45,17 +45,17 @@ This payload uses ManagedPreferences (`mcx_preference_settings`).
 
 * `com.apple.menuextra.clock`
   * `IsAnalog`
-    * 
+    * `false`
   * `ShowDate`
-    * 
+    * `true`
   * `ShowDayOfWeek`
-    * 
+    * `true`
   * `ShowSeconds`
-    * 
+    * `false`
   * `FlashDateSeparators`
-    * 
+    * `false`
   * `ShowAMPM`
-    * 
+    * `false`
   * `DateFormat`
     * `EEE d MMM  HH:mm`
     * e.g. Sun 28 Apr 21:55
@@ -77,10 +77,15 @@ Configures settings related to behaviour.
 * Domains
   * `com.apple.AppleMultitouchTrackpad`
   * `com.apple.driver.AppleBluetoothMultitouch.trackpad`
+* `bittersweet` still sets `TrackpadThreeFingerDrag` and `Clicking` with `defaults write`.
+  No source found shows a profile setting them, so they stay there.
 
 ### Payloads
-* `com.apple.AppleMultitouchTrackpad`
-  * Enable Three Finger Drag
+
+This payload uses ManagedPreferences (`mcx_preference_settings`), `Forced`.
+
+* `com.apple.finder`
+  * `FXRemoveOldTrashItems` = `true` (empty the Trash after 30 days)
 
 
 ## `machos.dotfiles.textedit`

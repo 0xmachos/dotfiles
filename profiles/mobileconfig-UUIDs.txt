@@ -29,7 +29,7 @@ com.machos.dotfiles.behaviour = DF8655A4-9225-45B0-B07B-4916B8BDF16B
 
 ## Payloads
 
-com.machos.dotfiles.AppleMultitouchTrackpad = 630869A9-64EA-4E4F-BF7A-4B8E5F14107E
+com.machos.dotfiles.Finder = 630869A9-64EA-4E4F-BF7A-4B8E5F14107E
 
 
 # machos.dotfiles.textedit.mobileconfig
@@ -56,3 +56,15 @@ com.machos.dotfiles.apps = 658F3244-9B29-4D68-B57F-3A4E6D6BC8BC
 com.machos.dotfiles.Mail = 38825BEB-FF05-430D-AFA3-7090FDFCE3AB
 
 com.machos.dotfiles.Keka = 26F967B3-8A1D-43F3-BECE-A2053C738386
+
+
+# machos.dotfiles.menubar.clock.mobileconfig
+
+## Profile
+
+com.machos.dotfiles.menubar.clock = F7383ADF-7B34-408F-BB0F-056A64AB7EC1
+
+
+## Payloads
+
+com.machos.dotfiles.Clock = ED5C3DB5-4B9E-4611-9FFC-B58BEE7949A0

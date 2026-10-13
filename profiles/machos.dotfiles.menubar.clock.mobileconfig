@@ -45,7 +45,7 @@
       <key>PayloadOrganization</key>
         <string>0xmachos</string>
       <key>PayloadIdentifier</key>
-        <string>com.machos.dotfiles.menubar.clock</string>
+        <string>com.machos.dotfiles.Clock</string>
       <key>PayloadDisplayName</key>
         <!-- This is what actually populates the Description field -->
         <string>Configures the Menu Bar clock the way I like it</string>
