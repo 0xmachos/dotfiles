@@ -1,0 +1,523 @@
+#!/bin/zsh
+# bin/herdr-handoff
+#
+# Usage: herdr-handoff [--session NAME] [--launchd-job LABEL] --expected-version V [--dry-run]
+#
+# Moves a running herdr server onto the Homebrew binary without stopping its
+# panes. Run `brew upgrade herdr` first. This script then runs
+# `herdr [--session NAME] server live-handoff --import-exe <herdr> --expected-version V`
+# and checks the result. `herdr update` is refused on a Homebrew install, so
+# this is the only update path for a live server (internals/herdr.md,
+# "Update and live handoff").
+#
+# Exit codes:
+#   0  pass: the new server answers with version V, no pane was lost, the old
+#      server process is gone
+#   1  the handoff command failed or hit its deadline. Source
+#      (src/server/handoff.rs): a failure before the commit step rolls back and
+#      the old server keeps running
+#   2  usage error
+#   3  precondition refused: nothing was changed
+#   4  the handoff command passed but a post-check failed, or the launchd job
+#      could not be restored. Inspect before you retry
+#
+# What it does, in order:
+#   1. Refuses inside a pane of the target session, and unless
+#      `herdr --version` equals V.
+#   2. Reads the before state: ping, server pid, pane count, and the macOS
+#      "responsible" process of the server (#808).
+#   3. --dry-run prints the plan and the before state, then stops.
+#   4. Takes the lock ~/Library/Caches/herdr-update/lock (a directory made
+#      with one mkdir). The herdr watchdog skips while that lock exists. A held
+#      lock is never broken: remove it by hand after you check its pid.
+#   5. Supervised mode (only with --launchd-job LABEL, default session only; the
+#      plist ~/Library/LaunchAgents/LABEL.plist must exist): boots out the
+#      job LABEL first. The job runs every 300 s and would
+#      start a competing server while the socket is absent (about 30 s). It is
+#      bootstrapped again afterwards, always, from the exit trap.
+#   6. Runs the handoff under a 120 s deadline. Output goes to
+#      ~/Library/Logs/herdr-handoff/<UTC timestamp>.log.
+#   7. Polls up to 60 s: ping version equals V, pane count equals the before
+#      count, the old pid is gone. Compares the responsible pid.
+#
+# Design notes:
+#   * No `set -e`. zsh skips the EXIT trap when errexit ends the shell from
+#     inside a function (tests/lib), and the trap must always restore the launchd
+#     job and release the lock. Every step checks its own status.
+#   * Deadlines use perl `alarm` + `exec`: macOS has no timeout(1), and a hung
+#     herdr CLI must not hang this script. Never call `herdr status` without a
+#     deadline: it hangs on a hung server. (SIGALRM ends the process: status 142.)
+#   * `herdr pane list` prints JSON by default and rejects --json (0.9.4).
+#   * The pane count is read with plain string counting, so jq is not needed on
+#     a non-login PATH.
+#   * The server pid comes from `ps` argv. The argv of a handed-off server
+#     holds a token, so this script logs pids only, never the argv.
+#   * The responsible-pid probe needs uv (`uv run --no-project python3 -I`).
+#     Without uv the probe is skipped and the verdict says so.
+#   * HERDR_* pane variables are unset after the pane check, so every herdr call
+#     goes to the target session even when this script runs in a pane of
+#     another session. `status --json` must name the target socket.
+#   * HH_* variables are test seams (tests/herdr-handoff). Leave them unset.
+
+set -uo pipefail
+umask 077
+zmodload zsh/datetime
+
+typeset -r H=${HH_HERDR:-/opt/homebrew/bin/herdr}
+typeset -r NC=${HH_NC:-/usr/bin/nc}
+typeset -r PSBIN=${HH_PS:-/bin/ps}
+typeset -r LAUNCHCTL=${HH_LAUNCHCTL:-/bin/launchctl}
+typeset -r PERL=/usr/bin/perl
+typeset -ri HANDOFF_S=${HH_HANDOFF_DEADLINE:-120}
+typeset -ri POLL_S=${HH_POLL_DEADLINE:-60}
+typeset -ri PANE_S=${HH_PANE_DEADLINE:-10}
+typeset -r POLL_INT=${HH_POLL_INTERVAL:-1}
+typeset -r RE_VERSION='^[0-9]+(\.[0-9]+){1,3}([-+][0-9A-Za-z.]+)?$'
+typeset -r RE_SESSION='^[A-Za-z0-9][A-Za-z0-9._-]*$'
+typeset -r RE_PONG_VERSION='"version":"([^"]+)"'
+typeset -r RE_LABEL='^[A-Za-z0-9._-]+$'
+typeset -r RE_UINT='^[0-9]+$'
+typeset -r RE_SOCKET='"socket":"([^"]*)"'
+typeset -r PROBE='import ctypes,sys;l=ctypes.CDLL(None);f=l.responsibility_get_pid_responsible_for_pid;f.restype=ctypes.c_int;f.argtypes=[ctypes.c_int];print(f(int(sys.argv[1])))'
+
+typeset -g SESSION='' EXPECT='' LABEL='' SDIR='' SOCK='' LOCKDIR='' LOGDIR='' LOG='' UV=''
+typeset -g PLIST='' DOMAIN='' JOB=''
+typeset -gi DRY=0 SUPERVISED=0 LOCK_HELD=0 BOOTED_OUT=0 RESTORED=0 BOOT_RC=0
+typeset -ga SARGS=()
+typeset -g B_VER='' B_PID='' B_PANES='' B_RESP_PID='' B_RESP_COMM='' B_RESP_NOTE=''
+typeset -g A_VER='' A_PID='' A_PANES='' A_RESP_PID='' A_RESP_COMM='' A_RESP_NOTE='' RESP_VERDICT=''
+typeset -g RESP_PID='' RESP_COMM='' PONG='' PANES=''
+typeset -gi HRC=0
+
+function _say {
+  print -r -- "$*"
+  if [[ -n "${LOG}" ]]; then print -r -- "$*" >> "${LOG}"; fi
+}
+
+function _err {
+  print -u2 -r -- "herdr-handoff: $*"
+  if [[ -n "${LOG}" ]]; then print -r -- "herdr-handoff: $*" >> "${LOG}"; fi
+}
+
+function _usage {
+  print -u2 -- 'usage: herdr-handoff [--session NAME] [--launchd-job LABEL] --expected-version V [--dry-run]'
+}
+
+function _bad_usage {
+  _err "$*"
+  _usage
+  exit 2
+}
+
+function _refuse {
+  _err "refused: $*"
+  exit 3
+}
+
+# _dl SECONDS CMD...: run CMD under a deadline. Status 142 means the deadline hit.
+# shellcheck disable=SC2016  # perl code, not a shell expansion
+function _dl {
+  local secs="$1"
+  shift
+  "${PERL}" -MTime::HiRes=alarm -e 'alarm(shift); exec {$ARGV[0]} @ARGV or die "exec: $!\n"' -- "${secs}" "$@"
+}
+
+function _parse {
+  while (( $# )); do
+    case "$1" in
+      --session)
+        (( $# >= 2 )) || _bad_usage '--session needs a name'
+        SESSION="$2"; shift 2 ;;
+      --session=*) SESSION="${1#--session=}"; shift ;;
+      --expected-version)
+        (( $# >= 2 )) || _bad_usage '--expected-version needs a value'
+        EXPECT="$2"; shift 2 ;;
+      --expected-version=*) EXPECT="${1#--expected-version=}"; shift ;;
+      --launchd-job)
+        (( $# >= 2 )) || _bad_usage '--launchd-job needs a label'
+        JOB="$2"; shift 2 ;;
+      --launchd-job=*) JOB="${1#--launchd-job=}"; shift ;;
+      --dry-run) DRY=1; shift ;;
+      -h|--help) _usage; exit 0 ;;
+      *) _bad_usage "unknown argument: $1" ;;
+    esac
+  done
+  [[ -n "${EXPECT}" ]] || _bad_usage '--expected-version is required'
+  [[ "${EXPECT}" =~ $RE_VERSION ]] \
+    || _bad_usage "not a version: ${EXPECT}"
+  if [[ "${SESSION}" == default ]]; then SESSION=''; fi
+  if [[ -n "${SESSION}" && ! "${SESSION}" =~ $RE_SESSION ]]; then
+    _bad_usage "bad session name: ${SESSION}"
+  fi
+  [[ "${HOME:-}" == /* ]] || _bad_usage 'HOME must be an absolute path'
+  if [[ -n "${JOB}" && -n "${SESSION}" ]]; then _bad_usage '--launchd-job works with the default session only'; fi
+}
+
+function _target {
+  if [[ -z "${SESSION}" ]]; then
+    LABEL=default
+    SDIR="${HOME}/.config/herdr"
+    SARGS=()
+  else
+    LABEL="${SESSION}"
+    SDIR="${HOME}/.config/herdr/sessions/${SESSION}"
+    SARGS=(--session "${SESSION}")
+  fi
+  SOCK="${SDIR}/herdr.sock"
+  LOCKDIR="${HOME}/Library/Caches/herdr-update/lock"
+  LOGDIR="${HOME}/Library/Logs/herdr-handoff"
+  PLIST="${HOME}/Library/LaunchAgents/${JOB}.plist"
+  DOMAIN="gui/${UID}"
+  if [[ -n "${JOB}" ]]; then
+    [[ "${JOB}" =~ $RE_LABEL ]] || _refuse "bad launchd job label: ${JOB}"
+    [[ -f "${PLIST}" ]] || _refuse "no plist for the launchd job: ${PLIST}"
+    SUPERVISED=1
+  fi
+  UV="${HH_UV:-${commands[uv]:-}}"
+  if [[ -z "${UV}" && -x /opt/homebrew/bin/uv ]]; then UV=/opt/homebrew/bin/uv; fi
+  if [[ "${UV}" == - ]]; then UV=''; fi
+}
+
+function _refuse_in_target_pane {
+  [[ "${HERDR_ENV:-}" == 1 ]] || return 0
+  local sock="${HERDR_SOCKET_PATH:-}"
+  if [[ -z "${sock}" ]]; then
+    _refuse 'HERDR_ENV=1 but HERDR_SOCKET_PATH is unset: cannot prove this pane is outside the target session'
+  fi
+  if [[ "${sock:h}" == "${SDIR}" || "${sock:h:A}" == "${SDIR:A}" ]]; then
+    _refuse "this pane belongs to the target session (${LABEL}); run from Terminal.app or a pane of another session"
+  fi
+  return 0
+}
+
+function _check_binary {
+  local out
+  [[ -x "${H}" ]] || _refuse "${H} is not executable"
+  out="$("${H}" --version 2>/dev/null)" || _refuse "${H} --version failed"
+  [[ "${out}" == "herdr ${EXPECT}" ]] \
+    || _refuse "${H} --version says '${out}', expected 'herdr ${EXPECT}': run brew upgrade herdr first"
+}
+
+# _ping: prints the pong line.
+function _ping {
+  local out
+  out="$(printf '{"id":"w","method":"ping","params":{}}\n' | "${NC}" -U -w 3 "${SOCK}" 2>/dev/null)" || return 1
+  [[ "${out}" == *'"type":"pong"'* ]] || return 1
+  print -r -- "${out}"
+}
+
+# _pong_version PONG: prints the version field.
+function _pong_version {
+  # shellcheck disable=SC2154  # zsh sets the match array
+  if [[ "$1" =~ $RE_PONG_VERSION ]]; then print -r -- "${match[1]}"; return 0; fi
+  return 1
+}
+
+# _server_pids: one pid per line for the target server (three argv shapes).
+function _server_pids {
+  local psout
+  psout="$("${PSBIN}" -axo pid=,args= 2>/dev/null)" || return 1
+  /usr/bin/awk -v sess="${SESSION}" -v sdir="${SDIR}" '
+    { n = split($2, p, "/"); if (p[n] != "herdr") next
+      if ($3 == "server" && $4 == "--handoff-import" && index($5, sdir "/herdr-handoff-") == 1) { print $1; next }
+      if (sess == "" && $3 == "server" && NF == 3) { print $1; next }
+      if (sess != "" && $3 == "--session" && $4 == sess && $5 == "server") { print $1; next }
+    }' <<< "${psout}"
+}
+
+# _pane_count: sets PANES. Status 1 on a deadline, a failed call or a non-list.
+function _pane_count {
+  local out needle='"pane_id":' stripped
+  PANES=''
+  out="$(_dl "${PANE_S}" "${H}" "${SARGS[@]}" pane list 2>/dev/null)" || return 1
+  [[ "${out}" == *'"panes":['* ]] || return 1
+  stripped="${out//"${needle}"/}"
+  PANES=$(( (${#out} - ${#stripped}) / ${#needle} ))
+}
+
+# _responsible PID: sets RESP_PID and RESP_COMM. Status 1 when the probe cannot run.
+function _responsible {
+  local out
+  RESP_PID=''; RESP_COMM=''
+  [[ -n "${UV}" ]] || return 1
+  out="$(_dl 20 "${UV}" run --no-project python3 -I -c "${PROBE}" "$1" 2>/dev/null)" || return 1
+  [[ "${out}" =~ $RE_UINT ]] || return 1
+  RESP_PID="${out}"
+  RESP_COMM="$("${PSBIN}" -o comm= -p "${out}" 2>/dev/null)" || RESP_COMM=''
+  RESP_COMM="${RESP_COMM:t}"
+  [[ -n "${RESP_COMM}" ]] || RESP_COMM='(gone)'
+  return 0
+}
+
+function _before {
+  local st rest pids
+  PONG="$(_ping)" || _refuse "no server answers ping on ${SOCK}"
+  B_VER="$(_pong_version "${PONG}")" || _refuse "ping answer has no version: ${PONG}"
+  [[ "${PONG}" == *'"live_handoff":true'* ]] || _refuse 'the running server does not report live_handoff'
+  st="$(_dl "${PANE_S}" "${H}" "${SARGS[@]}" status --json 2>/dev/null)" \
+    || _refuse "herdr status --json failed or passed its ${PANE_S} s deadline: the server may be hung"
+  rest="${st#*\"server\":\{}"
+  if [[ "${rest}" =~ $RE_SOCKET ]]; then
+    [[ "${match[1]}" == "${SOCK}" || "${match[1]:A}" == "${SOCK:A}" ]] \
+      || _refuse "status names socket ${match[1]}, not the target ${SOCK}"
+  else
+    _refuse 'herdr status --json names no server socket'
+  fi
+  pids="$(_server_pids)"
+  B_PID="${pids%%$'\n'*}"
+  _pane_count || _refuse "pane list failed or passed its ${PANE_S} s deadline"
+  B_PANES="${PANES}"
+  if _responsible "${B_PID:-0}"; then
+    B_RESP_PID="${RESP_PID}"; B_RESP_COMM="${RESP_COMM}"
+  elif [[ -z "${UV}" ]]; then
+    B_RESP_NOTE='skipped (uv not found)'
+  else
+    B_RESP_NOTE='unknown (probe failed)'
+  fi
+}
+
+function _print_before {
+  _say "before:"
+  _say "  server version: ${B_VER}"
+  _say "  server pid:     ${B_PID:-unknown (no matching ps line; the old-pid check is skipped)}"
+  _say "  panes:          ${B_PANES}"
+  if [[ -n "${B_RESP_PID}" ]]; then
+    _say "  responsible:    ${B_RESP_PID} ${B_RESP_COMM}"
+  else
+    _say "  responsible:    ${B_RESP_NOTE}"
+  fi
+}
+
+function _print_plan {
+  _say "herdr-handoff plan: session ${LABEL}, socket ${SOCK}"
+  _say "  1. take lock ${LOCKDIR}"
+  if (( SUPERVISED )); then
+    _say "  2. supervised mode: launchctl bootout ${DOMAIN}/${JOB}"
+  else
+    _say "  2. supervised mode: off"
+  fi
+  _say "  3. herdr ${SARGS[*]:+${SARGS[*]} }server live-handoff --import-exe ${H} --expected-version ${EXPECT} (deadline ${HANDOFF_S} s)"
+  _say "  4. wait up to ${POLL_S} s: version ${EXPECT}, ${B_PANES} panes, old pid gone"
+  if (( SUPERVISED )); then
+    _say "  5. launchctl bootstrap ${DOMAIN} ${PLIST}"
+  fi
+}
+
+function _lock_take {
+  local holder started
+  /bin/mkdir -p -- "${LOCKDIR:h}" || _refuse "cannot create ${LOCKDIR:h}"
+  if /bin/mkdir -- "${LOCKDIR}" 2>/dev/null; then
+    LOCK_HELD=1
+    print -r -- "$$" > "${LOCKDIR}/pid"
+    print -r -- "${EPOCHSECONDS}" > "${LOCKDIR}/started"
+    return 0
+  fi
+  holder="$(< "${LOCKDIR}/pid" 2>/dev/null)" || holder=unknown
+  started="$(< "${LOCKDIR}/started" 2>/dev/null)" || started=unknown
+  _refuse "lock held: ${LOCKDIR} (pid ${holder}, started ${started} epoch). Check that pid, then remove the directory by hand"
+}
+
+# shellcheck disable=SC2329  # called from the EXIT trap
+function _lock_release {
+  if (( LOCK_HELD )); then
+    /bin/rm -f -- "${LOCKDIR}/pid" "${LOCKDIR}/started"
+    /bin/rmdir -- "${LOCKDIR}" 2>/dev/null
+    LOCK_HELD=0
+  fi
+  return 0
+}
+
+function _prepare_log {
+  local stamp
+  stamp="$(/bin/date -u +%Y%m%dT%H%M%SZ)"
+  /bin/mkdir -p -- "${LOGDIR}" || { _err "cannot create ${LOGDIR}"; return 0; }
+  LOG="${LOGDIR}/${stamp}.log"
+  : > "${LOG}"
+}
+
+function _job_bootout {
+  (( SUPERVISED )) || return 0
+  BOOTED_OUT=1
+  _say "job: launchctl bootout ${DOMAIN}/${JOB}"
+  if ! "${LAUNCHCTL}" bootout "${DOMAIN}/${JOB}" >> "${LOG}" 2>&1; then
+    _say "job: bootout returned non-zero (job may not be loaded); continuing"
+  fi
+}
+
+# Idempotent. Runs from the main flow before the verdict and again from the
+# exit trap, so a signal or an unexpected exit still restores the job.
+function _job_restore {
+  (( BOOTED_OUT && ! RESTORED )) || return 0
+  RESTORED=1
+  _say "job: launchctl bootstrap ${DOMAIN} ${PLIST}"
+  if "${LAUNCHCTL}" bootstrap "${DOMAIN}" "${PLIST}" >> "${LOG:-/dev/null}" 2>&1; then
+    return 0
+  fi
+  if "${LAUNCHCTL}" print "${DOMAIN}/${JOB}" > /dev/null 2>&1; then
+    _say "job: bootstrap returned non-zero but the job is loaded"
+    return 0
+  fi
+  _err "job: the job ${JOB} is NOT loaded. Run: launchctl bootstrap ${DOMAIN} ${PLIST}"
+  BOOT_RC=1
+  return 1
+}
+
+# shellcheck disable=SC2329  # runs as the EXIT trap
+function _cleanup {
+  local rc=$?
+  trap - EXIT INT TERM
+  _job_restore
+  if (( BOOT_RC && rc == 0 )); then rc=4; fi
+  _lock_release
+  exit "${rc}"
+}
+
+function _do_handoff {
+  local -a cmd=("${H}" "${SARGS[@]}" server live-handoff --import-exe "${H}" --expected-version "${EXPECT}")
+  _say "+ ${cmd[*]}"
+  _dl "${HANDOFF_S}" "${cmd[@]}" >> "${LOG}" 2>&1
+  HRC=$?
+}
+
+function _handoff_failed {
+  local now tailtxt why="exit ${HRC}"
+  tailtxt="$(/usr/bin/tail -n 8 "${LOG}" | /usr/bin/sed 's/^/  | /')"
+  if (( HRC == 142 )); then why="the ${HANDOFF_S} s deadline hit and the CLI was stopped; the server state is unknown, so check ping before any retry"; fi
+  _say "handoff FAILED: ${why}"
+  _say "last log lines before this failure:"
+  _say "${tailtxt}"
+  if now="$(_ping)"; then
+    _say "the old server keeps running (source: a failed handoff rolls back): version $(_pong_version "${now}")"
+  else
+    _say "NO server answers ping now: inspect ${LOG} and the server log before any restart"
+  fi
+}
+
+# _poll: waits for the post-conditions; sets A_* and the FAILS list.
+typeset -ga FAILS=()
+function _poll {
+  local end=$(( EPOCHSECONDS + POLL_S )) pong ver gone pids ok
+  while true; do
+    ok=1
+    pong="$(_ping)" || pong=''
+    ver=''
+    if [[ -n "${pong}" ]]; then ver="$(_pong_version "${pong}")" || ver=''; fi
+    A_VER="${ver}"
+    [[ "${ver}" == "${EXPECT}" ]] || ok=0
+    gone=1
+    if [[ -n "${B_PID}" ]] && kill -0 "${B_PID}" 2>/dev/null; then gone=0; fi
+    (( gone )) || ok=0
+    A_PANES=''
+    if (( ok )); then
+      if _pane_count; then A_PANES="${PANES}"; fi
+      [[ "${A_PANES}" == "${B_PANES}" ]] || ok=0
+    fi
+    (( ok )) && break
+    (( EPOCHSECONDS >= end )) && break
+    /bin/sleep "${POLL_INT}"
+  done
+  if [[ -z "${A_PANES}" ]] && _pane_count; then A_PANES="${PANES}"; fi
+  pids="$(_server_pids)"
+  A_PID=''
+  local p
+  while IFS= read -r p; do
+    if [[ -n "${p}" && "${p}" != "${B_PID}" ]]; then A_PID="${p}"; break; fi
+  done <<< "${pids}"
+  FAILS=()
+  if [[ -z "${A_VER}" ]]; then
+    FAILS+=("no server answers ping")
+  elif [[ "${A_VER}" != "${EXPECT}" ]]; then
+    FAILS+=("server version is ${A_VER}, expected ${EXPECT}")
+  fi
+  if [[ "${A_PANES}" != "${B_PANES}" ]]; then
+    FAILS+=("pane count ${B_PANES} -> ${A_PANES:-unreadable}")
+  fi
+  if [[ -n "${B_PID}" ]] && kill -0 "${B_PID}" 2>/dev/null; then
+    FAILS+=("old server pid ${B_PID} is still running")
+  fi
+  return 0
+}
+
+function _compare_responsible {
+  if [[ -n "${A_PID}" ]] && _responsible "${A_PID}"; then
+    A_RESP_PID="${RESP_PID}"; A_RESP_COMM="${RESP_COMM}"
+  elif [[ -z "${UV}" ]]; then
+    A_RESP_NOTE='skipped (uv not found)'
+  else
+    A_RESP_NOTE='unknown (no new server pid or probe failed)'
+  fi
+  if [[ -z "${B_RESP_PID}" || -z "${A_RESP_PID}" ]]; then
+    RESP_VERDICT="not compared (before: ${B_RESP_NOTE:-ok}; after: ${A_RESP_NOTE:-ok})"
+  elif [[ "${A_RESP_PID}" == "${A_PID}" ]]; then
+    RESP_VERDICT="WARN #808: the new server is its own responsible process; op prompts and LAN access may break until a cold restart"
+    if [[ "${B_RESP_PID}" == "${B_PID}" ]]; then RESP_VERDICT+=" (it was already so before the handoff)"; fi
+  elif [[ "${A_RESP_PID}" == "${B_RESP_PID}" ]]; then
+    RESP_VERDICT="pass (same process ${A_RESP_PID})"
+  elif [[ "${A_RESP_COMM}" == "${B_RESP_COMM}" ]]; then
+    RESP_VERDICT="pass (same app ${A_RESP_COMM}, pid ${B_RESP_PID} -> ${A_RESP_PID})"
+  else
+    RESP_VERDICT="WARN: responsible process changed ${B_RESP_PID} ${B_RESP_COMM} -> ${A_RESP_PID} ${A_RESP_COMM}"
+  fi
+}
+
+function _verdict {
+  local result="$1" f
+  _say ""
+  _say "herdr-handoff verdict: ${result}"
+  _say "  session:     ${LABEL}"
+  _say "  version:     ${B_VER} -> ${A_VER:-?} (expected ${EXPECT})"
+  _say "  server pid:  ${B_PID:-?} -> ${A_PID:-?}"
+  _say "  panes:       ${B_PANES} -> ${A_PANES:-?}"
+  if [[ -n "${RESP_VERDICT}" ]]; then _say "  responsible: ${RESP_VERDICT}"; fi
+  for f in "${FAILS[@]}"; do _say "  FAIL: ${f}"; done
+  if (( BOOT_RC )); then _say "  FAIL: launchd job ${JOB} is not loaded"; fi
+  _say "  log:         ${LOG}"
+}
+
+function main {
+  _parse "$@"
+  _target
+  _refuse_in_target_pane
+  unset HERDR_ENV HERDR_SOCKET_PATH HERDR_PANE_ID HERDR_TAB_ID HERDR_WORKSPACE_ID
+  _check_binary
+  _before
+  if (( DRY )); then
+    _print_plan
+    _print_before
+    _say "dry run: stopped. Nothing was changed."
+    exit 0
+  fi
+  _lock_take
+  _prepare_log
+  _print_plan
+  _print_before
+  _job_bootout
+  _do_handoff
+  if (( HRC != 0 )); then
+    _handoff_failed
+    _job_restore
+    _verdict 'FAIL (handoff failed)'
+    exit 1
+  fi
+  _say "handoff command: ok"
+  _poll
+  _compare_responsible
+  _job_restore
+  if (( ${#FAILS[@]} )); then
+    _verdict 'FAIL (post-check)'
+    exit 4
+  fi
+  if (( BOOT_RC )); then
+    _verdict 'FAIL (launchd job not restored)'
+    exit 4
+  fi
+  _verdict PASS
+  exit 0
+}
+
+# Traps are set at top level: in zsh an EXIT trap set inside a function runs when
+# that function returns, with a lost exit status.
+trap '_cleanup' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+main "$@"

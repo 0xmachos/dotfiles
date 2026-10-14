@@ -1,0 +1,473 @@
+#!/bin/zsh
+# dotfiles/bin/herdr-watch
+#
+# Watchdog for the default herdr session on this Mac. Run every 120 s by the
+# com.0xmachos.herdr-watch LaunchAgent; safe to run by hand.
+#
+#   herdr-watch
+#
+# Probe: one JSON `ping` on ~/.config/herdr/herdr.sock through nc, under a hard
+# deadline. A reply with "type":"pong" is `ok` and carries the server version.
+# `herdr status` is never called: it has no timeout and blocks forever on a
+# hung server. No pong gives `down` (no server process) or `hung` (a server
+# process exists). The process list is one `ps -axo pid=,command=` read, not
+# pgrep (pgrep gave a false negative on this Mac).
+#
+# Skipped runs (log only, state untouched): kill switch file
+# ~/Library/Application Support/herdr-watch/disabled; update lock
+# ~/Library/Caches/herdr-update/lock younger than 15 min; a
+# ~/.config/herdr/herdr-handoff-* file of any age (a live handoff). A lock
+# older than 15 min is leftover and is ignored. A leftover handoff file keeps
+# the watchdog skipping (and logging) until someone removes it.
+#
+# Heal, after 2 consecutive `down` runs only:
+#   - Herdr.app not running: `open -a /Applications/Herdr.app` (at most once
+#     per 10 min) and a banner. The app starts the server of a session it shows.
+#   - Herdr.app running: no action. The app restarts a crashed server of a
+#     session it shows within 3 s (measured 2026-10-14), so a down server under
+#     a running app means no window shows the session. Banner asks for a window.
+#   - Never `herdr server`: a server that Herdr.app did not start loses LAN
+#     access and 1Password prompts on every call (upstream #808). Never kill.
+# `hung` for 2 consecutive runs: banner only.
+# Back to `ok` after a banner: one recovery banner.
+# Stale binary: after a pong, `herdr --version` differs from the pong version:
+# one banner per 24 h.
+#
+# Banners: osascript `display notification`, text passed as argv through
+# `on run argv`, never interpolated into AppleScript source. Cooldown 6 h per
+# kind (24 h for the stale binary); the recovery banner has none. A cooldown
+# starts only when osascript succeeded.
+#
+# State: ~/Library/Caches/herdr-watch/state, KEY=VALUE lines, parsed by hand
+# (never sourced), replaced atomically. Log: ~/Library/Logs/herdr-watch.log
+# (one line per run, rotated at 1 MiB to .log.1) and syslog tag
+# com.0xmachos.herdr-watch.
+#
+# Every external call runs under a perl `alarm` deadline with its output in a
+# temp file, so a hung child cannot hold a pipe open. launchd has no PATH, so
+# binaries are called by absolute path; the exit status is 0 unless the script
+# itself cannot run (unusable HOME or state directory).
+#
+# Test seams (environment): HERDR_WATCH_HOME (replaces HOME for every path),
+# HERDR_WATCH_NC, _PS, _OPEN, _OSASCRIPT, _HERDR, _LOGGER, _PERL (program
+# paths), HERDR_WATCH_APP (the .app bundle), HERDR_WATCH_DEADLINE (seconds,
+# default 5), HERDR_WATCH_NOW (epoch seconds). Defaults are the real paths.
+# Deployed as a root-owned copy in /usr/local/bin by `./bittersweet scripts`.
+#
+# ShellCheck: lint with `shellcheck --shell=bash bin/herdr-watch`.
+# Test: ./test herdr-watch
+
+# shellcheck disable=SC2154  # zsh fills the `match` array on a successful =~
+emulate -L zsh
+set -uo pipefail
+umask 077
+
+zmodload zsh/datetime
+zmodload -F zsh/stat b:zstat
+
+readonly WATCH_TAG='com.0xmachos.herdr-watch'
+readonly WATCH_LOCK_MAX_AGE=900     # 15 min
+readonly WATCH_COOLDOWN=21600       # 6 h
+readonly WATCH_STALE_COOLDOWN=86400 # 24 h
+readonly WATCH_OPEN_GAP=600         # 10 min between two app launches
+readonly WATCH_HEAL_AFTER=2         # consecutive bad runs
+readonly WATCH_LOG_MAX=1048576      # 1 MiB
+
+# Regular expressions in variables: an unquoted variable on the right of =~ is a
+# regex in zsh, and shellcheck reads it the same way.
+readonly RE_PONG='"type"[[:space:]]*:[[:space:]]*"pong"'
+readonly RE_VERSION='"version"[[:space:]]*:[[:space:]]*"([0-9A-Za-z.+-]+)"'
+readonly RE_PSLINE='^[[:space:]]*[0-9]+[[:space:]]+(.*)$'
+readonly RE_SEMVER='([0-9]+\.[0-9]+\.[0-9]+[0-9A-Za-z.+-]*)'
+
+typeset -g W_HOME='' W_NC='' W_PS='' W_OPEN='' W_OSA='' W_HERDR='' W_LOGGER='' W_PERL=''
+typeset -g W_APP='' W_APP_BIN='' W_SOCK='' W_STATE_DIR='' W_STATE='' W_LOG=''
+typeset -gi W_DEADLINE=5 W_NOW=0
+
+# State, as loaded from and saved to the state file.
+typeset -g S_KIND='' S_ALERTED=0
+typeset -gi S_STREAK=0 S_LAST_OPEN=0
+typeset -gA S_BANNER=()
+
+# Results of the external-call helper.
+typeset -g RUN_OUT=''
+typeset -gi RUN_RC=0
+
+function _w_init {
+  W_HOME="${HERDR_WATCH_HOME:-${HOME:-}}"
+  if [[ -z "${W_HOME}" || "${W_HOME}" != /* || "${W_HOME}" == *..* ]]; then
+    print -u2 'herdr-watch: HOME is unset, empty or relative; refusing'
+    return 1
+  fi
+  W_NC="${HERDR_WATCH_NC:-/usr/bin/nc}"
+  W_PS="${HERDR_WATCH_PS:-/bin/ps}"
+  W_OPEN="${HERDR_WATCH_OPEN:-/usr/bin/open}"
+  W_OSA="${HERDR_WATCH_OSASCRIPT:-/usr/bin/osascript}"
+  W_HERDR="${HERDR_WATCH_HERDR:-/opt/homebrew/bin/herdr}"
+  W_LOGGER="${HERDR_WATCH_LOGGER:-/usr/bin/logger}"
+  W_PERL="${HERDR_WATCH_PERL:-/usr/bin/perl}"
+  W_APP="${HERDR_WATCH_APP:-/Applications/Herdr.app}"
+  W_APP_BIN="${W_APP}/Contents/MacOS/Herdr"
+  W_SOCK="${W_HOME}/.config/herdr/herdr.sock"
+  W_STATE_DIR="${W_HOME}/Library/Caches/herdr-watch"
+  W_STATE="${W_STATE_DIR}/state"
+  W_LOG="${W_HOME}/Library/Logs/herdr-watch.log"
+  W_NOW="${HERDR_WATCH_NOW:-${EPOCHSECONDS}}"
+  if [[ "${HERDR_WATCH_DEADLINE:-}" =~ ^[0-9]{1,2}$ ]] && (( HERDR_WATCH_DEADLINE >= 1 )); then
+    W_DEADLINE="${HERDR_WATCH_DEADLINE}"
+  fi
+  /bin/mkdir -p "${W_STATE_DIR}" "${W_HOME}/Library/Logs" || {
+    print -u2 'herdr-watch: cannot create the state or log directory'
+    return 1
+  }
+}
+
+# Log one decision line to the log file and syslog. A failed file write is
+# reported to syslog, the sink that cannot fail.
+function _w_log {
+  local msg="$*" stamp size
+  local -a st
+  stamp="$(strftime '%Y-%m-%dT%H:%M:%S%z' "${W_NOW}")"
+  if [[ -f "${W_LOG}" ]] && zstat -A st +size -- "${W_LOG}" 2>/dev/null; then
+    size="${st[1]}"
+    if (( size > WATCH_LOG_MAX )); then
+      /bin/mv -f -- "${W_LOG}" "${W_LOG}.1" 2>/dev/null || :
+    fi
+  fi
+  if ! print -r -- "${stamp} ${msg}" >> "${W_LOG}" 2>/dev/null; then
+    "${W_LOGGER}" -t "${WATCH_TAG}" "cannot write ${W_LOG}" 2>/dev/null || :
+  fi
+  "${W_LOGGER}" -t "${WATCH_TAG}" -- "${msg}" 2>/dev/null || :
+}
+
+# _w_run SECONDS STDIN_TEXT COMMAND [ARG...]
+# Runs the command under a hard deadline: perl sets alarm(SECONDS) and execs it,
+# and the pending alarm survives exec, so SIGALRM ends a hung command. Output
+# (stdout and stderr) goes to a temp file, not a pipe, so a grandchild that
+# outlives the command cannot block this script. Sets RUN_OUT and RUN_RC. A
+# command ended by the deadline has RUN_RC 142 (128 + SIGALRM).
+function _w_run {
+  local secs="$1" input="$2" tmp
+  shift 2
+  tmp="$(/usr/bin/mktemp "${W_STATE_DIR}/run.XXXXXX")" || {
+    RUN_OUT=''
+    RUN_RC=125
+    return 0
+  }
+  # shellcheck disable=SC2016  # perl code, not shell expansion
+  "${W_PERL}" -e 'alarm shift; exec { $ARGV[0] } @ARGV or exit 127' \
+    "${secs}" "$@" <<< "${input}" > "${tmp}" 2>&1
+  RUN_RC=$?
+  RUN_OUT="$(<"${tmp}")"
+  /bin/rm -f -- "${tmp}"
+  return 0
+}
+
+# --- State ---------------------------------------------------------------
+
+function _w_state_load {
+  local line key val
+  S_KIND=''
+  S_ALERTED=0
+  S_STREAK=0
+  S_LAST_OPEN=0
+  S_BANNER=()
+  [[ -r "${W_STATE}" ]] || return 0
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    key="${line%%=*}"
+    val="${line#*=}"
+    case "${key}" in
+      kind)      [[ "${val}" == down || "${val}" == hung ]] && S_KIND="${val}" ;;
+      streak)    [[ "${val}" =~ ^[0-9]{1,5}$ ]] && S_STREAK="${val}" ;;
+      alerted)   [[ "${val}" == 0 || "${val}" == 1 ]] && S_ALERTED="${val}" ;;
+      last_open) [[ "${val}" =~ ^[0-9]{1,10}$ ]] && S_LAST_OPEN="${val}" ;;
+      banner_*)
+        [[ "${key#banner_}" =~ ^(reopened|window|hung|stale)$ && "${val}" =~ ^[0-9]{1,10}$ ]] \
+          && S_BANNER[${key#banner_}]="${val}" ;;
+    esac
+  done < "${W_STATE}"
+  return 0
+}
+
+# Atomic replace: temp file in the same directory, then rename.
+function _w_state_save {
+  local tmp kind
+  tmp="$(/usr/bin/mktemp "${W_STATE_DIR}/state.XXXXXX")" || {
+    _w_log 'state: cannot create a temp file; state not saved'
+    return 1
+  }
+  local rc=0
+  {
+    print -r -- "kind=${S_KIND}"
+    print -r -- "streak=${S_STREAK}"
+    print -r -- "alerted=${S_ALERTED}"
+    print -r -- "last_open=${S_LAST_OPEN}"
+    for kind in reopened window hung stale; do
+      if [[ -n "${S_BANNER[${kind}]:-}" ]]; then
+        print -r -- "banner_${kind}=${S_BANNER[${kind}]}"
+      fi
+    done
+  } > "${tmp}" || rc=1
+  if (( rc == 0 )); then
+    /bin/mv -f -- "${tmp}" "${W_STATE}" || rc=1
+  fi
+  if (( rc != 0 )); then
+    /bin/rm -f -- "${tmp}"
+    _w_log 'state: write failed; state not saved'
+    return 1
+  fi
+}
+
+# --- Banners -------------------------------------------------------------
+
+# _w_banner TITLE BODY: osascript with the text as argv items, never in source.
+function _w_banner_send {
+  _w_run 10 '' "${W_OSA}" \
+    -e 'on run argv' \
+    -e 'display notification (item 2 of argv) with title (item 1 of argv)' \
+    -e 'end run' \
+    -- "$1" "$2"
+  (( RUN_RC == 0 ))
+}
+
+# _w_banner KIND TITLE BODY [COOLDOWN]: honour the per-kind cooldown, send, and
+# start the cooldown only after a successful send. Returns 0 if it sent.
+function _w_banner {
+  local kind="$1" title="$2" body="$3" cooldown="${4:-${WATCH_COOLDOWN}}" last
+  last="${S_BANNER[${kind}]:-0}"
+  if (( W_NOW - last < cooldown )); then
+    _w_log "banner ${kind}: suppressed by cooldown"
+    return 1
+  fi
+  if _w_banner_send "${title}" "${body}"; then
+    S_BANNER[${kind}]="${W_NOW}"
+    _w_log "banner ${kind}: sent"
+    return 0
+  fi
+  _w_log "banner ${kind}: osascript failed rc=${RUN_RC}"
+  return 1
+}
+
+# --- Probes --------------------------------------------------------------
+
+typeset -g P_STATUS='' P_VERSION='' PS_TEXT=''
+typeset -gi PS_RC=0
+typeset -ga PS_CMDS=()
+
+# Sets P_STATUS to pong or nopong, and P_VERSION from a pong. An nc that cannot
+# run (rc 126, 127) is `error`, not a dead server.
+function _w_ping {
+  P_STATUS='nopong'
+  P_VERSION=''
+  _w_run "${W_DEADLINE}" '{"id":"w","method":"ping","params":{}}' \
+    "${W_NC}" -U -w 3 "${W_SOCK}"
+  if (( RUN_RC == 126 || RUN_RC == 127 )); then
+    P_STATUS='error'
+    return 0
+  fi
+  if [[ "${RUN_OUT}" =~ $RE_PONG ]]; then
+    P_STATUS='pong'
+    if [[ "${RUN_OUT}" =~ $RE_VERSION ]]; then
+      P_VERSION="${match[1]}"
+    fi
+  fi
+  return 0
+}
+
+# One process-list read: PS_RC is its status, PS_CMDS holds the command column
+# of each line (the pid is dropped).
+function _w_ps_read {
+  local line
+  local -a lines
+  PS_CMDS=()
+  _w_run "${W_DEADLINE}" '' "${W_PS}" -axo 'pid=,command='
+  PS_RC="${RUN_RC}"
+  PS_TEXT="${RUN_OUT}"
+  # shellcheck disable=SC2296  # zsh (@f) line split
+  lines=("${(@f)PS_TEXT}")
+  for line in "${lines[@]}"; do
+    if [[ "${line}" =~ $RE_PSLINE ]]; then
+      PS_CMDS+=("${match[1]}")
+    fi
+  done
+}
+
+# True if PS_CMDS holds a server of the DEFAULT session: `<herdr> server` or
+# `<herdr> server --handoff-import <default dir>`, and no --session. A named
+# session lives under .../herdr/sessions/<name>/.
+function _w_has_server {
+  local cmd
+  for cmd in "${PS_CMDS[@]}"; do
+    [[ "${cmd}" == "${W_HERDR} server" || "${cmd}" == "${W_HERDR} server "* ]] || continue
+    [[ "${cmd}" == *--session* ]] && continue
+    if [[ "${cmd}" == *--handoff-import* && "${cmd}" == */sessions/* ]]; then
+      continue
+    fi
+    return 0
+  done
+  return 1
+}
+
+# True if PS_CMDS holds the Herdr.app binary alone (no arguments).
+function _w_has_app {
+  local cmd
+  for cmd in "${PS_CMDS[@]}"; do
+    [[ "${cmd}" == "${W_APP_BIN}" ]] && return 0
+  done
+  return 1
+}
+
+# --- Skip conditions -----------------------------------------------------
+
+# True if path $1 exists and its mtime is younger than WATCH_LOCK_MAX_AGE.
+function _w_fresh {
+  local -a st
+  zstat -A st +mtime -- "$1" 2>/dev/null || return 1
+  (( W_NOW - st[1] < WATCH_LOCK_MAX_AGE ))
+}
+
+# Prints the reason and returns 0 when the run must be skipped.
+function _w_skip_reason {
+  local lock="${W_HOME}/Library/Caches/herdr-update/lock" f
+  local -a handoffs
+  if [[ -e "${W_HOME}/Library/Application Support/herdr-watch/disabled" ]]; then
+    print -r -- 'kill switch file present'
+    return 0
+  fi
+  if [[ -e "${lock}" ]]; then
+    if _w_fresh "${lock}"; then
+      print -r -- 'update lock is fresh'
+      return 0
+    fi
+    _w_log 'update lock is older than 15 min; ignored'
+  fi
+  # shellcheck disable=SC2296  # zsh (N) null-glob qualifier
+  handoffs=("${W_HOME}"/.config/herdr/herdr-handoff-*(N))
+  for f in "${handoffs[@]}"; do
+    print -r -- "handoff file present: ${f:t}"
+    return 0
+  done
+  return 1
+}
+
+# --- Handlers ------------------------------------------------------------
+
+function _w_clear_streak {
+  S_KIND=''
+  S_STREAK=0
+}
+
+function _w_handle_ok {
+  local installed=''
+  _w_clear_streak
+  _w_log "decision: ok version=${P_VERSION:-unknown}"
+  if (( S_ALERTED )); then
+    if _w_banner_send 'Herdr is back' 'The Herdr server answers again.'; then
+      _w_log 'banner recovery: sent'
+      S_ALERTED=0
+    else
+      _w_log "banner recovery: osascript failed rc=${RUN_RC}; will retry"
+    fi
+  fi
+  # Stale binary: the server runs older code than the installed binary.
+  _w_run "${W_DEADLINE}" '' "${W_HERDR}" --version
+  if (( RUN_RC == 0 )) && [[ "${RUN_OUT}" =~ $RE_SEMVER ]]; then
+    installed="${match[1]}"
+  else
+    _w_log "stale check: herdr --version gave no version rc=${RUN_RC}"
+    return 0
+  fi
+  if [[ -n "${P_VERSION}" && "${installed}" != "${P_VERSION}" ]]; then
+    _w_log "stale binary: server ${P_VERSION}, installed ${installed}"
+    _w_banner stale 'Herdr update waiting' \
+      "Server runs ${P_VERSION}, installed is ${installed}. Run the herdr-update skill." \
+      "${WATCH_STALE_COOLDOWN}" || :
+  fi
+  return 0
+}
+
+function _w_bump_streak {
+  if [[ "${S_KIND}" == "$1" ]]; then
+    S_STREAK+=1
+  else
+    S_KIND="$1"
+    S_STREAK=1
+  fi
+}
+
+function _w_handle_down {
+  _w_bump_streak down
+  if (( S_STREAK < WATCH_HEAL_AFTER )); then
+    _w_log "decision: down streak=${S_STREAK}; waiting for run ${WATCH_HEAL_AFTER}"
+    return 0
+  fi
+  if _w_has_app; then
+    _w_log "decision: down streak=${S_STREAK}; Herdr.app is running; no action"
+    _w_banner window 'Herdr server is down' \
+      'Herdr.app is open but no server answers. Open a Herdr window to start one.' \
+      && S_ALERTED=1
+    return 0
+  fi
+  if (( W_NOW - S_LAST_OPEN < WATCH_OPEN_GAP )); then
+    _w_log "decision: down streak=${S_STREAK}; Herdr.app not running; open skipped (last launch under 10 min ago)"
+  else
+    _w_run 10 '' "${W_OPEN}" -a "${W_APP}"
+    S_LAST_OPEN="${W_NOW}"
+    _w_log "decision: down streak=${S_STREAK}; Herdr.app not running; open -a rc=${RUN_RC}"
+  fi
+  _w_banner reopened 'Herdr was not running' \
+    'Herdr watch opened the app. Check that your sessions came back.' \
+    && S_ALERTED=1
+  return 0
+}
+
+function _w_handle_hung {
+  _w_bump_streak hung
+  if (( S_STREAK < WATCH_HEAL_AFTER )); then
+    _w_log "decision: hung streak=${S_STREAK}; waiting for run ${WATCH_HEAL_AFTER}"
+    return 0
+  fi
+  _w_log "decision: hung streak=${S_STREAK}; banner only, nothing is killed"
+  _w_banner hung 'Herdr server not answering' \
+    'The server process runs but does not reply. Herdr watch will not stop it.' \
+    && S_ALERTED=1
+  return 0
+}
+
+function main {
+  local reason
+  _w_init || return 1
+
+  if reason="$(_w_skip_reason)"; then
+    _w_log "decision: skip (${reason})"
+    return 0
+  fi
+
+  _w_state_load
+  _w_ping
+  case "${P_STATUS}" in
+    pong)
+      _w_handle_ok
+      ;;
+    error)
+      _w_log "decision: probe unavailable (${W_NC} rc=${RUN_RC}); state unchanged"
+      return 0
+      ;;
+    *)
+      _w_ps_read
+      if (( PS_RC != 0 )) || [[ -z "${PS_TEXT}" ]]; then
+        _w_log "decision: process list unavailable (rc=${PS_RC}); state unchanged"
+        return 0
+      fi
+      if _w_has_server; then
+        _w_handle_hung
+      else
+        _w_handle_down
+      fi
+      ;;
+  esac
+  _w_state_save
+  return 0
+}
+
+main "$@"

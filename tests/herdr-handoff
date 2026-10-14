@@ -1,0 +1,512 @@
+#!/bin/zsh
+# dotfiles/tests/herdr-handoff
+#
+# Behavioural test for bin/herdr-handoff. The script moves a live herdr server
+# onto a new binary, so the suite never touches a real server, a real launchd
+# job or the real $HOME. Every case runs the script under `env -i` with a fake
+# HOME and stub binaries (herdr, nc, ps, launchctl, uv) chosen through the
+# script's HH_* seams. A stub keeps its state in plain files under the fixture,
+# and logs each call to `calls`, so a case can assert what ran and in what order.
+#
+# Run: ./test herdr-handoff    (or ./test for the full suite)
+#
+# Red check: point HH_TEST_SCRIPT at a broken copy of the script and run the
+# suite; the case named for the broken behaviour must fail.
+#
+# ShellCheck: lint with `shellcheck --shell=bash tests/herdr-handoff`.
+# This file is sourced, not executed - chmod 644.
+#
+# shellcheck source=tests/lib
+
+typeset -g HH_BOX='' HH_DIR='' HH_HOME='' HH_STATE='' HH_OUT=''
+typeset -gi HH_RC=0 HH_SEQ=0 HH_SECS=0
+typeset -ga HH_XENV=()
+typeset -g HH_UV_PATH=''
+typeset -gr HH_JOB=test.local.herdr-server
+
+function _hh_write_stubs {
+  # _hh_write_stubs <dir>: one POSIX sh stub per external the script calls.
+  local d="$1"
+  /bin/mkdir -p "${d}"
+
+  cat > "${d}/herdr" <<'EOF'
+#!/bin/sh
+S="$HH_STATE"
+printf 'herdr %s | sock=[%s] env=[%s]\n' "$*" "${HERDR_SOCKET_PATH:-}" "${HERDR_ENV:-}" >> "$S/calls"
+if [ "$1" = "--version" ]; then echo "herdr $(cat "$S/binver")"; exit 0; fi
+sdir="$HOME/.config/herdr"
+if [ "$1" = "--session" ]; then sdir="$sdir/sessions/$2"; shift 2; fi
+case "$1 $2" in
+  "pane list")
+    if [ -f "$S/panes_hang" ]; then exec sleep 30; fi
+    n=$(cat "$S/panes"); i=1
+    printf '{"id":"cli:pane:list","result":{"panes":['
+    while [ "$i" -le "$n" ]; do
+      if [ "$i" -gt 1 ]; then printf ','; fi
+      printf '{"pane_id":"p%s","label":"x"}' "$i"
+      i=$((i + 1))
+    done
+    printf ']}}\n' ;;
+  "status --json")
+    if [ -f "$S/status_hang" ]; then exec sleep 30; fi
+    sock="$sdir/herdr.sock"
+    if [ -f "$S/status_socket" ]; then sock=$(cat "$S/status_socket"); fi
+    printf '{"client":{"version":"0.9.4","session":null},"server":{"status":"running","version":"%s","socket":"%s","session":null}}\n' "$(cat "$S/ver")" "$sock" ;;
+  "server live-handoff")
+    case "$(cat "$S/scenario")" in
+      ok) cp "$S/ps_after" "$S/ps"; cp "$S/binver" "$S/ver"; cp "$S/panes_after" "$S/panes"; : > "$S/handed"; echo "live handoff complete" ;;
+      noswap) : > "$S/handed"; echo "live handoff complete" ;;
+      fail) echo "handoff failed: import server exited" >&2; exit 1 ;;
+      hang) exec sleep 30 ;;
+    esac ;;
+  *) echo "stub herdr: unexpected $*" >&2; exit 9 ;;
+esac
+EOF
+
+  cat > "${d}/nc" <<'EOF'
+#!/bin/sh
+S="$HH_STATE"
+cat > /dev/null
+for a in "$@"; do last=$a; done
+echo "$last" >> "$S/nc_calls"
+if [ -f "$S/down" ]; then exit 1; fi
+printf '{"id":"w","result":{"type":"pong","version":"%s","protocol":22,"capabilities":{"live_handoff":%s}}}\n' "$(cat "$S/ver")" "$(cat "$S/live")"
+EOF
+
+  cat > "${d}/ps" <<'EOF'
+#!/bin/sh
+S="$HH_STATE"
+case "$*" in
+  *comm=*)
+    if [ -f "$S/comm_$4" ]; then cat "$S/comm_$4"; else echo /Applications/Herdr.app/Contents/MacOS/Herdr; fi ;;
+  *) cat "$S/ps" ;;
+esac
+EOF
+
+  cat > "${d}/launchctl" <<'EOF'
+#!/bin/sh
+S="$HH_STATE"
+echo "launchctl $*" >> "$S/calls"
+if [ -f "$S/rc_$1" ]; then exit "$(cat "$S/rc_$1")"; fi
+exit 0
+EOF
+
+  cat > "${d}/uv" <<'EOF'
+#!/bin/sh
+S="$HH_STATE"
+echo "uv $*" >> "$S/uvcalls"
+if [ -f "$S/uv_fail" ]; then exit 1; fi
+if [ -f "$S/handed" ]; then cat "$S/resp_after"; else cat "$S/resp_before"; fi
+EOF
+  /bin/chmod 755 "${d}"/*
+}
+
+function _hh_set {
+  # _hh_set <state file> <value>
+  print -r -- "$2" > "${HH_STATE}/$1"
+}
+
+function _hh_fixture {
+  # New fake HOME and stub state. Defaults: binary 0.9.4, server 0.9.3, three
+  # panes, old pid 4000001 (above pid_max, so never alive), new pid 4000002,
+  # responsible pid 22142 on both sides.
+  HH_SEQ+=1
+  HH_DIR="${HH_BOX}/${HH_SEQ}"
+  HH_HOME="${HH_DIR}/home"
+  HH_STATE="${HH_DIR}/state"
+  HH_XENV=()
+  HH_UV_PATH="${HH_BOX}/stubs/uv"
+  /bin/mkdir -p "${HH_HOME}/.config/herdr" "${HH_STATE}"
+  _hh_set binver 0.9.4
+  _hh_set ver 0.9.3
+  _hh_set live true
+  _hh_set panes 3
+  _hh_set panes_after 3
+  _hh_set scenario ok
+  _hh_set ps "4000001 /opt/homebrew/bin/herdr server"
+  _hh_set ps_after "4000002 /opt/homebrew/bin/herdr server --handoff-import ${HH_HOME}/.config/herdr/herdr-handoff-4000001.sock SECRETTOKEN"
+  _hh_set resp_before 22142
+  _hh_set resp_after 22142
+  : > "${HH_STATE}/calls"
+}
+
+function _hh_run {
+  # _hh_run <args>: HH_OUT = both streams, HH_RC = status, HH_SECS = wall seconds.
+  local script="${HH_TEST_SCRIPT:-${SCRIPT_DIR}/bin/herdr-handoff}"
+  local t0=${EPOCHSECONDS}
+  if HH_OUT="$(/usr/bin/env -i HOME="${HH_HOME}" PATH="${HH_BOX}/stubs:/usr/bin:/bin" \
+      HH_STATE="${HH_STATE}" HH_HERDR="${HH_BOX}/stubs/herdr" HH_NC="${HH_BOX}/stubs/nc" \
+      HH_PS="${HH_BOX}/stubs/ps" HH_LAUNCHCTL="${HH_BOX}/stubs/launchctl" HH_UV="${HH_UV_PATH}" \
+      HH_POLL_INTERVAL=0.2 HH_POLL_DEADLINE=1 \
+      "${HH_XENV[@]}" /bin/zsh "${script}" "$@" 2>&1)"; then
+    HH_RC=0
+  else
+    HH_RC=$?
+  fi
+  HH_SECS=$(( EPOCHSECONDS - t0 ))
+}
+
+function _hh_rc {
+  # _hh_rc <expected status> <case name>
+  if (( HH_RC == $1 )); then _pass "$2"; else _fail "$2 - rc=${HH_RC} (want $1) out=${HH_OUT}"; fi
+}
+
+function _hh_out_has {
+  # _hh_out_has <needle> <case name>
+  if [[ "${HH_OUT}" == *"$1"* ]]; then _pass "$2"; else _fail "$2 - output lacks '$1': ${HH_OUT}"; fi
+}
+
+function _hh_out_lacks {
+  if [[ "${HH_OUT}" != *"$1"* ]]; then _pass "$2"; else _fail "$2 - output has '$1': ${HH_OUT}"; fi
+}
+
+function _hh_calls {
+  # The call kinds in order, one word each: bootout, bootstrap, handoff.
+  local line kinds=''
+  while IFS= read -r line; do
+    case "${line}" in
+      "launchctl bootout"*) kinds+="bootout " ;;
+      "launchctl bootstrap"*) kinds+="bootstrap " ;;
+      herdr*"live-handoff"*) kinds+="handoff " ;;
+    esac
+  done < "${HH_STATE}/calls"
+  print -r -- "${kinds% }"
+}
+
+function _hh_calls_is {
+  # _hh_calls_is <expected sequence> <case name>
+  local got
+  got="$(_hh_calls)"
+  if [[ "${got}" == "$1" ]]; then _pass "$2"; else _fail "$2 - calls were '${got}', want '$1'"; fi
+}
+
+function _hh_job_plist {
+  /bin/mkdir -p "${HH_HOME}/Library/LaunchAgents"
+  : > "${HH_HOME}/Library/LaunchAgents/${HH_JOB}.plist"
+}
+
+function run_herdr_handoff {
+  _section "herdr-handoff"
+
+  local script="${HH_TEST_SCRIPT:-${SCRIPT_DIR}/bin/herdr-handoff}"
+  if [[ ! -f "${script}" ]]; then
+    _skip "bin/herdr-handoff absent"
+    return 0
+  fi
+  if [[ ! -x /usr/bin/perl ]]; then
+    _skip "/usr/bin/perl absent"
+    return 0
+  fi
+
+  local keep='' log re_log='^[0-9]{8}T[0-9]{6}Z\.log$'
+  local -a logs
+  HH_SEQ=0
+  HH_BOX="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/herdr-handoff-test.XXXXXX")" || return 1
+  HH_BOX="${HH_BOX:A}"
+  _hh_write_stubs "${HH_BOX}/stubs"
+
+  if kill -0 4000001 2>/dev/null; then
+    _skip "pid 4000001 is alive; the fixture pids are not usable"
+    /bin/rm -rf "${HH_BOX}"
+    return 0
+  fi
+
+  # --- Usage (exit 2) ---------------------------------------------------------
+  _hh_fixture
+  _hh_run
+  _hh_rc 2 "no arguments: usage error"
+  _hh_out_has "usage: herdr-handoff" "usage text is printed"
+  _hh_run --expected-version
+  _hh_rc 2 "--expected-version without a value: usage error"
+  _hh_run --session hwtest
+  _hh_rc 2 "missing --expected-version: usage error"
+  _hh_run --expected-version abc
+  _hh_rc 2 "a non-version value: usage error"
+  _hh_run --expected-version 0.9.4 --bogus
+  _hh_rc 2 "unknown option: usage error"
+  _hh_run --expected-version 0.9.4 --session '../x'
+  _hh_rc 2 "a session name with a path part: usage error"
+  _hh_run --expected-version 0.9.4 --session
+  _hh_rc 2 "--session without a name: usage error"
+  _hh_run --help
+  _hh_rc 0 "--help exits 0"
+  if [[ ! -s "${HH_STATE}/calls" ]]; then _pass "usage errors run no herdr call"; else _fail "usage errors ran a command: $(< "${HH_STATE}/calls")"; fi
+
+  # --- Version refusal (exit 3) -----------------------------------------------
+  _hh_fixture
+  _hh_set binver 0.9.3
+  _hh_run --expected-version 0.9.4
+  _hh_rc 3 "binary version differs from --expected-version: refused"
+  _hh_out_has "expected 'herdr 0.9.4'" "the refusal names both versions"
+  _hh_calls_is "" "a version refusal runs no handoff"
+  if [[ ! -e "${HH_HOME}/Library/Caches/herdr-update/lock" ]]; then _pass "a version refusal takes no lock"; else _fail "a version refusal left a lock"; fi
+
+  # --- In-pane refusal (exit 3) -----------------------------------------------
+  _hh_fixture
+  HH_XENV=(HERDR_ENV=1 "HERDR_SOCKET_PATH=${HH_HOME}/.config/herdr/herdr.sock")
+  _hh_run --expected-version 0.9.4
+  _hh_rc 3 "a pane of the default session cannot hand off the default session"
+  _hh_out_has "belongs to the target session" "the in-pane refusal says why"
+  _hh_calls_is "" "the in-pane refusal runs no handoff"
+  _hh_fixture
+  HH_XENV=(HERDR_ENV=1 "HERDR_SOCKET_PATH=${HH_HOME}/.config/herdr/sessions/hwtest/herdr.sock")
+  _hh_set ps "4000001 /opt/homebrew/bin/herdr --session hwtest server"
+  _hh_run --expected-version 0.9.4 --session hwtest
+  _hh_rc 3 "a pane of a named session cannot hand off that session"
+  _hh_fixture
+  HH_XENV=(HERDR_ENV=1)
+  _hh_run --expected-version 0.9.4
+  _hh_rc 3 "HERDR_ENV=1 with no socket path is refused"
+  _hh_fixture
+  HH_XENV=(HERDR_ENV=1 "HERDR_SOCKET_PATH=${HH_HOME}/.config/herdr/sessions/other/herdr.sock")
+  _hh_run --expected-version 0.9.4
+  _hh_rc 0 "a pane of another session may hand off the default session"
+  if [[ "$(< "${HH_STATE}/calls")" != *"sock=[/"* ]]; then
+    _pass "no herdr call sees the pane's HERDR_SOCKET_PATH"
+  else
+    _fail "a herdr call kept HERDR_SOCKET_PATH: $(< "${HH_STATE}/calls")"
+  fi
+  _hh_fixture
+  HH_XENV=("HERDR_SOCKET_PATH=${HH_HOME}/.config/herdr/herdr.sock")
+  _hh_run --expected-version 0.9.4
+  _hh_rc 0 "a socket path without HERDR_ENV is not a pane"
+
+  # --- Lock held (exit 3) -----------------------------------------------------
+  _hh_fixture
+  /bin/mkdir -p "${HH_HOME}/Library/Caches/herdr-update/lock"
+  print -r -- 12345 > "${HH_HOME}/Library/Caches/herdr-update/lock/pid"
+  _hh_run --expected-version 0.9.4
+  _hh_rc 3 "a held lock refuses"
+  _hh_out_has "lock held" "the refusal says the lock is held"
+  _hh_out_has "pid 12345" "the refusal names the holder pid"
+  _hh_calls_is "" "a held lock runs no handoff"
+  if [[ -d "${HH_HOME}/Library/Caches/herdr-update/lock" ]]; then _pass "a refused run leaves the other holder's lock"; else _fail "a refused run removed a lock it does not own"; fi
+
+  # --- Dry run ----------------------------------------------------------------
+  _hh_fixture
+  _hh_job_plist
+  _hh_run --launchd-job "${HH_JOB}" --expected-version 0.9.4 --dry-run
+  _hh_rc 0 "dry run exits 0"
+  _hh_out_has "dry run: stopped" "dry run says it stopped"
+  _hh_out_has "server pid:     4000001" "dry run shows the before pid"
+  _hh_out_has "panes:          3" "dry run shows the before pane count"
+  _hh_out_has "launchctl bootout" "dry run lists the launchd bootout in the plan"
+  _hh_calls_is "" "dry run runs no handoff and no launchctl"
+  if [[ ! -e "${HH_HOME}/Library/Caches/herdr-update" && ! -e "${HH_HOME}/Library/Logs/herdr-handoff" ]]; then
+    _pass "dry run takes no lock and writes no log"
+  else
+    _fail "dry run wrote a lock or a log"
+  fi
+
+  # --- Success ----------------------------------------------------------------
+  _hh_fixture
+  _hh_run --expected-version 0.9.4
+  _hh_rc 0 "success path exits 0"
+  _hh_out_has "verdict: PASS" "success prints a PASS verdict"
+  _hh_out_has "4000001 -> 4000002" "the verdict shows the pid change"
+  _hh_out_has "panes:       3 -> 3" "the verdict shows the pane count"
+  _hh_out_has "pass (same process 22142)" "the responsible pid is compared and unchanged"
+  _hh_calls_is "handoff" "success runs the handoff once"
+  if [[ "$(< "${HH_STATE}/calls")" == *"server live-handoff --import-exe ${HH_BOX}/stubs/herdr --expected-version 0.9.4 |"* ]]; then
+    _pass "the handoff gets --import-exe and --expected-version"
+  else
+    _fail "handoff arguments wrong: $(< "${HH_STATE}/calls")"
+  fi
+  if [[ ! -e "${HH_HOME}/Library/Caches/herdr-update/lock" ]]; then _pass "the lock is released after success"; else _fail "the lock survived success"; fi
+  # shellcheck disable=SC1036,SC2206  # zsh (N) glob qualifier
+  logs=( "${HH_HOME}"/Library/Logs/herdr-handoff/*.log(N) )
+  if (( ${#logs[@]} == 1 )) && [[ "${logs[1]:t}" =~ $re_log ]]; then
+    _pass "one UTC-timestamped log is written"
+    log="$(< "${logs[1]}")"
+    if [[ "${log}" == *"live handoff complete"* ]]; then _pass "the log holds the handoff output"; else _fail "log lacks handoff output: ${log}"; fi
+    if [[ "${log}${HH_OUT}" != *SECRETTOKEN* ]]; then _pass "the handoff token reaches neither the log nor the output"; else _fail "the token leaked"; fi
+  else
+    _fail "log files: ${logs[*]:-none}"
+  fi
+
+  # --- Handoff command fails (exit 1) -----------------------------------------
+  _hh_fixture
+  _hh_set scenario fail
+  _hh_run --expected-version 0.9.4
+  _hh_rc 1 "a failed handoff exits 1"
+  _hh_out_has "the old server keeps running" "the failure says the old server keeps running"
+  _hh_out_has "import server exited" "the failure shows the CLI error"
+  _hh_out_has "verdict: FAIL (handoff failed)" "the failure prints a FAIL verdict"
+  if [[ ! -e "${HH_HOME}/Library/Caches/herdr-update/lock" ]]; then _pass "the lock is released after a failed handoff"; else _fail "the lock survived a failed handoff"; fi
+
+  # --- Deadline ---------------------------------------------------------------
+  _hh_fixture
+  _hh_set scenario hang
+  HH_XENV=(HH_HANDOFF_DEADLINE=1)
+  _hh_run --expected-version 0.9.4
+  _hh_rc 1 "a hung handoff stops at the deadline with exit 1"
+  _hh_out_has "1 s deadline hit" "the deadline is named"
+  if (( HH_SECS < 15 )); then _pass "the deadline ends the run in ${HH_SECS} s, not 30 s"; else _fail "the hung stub ran ${HH_SECS} s"; fi
+  if [[ ! -e "${HH_HOME}/Library/Caches/herdr-update/lock" ]]; then _pass "the lock is released after the deadline"; else _fail "the lock survived the deadline"; fi
+
+  # --- Post-check failures (exit 4) -------------------------------------------
+  _hh_fixture
+  _hh_set panes_after 2
+  _hh_run --expected-version 0.9.4
+  _hh_rc 4 "a pane-count drop fails the post-check"
+  _hh_out_has "pane count 3 -> 2" "the pane drop is reported"
+  _hh_fixture
+  _hh_set scenario noswap
+  _hh_run --expected-version 0.9.4
+  _hh_rc 4 "a server that keeps the old version fails the post-check"
+  _hh_out_has "server version is 0.9.3, expected 0.9.4" "the stale version is reported"
+  _hh_fixture
+  /bin/sleep 120 &
+  keep=$!
+  _hh_set ps "${keep} /opt/homebrew/bin/herdr server"
+  _hh_run --expected-version 0.9.4
+  kill "${keep}" 2>/dev/null || :
+  _hh_rc 4 "an old server that does not exit fails the post-check"
+  _hh_out_has "old server pid ${keep} is still running" "the surviving old pid is reported"
+
+  # --- Preconditions on the server (exit 3) -----------------------------------
+  _hh_fixture
+  : > "${HH_STATE}/down"
+  _hh_run --expected-version 0.9.4
+  _hh_rc 3 "a server that does not answer ping is refused"
+  _hh_fixture
+  _hh_set live false
+  _hh_run --expected-version 0.9.4
+  _hh_rc 3 "a server without live_handoff is refused"
+  _hh_fixture
+  _hh_set status_socket "${HH_HOME}/elsewhere.sock"
+  _hh_run --expected-version 0.9.4
+  _hh_rc 3 "a status answer for another socket is refused"
+  _hh_calls_is "" "a socket mismatch runs no handoff"
+  _hh_fixture
+  : > "${HH_STATE}/panes_hang"
+  HH_XENV=(HH_PANE_DEADLINE=1)
+  _hh_run --expected-version 0.9.4
+  _hh_rc 3 "a hung pane list is refused at its deadline"
+  _hh_calls_is "" "a hung pane list runs no handoff"
+  if (( HH_SECS < 15 )); then _pass "the pane-list deadline ends the run in ${HH_SECS} s"; else _fail "the hung pane list ran ${HH_SECS} s"; fi
+
+  # --- Responsible pid (#808) -------------------------------------------------
+  _hh_fixture
+  _hh_set resp_after 4000002
+  _hh_run --expected-version 0.9.4
+  _hh_rc 0 "a new server that is its own responsible process still exits 0"
+  _hh_out_has "WARN #808" "that case warns about #808"
+  _hh_fixture
+  _hh_set resp_after 22143
+  _hh_run --expected-version 0.9.4
+  _hh_rc 0 "a changed responsible pid of the same app passes"
+  _hh_out_has "same app Herdr" "the same app is named"
+  _hh_fixture
+  _hh_set resp_after 555
+  _hh_set comm_555 /sbin/launchd
+  _hh_run --expected-version 0.9.4
+  _hh_rc 0 "a responsible process of another app still exits 0"
+  _hh_out_has "responsible process changed" "that case warns"
+  _hh_fixture
+  HH_UV_PATH=-
+  _hh_run --expected-version 0.9.4
+  _hh_rc 0 "without uv the run still passes"
+  _hh_out_has "skipped (uv not found)" "the skipped probe is said aloud"
+  _hh_fixture
+  _hh_set ps ""
+  _hh_run --expected-version 0.9.4
+  _hh_rc 0 "an unknown old pid skips the old-pid check"
+  _hh_out_has "no matching ps line" "the unknown pid is said aloud"
+
+  # --- Named session ----------------------------------------------------------
+  _hh_fixture
+  _hh_set ps "4000009 /opt/homebrew/bin/herdr server
+4000001 /opt/homebrew/bin/herdr --session hwtest server
+4000008 /opt/homebrew/bin/herdr --session other server"
+  _hh_set ps_after "4000009 /opt/homebrew/bin/herdr server
+4000002 /opt/homebrew/bin/herdr server --handoff-import ${HH_HOME}/.config/herdr/sessions/hwtest/herdr-handoff-4000001.sock SECRETTOKEN
+4000008 /opt/homebrew/bin/herdr --session other server"
+  _hh_run --expected-version 0.9.4 --session hwtest
+  _hh_rc 0 "a named session hands off"
+  _hh_out_has "4000001 -> 4000002" "the matcher picks the named session's server and its handed-off successor"
+  if [[ "$(< "${HH_STATE}/calls")" == *"herdr --session hwtest server live-handoff"* ]]; then _pass "the named session is passed to the handoff"; else _fail "no --session in: $(< "${HH_STATE}/calls")"; fi
+  if [[ "$(< "${HH_STATE}/nc_calls")" == *"${HH_HOME}/.config/herdr/sessions/hwtest/herdr.sock"* ]]; then _pass "ping goes to the named session socket"; else _fail "ping sockets: $(< "${HH_STATE}/nc_calls")"; fi
+
+  # --- Supervised mode (--launchd-job) ---------------------------------------
+  _hh_fixture
+  _hh_job_plist
+  _hh_run --launchd-job "${HH_JOB}" --expected-version 0.9.4
+  _hh_rc 0 "supervised mode: success exits 0"
+  _hh_calls_is "bootout handoff bootstrap" "supervised mode: bootout, handoff, bootstrap in that order"
+  if [[ "$(< "${HH_STATE}/calls")" == *"launchctl bootout gui/${UID}/${HH_JOB}"* \
+     && "$(< "${HH_STATE}/calls")" == *"launchctl bootstrap gui/${UID} ${HH_HOME}/Library/LaunchAgents/${HH_JOB}.plist"* ]]; then
+    _pass "supervised mode: the launchctl arguments name the gui domain, label and plist"
+  else
+    _fail "launchctl arguments: $(< "${HH_STATE}/calls")"
+  fi
+  _hh_fixture
+  _hh_job_plist
+  _hh_set scenario fail
+  _hh_run --launchd-job "${HH_JOB}" --expected-version 0.9.4
+  _hh_rc 1 "supervised mode: a failed handoff exits 1"
+  _hh_calls_is "bootout handoff bootstrap" "supervised mode: bootstrap still runs after a failed handoff"
+  _hh_fixture
+  _hh_job_plist
+  _hh_set scenario hang
+  HH_XENV=(HH_HANDOFF_DEADLINE=1)
+  _hh_run --launchd-job "${HH_JOB}" --expected-version 0.9.4
+  _hh_rc 1 "supervised mode: a deadline exits 1"
+  _hh_calls_is "bootout handoff bootstrap" "supervised mode: bootstrap still runs after the deadline"
+  _hh_fixture
+  _hh_job_plist
+  _hh_set panes_after 1
+  _hh_run --launchd-job "${HH_JOB}" --expected-version 0.9.4
+  _hh_rc 4 "supervised mode: a failed post-check exits 4"
+  _hh_calls_is "bootout handoff bootstrap" "supervised mode: bootstrap still runs after a failed post-check"
+  _hh_fixture
+  _hh_job_plist
+  _hh_set rc_bootout 3
+  _hh_run --launchd-job "${HH_JOB}" --expected-version 0.9.4
+  _hh_rc 0 "supervised mode: a bootout that reports 'not loaded' does not stop the run"
+  _hh_calls_is "bootout handoff bootstrap" "supervised mode: bootstrap still runs after a failed bootout"
+  _hh_fixture
+  _hh_job_plist
+  _hh_set rc_bootstrap 5
+  _hh_set rc_print 113
+  _hh_run --launchd-job "${HH_JOB}" --expected-version 0.9.4
+  _hh_rc 4 "supervised mode: a job that cannot be restored exits 4"
+  _hh_out_has "launchctl bootstrap gui/${UID}" "supervised mode: the manual restore command is printed"
+  _hh_fixture
+  _hh_job_plist
+  _hh_set rc_bootstrap 5
+  _hh_run --launchd-job "${HH_JOB}" --expected-version 0.9.4
+  _hh_rc 0 "supervised mode: a bootstrap that reports 'already loaded' passes"
+  _hh_fixture
+  _hh_job_plist
+  _hh_run --launchd-job "${HH_JOB}" --expected-version 0.9.4 --dry-run
+  _hh_rc 0 "supervised mode: dry run exits 0"
+  _hh_calls_is "" "supervised mode: dry run runs no launchctl"
+  _hh_fixture
+  _hh_job_plist
+  _hh_run --launchd-job "${HH_JOB}" --expected-version 0.9.4 --session hwtest
+  _hh_rc 2 "supervised mode: --launchd-job with --session is a usage error"
+  _hh_calls_is "" "supervised mode: that usage error runs nothing"
+  _hh_fixture
+  _hh_job_plist
+  _hh_run --expected-version 0.9.4
+  _hh_rc 0 "a plist on disk without the flag still passes"
+  _hh_calls_is "handoff" "a plist on disk without the flag causes no launchctl call"
+  _hh_fixture
+  _hh_run --expected-version 0.9.4
+  _hh_calls_is "handoff" "no flag and no plist: no launchctl call"
+  _hh_fixture
+  _hh_run --launchd-job "${HH_JOB}" --expected-version 0.9.4
+  _hh_rc 3 "supervised mode: a missing plist is refused"
+  _hh_calls_is "" "supervised mode: a missing plist runs nothing"
+  _hh_fixture
+  _hh_run --launchd-job "bad/label" --expected-version 0.9.4
+  _hh_rc 3 "supervised mode: a label with a slash is refused"
+  _hh_run --launchd-job "bad label" --expected-version 0.9.4
+  _hh_rc 3 "supervised mode: a label with a space is refused"
+  _hh_run --launchd-job --expected-version 0.9.4
+  _hh_rc 2 "supervised mode: --launchd-job without a value is a usage error"
+  _hh_calls_is "" "supervised mode: bad labels run nothing"
+
+  /bin/rm -rf "${HH_BOX}"
+}

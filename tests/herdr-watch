@@ -1,0 +1,631 @@
+#!/bin/zsh
+# dotfiles/tests/herdr-watch
+#
+# Behavioural test for bin/herdr-watch, the watchdog for the default herdr
+# session. Every run uses a fake HOME under the suite sandbox and stub binaries
+# (nc, ps, open, osascript, herdr, logger) that record their calls, so nothing
+# touches the real herdr server, Herdr.app, notifications or $HOME.
+#
+# Scenarios are set through the HW_* globals read by the stubs; HERDR_WATCH_NOW
+# moves the script's clock for cooldown cases. HERDR_WATCH_UNDER_TEST points the
+# suite at another copy of the script (used to prove the suite goes red when a
+# behaviour is broken).
+#
+# Run: ./test herdr-watch    (or ./test for the full suite)
+#
+# ShellCheck: lint with `shellcheck --shell=bash tests/herdr-watch`.
+# This file is sourced, not executed - chmod 644.
+#
+# shellcheck source=tests/lib
+
+typeset -g HW_T_BOX='' HW_T_STUBS='' HW_T_SCRIPT='' HW_T_HOME='' HW_T_CALLS='' HW_T_OUT=''
+typeset -gi HW_T_RC=0 HW_T_SEQ=0 HW_T_BASE=0 HW_T_ELAPSED_MS=0
+
+# Scenario knobs, read by the stubs (see _hw_t_reset for the defaults).
+typeset -g HW_NC_MODE='' HW_NC_VERSION='' HW_HERDR_VERSION=''
+typeset -g HW_PS_SERVER='' HW_PS_NAMED='' HW_PS_APP='' HW_PS_APP_ARGS='' HW_PS_HANDOFF='' HW_PS_FAIL=''
+typeset -g HW_OSA_FAIL='' HW_T_DEADLINE='' HW_T_NC_PATH=''
+
+function _hw_t_make_stubs {
+  local d="${HW_T_STUBS}"
+  /bin/mkdir -p "${d}"
+
+  cat > "${d}/nc" <<'MOCK'
+#!/bin/zsh
+print -r -- "nc $*" >> "${HW_CALLS}"
+case "${HW_NC_MODE}" in
+  pong) print -r -- "{\"id\":\"w\",\"result\":{\"type\":\"pong\",\"version\":\"${HW_NC_VERSION}\",\"protocol\":22}}" ;;
+  dead) exit 1 ;;
+  hang) exec /bin/sleep 30 ;;
+esac
+MOCK
+
+  cat > "${d}/ps" <<'MOCK'
+#!/bin/zsh
+print -r -- "ps $*" >> "${HW_CALLS}"
+[[ -n "${HW_PS_FAIL}" ]] && exit 1
+print -r -- '  101 /usr/sbin/cfprefsd agent'
+print -r -- ' 4242 ssh -T -o BatchMode=yes host herdr server'
+[[ -n "${HW_PS_SERVER}" ]] && print -r -- " 2632 ${HERDR_BIN} server"
+[[ -n "${HW_PS_NAMED}" ]] && print -r -- " 2700 ${HERDR_BIN} server --session hwtest"
+[[ -n "${HW_PS_HANDOFF}" ]] && print -r -- " 2701 ${HERDR_BIN} server --handoff-import ${HW_PS_HANDOFF}"
+[[ -n "${HW_PS_APP}" ]] && print -r -- "86345 ${HW_APP_BIN}"
+[[ -n "${HW_PS_APP_ARGS}" ]] && print -r -- "86346 ${HW_APP_BIN} --inspect"
+exit 0
+MOCK
+
+  cat > "${d}/open" <<'MOCK'
+#!/bin/zsh
+print -r -- "open $*" >> "${HW_CALLS}"
+MOCK
+
+  # Records the title and body (the last two arguments) and the script text
+  # (everything before `--`), to prove the text never enters the AppleScript.
+  cat > "${d}/osascript" <<'MOCK'
+#!/bin/zsh
+src=''
+for a in "$@"; do
+  [[ "${a}" == -- ]] && break
+  src+="${a} "
+done
+print -r -- "osasrc|${src}" >> "${HW_CALLS}"
+print -r -- "osa|${argv[-2]}|${argv[-1]}" >> "${HW_CALLS}"
+[[ -n "${HW_OSA_FAIL}" ]] && exit 1
+exit 0
+MOCK
+
+  cat > "${d}/herdr" <<'MOCK'
+#!/bin/zsh
+print -r -- "herdr $*" >> "${HW_CALLS}"
+if [[ "$1" == --version ]]; then
+  print -r -- "herdr ${HW_HERDR_VERSION}"
+  exit 0
+fi
+exit 2
+MOCK
+
+  cat > "${d}/logger" <<'MOCK'
+#!/bin/zsh
+print -r -- "logger $*" >> "${HW_CALLS}"
+MOCK
+
+  /bin/chmod 755 "${d}/nc" "${d}/ps" "${d}/open" "${d}/osascript" "${d}/herdr" "${d}/logger"
+}
+
+# Fresh fake HOME and call log; default scenario: healthy server, app absent.
+function _hw_t_reset {
+  HW_T_SEQ+=1
+  HW_T_HOME="${HW_T_BOX}/case${HW_T_SEQ}/home"
+  HW_T_CALLS="${HW_T_BOX}/case${HW_T_SEQ}/calls"
+  /bin/mkdir -p "${HW_T_HOME}/.config/herdr" "${HW_T_HOME}/Library"
+  : > "${HW_T_CALLS}"
+  HW_NC_MODE=pong
+  HW_NC_VERSION=0.9.4
+  HW_HERDR_VERSION=0.9.4
+  HW_PS_SERVER=1
+  HW_PS_NAMED=''
+  HW_PS_APP=''
+  HW_PS_APP_ARGS=''
+  HW_PS_HANDOFF=''
+  HW_PS_FAIL=''
+  HW_OSA_FAIL=''
+  HW_T_DEADLINE=5
+  HW_T_NC_PATH="${HW_T_STUBS}/nc"
+}
+
+# _hw_t_run [OFFSET_SECONDS]: run the script once with the scenario knobs; the
+# script's clock is the suite base time plus the offset. Sets HW_T_RC, HW_T_OUT
+# and HW_T_ELAPSED_MS.
+function _hw_t_run {
+  local -F start end
+  start="${EPOCHREALTIME}"
+  HW_T_OUT="$(/usr/bin/env -i \
+    PATH=/usr/bin:/bin \
+    HOME="${HW_T_HOME}" \
+    HERDR_WATCH_HOME="${HW_T_HOME}" \
+    HERDR_WATCH_NC="${HW_T_NC_PATH}" \
+    HERDR_WATCH_PS="${HW_T_STUBS}/ps" \
+    HERDR_WATCH_OPEN="${HW_T_STUBS}/open" \
+    HERDR_WATCH_OSASCRIPT="${HW_T_STUBS}/osascript" \
+    HERDR_WATCH_HERDR="${HW_T_STUBS}/herdr" \
+    HERDR_WATCH_LOGGER="${HW_T_STUBS}/logger" \
+    HERDR_WATCH_APP="${HW_T_BOX}/Herdr.app" \
+    HERDR_WATCH_DEADLINE="${HW_T_DEADLINE}" \
+    HERDR_WATCH_NOW="$(( HW_T_BASE + ${1:-0} ))" \
+    HW_CALLS="${HW_T_CALLS}" \
+    HERDR_BIN="${HW_T_STUBS}/herdr" \
+    HW_APP_BIN="${HW_T_BOX}/Herdr.app/Contents/MacOS/Herdr" \
+    HW_NC_MODE="${HW_NC_MODE}" \
+    HW_NC_VERSION="${HW_NC_VERSION}" \
+    HW_HERDR_VERSION="${HW_HERDR_VERSION}" \
+    HW_PS_SERVER="${HW_PS_SERVER}" \
+    HW_PS_NAMED="${HW_PS_NAMED}" \
+    HW_PS_APP="${HW_PS_APP}" \
+    HW_PS_APP_ARGS="${HW_PS_APP_ARGS}" \
+    HW_PS_HANDOFF="${HW_PS_HANDOFF}" \
+    HW_PS_FAIL="${HW_PS_FAIL}" \
+    HW_OSA_FAIL="${HW_OSA_FAIL}" \
+    /bin/zsh "${HW_T_SCRIPT}" 2>&1)" && HW_T_RC=0 || HW_T_RC=$?
+  end="${EPOCHREALTIME}"
+  HW_T_ELAPSED_MS=$(( (end - start) * 1000 ))
+}
+
+# Number of recorded calls whose line starts with $1 (result in REPLY).
+function _hw_t_count {
+  local line
+  local -i n=0
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ "${line}" == "$1"* ]] && n+=1
+  done < "${HW_T_CALLS}"
+  REPLY="${n}"
+}
+
+function _hw_t_expect_count {
+  # $1 = call prefix, $2 = expected count, $3 = case name
+  _hw_t_count "$1"
+  if [[ "${REPLY}" == "$2" ]]; then
+    _pass "$3"
+  else
+    _fail "$3 - '$1' called ${REPLY} times, wanted $2"
+  fi
+}
+
+# True if some recorded call line starts with $1 and contains $2.
+function _hw_t_call_has {
+  local line
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ "${line}" == "$1"* && "${line}" == *"$2"* ]] && return 0
+  done < "${HW_T_CALLS}"
+  return 1
+}
+
+function _hw_t_expect_call {
+  if _hw_t_call_has "$1" "$2"; then _pass "$3"; else _fail "$3 - no '$1' call containing '$2'"; fi
+}
+
+function _hw_t_expect_no_call {
+  if _hw_t_call_has "$1" "$2"; then _fail "$3 - found '$1' call containing '$2'"; else _pass "$3"; fi
+}
+
+function _hw_t_log_has {
+  local line
+  [[ -r "${HW_T_HOME}/Library/Logs/herdr-watch.log" ]] || return 1
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ "${line}" == *"$1"* ]] && return 0
+  done < "${HW_T_HOME}/Library/Logs/herdr-watch.log"
+  return 1
+}
+
+function _hw_t_expect_log {
+  if _hw_t_log_has "$1"; then _pass "$2"; else _fail "$2 - log lacks '$1'"; fi
+}
+
+function _hw_t_state_has {
+  local line
+  [[ -r "${HW_T_HOME}/Library/Caches/herdr-watch/state" ]] || return 1
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ "${line}" == "$1" ]] && return 0
+  done < "${HW_T_HOME}/Library/Caches/herdr-watch/state"
+  return 1
+}
+
+function _hw_t_expect_state {
+  if _hw_t_state_has "$1"; then _pass "$2"; else _fail "$2 - state lacks '$1'"; fi
+}
+
+function _hw_t_expect_eq {
+  # $1 = actual, $2 = expected, $3 = case name
+  if [[ "$1" == "$2" ]]; then _pass "$3"; else _fail "$3 - got '$1', wanted '$2'"; fi
+}
+
+function _hw_t_expect_rc0 {
+  if (( HW_T_RC == 0 )); then _pass "$1"; else _fail "$1 - rc=${HW_T_RC} out=${HW_T_OUT}"; fi
+}
+
+# --- Cases ---------------------------------------------------------------
+
+function _hw_t_static {
+  _section "herdr-watch: static checks"
+
+  local first line
+  local -i bad=0
+  if [[ -x "${HW_T_SCRIPT}" ]]; then _pass "script is executable"; else _fail "script missing or not executable"; return 0; fi
+  IFS= read -r first < "${HW_T_SCRIPT}"
+  if [[ "${first}" == '#!/bin/zsh' ]]; then _pass "shebang is /bin/zsh"; else _fail "shebang is '${first}'"; fi
+
+  # No code line may start a server, call `herdr status`, use pgrep or kill.
+  local re_comment='^[[:space:]]*#'
+  local re_bad='(^|[[:space:];&|(])(kill|pkill|killall|pgrep)([[:space:]]|$)|/bin/kill'
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ "${line}" =~ $re_comment ]] && continue
+    if [[ "${line}" == *'W_HERDR}" server'* || "${line}" == *'W_HERDR}" status'* || "${line}" =~ $re_bad ]]; then
+      _fail "code line must not start a server, call status, pgrep or kill: ${line}"
+      (( bad += 1 ))
+    fi
+  done < "${HW_T_SCRIPT}"
+  (( bad == 0 )) && _pass "no server start, status call, pgrep or kill in code"
+
+  local plist="${SCRIPT_DIR}/LaunchAgents/com.0xmachos.herdr-watch.plist" v
+  if /usr/bin/plutil -lint "${plist}" >/dev/null 2>&1; then _pass "plist lints"; else _fail "plist does not lint"; fi
+  v="$(/usr/libexec/PlistBuddy -c 'Print :StartInterval' "${plist}" 2>/dev/null)"
+  _hw_t_expect_eq "${v}" 120 "plist StartInterval is 120"
+  v="$(/usr/libexec/PlistBuddy -c 'Print :RunAtLoad' "${plist}" 2>/dev/null)"
+  _hw_t_expect_eq "${v}" true "plist RunAtLoad is true"
+  v="$(/usr/libexec/PlistBuddy -c 'Print :ProcessType' "${plist}" 2>/dev/null)"
+  _hw_t_expect_eq "${v}" Background "plist ProcessType is Background"
+  v="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "${plist}" 2>/dev/null)"
+  _hw_t_expect_eq "${v}" /usr/local/bin/herdr-watch "plist runs the absolute /usr/local/bin copy"
+  v="$(/usr/libexec/PlistBuddy -c 'Print :StandardOutPath' "${plist}" 2>/dev/null)"
+  _hw_t_expect_eq "${v:0:21}" "__HOME__/Library/Logs" "plist stdout goes under ~/Library/Logs"
+}
+
+function _hw_t_ok {
+  _section "herdr-watch: ok"
+
+  _hw_t_reset
+  _hw_t_run
+  _hw_t_expect_rc0 "ok: exit 0"
+  _hw_t_expect_log "decision: ok version=0.9.4" "ok: decision logged with the pong version"
+  _hw_t_expect_call "nc " "-U -w 3 ${HW_T_HOME}/.config/herdr/herdr.sock" "ok: pings the default socket under HOME"
+  _hw_t_expect_count "open" 0 "ok: no open"
+  _hw_t_expect_count "osa|" 0 "ok: no banner"
+  _hw_t_expect_count "ps" 0 "ok: no process list read"
+  _hw_t_expect_call "herdr --version" "" "ok: asks the binary for its version after the pong"
+  _hw_t_expect_no_call "herdr " "status" "ok: never calls herdr status"
+  _hw_t_expect_state "streak=0" "ok: streak is 0"
+  _hw_t_expect_call "logger " "com.0xmachos.herdr-watch" "ok: syslog uses the com.0xmachos.herdr-watch tag"
+
+  # A second run appends a line: one log line per run.
+  _hw_t_run 120
+  local -a lines
+  # shellcheck disable=SC2296  # zsh (@f) line split
+  lines=("${(@f)$(<"${HW_T_HOME}/Library/Logs/herdr-watch.log")}")
+  if (( ${#lines[@]} == 2 )); then _pass "ok: one log line per run"; else _fail "ok: ${#lines[@]} log lines after 2 runs"; fi
+
+  # No temp file is left in the state directory.
+  local -a leftovers
+  setopt local_options null_glob
+  # shellcheck disable=SC2296  # zsh (N) null-glob qualifier
+  leftovers=("${HW_T_HOME}"/Library/Caches/herdr-watch/run.*(N) "${HW_T_HOME}"/Library/Caches/herdr-watch/state.*(N))
+  if (( ${#leftovers[@]} == 0 )); then _pass "ok: no temp file left behind"; else _fail "ok: leftover ${leftovers[*]}"; fi
+}
+
+function _hw_t_down {
+  _section "herdr-watch: down"
+
+  # One down run: no heal.
+  _hw_t_reset
+  HW_NC_MODE=dead HW_PS_SERVER=''
+  _hw_t_run
+  _hw_t_expect_rc0 "one down: exit 0"
+  _hw_t_expect_count "open" 0 "one down: no open"
+  _hw_t_expect_count "osa|" 0 "one down: no banner"
+  _hw_t_expect_state "kind=down" "one down: state records down"
+  _hw_t_expect_state "streak=1" "one down: streak is 1"
+  _hw_t_expect_log "decision: down streak=1" "one down: decision logged"
+
+  # Two downs, app absent: open once, one banner.
+  _hw_t_run 120
+  _hw_t_expect_count "open" 1 "two downs, app absent: open called once"
+  _hw_t_expect_call "open " "-a ${HW_T_BOX}/Herdr.app" "two downs, app absent: opens the app bundle"
+  _hw_t_expect_count "osa|" 1 "two downs, app absent: one banner"
+  _hw_t_expect_call "osa|" "Herdr was not running" "two downs, app absent: banner says the app was not running"
+  _hw_t_expect_state "alerted=1" "two downs, app absent: incident recorded"
+  # A third run 2 min later must not open again or repeat the banner.
+  _hw_t_run 240
+  _hw_t_expect_count "open" 1 "third down run: no second open"
+  _hw_t_expect_count "osa|" 1 "third down run: banner on cooldown"
+
+  # Two downs, app running: no action, banner asks for a window.
+  _hw_t_reset
+  HW_NC_MODE=dead HW_PS_SERVER='' HW_PS_APP=1
+  _hw_t_run
+  _hw_t_run 120
+  _hw_t_expect_count "open" 0 "two downs, app running: no open"
+  _hw_t_expect_count "osa|" 1 "two downs, app running: one banner"
+  _hw_t_expect_call "osa|" "Open a Herdr window" "two downs, app running: banner asks for a window"
+  _hw_t_expect_log "Herdr.app is running; no action" "two downs, app running: decision logged"
+
+  # A process that only starts with the app path plus arguments is not the app.
+  _hw_t_reset
+  HW_NC_MODE=dead HW_PS_SERVER='' HW_PS_APP_ARGS=1
+  _hw_t_run
+  _hw_t_run 120
+  _hw_t_expect_count "open" 1 "app binary with arguments does not count as running"
+
+  # Streak resets when the kind changes: down then hung is a streak of 1.
+  _hw_t_reset
+  HW_NC_MODE=dead HW_PS_SERVER=''
+  _hw_t_run
+  HW_PS_SERVER=1
+  _hw_t_run 120
+  _hw_t_expect_state "kind=hung" "down then hung: kind switches"
+  _hw_t_expect_state "streak=1" "down then hung: streak restarts at 1"
+  _hw_t_expect_count "open" 0 "down then hung: no open"
+}
+
+function _hw_t_hung {
+  _section "herdr-watch: hung"
+
+  # nc that never returns: the deadline must end it, and the run counts as hung.
+  _hw_t_reset
+  HW_NC_MODE=hang HW_T_DEADLINE=1
+  _hw_t_run
+  if (( HW_T_ELAPSED_MS < 4000 )); then
+    _pass "nc hang: the deadline ended it (${HW_T_ELAPSED_MS} ms)"
+  else
+    _fail "nc hang: run took ${HW_T_ELAPSED_MS} ms with a 1 s deadline"
+  fi
+  _hw_t_expect_rc0 "nc hang: exit 0"
+  _hw_t_expect_state "kind=hung" "nc hang with a server process: hung"
+  _hw_t_expect_count "osa|" 0 "hung once: no banner"
+  _hw_t_run 120
+  _hw_t_expect_count "osa|" 1 "hung twice: one banner"
+  _hw_t_expect_call "osa|" "not answering" "hung twice: banner says the server is not answering"
+  _hw_t_expect_count "open" 0 "hung twice: no open"
+  _hw_t_expect_no_call "herdr " "server" "hung twice: never starts or stops a server"
+  _hw_t_expect_no_call "herdr " "status" "hung twice: never calls herdr status"
+  _hw_t_expect_state "alerted=1" "hung twice: incident recorded"
+
+  # Dead socket (nc exits 1, no output) with a live server process is hung too.
+  _hw_t_reset
+  HW_NC_MODE=dead
+  _hw_t_run
+  _hw_t_expect_state "kind=hung" "dead socket + server process: hung"
+
+  # A server of a named session is not the default session's server.
+  _hw_t_reset
+  HW_NC_MODE=dead HW_PS_SERVER='' HW_PS_NAMED=1
+  _hw_t_run
+  _hw_t_expect_state "kind=down" "named-session server only: down"
+
+  # Handoff import under the default config dir counts; one under sessions/ does not.
+  _hw_t_reset
+  HW_NC_MODE=dead HW_PS_SERVER='' HW_PS_HANDOFF="${HW_T_HOME}/.config/herdr/herdr-handoff-1"
+  _hw_t_run
+  _hw_t_expect_state "kind=hung" "default-session handoff-import process: hung"
+  _hw_t_reset
+  HW_NC_MODE=dead HW_PS_SERVER='' HW_PS_HANDOFF="${HW_T_HOME}/.config/herdr/sessions/x/herdr-handoff-1"
+  _hw_t_run
+  _hw_t_expect_state "kind=down" "named-session handoff-import process: down"
+}
+
+function _hw_t_skips {
+  _section "herdr-watch: skip conditions"
+
+  # Each skip leaves a pre-seeded streak alone, calls nothing and does not heal.
+  local seed='kind=down'$'\n''streak=1'$'\n''alerted=0'$'\n''last_open=0'
+  local name
+  for name in kill-switch fresh-lock handoff; do
+    _hw_t_reset
+    HW_NC_MODE=dead HW_PS_SERVER=''
+    /bin/mkdir -p "${HW_T_HOME}/Library/Caches/herdr-watch"
+    print -r -- "${seed}" > "${HW_T_HOME}/Library/Caches/herdr-watch/state"
+    case "${name}" in
+      kill-switch)
+        /bin/mkdir -p "${HW_T_HOME}/Library/Application Support/herdr-watch"
+        : > "${HW_T_HOME}/Library/Application Support/herdr-watch/disabled" ;;
+      fresh-lock)
+        /bin/mkdir -p "${HW_T_HOME}/Library/Caches/herdr-update"
+        : > "${HW_T_HOME}/Library/Caches/herdr-update/lock"
+        /usr/bin/touch -t "$(strftime '%Y%m%d%H%M.%S' "$(( HW_T_BASE - 60 ))")" "${HW_T_HOME}/Library/Caches/herdr-update/lock" ;;
+      handoff)
+        : > "${HW_T_HOME}/.config/herdr/herdr-handoff-4242"
+        /usr/bin/touch -t "$(strftime '%Y%m%d%H%M.%S' "$(( HW_T_BASE - 30 ))")" "${HW_T_HOME}/.config/herdr/herdr-handoff-4242" ;;
+    esac
+    _hw_t_run
+    _hw_t_expect_rc0 "skip ${name}: exit 0"
+    _hw_t_expect_count "nc " 0 "skip ${name}: no probe"
+    _hw_t_expect_count "open" 0 "skip ${name}: no open"
+    _hw_t_expect_count "osa|" 0 "skip ${name}: no banner"
+    _hw_t_expect_log "decision: skip" "skip ${name}: logged"
+    _hw_t_expect_state "streak=1" "skip ${name}: state untouched"
+  done
+
+  # A lock older than 15 min is ignored: the probe runs.
+  _hw_t_reset
+  /bin/mkdir -p "${HW_T_HOME}/Library/Caches/herdr-update"
+  : > "${HW_T_HOME}/Library/Caches/herdr-update/lock"
+  /usr/bin/touch -t 202001010000 "${HW_T_HOME}/Library/Caches/herdr-update/lock"
+  _hw_t_run
+  _hw_t_expect_count "nc " 1 "stale lock: ignored, probe runs"
+  _hw_t_expect_log "older than 15 min; ignored" "stale lock: ignore logged"
+
+  # A lock 14 min old still skips; one 16 min old does not.
+  _hw_t_reset
+  /bin/mkdir -p "${HW_T_HOME}/Library/Caches/herdr-update"
+  : > "${HW_T_HOME}/Library/Caches/herdr-update/lock"
+  /usr/bin/touch -t "$(strftime '%Y%m%d%H%M.%S' "$(( HW_T_BASE - 840 ))")" "${HW_T_HOME}/Library/Caches/herdr-update/lock"
+  _hw_t_run
+  _hw_t_expect_count "nc " 0 "lock 14 min old: skips"
+  /usr/bin/touch -t "$(strftime '%Y%m%d%H%M.%S' "$(( HW_T_BASE - 960 ))")" "${HW_T_HOME}/Library/Caches/herdr-update/lock"
+  _hw_t_run
+  _hw_t_expect_count "nc " 1 "lock 16 min old: probes"
+
+  # A handoff file of any age skips the run (a live handoff must not be disturbed).
+  _hw_t_reset
+  : > "${HW_T_HOME}/.config/herdr/herdr-handoff-9"
+  /usr/bin/touch -t 202001010000 "${HW_T_HOME}/.config/herdr/herdr-handoff-9"
+  _hw_t_run
+  _hw_t_expect_count "nc " 0 "old handoff file: still skips"
+  _hw_t_expect_log "handoff file present" "old handoff file: skip reason logged"
+}
+
+function _hw_t_recovery {
+  _section "herdr-watch: recovery"
+
+  _hw_t_reset
+  HW_NC_MODE=dead HW_PS_SERVER='' HW_PS_APP=1
+  _hw_t_run
+  _hw_t_run 120
+  _hw_t_expect_count "osa|" 1 "recovery: one banner while down"
+  HW_NC_MODE=pong HW_PS_SERVER=1
+  _hw_t_run 240
+  _hw_t_expect_count "osa|" 2 "recovery: one recovery banner"
+  _hw_t_expect_call "osa|Herdr is back|" "answers again" "recovery: banner says the server is back"
+  _hw_t_expect_state "alerted=0" "recovery: incident cleared"
+  _hw_t_expect_state "streak=0" "recovery: streak cleared"
+  _hw_t_run 360
+  _hw_t_expect_count "osa|" 2 "recovery: no second recovery banner"
+
+  # A single blip with no banner needs no recovery banner.
+  _hw_t_reset
+  HW_NC_MODE=dead HW_PS_SERVER=''
+  _hw_t_run
+  HW_NC_MODE=pong HW_PS_SERVER=1
+  _hw_t_run 120
+  _hw_t_expect_count "osa|" 0 "single blip: no banner, no recovery banner"
+  _hw_t_expect_state "streak=0" "single blip: streak cleared"
+}
+
+function _hw_t_stale {
+  _section "herdr-watch: stale binary"
+
+  _hw_t_reset
+  HW_NC_VERSION=0.9.3 HW_HERDR_VERSION=0.9.4
+  _hw_t_run
+  _hw_t_expect_count "osa|" 1 "stale: one banner"
+  _hw_t_expect_call "osa|Herdr update waiting|" "0.9.3" "stale: body names the server version"
+  _hw_t_expect_call "osa|Herdr update waiting|" "0.9.4" "stale: body names the installed version"
+  _hw_t_expect_call "osa|Herdr update waiting|" "herdr-update skill" "stale: body names the skill"
+  _hw_t_run 3600
+  _hw_t_expect_count "osa|" 1 "stale: no second banner within 24 h"
+  _hw_t_run 82800
+  _hw_t_expect_count "osa|" 1 "stale: none at 23 h"
+  _hw_t_run 87000
+  _hw_t_expect_count "osa|" 2 "stale: second banner after 24 h"
+
+  _hw_t_reset
+  HW_NC_VERSION=0.9.4 HW_HERDR_VERSION=0.9.4
+  _hw_t_run
+  _hw_t_expect_count "osa|" 0 "same versions: no banner"
+
+  # herdr --version with no version in its output: logged, no banner.
+  _hw_t_reset
+  HW_NC_VERSION=0.9.3 HW_HERDR_VERSION=garbage
+  _hw_t_run
+  _hw_t_expect_count "osa|" 0 "unparsable binary version: no banner"
+  _hw_t_expect_log "stale check: herdr --version gave no version" "unparsable binary version: logged"
+}
+
+function _hw_t_cooldown {
+  _section "herdr-watch: banner cooldown and delivery"
+
+  _hw_t_reset
+  HW_NC_MODE=dead HW_PS_SERVER='' HW_PS_APP=1
+  _hw_t_run
+  _hw_t_run 120
+  _hw_t_expect_count "osa|" 1 "cooldown: first banner"
+  _hw_t_run 3600
+  _hw_t_expect_count "osa|" 1 "cooldown: none at 1 h"
+  _hw_t_expect_log "banner window: suppressed by cooldown" "cooldown: suppression logged"
+  _hw_t_run 21000
+  _hw_t_expect_count "osa|" 1 "cooldown: none at 5 h 50 min"
+  _hw_t_run 22000
+  _hw_t_expect_count "osa|" 2 "cooldown: banner again after 6 h"
+
+  # A failed osascript starts no cooldown and sets no incident flag.
+  _hw_t_reset
+  HW_NC_MODE=dead HW_PS_SERVER='' HW_PS_APP=1 HW_OSA_FAIL=1
+  _hw_t_run
+  _hw_t_run 120
+  _hw_t_expect_count "osa|" 1 "osascript failure: attempted"
+  _hw_t_expect_log "osascript failed" "osascript failure: logged"
+  HW_OSA_FAIL=''
+  _hw_t_run 240
+  _hw_t_expect_count "osa|" 2 "osascript failure: next run retries"
+  _hw_t_expect_state "alerted=1" "osascript failure: incident recorded once it sent"
+
+  # The banner text travels as argv, never inside the AppleScript source.
+  _hw_t_expect_call "osasrc|" "on run argv" "banner: AppleScript reads its text from argv"
+  _hw_t_expect_no_call "osasrc|" "not running" "banner: title is not in the AppleScript source"
+  _hw_t_expect_no_call "osasrc|" "Open a Herdr window" "banner: body is not in the AppleScript source"
+
+  # Titles stay within 30 characters and carry no exclamation mark.
+  local line title body bad=0
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ "${line}" == osa\|* ]] || continue
+    title="${line#osa|}"
+    title="${title%%|*}"
+    body="${line#osa|*|}"
+    if (( ${#title} > 30 )) || [[ "${title}${body}" == *'!'* ]]; then
+      (( bad += 1 ))
+      _fail "banner copy rule broken: ${line}"
+    fi
+  done < "${HW_T_CALLS}"
+  (( bad == 0 )) && _pass "banner copy: titles at most 30 characters, no exclamation marks"
+}
+
+function _hw_t_edges {
+  _section "herdr-watch: edge cases"
+
+  # ps failure: state unchanged, no heal.
+  _hw_t_reset
+  HW_NC_MODE=dead HW_PS_FAIL=1
+  _hw_t_run
+  _hw_t_expect_rc0 "ps failure: exit 0"
+  _hw_t_expect_log "process list unavailable" "ps failure: logged"
+  _hw_t_expect_count "open" 0 "ps failure: no open"
+  if [[ ! -e "${HW_T_HOME}/Library/Caches/herdr-watch/state" ]]; then _pass "ps failure: no state written"; else _fail "ps failure: state written"; fi
+
+  # nc cannot run: probe unavailable, not a dead server.
+  _hw_t_reset
+  HW_T_NC_PATH="${HW_T_BOX}/no-such-nc"
+  _hw_t_run
+  _hw_t_expect_rc0 "missing nc: exit 0"
+  _hw_t_expect_log "probe unavailable" "missing nc: logged as unavailable"
+  _hw_t_expect_count "open" 0 "missing nc: no open"
+
+  # A corrupt state file is read as data: nothing in it runs.
+  _hw_t_reset
+  /bin/mkdir -p "${HW_T_HOME}/Library/Caches/herdr-watch"
+  print -r -- $'streak=$(/usr/bin/touch '"${HW_T_BOX}"$'/pwned)\nkind=`/usr/bin/touch '"${HW_T_BOX}"$'/pwned2`\nbanner_hung=x\n;;\nstreak=7' \
+    > "${HW_T_HOME}/Library/Caches/herdr-watch/state"
+  HW_NC_MODE=dead HW_PS_SERVER=''
+  _hw_t_run
+  if [[ ! -e "${HW_T_BOX}/pwned" && ! -e "${HW_T_BOX}/pwned2" ]]; then _pass "corrupt state: nothing executed"; else _fail "corrupt state: command substitution ran"; fi
+  _hw_t_expect_rc0 "corrupt state: exit 0"
+  _hw_t_expect_state "kind=down" "corrupt state: valid lines used, junk dropped"
+
+  # A pong version with odd characters is not trusted into the banner text.
+  _hw_t_reset
+  HW_NC_VERSION="0.9.3 \$(/usr/bin/touch pwned)" HW_HERDR_VERSION=0.9.4
+  _hw_t_run
+  _hw_t_expect_count "osa|" 0 "odd pong version: no banner"
+
+  # An unusable HOME is refused before any work.
+  _hw_t_reset
+  local saved="${HW_T_HOME}"
+  HW_T_HOME='relative/home'
+  _hw_t_run
+  HW_T_HOME="${saved}"
+  if (( HW_T_RC == 1 )) && [[ "${HW_T_OUT}" == *refusing* ]]; then _pass "relative HOME: refused with exit 1"; else _fail "relative HOME: rc=${HW_T_RC} out=${HW_T_OUT}"; fi
+}
+
+function run_herdr_watch {
+  zmodload zsh/datetime
+
+  HW_T_SCRIPT="${HERDR_WATCH_UNDER_TEST:-${SCRIPT_DIR}/bin/herdr-watch}"
+  if [[ ! -f "${HW_T_SCRIPT}" ]]; then
+    _fail "herdr-watch: ${HW_T_SCRIPT} is missing"
+    return 0
+  fi
+
+  HW_T_BOX="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/herdr-watch-test.XXXXXX")" || return 1
+  HW_T_BOX="${HW_T_BOX:A}"
+  HW_T_STUBS="${HW_T_BOX}/stubs"
+  HW_T_BASE="${EPOCHSECONDS}"
+  _hw_t_make_stubs
+
+  _hw_t_static
+  _hw_t_ok
+  _hw_t_down
+  _hw_t_hung
+  _hw_t_skips
+  _hw_t_recovery
+  _hw_t_stale
+  _hw_t_cooldown
+  _hw_t_edges
+
+  /bin/rm -rf -- "${HW_T_BOX}"
+}

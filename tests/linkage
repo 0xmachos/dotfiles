@@ -365,6 +365,7 @@ function run_linkage {
     [jump-user]=install_scripts
     [jump-system]=install_scripts
     [scratch-sweep]=install_scripts
+    [herdr-watch]=install_scripts
     [mdview]=install_scripts
     [npm-audit-check]=install_scripts
     [claude-session-audit]=install_scripts
@@ -374,6 +375,7 @@ function run_linkage {
     [papercut]=install_scripts                  # status-line and log CLI
     [spawnprof]=install_scripts                 # spawn-cost profiler for zsh scripts
     [agent-reset]=repo                          # backup/verify/wipe ritual; run from the repo, installed nowhere
+    [herdr-handoff]=repo                        # live handoff after brew upgrade herdr; run as ~/dotfiles/bin/herdr-handoff on each Mac
 
     # install_dotfiles → ~/.local/bin/ (op wrappers)
     [vt]=install_dotfiles
