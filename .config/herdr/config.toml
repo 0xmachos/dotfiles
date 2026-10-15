@@ -24,6 +24,8 @@ green = "#7ee787"
 [ui]
 status_indicators = "symbols"
 hide_tab_bar_when_single_tab = false
+# Use the mobile single-column layout at 80 columns or less.
+mobile_width_threshold = 80
 # Attention queue: blocked agents first, then working, then done.
 agent_panel_sort = "priority"
 show_agent_labels_on_pane_borders = true
