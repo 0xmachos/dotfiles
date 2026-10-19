@@ -75,12 +75,16 @@ function jump {
   # no access_token key; checked 2026-09-04), so downloads go out
   # unauthenticated and device_login is the fallback if the host denies them.
   # Sign-in stays `muse`'s own job.
+  # The launcher is sourced, not run, so Herdr does not see a process named
+  # `muse` and label the pane a Muse session. Its install path reads only
+  # BASH_SOURCE[0], which is the same when sourced.
   # In a terminal the launcher prints and clears any pending
   # .muse-update-notice ("Muse Code updated X -> Y").
   # Verified against launcher_version=2 (Muse Code 1.0.2-R2040.1), 2026-09-04.
   if [[ -x "${MUSE_BINARY}" ]]; then
     echo "[🎨] Updating Muse Code..."
-    MUSE_LAUNCHER_INSTALL=1 MUSE_LOGIN=0 "${MUSE_BINARY}" || rc=1
+    # shellcheck disable=SC2016 # "$1" belongs to the inner bash
+    MUSE_LAUNCHER_INSTALL=1 MUSE_LOGIN=0 /usr/bin/env bash -c '. "$1"' jump-launcher "${MUSE_BINARY}" || rc=1
   fi
 
 

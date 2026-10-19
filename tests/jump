@@ -207,6 +207,14 @@ function _jump_test_zsh_syntax {
   else
     _fail ".functions/jump failed to source or define jump()"
   fi
+
+  # Herdr labels a pane by foreground process name: a direct run of the
+  # launcher shows a Muse session in the agents sidebar during the update.
+  if /usr/bin/grep -Fq "bash -c '. \"\$1\"' jump-launcher \"\${MUSE_BINARY}\"" .functions/jump; then
+    _pass ".functions/jump sources the Muse launcher, never runs it as muse"
+  else
+    _fail ".functions/jump must source the Muse launcher (bash -c '. \"\$1\"'), not run it directly"
+  fi
 }
 
 function _jump_test_log_file {
