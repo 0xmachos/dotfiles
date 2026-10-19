@@ -208,12 +208,21 @@ function _jump_test_zsh_syntax {
     _fail ".functions/jump failed to source or define jump()"
   fi
 
-  # Herdr labels a pane by foreground process name: a direct run of the
-  # launcher shows a Muse session in the agents sidebar during the update.
-  if /usr/bin/grep -Fq "bash -c '. \"\$1\"' jump-launcher \"\${MUSE_BINARY}\"" .functions/jump; then
-    _pass ".functions/jump sources the Muse launcher, never runs it as muse"
+  # Herdr labels a pane by foreground process: a direct run of the launcher
+  # shows a Muse session in the agents sidebar during the update. Comment
+  # lines are dropped first, so a commented-out copy cannot satisfy the check.
+  local code
+  code=$(/usr/bin/grep -v '^[[:space:]]*#' .functions/jump)
+  if [[ "${code}" == *"bash -c 'launcher=\$1; shift; . \"\$launcher\"' jump-launcher \"\${MUSE_BINARY}\""* ]]; then
+    _pass ".functions/jump sources the Muse launcher with its path shifted off"
   else
-    _fail ".functions/jump must source the Muse launcher (bash -c '. \"\$1\"'), not run it directly"
+    _fail ".functions/jump must source the Muse launcher (bash -c 'launcher=\$1; shift; . \"\$launcher\"')"
+  fi
+  # shellcheck disable=SC2016 # literal text of the launcher call, no expansion
+  if [[ "${code}" == *'MUSE_LOGIN=0 "${MUSE_BINARY}"'* || "${code}" == *'bash "${MUSE_BINARY}"'* ]]; then
+    _fail ".functions/jump runs the Muse launcher directly: Herdr labels the pane a Muse session"
+  else
+    _pass ".functions/jump never runs the Muse launcher directly"
   fi
 }
 

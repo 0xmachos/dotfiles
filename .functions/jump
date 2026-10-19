@@ -75,16 +75,21 @@ function jump {
   # no access_token key; checked 2026-09-04), so downloads go out
   # unauthenticated and device_login is the fallback if the host denies them.
   # Sign-in stays `muse`'s own job.
-  # The launcher is sourced, not run, so Herdr does not see a process named
-  # `muse` and label the pane a Muse session. Its install path reads only
+  # Herdr labels a pane by the foreground process: a shell whose first
+  # non-flag argument is named `muse` reads as a Muse session. So the launcher
+  # is sourced by a `bash -c` shell, where Herdr stops at `-c` and sees no
+  # agent. Keep the launcher path out of the script slot of argv: never
+  # `bash "${MUSE_BINARY}"`. The path is shifted off so the launcher sees no
+  # arguments, as in a direct run. Sourcing needs the install path to use no
+  # `$0`, no `$@`, and no top-level `local` or `return`: it reads only
   # BASH_SOURCE[0], which is the same when sourced.
   # In a terminal the launcher prints and clears any pending
   # .muse-update-notice ("Muse Code updated X -> Y").
-  # Verified against launcher_version=2 (Muse Code 1.0.2-R2040.1), 2026-09-04.
+  # Verified against launcher_version=3, 2026-10-19.
   if [[ -x "${MUSE_BINARY}" ]]; then
     echo "[🎨] Updating Muse Code..."
-    # shellcheck disable=SC2016 # "$1" belongs to the inner bash
-    MUSE_LAUNCHER_INSTALL=1 MUSE_LOGIN=0 /usr/bin/env bash -c '. "$1"' jump-launcher "${MUSE_BINARY}" || rc=1
+    # shellcheck disable=SC2016 # "$launcher" belongs to the inner bash
+    MUSE_LAUNCHER_INSTALL=1 MUSE_LOGIN=0 /usr/bin/env bash -c 'launcher=$1; shift; . "$launcher"' jump-launcher "${MUSE_BINARY}" || rc=1
   fi
 
 
