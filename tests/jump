@@ -207,23 +207,6 @@ function _jump_test_zsh_syntax {
   else
     _fail ".functions/jump failed to source or define jump()"
   fi
-
-  # Herdr labels a pane by foreground process: a direct run of the launcher
-  # shows a Muse session in the agents sidebar during the update. Comment
-  # lines are dropped first, so a commented-out copy cannot satisfy the check.
-  local code
-  code=$(/usr/bin/grep -v '^[[:space:]]*#' .functions/jump)
-  if [[ "${code}" == *"bash -c 'launcher=\$1; shift; . \"\$launcher\"' jump-launcher \"\${MUSE_BINARY}\""* ]]; then
-    _pass ".functions/jump sources the Muse launcher with its path shifted off"
-  else
-    _fail ".functions/jump must source the Muse launcher (bash -c 'launcher=\$1; shift; . \"\$launcher\"')"
-  fi
-  # shellcheck disable=SC2016 # literal text of the launcher call, no expansion
-  if [[ "${code}" == *'MUSE_LOGIN=0 "${MUSE_BINARY}"'* || "${code}" == *'bash "${MUSE_BINARY}"'* ]]; then
-    _fail ".functions/jump runs the Muse launcher directly: Herdr labels the pane a Muse session"
-  else
-    _pass ".functions/jump never runs the Muse launcher directly"
-  fi
 }
 
 function _jump_test_log_file {
@@ -450,6 +433,78 @@ function _jump_test_run_and_log_unwritable {
   done
 }
 
+# The `if [[ -x "${MUSE_BINARY}" ]]` block of .functions/jump, through its `fi`.
+function _jump_muse_block {
+  local -a lines
+  local line block="" inside=0
+  # shellcheck disable=SC2296  # zsh (@f) line split
+  lines=("${(@f)$(<.functions/jump)}")
+  for line in "${lines[@]}"; do
+    # shellcheck disable=SC2016  # literal text of the guard line
+    [[ "${line}" == *'[[ -x "${MUSE_BINARY}" ]]; then' ]] && inside=1
+    (( inside )) || continue
+    block+="${line}"$'\n'
+    [[ "${line}" == '  fi' ]] && break
+  done
+  print -r -- "${block}"
+}
+
+# Herdr labels a pane by its foreground process: a shell whose first non-flag
+# argument is named `muse` shows a false Muse session in the agents sidebar. The
+# step must source the launcher from a `bash -c` shell ($0 stays jump-launcher,
+# no arguments), so this runs jump's real Muse block against a fake launcher
+# named muse and reads what the launcher saw. HOME points at the fixture.
+function _jump_test_muse_launcher {
+  _section "Muse launcher step (real block, fake launcher)"
+
+  local fixture block status_in expected_rc actual record
+  local -a records
+  fixture="$(mktemp -d "${TMPDIR}test-jump-muse.XXXXXX")"
+  # Named muse, as Herdr matches the basename.
+  # shellcheck disable=SC2016  # the fake launcher expands these itself
+  print -rl -- '#!/usr/bin/env bash' \
+    'printf "%s|%s|%s|%s|%s\n" "$0" "$#" "${BASH_SOURCE[0]-}" "${MUSE_LAUNCHER_INSTALL-unset}" "${MUSE_LOGIN-unset}" >> "${JUMP_MUSE_OUT}"' \
+    'exit "${JUMP_MUSE_STATUS}"' > "${fixture}/muse"
+  zf_chmod 700 "${fixture}/muse"
+
+  block="$(_jump_muse_block)"
+  if [[ "${block}" != *jump-launcher* ]]; then
+    _fail ".functions/jump: Muse block not found"
+    zf_rm -rf "${fixture}"
+    return
+  fi
+
+  for status_in in 0 7; do
+    expected_rc=$(( status_in != 0 ))
+    : > "${fixture}/out"
+    # shellcheck disable=SC2034  # MUSE_BINARY and rc are read by the evaled block
+    actual=$(
+      set +e
+      export JUMP_MUSE_OUT="${fixture}/out" JUMP_MUSE_STATUS="${status_in}"
+      HOME="${fixture}"
+      MUSE_BINARY="${fixture}/muse"
+      rc=0
+      eval "${block}" >/dev/null 2>&1
+      print -r -- "${rc}"
+    )
+    # shellcheck disable=SC2296  # zsh (@f) line split
+    records=("${(@f)$(<"${fixture}/out")}")
+    record="jump-launcher|0|${fixture}/muse|1|0"
+    if (( ${#records[@]} == 1 )) && [[ "${records[1]}" == "${record}" ]]; then
+      _pass "launcher sourced once from bash -c, no arguments, both env vars (exit ${status_in})"
+    else
+      # shellcheck disable=SC2296  # zsh (j) join flag
+      _fail "launcher call was '${(j:; :)records}', want '${record}' (exit ${status_in})"
+    fi
+    if [[ "${actual}" == "${expected_rc}" ]]; then
+      _pass "launcher exit ${status_in} sets rc=${expected_rc}"
+    else
+      _fail "launcher exit ${status_in} left rc='${actual}', want ${expected_rc}"
+    fi
+  done
+  zf_rm -rf "${fixture}"
+}
+
 function run_jump {
   # Builtin rm and chmod: the zf_ prefix leaves the external commands alone.
   zmodload -F zsh/files b:zf_rm b:zf_chmod
@@ -457,6 +512,7 @@ function run_jump {
   _jump_load_plists
   _jump_test_scripts_exist
   _jump_test_zsh_syntax
+  _jump_test_muse_launcher
   _jump_test_reachability
   _jump_test_binary_paths
   _jump_test_log_file
