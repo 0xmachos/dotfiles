@@ -572,6 +572,49 @@ function _sl_ttl_case {
   fi
 }
 
+# _sl_expect_not_expired <label> — the last output has no cache takeover
+function _sl_expect_not_expired {
+  if [[ "$(_sl_plain "${_SL_OUT}")" == *"Cache Expired"* ]]; then
+    _fail "$1 — flagged cold: $(printf '%q' "${_SL_OUT}")"
+  else
+    _pass "$1"
+  fi
+}
+
+# ── (8c) resumed session: no prompt_cache, cold transcript ────────────────
+# Claude Code omits prompt_cache until the process makes a request, so the
+# status line judges coldness from the transcript file's age instead.
+function _sl_resumed_cold {
+  local t="${_SL_SB}/transcript.jsonl" payload
+  _sl_usage_reset
+  printf '{}\n' > "${t}"
+  payload=".transcript_path = \"${t}\" | .effort.level = \"medium\"
+    | .context_window.current_usage = {input_tokens: 2000,
+      cache_creation_input_tokens: 10000, cache_read_input_tokens: 130000}"
+  # 2h old: cold, 142K tokens (2K + 10K + 130K) re-written at the 1h price
+  touch -t "$(date -r $(( _SL_NOW - 7200 )) +%Y%m%d%H%M.%S)" "${t}"
+  _sl_run 140 "$(_sl_json "${payload}")"
+  _sl_expect_eq "resumed: cold transcript takes over the line" "$(_sl_plain "${_SL_OUT}")" \
+    $'Cache Expired!\n142K tokens to Opus Med is £1.14'
+  _sl_run 100 "$(_sl_json "${payload}")"
+  _sl_expect_has "resumed: also at medium width" "$(_sl_plain "${_SL_OUT}")" "Cache Expired!"
+  # 30 min old: inside the TTL, so no takeover
+  touch -t "$(date -r $(( _SL_NOW - 1800 )) +%Y%m%d%H%M.%S)" "${t}"
+  _sl_run 140 "$(_sl_json "${payload}")"
+  _sl_expect_not_expired "resumed: recent transcript is left alone"
+  # An old transcript with a live prompt_cache object: Claude Code's data wins
+  touch -t "$(date -r $(( _SL_NOW - 7200 )) +%Y%m%d%H%M.%S)" "${t}"
+  _sl_run 140 "$(_sl_json "${payload} | .prompt_cache = {warm: true, caching_observed: true,
+    expires_at: (\$now + 1800), hit_ratio: 0.9, recache_tokens_if_cold: 142000}")"
+  _sl_expect_not_expired "resumed: a warm prompt_cache beats an old transcript"
+  # No context yet: nothing to re-cache
+  _sl_run 140 "$(_sl_json ".transcript_path = \"${t}\"")"
+  _sl_expect_not_expired "resumed: empty context is left alone"
+  # Missing transcript file: no flag, no error
+  _sl_run 140 "$(_sl_json "${payload} | .transcript_path = \"${_SL_SB}/none.jsonl\"")"
+  _sl_expect_not_expired "resumed: missing transcript is left alone"
+}
+
 # ── (8b) expired-cache takeover and the usage-rate ledger ─────────────────
 # shellcheck disable=SC2016  # $now is a jq variable, expanded by _sl_json
 _SL_EXPIRED='.effort.level = "medium"
@@ -1134,6 +1177,7 @@ function run_statusline {
   _sl_git
   _sl_economics
   _sl_expired
+  _sl_resumed_cold
   _sl_cache_alert
   _sl_guards
   _sl_subagent
