@@ -375,6 +375,7 @@ function run_linkage {
     [papercut]=install_scripts                  # status-line and log CLI
     [spawnprof]=install_scripts                 # spawn-cost profiler for zsh scripts
     [agent-reset]=repo                          # backup/verify/wipe ritual; run from the repo, installed nowhere
+    [herdr-detection-override]=repo               # builds the local Herdr detection override; run from the repo, installed nowhere
     [herdr-handoff]=repo                        # live handoff after brew upgrade herdr; run as ~/dotfiles/bin/herdr-handoff on each Mac
 
     # install_dotfiles → ~/.local/bin/ (op wrappers)

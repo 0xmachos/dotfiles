@@ -1,0 +1,129 @@
+#!/bin/zsh
+# dotfiles/bin/herdr-detection-override
+#
+# Makes Herdr show a Claude Code pane as working while a background shell or
+# Monitor still runs. Run from the repo; installed nowhere.
+#
+#   herdr-detection-override apply    write the local override, reload the server
+#   herdr-detection-override check    exit 1 when the override is missing or is
+#                                   built on an older remote manifest
+#
+# Why: Herdr reads the Claude pane screen with the rules of a detection
+# manifest. When a turn ends while a background shell or Monitor runs, the
+# screen shows the empty prompt box, so the idle rule matches. Claude Code
+# still prints the tasks in its footer (`⏵⏵ auto mode on · 1 shell, 1 monitor`).
+# The upstream manifest has rules for background agents and MCP tasks only.
+#
+# How: a file in ~/.config/herdr/agent-detection/<agent>.toml replaces the
+# whole manifest and always wins over the remote one. So `apply` copies the
+# cached remote manifest (~/.local/state/herdr/agent-detection/remote/) and
+# appends one `working` rule at priority 960, above the idle rule (950) and
+# below the blocked rules (980), with the same `not` guards as the upstream MCP
+# task rule so a permission dialog still wins. No upstream text is stored in
+# the repo. The first line of the override records the remote version it was
+# built from.
+#
+# Cost: while the override exists, Herdr no longer applies remote updates to
+# the Claude rules. Run `check` after `herdr server update-agent-manifests`,
+# then `apply` again when it reports a newer remote version. Undo: move the
+# override aside and run `herdr server reload-agent-manifests`.
+#
+# Every write is a temp file in the override directory and one rename.
+
+set -euo pipefail
+umask 077
+zmodload -F zsh/files b:zf_rm
+
+readonly HERDR=${HERDR_BIN_PATH:-/opt/homebrew/bin/herdr}
+readonly REMOTE=$HOME/.local/state/herdr/agent-detection/remote/claude.toml
+readonly DIR=$HOME/.config/herdr/agent-detection
+readonly OVERRIDE=$DIR/claude.toml
+readonly BASE_TAG='# Built from the remote claude manifest version '
+readonly RULE_ID=background_shell_or_monitor_working
+
+die() {
+  print -u2 -- "herdr-detection-override: $1"
+  exit 1
+}
+
+# Sets REPLY to the version = "..." value of the manifest file in $1.
+manifest_version() {
+  local line
+  REPLY=
+  while IFS= read -r line; do
+    if [[ $line == 'version = "'*'"' ]]; then
+      REPLY=${line#'version = "'}
+      REPLY=${REPLY%'"'}
+      return 0
+    fi
+  done < "$1"
+  return 1
+}
+
+rule_block() {
+  cat <<'EOF'
+
+# Added by bin/herdr-detection-override: Claude Code lists a running background
+# shell or Monitor in its footer, so the pane is working, not idle.
+[[rules]]
+id = "background_shell_or_monitor_working"
+state = "working"
+priority = 960
+region = "bottom_non_empty_lines(4)"
+visible_working = true
+line_regex = ['^\s*[⏸⏵]+.*·\s+[1-9]\d*\s+(?:shells?|monitors?)\b']
+not = [
+  { contains = ["do you want to proceed?"] },
+  { contains = ["esc to cancel"] },
+  { contains = ["waiting for permission"] },
+  { contains = ["do you want to allow this connection?"] },
+  { contains = ["tab to amend"] },
+  { contains = ["ctrl+e to explain"] },
+]
+EOF
+}
+
+apply() {
+  [[ -r $REMOTE ]] || die "no remote manifest at $REMOTE (run: herdr server update-agent-manifests)"
+  local version tmp text
+  manifest_version "$REMOTE" || die "no version line in $REMOTE"
+  version=$REPLY
+  text=$(< "$REMOTE")
+  [[ $text == *'id = "claude"'* ]] || die "$REMOTE is not the claude manifest"
+  [[ $text != *"id = \"$RULE_ID\""* ]] || die "the remote manifest already holds the rule $RULE_ID"
+  [[ -d $DIR ]] || /bin/mkdir -p -- "$DIR"
+  tmp=$(/usr/bin/mktemp "$DIR/.claude.toml.XXXXXX") || die "cannot create a temp file in $DIR"
+  {
+    print -r -- "${BASE_TAG}${version}."
+    print -r -- "$text"
+    rule_block
+  } > "$tmp" || { zf_rm -f -- "$tmp"; die "cannot write $tmp"; }
+  /bin/mv -f -- "$tmp" "$OVERRIDE" || die "cannot move the override into place"
+  print -- "wrote $OVERRIDE (built on remote $version)"
+  "$HERDR" server reload-agent-manifests > /dev/null || die "override written, but the server reload failed"
+}
+
+check() {
+  local remote_version base line
+  manifest_version "$REMOTE" || die "no remote manifest at $REMOTE"
+  remote_version=$REPLY
+  [[ -r $OVERRIDE ]] || die "no override at $OVERRIDE (remote is $remote_version)"
+  read -r line < "$OVERRIDE" || true
+  [[ $line == "$BASE_TAG"*'.' ]] || die "$OVERRIDE has no base version line"
+  base=${line#"$BASE_TAG"}
+  base=${base%.}
+  if [[ $base != "$remote_version" ]]; then
+    die "override is built on $base, remote is $remote_version: run apply"
+  fi
+  print -- "override is current (remote $remote_version)"
+}
+
+main() {
+  case ${1:-} in
+    apply) apply ;;
+    check) check ;;
+    *) print -u2 -- "usage: herdr-detection-override apply|check"; exit 2 ;;
+  esac
+}
+
+main "$@"

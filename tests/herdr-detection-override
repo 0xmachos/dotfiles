@@ -1,0 +1,193 @@
+#!/bin/zsh
+# dotfiles/tests/herdr-detection-override
+#
+# Test for bin/herdr-detection-override, which builds the local Herdr detection
+# override for Claude Code (the remote manifest plus one rule that marks a pane
+# with a running background shell or Monitor as working) and checks that the
+# override is built on the current remote manifest.
+#
+# Every case runs the script as a child process with a clean environment
+# (env -i), HOME set to a sandbox that holds a fixture remote manifest, and a
+# fake herdr binary through HERDR_BIN_PATH. The fake logs its argv and can fail
+# on request. The real HOME, the real herdr binary and the live server are never
+# used. Whether Herdr accepts the rule is checked by hand with
+# `herdr agent explain --file <screen> --agent claude`, never here.
+#
+# HERDR_DETECTION_OVERRIDE_TEST_SCRIPT=<path> runs the suite against another copy
+# of the script (a mutation check on a scratch copy).
+#
+# Run: ./test herdr-detection-override
+#
+# ShellCheck: lint with `shellcheck --shell=bash tests/herdr-detection-override`.
+# This file is sourced, not executed: chmod 644.
+#
+# shellcheck source=tests/lib
+
+typeset -g _HCD_SCRIPT='' _HCD_BOX='' _HCD_FAKE='' _HCD_OUT='' _HCD_ERR=''
+typeset -gi _HCD_RC=0
+
+function _hcd_setup {
+  local base="${TMPDIR:-/tmp}"
+  base="${base%/}"
+  _HCD_BOX="$(/usr/bin/mktemp -d "${base}/herdr-detection-override.XXXXXX")"
+  _HCD_FAKE="${_HCD_BOX}/fake-herdr"
+  cat > "${_HCD_FAKE}" <<'FAKE'
+#!/bin/zsh
+print -r -- "$*" >> "${FAKE_DIR}/calls.log"
+[[ -n ${FAKE_FAIL:-} ]] && exit 1
+exit 0
+FAKE
+  /bin/chmod 755 "${_HCD_FAKE}"
+}
+
+# _hcd_remote <version> [id]: write the fixture remote manifest.
+function _hcd_remote {
+  local d="${_HCD_BOX}/home/.local/state/herdr/agent-detection/remote"
+  /bin/mkdir -p "${d}"
+  printf 'id = "%s"\nversion = "%s"\n\n[[rules]]\nid = "live_prompt_box"\nstate = "idle"\npriority = 950\n' \
+    "${2:-claude}" "$1" > "${d}/claude.toml"
+}
+
+function _hcd_reset {
+  /bin/rm -rf "${_HCD_BOX:?}/home" "${_HCD_BOX:?}/calls.log"
+  /bin/mkdir -p "${_HCD_BOX}/home"
+  : > "${_HCD_BOX}/calls.log"
+}
+
+# _hcd_run <apply|check|...> [VAR=value ...]: sets _HCD_OUT, _HCD_ERR, _HCD_RC.
+function _hcd_run {
+  local arg="$1"
+  shift
+  _HCD_RC=0
+  : > "${_HCD_BOX}/calls.log"
+  _HCD_OUT="$(env -i PATH=/usr/bin:/bin HOME="${_HCD_BOX}/home" \
+    HERDR_BIN_PATH="${_HCD_FAKE}" FAKE_DIR="${_HCD_BOX}" "$@" \
+    /bin/zsh "${_HCD_SCRIPT}" "${arg}" 2>"${_HCD_BOX}/stderr")" || _HCD_RC=$?
+  _HCD_ERR="$(< "${_HCD_BOX}/stderr")"
+}
+
+function _hcd_eq {
+  if [[ "$2" == "$3" ]]; then
+    _pass "$1"
+  else
+    _fail "$1 — expected [$2] got [$3]"
+  fi
+}
+
+function _hcd_has {
+  if [[ "$2" == *"$3"* ]]; then
+    _pass "$1"
+  else
+    _fail "$1 — wanted [$3] in [$2]"
+  fi
+}
+
+function _hcd_override { print -r -- "${_HCD_BOX}/home/.config/herdr/agent-detection/claude.toml"; }
+function _hcd_exists {
+  if [[ -e "$(_hcd_override)" ]]; then print yes; else print no; fi
+}
+function _hcd_calls { print -r -- "$(< "${_HCD_BOX}/calls.log")"; }
+
+function run_herdr_detection_override {
+  _section "herdr claude detection override"
+
+  _HCD_SCRIPT="${HERDR_DETECTION_OVERRIDE_TEST_SCRIPT:-${SCRIPT_DIR}/bin/herdr-detection-override}"
+  if [[ ! -f "${_HCD_SCRIPT}" ]]; then
+    _fail "script absent: ${_HCD_SCRIPT}"
+    return 0
+  fi
+  _hcd_setup
+  if [[ -z "${_HCD_BOX}" || ! -d "${_HCD_BOX}" ]]; then
+    _fail "could not create a sandbox for the suite"
+    return 0
+  fi
+  local ov text
+
+  # apply: base line, the whole remote text, the new rule, one reload
+  _hcd_reset
+  _hcd_remote 2026.10.11.1
+  _hcd_run apply
+  ov="$(_hcd_override)"
+  _hcd_eq "apply: exit 0" 0 "${_HCD_RC}"
+  text="$(< "${ov}")"
+  _hcd_eq "apply: first line records the remote version" \
+    "# Built from the remote claude manifest version 2026.10.11.1." "${text%%$'\n'*}"
+  _hcd_has "apply: keeps the remote rules" "${text}" 'id = "live_prompt_box"'
+  _hcd_has "apply: adds the rule" "${text}" 'id = "background_shell_or_monitor_working"'
+  _hcd_has "apply: rule is working at priority 960" "${text}" $'state = "working"\npriority = 960'
+  _hcd_has "apply: rule keeps the permission guard" "${text}" '{ contains = ["do you want to proceed?"] }'
+  _hcd_eq "apply: reloads the server once" "server reload-agent-manifests" "$(_hcd_calls)"
+  _hcd_eq "apply: only the override is in the directory" "claude.toml" \
+    "$(/bin/ls -A "${ov:h}")"
+  _hcd_eq "apply: the override is private (mode 600)" "600" \
+    "$(/usr/bin/stat -f %Lp "${ov}")"
+
+  # a second apply replaces the file, it does not append
+  _hcd_run apply
+  _hcd_eq "apply twice: one rule in the file" "1" \
+    "$(/usr/bin/grep -c 'id = "background_shell_or_monitor_working"' "${ov}")"
+
+  # check
+  _hcd_run check
+  _hcd_eq "check: current override exits 0" 0 "${_HCD_RC}"
+  _hcd_has "check: says current" "${_HCD_OUT}" "override is current (remote 2026.10.11.1)"
+  _hcd_remote 2026.11.01.1
+  _hcd_run check
+  _hcd_eq "check: older base exits 1" 1 "${_HCD_RC}"
+  _hcd_has "check: names both versions" "${_HCD_ERR}" "built on 2026.10.11.1, remote is 2026.11.01.1"
+  /bin/rm -f "${ov}"
+  _hcd_run check
+  _hcd_eq "check: missing override exits 1" 1 "${_HCD_RC}"
+  _hcd_has "check: missing override says so" "${_HCD_ERR}" "no override at"
+  printf 'id = "claude"\n' > "${ov}"
+  _hcd_run check
+  _hcd_eq "check: an override with no base line exits 1" 1 "${_HCD_RC}"
+  _hcd_has "check: names the missing base line" "${_HCD_ERR}" "no base version line"
+
+  # apply error paths: no override written, no reload
+  _hcd_reset
+  _hcd_run apply
+  _hcd_eq "apply: no remote manifest exits 1" 1 "${_HCD_RC}"
+  _hcd_has "apply: no remote manifest says how to fetch" "${_HCD_ERR}" "no remote manifest"
+  _hcd_eq "apply: no remote manifest writes nothing" "no" \
+    "$(_hcd_exists)"
+  _hcd_eq "apply: no remote manifest does not reload" "" "$(_hcd_calls)"
+
+  _hcd_reset
+  _hcd_remote 2026.10.11.1 codex
+  _hcd_run apply
+  _hcd_eq "apply: another agent's manifest exits 1" 1 "${_HCD_RC}"
+  _hcd_has "apply: another agent's manifest is named" "${_HCD_ERR}" "is not the claude manifest"
+  _hcd_eq "apply: another agent's manifest writes nothing" "no" \
+    "$(_hcd_exists)"
+
+  _hcd_reset
+  _hcd_remote 2026.10.11.1
+  print -r -- 'id = "background_shell_or_monitor_working"' >> "${_HCD_BOX}/home/.local/state/herdr/agent-detection/remote/claude.toml"
+  _hcd_run apply
+  _hcd_eq "apply: a remote that holds the rule exits 1" 1 "${_HCD_RC}"
+  _hcd_has "apply: says the remote has the rule" "${_HCD_ERR}" "already holds the rule"
+
+  _hcd_reset
+  /bin/mkdir -p "${_HCD_BOX}/home/.local/state/herdr/agent-detection/remote"
+  printf 'id = "claude"\n' > "${_HCD_BOX}/home/.local/state/herdr/agent-detection/remote/claude.toml"
+  _hcd_run apply
+  _hcd_eq "apply: a manifest with no version exits 1" 1 "${_HCD_RC}"
+  _hcd_has "apply: says the version line is missing" "${_HCD_ERR}" "no version line"
+
+  # a failed reload leaves the file and exits 1
+  _hcd_reset
+  _hcd_remote 2026.10.11.1
+  _hcd_run apply FAKE_FAIL=1
+  _hcd_eq "apply: failed reload exits 1" 1 "${_HCD_RC}"
+  _hcd_has "apply: failed reload says the file was written" "${_HCD_ERR}" "override written, but the server reload failed"
+  _hcd_eq "apply: failed reload keeps the file" "yes" \
+    "$(_hcd_exists)"
+
+  # usage
+  _hcd_run bogus
+  _hcd_eq "usage: unknown word exits 2" 2 "${_HCD_RC}"
+  _hcd_has "usage: prints usage" "${_HCD_ERR}" "usage: herdr-detection-override apply|check"
+
+  /bin/rm -rf "${_HCD_BOX}"
+}
