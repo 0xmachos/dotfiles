@@ -851,36 +851,42 @@ function _sl_herdr_token {
   _sl_herdr_stub
   _sl_herdr_run h1 true 1140
   _sl_expect_eq "herdr: 19 min left sets a 150 s countdown token" "$(_sl_herdr_log)" \
-    "${want} --token cache=cache 19m --ttl-ms 150000"
+    "${want} --token cache=cache 19m --clear-token cache_low --ttl-ms 150000"
   _sl_herdr_run h1 true 1140
   _sl_expect_eq "herdr: an unchanged value makes no second call" "$(_sl_herdr_log)" ""
   _sl_herdr_run h1 true 1080
   _sl_expect_eq "herdr: a new minute count sets the token again" "$(_sl_herdr_log)" \
-    "${want} --token cache=cache 18m --ttl-ms 150000"
+    "${want} --token cache=cache 18m --clear-token cache_low --ttl-ms 150000"
   _sl_herdr_run h1 true 1500
   _sl_expect_eq "herdr: over 20 min left clears the token" "$(_sl_herdr_log)" \
-    "${want} --clear-token cache"
+    "${want} --clear-token cache --clear-token cache_low"
   _sl_herdr_run h1 true 1500
   _sl_expect_eq "herdr: a cleared token is not cleared again" "$(_sl_herdr_log)" ""
   _sl_herdr_run h2 true 1200
   _sl_expect_eq "herdr: exactly 20 min left shows 20m" "$(_sl_herdr_log)" \
-    "${want} --token cache=cache 20m --ttl-ms 150000"
+    "${want} --token cache=cache 20m --clear-token cache_low --ttl-ms 150000"
   _sl_herdr_run h3 true 1201
   _sl_expect_eq "herdr: 20 min and 1 s left shows nothing" "$(_sl_herdr_log)" \
-    "${want} --clear-token cache"
+    "${want} --clear-token cache --clear-token cache_low"
   _sl_herdr_run h4 true 61
   _sl_expect_eq "herdr: 61 s left rounds up to 2m" "$(_sl_herdr_log)" \
-    "${want} --token cache=cache 2m --ttl-ms 150000"
+    "${want} --token cache_low=cache 2m --clear-token cache --ttl-ms 150000"
+  _sl_herdr_run h4b true 300
+  _sl_expect_eq "herdr: exactly 5 min left is the red token" "$(_sl_herdr_log)" \
+    "${want} --token cache_low=cache 5m --clear-token cache --ttl-ms 150000"
+  _sl_herdr_run h4c true 301
+  _sl_expect_eq "herdr: 5 min and 1 s left is the yellow token" "$(_sl_herdr_log)" \
+    "${want} --token cache=cache 6m --clear-token cache_low --ttl-ms 150000"
   _sl_herdr_run h5 false 0
   _sl_expect_eq "herdr: an expired cache sets cold for 24 h" "$(_sl_herdr_log)" \
-    "${want} --token cache=cache cold --ttl-ms 86400000"
+    "${want} --token cache_low=cache cold --clear-token cache --ttl-ms 86400000"
   _sl_herdr_run h5 false 0
   _sl_expect_eq "herdr: cold is not set again inside the refresh window" "$(_sl_herdr_log)" ""
   touch -t "$(date -r $(( _SL_NOW - 700 )) +%Y%m%d%H%M.%S)" \
     "${_SL_SB}/Library/Caches/statusline/herdr-cache-h5"
   _sl_herdr_run h5 false 0
   _sl_expect_eq "herdr: cold is set again after the refresh window" "$(_sl_herdr_log)" \
-    "${want} --token cache=cache cold --ttl-ms 86400000"
+    "${want} --token cache_low=cache cold --clear-token cache --ttl-ms 86400000"
   # A resumed session with no prompt_cache and a 2 h old transcript is cold
   printf '{}\n' > "${t}"
   touch -t "$(date -r $(( _SL_NOW - 7200 )) +%Y%m%d%H%M.%S)" "${t}"
@@ -890,7 +896,7 @@ function _sl_herdr_token {
     HERDR_PANE_ID=w1:p1 HERDR_BIN_PATH="${_SL_SB}/herdr-stub"
   zselect -t 30 || :
   _sl_expect_eq "herdr: a cold resumed transcript sets cold" "$(_sl_herdr_log)" \
-    "${want} --token cache=cache cold --ttl-ms 86400000"
+    "${want} --token cache_low=cache cold --clear-token cache --ttl-ms 86400000"
   # No herdr env: no call
   : > "${_SL_SB}/herdr.log"
   _sl_run 140 "$(_sl_json ".session_id = \"h7\" | .prompt_cache = {warm: false, caching_observed: true,

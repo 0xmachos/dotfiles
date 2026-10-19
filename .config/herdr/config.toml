@@ -77,10 +77,11 @@ rows = [
 
 # Claude rows show the pane label instead: the herdr-tab-title mod sets it to
 # the session title shortened to fit the Herdr UI sidebar width. A pane with
-# no label shows no title, so other agents keep the rows above. The pane token
-# `cache` is set by claude/statusline-command (source user:cache): `cache cold`
-# (red) once the prompt cache is cold, `cache Nm` (yellow) in its last 20
-# minutes, and unset otherwise.
+# no label shows no title, so other agents keep the rows above. Two pane
+# tokens come from claude/statusline-command (source user:cache), never both
+# at once: `cache_low` is `cache cold` or `cache Nm` for the last 5 minutes
+# (red), `cache` is `cache Nm` from 6 to 20 minutes (yellow). Neither is set
+# otherwise.
 [ui.sidebar.agents.rows_by_agent]
 claude = [
   [
@@ -90,7 +91,8 @@ claude = [
   [
     { token = "state_text", bold = true },
     { token = "$wrap", bold = true, rules = [{ equals = "wrapped", fg = "#c792ea" }, { contains = "blocked", fg = "#ff9e64" }] },
-    { token = "$cache", bold = true, rules = [{ equals = "cache cold", fg = "#ff5f5f" }, { contains = "m", fg = "#e5c07b" }] },
+    { token = "$cache_low", bold = true, rules = [{ contains = "cache", fg = "#ff5f5f" }] },
+    { token = "$cache", bold = true, rules = [{ contains = "cache", fg = "#e5c07b" }] },
   ],
 ]
 
