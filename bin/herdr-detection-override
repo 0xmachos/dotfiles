@@ -7,6 +7,9 @@
 #   herdr-detection-override apply    write the local override, reload the server
 #   herdr-detection-override check    exit 1 when the override is missing or is
 #                                   built on an older remote manifest
+#   herdr-detection-override sync     apply only when an override from this
+#                                   script exists and the remote is newer;
+#                                   silent and exit 0 otherwise
 #
 # Why: Herdr reads the Claude pane screen with the rules of a detection
 # manifest. When a turn ends while a background shell or Monitor runs, the
@@ -23,16 +26,22 @@
 # the repo. The first line of the override records the remote version it was
 # built from.
 #
-# Cost: while the override exists, Herdr no longer applies remote updates to
-# the Claude rules. Run `check` after `herdr server update-agent-manifests`,
-# then `apply` again when it reports a newer remote version. Undo: move the
-# override aside and run `herdr server reload-agent-manifests`.
+# Staying current: the plugin .config/herdr/plugins/detection-sync runs `sync`
+# at server start and on every agent state change, so the override is rebuilt
+# from the new remote manifest within one state change of Herdr downloading it.
+# `sync` never creates an override: remove the file and it stays removed. A
+# failed `sync` is remembered per remote version in
+# ~/Library/Caches/herdr-detection-override/failed, so it is not retried on
+# every event; the next remote version retries. Limit: the rule's priority 960
+# assumes upstream keeps the idle rule below it and the blocked rules above it.
+# If upstream renumbers, the rule may lose (the old idle behaviour returns).
+# Undo: move the override aside and run `herdr server reload-agent-manifests`.
 #
 # Every write is a temp file in the override directory and one rename.
 
 set -euo pipefail
 umask 077
-zmodload -F zsh/files b:zf_rm
+zmodload -F zsh/files b:zf_rm b:zf_mkdir
 
 readonly HERDR=${HERDR_BIN_PATH:-/opt/homebrew/bin/herdr}
 readonly REMOTE=$HOME/.local/state/herdr/agent-detection/remote/claude.toml
@@ -40,6 +49,7 @@ readonly DIR=$HOME/.config/herdr/agent-detection
 readonly OVERRIDE=$DIR/claude.toml
 readonly BASE_TAG='# Built from the remote claude manifest version '
 readonly RULE_ID=background_shell_or_monitor_working
+readonly FAILED=$HOME/Library/Caches/herdr-detection-override/failed
 
 die() {
   print -u2 -- "herdr-detection-override: $1"
@@ -118,11 +128,36 @@ check() {
   print -- "override is current (remote $remote_version)"
 }
 
+# Fast path (nothing to do) uses shell builtins only: it runs on every agent
+# state change.
+sync() {
+  local remote_version base line
+  [[ -r $OVERRIDE && -r $REMOTE ]] || return 0
+  manifest_version "$REMOTE" || return 0
+  remote_version=$REPLY
+  read -r line < "$OVERRIDE" || return 0
+  [[ $line == "$BASE_TAG"*'.' ]] || return 0
+  base=${line#"$BASE_TAG"}
+  base=${base%.}
+  [[ $base != "$remote_version" ]] || return 0
+  if [[ -r $FAILED && "$(< "$FAILED")" == "$remote_version" ]]; then
+    return 0
+  fi
+  if ( apply ); then
+    zf_rm -f -- "$FAILED"
+    return 0
+  fi
+  [[ -d ${FAILED:h} ]] || zf_mkdir -p -- "${FAILED:h}"
+  print -r -- "$remote_version" > "$FAILED"
+  return 1
+}
+
 main() {
   case ${1:-} in
     apply) apply ;;
     check) check ;;
-    *) print -u2 -- "usage: herdr-detection-override apply|check"; exit 2 ;;
+    sync) sync ;;
+    *) print -u2 -- "usage: herdr-detection-override apply|check|sync"; exit 2 ;;
   esac
 }
 

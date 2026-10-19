@@ -84,7 +84,8 @@ function _hcd_has {
 
 function _hcd_override { print -r -- "${_HCD_BOX}/home/.config/herdr/agent-detection/claude.toml"; }
 function _hcd_exists {
-  if [[ -e "$(_hcd_override)" ]]; then print yes; else print no; fi
+  # _hcd_exists [path]: yes or no; the override when no path is given.
+  if [[ -e "${1:-$(_hcd_override)}" ]]; then print yes; else print no; fi
 }
 function _hcd_calls { print -r -- "$(< "${_HCD_BOX}/calls.log")"; }
 
@@ -184,10 +185,70 @@ function run_herdr_detection_override {
   _hcd_eq "apply: failed reload keeps the file" "yes" \
     "$(_hcd_exists)"
 
+  # sync: rebuild only a stale override that this script wrote
+  _hcd_reset
+  _hcd_remote 2026.10.11.1
+  _hcd_run apply
+  _hcd_run sync
+  _hcd_eq "sync: a current override exits 0" 0 "${_HCD_RC}"
+  _hcd_eq "sync: a current override makes no call" "" "$(_hcd_calls)"
+  _hcd_eq "sync: a current override prints nothing" "" "${_HCD_OUT}${_HCD_ERR}"
+  _hcd_remote 2026.11.01.1
+  _hcd_run sync
+  _hcd_eq "sync: a stale override exits 0" 0 "${_HCD_RC}"
+  _hcd_has "sync: a stale override is rebuilt on the new remote" \
+    "$(< "$(_hcd_override)")" "# Built from the remote claude manifest version 2026.11.01.1."
+  _hcd_eq "sync: a stale override reloads the server once" "server reload-agent-manifests" "$(_hcd_calls)"
+  _hcd_run sync
+  _hcd_eq "sync: after the rebuild it is quiet again" "" "$(_hcd_calls)"
+
+  _hcd_reset
+  _hcd_remote 2026.10.11.1
+  _hcd_run sync
+  _hcd_eq "sync: no override exits 0" 0 "${_HCD_RC}"
+  _hcd_eq "sync: no override is never created" "no" "$(_hcd_exists)"
+  _hcd_eq "sync: no override makes no call" "" "$(_hcd_calls)"
+
+  _hcd_reset
+  _hcd_remote 2026.10.11.1
+  /bin/mkdir -p "${_HCD_BOX}/home/.config/herdr/agent-detection"
+  printf 'id = "claude"\nversion = "0"\n' > "$(_hcd_override)"
+  _hcd_run sync
+  _hcd_eq "sync: an override from elsewhere exits 0" 0 "${_HCD_RC}"
+  _hcd_eq "sync: an override from elsewhere is left alone" 'id = "claude"'$'\n''version = "0"' "$(< "$(_hcd_override)")"
+
+  _hcd_reset
+  _hcd_run sync
+  _hcd_eq "sync: no remote manifest exits 0" 0 "${_HCD_RC}"
+
+  # a failed sync is remembered for that remote version only; the failure here
+  # (the remote holds the rule) writes nothing, so only the memory stops a retry
+  _hcd_reset
+  _hcd_remote 2026.10.11.1
+  _hcd_run apply
+  _hcd_remote 2026.11.01.1
+  print -r -- 'id = "background_shell_or_monitor_working"' >> \
+    "${_HCD_BOX}/home/.local/state/herdr/agent-detection/remote/claude.toml"
+  _hcd_run sync
+  _hcd_eq "sync: a failed rebuild exits 1" 1 "${_HCD_RC}"
+  _hcd_has "sync: a failed rebuild says why" "${_HCD_ERR}" "already holds the rule"
+  _hcd_run sync
+  _hcd_eq "sync: the same failed version is not retried" 0 "${_HCD_RC}"
+  _hcd_eq "sync: the same failed version prints nothing" "" "${_HCD_OUT}${_HCD_ERR}"
+  _hcd_has "sync: a failed rebuild keeps the old override" \
+    "$(< "$(_hcd_override)")" "version 2026.10.11.1."
+  _hcd_remote 2026.12.01.1
+  _hcd_run sync
+  _hcd_eq "sync: a newer remote retries and succeeds" 0 "${_HCD_RC}"
+  _hcd_has "sync: the retry is built on the newest remote" \
+    "$(< "$(_hcd_override)")" "version 2026.12.01.1."
+  _hcd_eq "sync: success clears the failure memory" "no" \
+    "$(_hcd_exists "${_HCD_BOX}/home/Library/Caches/herdr-detection-override/failed")"
+
   # usage
   _hcd_run bogus
   _hcd_eq "usage: unknown word exits 2" 2 "${_HCD_RC}"
-  _hcd_has "usage: prints usage" "${_HCD_ERR}" "usage: herdr-detection-override apply|check"
+  _hcd_has "usage: prints usage" "${_HCD_ERR}" "usage: herdr-detection-override apply|check|sync"
 
   /bin/rm -rf "${_HCD_BOX}"
 }

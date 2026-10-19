@@ -1,0 +1,25 @@
+# Local herdr plugin, linked from the repo by `bittersweet dotfiles`. It keeps
+# the local Claude detection override (bin/herdr-detection-override) built on
+# the newest remote manifest: `sync` runs at server startup, on every agent
+# state change and as an action (herdr plugin action invoke sync --plugin
+# local.detection-sync). `sync` does nothing unless the override exists and is
+# stale, and its fast path spawns no process beyond the script itself.
+id = "local.detection-sync"
+name = "Detection sync"
+version = "0.1.0"
+min_herdr_version = "0.9.3"
+description = "Rebuild the local Claude detection override when Herdr downloads a newer manifest"
+platforms = ["macos"]
+
+[[startup]]
+command = ["../../../../bin/herdr-detection-override", "sync"]
+
+[[events]]
+on = "pane.agent_status_changed"
+command = ["../../../../bin/herdr-detection-override", "sync"]
+
+[[actions]]
+id = "sync"
+title = "Sync the detection override"
+contexts = ["global"]
+command = ["../../../../bin/herdr-detection-override", "sync"]
