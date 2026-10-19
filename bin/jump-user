@@ -161,7 +161,8 @@ function main {
   # No `muse update` subcommand: MUSE_LAUNCHER_INSTALL=1 is the launcher's
   # install-and-exit path (updates the binary, reports any update notice,
   # exits 0 without the TUI). Verified against launcher_version="2"
-  # (Muse Code 1.0.2-R2040.1), 2026-09-04.
+  # (Muse Code 1.0.2-R2040.1), 2026-09-04; the install path re-read against
+  # launcher_version="3", 2026-10-19.
   # Binary only: the launcher script refreshes itself from api.meta.ai on an
   # interactive launch, at most hourly. MUSE_SYNC_UPDATE=1 is not used to
   # cover that: it execs the app binary afterwards.
