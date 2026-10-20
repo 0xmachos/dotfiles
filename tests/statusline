@@ -818,7 +818,8 @@ function _sl_ledger_concurrent {
     printf '1' > "${u}/last-c${i}"
     ( _sl_json ".session_id = \"c${i}\" | .cost.total_cost_usd = 2
         | .rate_limits.five_hour.used_percentage = 20" \
-      | _run_no_tty env HOME="${_SL_SB}" COLUMNS=140 STATUSLINE_NOW="${_SL_NOW}" \
+      | _run_no_tty env -u HERDR_PANE_ID -u HERDR_BIN_PATH \
+        HOME="${_SL_SB}" COLUMNS=140 STATUSLINE_NOW="${_SL_NOW}" \
         GIT_CEILING_DIRECTORIES="${_SL_SB}" STATUSLINE_OSASCRIPT="${_SL_SB}/osascript-stub" \
         /bin/zsh "${SCRIPT_DIR}/claude/statusline-command" >/dev/null 2>&1
       print -r -- $? > "${_SL_SB}/rc-c${i}" ) &
@@ -1099,7 +1100,8 @@ function _sl_run_spawn {
   local five="${_SL_SB}/Library/Caches/statusline/usage/five"
   if [[ -f "${five}" ]]; then printf '%s 55\n' "${_SL_NOW}" > "${five}"; fi
   printf '%s' "$1" | _run_no_tty env -u CLAUDE_CODE_AUTO_COMPACT_WINDOW \
-    -u GIT_DIR -u GIT_WORK_TREE -u STATUSLINE_NOW GIT_CEILING_DIRECTORIES="${_SL_SB}" \
+    -u GIT_DIR -u GIT_WORK_TREE -u STATUSLINE_NOW -u HERDR_PANE_ID -u HERDR_BIN_PATH \
+    GIT_CEILING_DIRECTORIES="${_SL_SB}" \
     HOME="${_SL_SB}" COLUMNS=140 PATH="${_SL_SB}/shims:${PATH}" \
     STATUSLINE_OSASCRIPT="${_SL_SB}/osascript-stub" \
     /bin/zsh "${SCRIPT_DIR}/claude/statusline-command" >/dev/null 2>"${_SL_SB}/stderr" || \
@@ -1278,6 +1280,15 @@ function run_statusline {
   _SL_SB=""
   trap '[[ -n "${_SL_SB}" ]] && /bin/rm -rf "${_SL_SB}"' EXIT
   _sl_setup
+  # Canary: a herdr pane's real HERDR_* variables reach ./test, and a runner
+  # that keeps them sets tokens on the live pane. Every runner must unset them,
+  # so a stub that logs any call stands in for the whole suite.
+  local herdr_pane_was="${HERDR_PANE_ID-}" herdr_bin_was="${HERDR_BIN_PATH-}"
+  local herdr_pane_set="${HERDR_PANE_ID+1}" herdr_bin_set="${HERDR_BIN_PATH+1}"
+  # shellcheck disable=SC2016  # $@ belongs to the stub, not this shell
+  printf '#!/bin/zsh\nprint -r -- "$@" >> %q\n' "${_SL_SB}/herdr-leak.log" > "${_SL_SB}/herdr-leak"
+  chmod 755 "${_SL_SB}/herdr-leak"
+  export HERDR_PANE_ID=leak:p0 HERDR_BIN_PATH="${_SL_SB}/herdr-leak"
   _sl_exit_codes
   _sl_context
   _sl_usage
@@ -1295,6 +1306,11 @@ function run_statusline {
   _sl_subagent
   _sl_spawns
   _sl_no_modules
+  zselect -t 10 || :
+  _sl_expect_eq "no runner reaches the herdr pane it inherits" \
+    "$(cat "${_SL_SB}/herdr-leak.log" 2>/dev/null)" ""
+  if [[ -n "${herdr_pane_set}" ]]; then export HERDR_PANE_ID="${herdr_pane_was}"; else unset HERDR_PANE_ID; fi
+  if [[ -n "${herdr_bin_set}" ]]; then export HERDR_BIN_PATH="${herdr_bin_was}"; else unset HERDR_BIN_PATH; fi
   /bin/rm -rf "${_SL_SB}"
   trap - EXIT
 }
