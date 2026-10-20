@@ -175,7 +175,9 @@ function _pf_shape {
   for tool in Write Edit NotebookEdit; do
     _pf_source_has "on('tool.call', { tool: '${tool}' }, dispatchAlways).catch(denyOnFailure)" "${tool} always dispatches, with a .catch"
   done
-  _pf_source_has "on('tool.call', { tool: 'Bash' }, prefilterBash).catch(denyOnFailure)" "Bash is prefiltered, with a .catch"
+  for tool in Bash Monitor; do
+    _pf_source_has "on('tool.call', { tool: '${tool}' }, prefilterCommand).catch(denyOnFailure)" "${tool} is prefiltered, with a .catch"
+  done
   _pf_source_has "on('session.start', announceLoaded)" "a session.start hook announces the load (toast proof)"
   _pf_source_has 'const SYNTAX = /[^\t\n\r\x20-\x7e]/' 'SYNTAX is exactly non-printable-ASCII (the mirror assumes it)'
   _pf_source_has "const DECORATION = /[\\\\'\"\$()\`\\n]/g" 'DECORATION deletes quotes, backslashes, $ ( ) backtick and newline (the mirror assumes it)'
