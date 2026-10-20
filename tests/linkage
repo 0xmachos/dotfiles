@@ -389,6 +389,7 @@ function run_linkage {
   local -A claude_items=(
     [settings.json]=install_dotfiles
     [global-claude.md]=install_dotfiles
+    [global-agents.md]=install_dotfiles
     [statusline-command]=install_dotfiles
     [subagent-statusline]=install_dotfiles
     [hosts]=install_dotfiles                 # Dynamic (per-host context files)

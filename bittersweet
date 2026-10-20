@@ -507,6 +507,7 @@ function install_dotfiles {
     "${SCRIPT_DIR}/.aliases"
     "${SCRIPT_DIR}/claude/settings.json"
     "${SCRIPT_DIR}/claude/global-claude.md"
+    "${SCRIPT_DIR}/claude/global-agents.md"
     "${SCRIPT_DIR}/.config/1Password/ssh/agent.toml"
     "${SCRIPT_DIR}/.codex/rules/default.rules"
     # Per-host rules files are named after private machines: a glob, never
@@ -575,15 +576,16 @@ function install_dotfiles {
   # --dangerously-bypass-approvals-and-sandbox.
   _symlink "${SCRIPT_DIR}/.codex/rules/default.rules" "${HOME}/.codex/rules/default.rules"
 
-  # Global agent instructions: ONE source file, three symlinks. Claude Code reads
-  # ~/.claude/CLAUDE.md (claude_files below), Codex ~/.codex/AGENTS.md, Muse Code
-  # ~/.config/muse/AGENTS.md (Muse 1.4.11 reads its own file first and falls back
-  # to ~/.claude/CLAUDE.md only while its own is absent; probed 2026-10-19).
-  # Gitignored, so it may name hosts and aliases. Codex loads the global file
-  # outside its 32768 B project-doc budget; tests/agents-md caps it (_CAP_GLOBAL).
-  _symlink "${SCRIPT_DIR}/claude/global-claude.md" "${HOME}/.codex/AGENTS.md"
+  # Global agent instructions: two source files. Claude Code reads
+  # ~/.claude/CLAUDE.md -> claude/global-claude.md (claude_files below). Codex
+  # and Muse Code read claude/global-agents.md through ~/.codex/AGENTS.md and
+  # ~/.config/muse/AGENTS.md (Muse 1.4.11 reads its own file first and falls
+  # back to ~/.claude/CLAUDE.md only while its own is absent; probed 2026-10-19).
+  # Both are gitignored, so they may name hosts and aliases. Codex loads the
+  # global file outside its 32768 B project-doc budget; tests/agents-md caps both.
+  _symlink "${SCRIPT_DIR}/claude/global-agents.md" "${HOME}/.codex/AGENTS.md"
   _ensure_dir "${HOME}/.config/muse"
-  _symlink "${SCRIPT_DIR}/claude/global-claude.md" "${HOME}/.config/muse/AGENTS.md"
+  _symlink "${SCRIPT_DIR}/claude/global-agents.md" "${HOME}/.config/muse/AGENTS.md"
 
   # Copied, not linked: 1Password doesn't follow symlinks.
   _ensure_dir "${HOME}/.config/1Password/ssh"

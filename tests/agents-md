@@ -1,11 +1,12 @@
 #!/bin/zsh
 # dotfiles/tests/agents-md
 #
-# Guards the one-file agent-guidance design (adopted 2026-09-06 against Claude
-# Code 2.1.263, Codex CLI 0.153.4, Muse Code 1.0.3-R2198.1):
+# Guards the agent-guidance design (one repo file since 2026-09-06; two global
+# files since 2026-10-20, Claude Code 2.1.304, Codex CLI 0.163.0, Muse 1.4.11):
 #   repo scope    AGENTS.md is the real file; CLAUDE.md is a symlink to it.
-#   global scope  claude/global-claude.md is the real file; ~/.claude/CLAUDE.md,
-#                 ~/.codex/AGENTS.md and ~/.config/muse/AGENTS.md link to it.
+#   global scope  claude/global-claude.md is the real file behind
+#                 ~/.claude/CLAUDE.md; claude/global-agents.md is the real file
+#                 behind ~/.codex/AGENTS.md and ~/.config/muse/AGENTS.md.
 # Claude Code needs the CLAUDE.md name through 2.1.263; 2.1.277 (2026-09-18)
 # added native AGENTS.md fallback behind a GrowthBook flag
 # (tengu_agents_md_mod) not guaranteed on, so the symlink stays. Codex ignores
@@ -84,7 +85,8 @@ function _agents_check_tail {
 
 # Regrowth caps. Hard fails; the Codex 32768 B check above stays the outer
 # ceiling. Format "max_bytes max_lines"; 0 = not checked.
-readonly _CAP_GLOBAL="17400 230"
+readonly _CAP_GLOBAL="16800 225"
+readonly _CAP_AGENTS_GLOBAL="11000 150"
 readonly _CAP_AGENTS="12100 212"
 readonly _CAP_REVIEW="8000 140"
 readonly _CAP_RULE_LINES=60
@@ -166,6 +168,7 @@ function _agents_check_regrowth_all {
     return
   }
   _agents_check_regrowth "global-claude.md" "${SCRIPT_DIR}/claude/global-claude.md" "${_CAP_GLOBAL}"
+  _agents_check_regrowth "global-agents.md" "${SCRIPT_DIR}/claude/global-agents.md" "${_CAP_AGENTS_GLOBAL}"
   _agents_check_regrowth "repo AGENTS.md" "${SCRIPT_DIR}/AGENTS.md" "${_CAP_AGENTS}"
   for f in "${SCRIPT_DIR}"/claude/rules/*.md; do
     _agents_check_rule_file "${f}"
@@ -279,25 +282,40 @@ function _agents_check_global_source {
     _agents_check_cap "global-claude.md" "${global_src}"
     _agents_check_tail "global-claude.md" "${global_src}" '^## Machine notes'
   fi
+  local agents_src="${SCRIPT_DIR}/claude/global-agents.md"
+  if [[ -L "${agents_src}" ]]; then
+    _fail "global: claude/global-agents.md is itself a symlink — it must be the real file both ~/.codex/AGENTS.md and ~/.config/muse/AGENTS.md link to"
+  elif [[ ! -f "${agents_src}" ]]; then
+    _skip "global: claude/global-agents.md absent — claude/ pending out-of-band sync"
+  else
+    _agents_check_cap "global-agents.md" "${agents_src}"
+    _agents_check_tail "global-agents.md" "${agents_src}" '^## Machine notes'
+  fi
 }
 
 # Skills Codex shares through ~/.agents/skills copies. The fixture cases shadow
 # the list with a shorter local one.
 typeset -a _AGENTS_SHARED_SKILLS=(git-history-repair zsh-style macos-security-footguns bao-admin swift-conventions rust-conventions npm-conventions python-conventions objc-conventions ci-conventions)
 
-# $1 home dir. Both global instruction files must link to
-# ${SCRIPT_DIR}/claude/global-claude.md.
+# $1 home dir. ~/.claude/CLAUDE.md must link to claude/global-claude.md;
+# ~/.codex/AGENTS.md and ~/.config/muse/AGENTS.md to claude/global-agents.md.
 function _agents_check_live_links {
-  local home="$1" live global_src="${SCRIPT_DIR}/claude/global-claude.md"
-  for live in "${home}/.claude/CLAUDE.md" "${home}/.codex/AGENTS.md"; do
+  local home="$1" live src
+  local -A expect=(
+    ["${home}/.claude/CLAUDE.md"]="${SCRIPT_DIR}/claude/global-claude.md"
+    ["${home}/.codex/AGENTS.md"]="${SCRIPT_DIR}/claude/global-agents.md"
+    ["${home}/.config/muse/AGENTS.md"]="${SCRIPT_DIR}/claude/global-agents.md"
+  )
+  for live in "${home}/.claude/CLAUDE.md" "${home}/.codex/AGENTS.md" "${home}/.config/muse/AGENTS.md"; do
+    src="${expect[${live}]}"
     if [[ ! -L "${live}" ]]; then
-      _fail "global: ${live} is not a symlink — it must link to claude/global-claude.md"
-    elif [[ "$(readlink "${live}")" != "${global_src}" ]]; then
-      _fail "global: ${live} points at '$(readlink "${live}")', expected ${global_src}"
+      _fail "global: ${live} is not a symlink — it must link to claude/${src:t}"
+    elif [[ "$(readlink "${live}")" != "${src}" ]]; then
+      _fail "global: ${live} points at '$(readlink "${live}")', expected ${src}"
     elif [[ ! -e "${live}" ]]; then
       _fail "global: ${live} is a dangling symlink"
     else
-      _pass "global: ${live} -> claude/global-claude.md"
+      _pass "global: ${live} -> claude/${src:t}"
     fi
   done
 }
@@ -396,6 +414,7 @@ function _agents_fixture_cases {
 
   ln -s elsewhere.md "${root}/gsym/claude/global-claude.md"
   print -rn -- $'## Machine notes\n' > "${root}/gok/claude/global-claude.md"
+  print -rn -- $'## Machine notes\n' > "${root}/gok/claude/global-agents.md"
   _agents_run_in "${root}/gsym" _agents_check_global_source
   _agents_expect "global: a symlinked source fails" "${REPLY}" "${RED}" FAIL "global: claude/global-claude.md is itself a symlink"
   _agents_run_in "${root}/gabsent" _agents_check_global_source
@@ -414,24 +433,30 @@ function _agents_home_fixture_cases {
   local -a _AGENTS_SHARED_SKILLS=(link-skill stale-skill gone-skill good-skill)
   root="$(mktemp -d "${TMPDIR}agents-md-home.XXXXXX")"
   sd="${root}/repo"
-  /bin/mkdir -p "${sd}/claude" "${root}"/{ok,notlink,wrong,dangling,skills,nodir,dirlink}/home/{.claude,.codex,.agents} "${root}/other/realskills" "${root}/nosrc/claude"
+  /bin/mkdir -p "${sd}/claude" "${root}"/{ok,notlink,wrong,dangling,skills,nodir,dirlink}/home/{.claude,.codex,.config/muse,.agents} "${root}/other/realskills" "${root}/nosrc/claude"
   print -rn -- $'## Machine notes\n' > "${sd}/claude/global-claude.md"
+  print -rn -- $'## Machine notes\n' > "${sd}/claude/global-agents.md"
   print -rn -- $'## Machine notes\n' > "${root}/other/elsewhere.md"
 
   # Links: ok links both files to the source; notlink holds regular files;
   # wrong links elsewhere; dangling links to a source that is absent.
   ln -s "${sd}/claude/global-claude.md" "${root}/ok/home/.claude/CLAUDE.md"
-  ln -s "${sd}/claude/global-claude.md" "${root}/ok/home/.codex/AGENTS.md"
+  ln -s "${sd}/claude/global-agents.md" "${root}/ok/home/.codex/AGENTS.md"
+  ln -s "${sd}/claude/global-agents.md" "${root}/ok/home/.config/muse/AGENTS.md"
   print -rn -- x > "${root}/notlink/home/.claude/CLAUDE.md"
   print -rn -- x > "${root}/notlink/home/.codex/AGENTS.md"
+  print -rn -- x > "${root}/notlink/home/.config/muse/AGENTS.md"
   ln -s "${root}/other/elsewhere.md" "${root}/wrong/home/.claude/CLAUDE.md"
   ln -s "${root}/other/elsewhere.md" "${root}/wrong/home/.codex/AGENTS.md"
+  ln -s "${root}/other/elsewhere.md" "${root}/wrong/home/.config/muse/AGENTS.md"
   ln -s "${root}/nosrc/claude/global-claude.md" "${root}/dangling/home/.claude/CLAUDE.md"
-  ln -s "${root}/nosrc/claude/global-claude.md" "${root}/dangling/home/.codex/AGENTS.md"
+  ln -s "${root}/nosrc/claude/global-agents.md" "${root}/dangling/home/.codex/AGENTS.md"
+  ln -s "${root}/nosrc/claude/global-agents.md" "${root}/dangling/home/.config/muse/AGENTS.md"
 
   _agents_run_in "${sd}" _agents_check_live_links "${root}/ok/home"
   _agents_expect "live links: ~/.claude/CLAUDE.md linked to the source passes" "${REPLY}" "${GREEN}" PASS "global: ${root}/ok/home/.claude/CLAUDE.md -> claude/global-claude.md"
-  _agents_expect "live links: ~/.codex/AGENTS.md linked to the source passes" "${REPLY}" "${GREEN}" PASS "global: ${root}/ok/home/.codex/AGENTS.md -> claude/global-claude.md"
+  _agents_expect "live links: ~/.codex/AGENTS.md linked to the source passes" "${REPLY}" "${GREEN}" PASS "global: ${root}/ok/home/.codex/AGENTS.md -> claude/global-agents.md"
+  _agents_expect "live links: ~/.config/muse/AGENTS.md linked to the source passes" "${REPLY}" "${GREEN}" PASS "global: ${root}/ok/home/.config/muse/AGENTS.md -> claude/global-agents.md"
   _agents_run_in "${sd}" _agents_check_live_links "${root}/notlink/home"
   _agents_expect "live links: ~/.claude/CLAUDE.md as a regular file fails" "${REPLY}" "${RED}" FAIL "global: ${root}/notlink/home/.claude/CLAUDE.md is not a symlink"
   _agents_expect "live links: ~/.codex/AGENTS.md as a regular file fails" "${REPLY}" "${RED}" FAIL "global: ${root}/notlink/home/.codex/AGENTS.md is not a symlink"
@@ -486,12 +511,15 @@ function run_agents_md {
   #    this repo is not the live deployment.
   local bittersweet="${SCRIPT_DIR}/bittersweet"
   # Single quotes on purpose: match the literal ${SCRIPT_DIR}/${HOME} text.
+  local live_path
   # shellcheck disable=SC2016
-  if /usr/bin/grep -q '_symlink "${SCRIPT_DIR}/claude/global-claude.md" "${HOME}/.codex/AGENTS.md"' "${bittersweet}"; then
-    _pass "bittersweet: ~/.codex/AGENTS.md deploys from claude/global-claude.md"
-  else
-    _fail "bittersweet: no _symlink deploying claude/global-claude.md to ~/.codex/AGENTS.md — Codex and Claude would drift apart again"
-  fi
+  for live_path in '${HOME}/.codex/AGENTS.md' '${HOME}/.config/muse/AGENTS.md'; do
+    if /usr/bin/grep -q "_symlink \"\${SCRIPT_DIR}/claude/global-agents.md\" \"${live_path}\"" "${bittersweet}"; then
+      _pass "bittersweet: ${live_path} deploys from claude/global-agents.md"
+    else
+      _fail "bittersweet: no _symlink deploying claude/global-agents.md to ${live_path} — the reviewer harnesses would read a stale or absent file"
+    fi
+  done
 
   # The Claude half deploys via a claude_files map entry, not a _symlink call,
   # so it needs its own guard (a dropped row is invisible where step 4 skips).
@@ -506,6 +534,12 @@ function run_agents_md {
     _pass "bittersweet: claude/global-claude.md is hardened (sensitive_files)"
   else
     _fail "bittersweet: claude/global-claude.md missing from sensitive_files — it names hosts and must be mode 600"
+  fi
+  # shellcheck disable=SC2016
+  if /usr/bin/grep -q '"\${SCRIPT_DIR}/claude/global-agents.md"' "${bittersweet}"; then
+    _pass "bittersweet: claude/global-agents.md is hardened (sensitive_files)"
+  else
+    _fail "bittersweet: claude/global-agents.md missing from sensitive_files — it names hosts and must be mode 600"
   fi
 
   # 3b. Review rulebook and regrowth caps. Before the live gate below, which
