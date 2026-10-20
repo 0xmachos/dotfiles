@@ -1,15 +1,13 @@
 #!/usr/bin/env zsh
 # dotfiles/.functions/muse
 #
-# Launches Muse Code under the built-in `:auto-review` permission profile
-# (since 2026-10-13, Muse Code 1.4.6; before that `--approval-mode never
-# --disable-sandbox`). The profile keeps the Seatbelt sandbox on: the whole
-# disk is readable, writes go only to the workspace and temp directories,
-# `.git`/`.muse`/`.agents` stay read-only, and local commands reach the
-# network through the proxy. Approval is on request, and an AI reviewer
-# decides eligible actions before a human is asked.
+# Launches Muse Code with `--approval-mode never --disable-sandbox`: no approval
+# prompts and no Seatbelt sandbox. 2026-10-13 to 2026-10-16 it used the built-in
+# `:auto-review` profile instead (Muse Code 1.4.6): sandbox on, approval on
+# request, an AI reviewer first and then a human. It still asked the user, so
+# the no-prompt flags came back (2026-10-16).
 #
-#   muse, muse "prompt", muse resume --last   # interactive: profile added
+#   muse, muse "prompt", muse resume --last   # interactive: flags added
 #   muse exec ..., muse skills list           # known subcommand: untouched
 #                                             # (headless picks its own posture:
 #                                             # --disable-approval / --yolo)
@@ -17,10 +15,10 @@
 #   MUSE_AUTO_SKIP=1 muse                     # escape hatch: stock defaults
 #
 # A posture flag in argv (--permission-profile, --approval-mode,
-# --disable-approval, --disable-sandbox, --yolo) skips the added profile:
+# --disable-approval, --disable-sandbox, --yolo) skips the added flags:
 # Muse refuses --permission-profile with --approval-mode, and rejects a
-# repeated --permission-profile. --disable-sandbox leaves any profile
-# recorded but not enforced.
+# repeated --permission-profile. The `permissions.default_profile` in
+# settings.json stays `:auto-review`; the launch flags override it.
 # Not --yolo: it also trusts the workspace, so a fork/PR checkout's AGENTS.md,
 # rules and skills would load unreviewed. Trust stays a one-time per-workspace
 # answer (~/.config/muse/trust.json).
@@ -70,5 +68,5 @@ function muse {
         ;;
     esac
   done
-  command muse --permission-profile :auto-review "$@"
+  command muse --approval-mode never --disable-sandbox "$@"
 }
