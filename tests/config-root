@@ -1,0 +1,603 @@
+#!/bin/zsh
+# dotfiles/tests/config-root
+#
+# Behavioural test for claude/hooks/config-root-hook, the PreToolUse hook that
+# denies writes into the live agent config directories (~/.claude, ~/.codex,
+# ~/.config/muse) and points at the dotfiles copy. Feeds tool calls as stdin
+# JSON and asserts the verdict:
+#   DENY: Write/Edit/NotebookEdit targets and Bash write positions under a
+#         root, except the allowed prefixes
+#   PASS: every allowed prefix, reads, lookalike names, other homes, text
+#         mentions, heredoc data, a cd that leaves the root
+# Both directions are pinned (`cat ~/.claude/x` must pass, `cp a ~/.claude/x`
+# must deny). The hook is lexical, so every case runs with a fake HOME
+# (/Users/tester) that is never touched on disk. Every loop in the hook is
+# driven more than once, and the hook source is checked for a `local` below
+# function level (a repeated untyped `local NAME` in one zsh scope prints
+# NAME=value to stdout and corrupts the deny JSON).
+#
+# Run: ./test config-root    (or ./test for the full suite)
+#
+# ShellCheck: lint with `shellcheck --shell=bash tests/config-root`.
+# This file is sourced, not executed - chmod 644.
+#
+# shellcheck source=tests/lib
+# shellcheck disable=SC2016,SC2088  # literal $ and ~ in fixtures: they are the hook's input
+
+typeset -g CR_HOME=/Users/tester CR_OUT=''
+typeset -g CR_HOOK_REL=claude/hooks/config-root-hook
+
+function _cr_hook {
+  # Print the path of the hook under test.
+  printf '%s' "${SCRIPT_DIR}/${CR_HOOK_REL}"
+}
+
+function _cr_run {
+  # Set CR_OUT to the hook's stdout for Bash command $1 run in directory $2
+  # (default /work; an empty $2 sends an empty cwd).
+  local payload
+  payload="$(jq -cn --arg c "$1" --arg w "${2-/work}" '{tool_name:"Bash", tool_input:{command:$c}, cwd:$w}')"
+  CR_OUT="$(HOME="${CR_HOME}" /bin/zsh "$(_cr_hook)" <<< "${payload}" || true)"
+}
+
+function _cr_run_path {
+  # Set CR_OUT to the hook's stdout for tool $1 with input key $2 set to path
+  # $3, run in directory $4.
+  local payload
+  payload="$(jq -cn --arg t "$1" --arg k "$2" --arg p "$3" --arg w "${4-/work}" '{tool_name:$t, tool_input:{($k):$p, content:"x"}, cwd:$w}')"
+  CR_OUT="$(HOME="${CR_HOME}" /bin/zsh "$(_cr_hook)" <<< "${payload}" || true)"
+}
+
+function _cr_check {
+  local want="$1" out="$2" label="$3" got
+  got="$(_hook_verdict "${out}")"
+  if [[ "${got}" == "${want}" ]]; then
+    _pass "${want}: ${label}"
+  else
+    _fail "${label} - expected ${want}, got ${got}"
+  fi
+}
+
+function _cr_expect {
+  # $1 = DENY or PASS, $2 = command, $3 = label (default the command).
+  _cr_run "$2"
+  _cr_check "$1" "${CR_OUT}" "${3:-$2}"
+}
+
+function _cr_expect_in {
+  # $1 = DENY or PASS, $2 = working directory, $3 = command.
+  _cr_run "$3" "$2"
+  _cr_check "$1" "${CR_OUT}" "$3 (cwd ${2:-<empty>})"
+}
+
+function _cr_expect_path {
+  # $1 = DENY or PASS, $2 = tool, $3 = input key, $4 = path, $5 = directory.
+  _cr_run_path "$2" "$3" "$4" "${5-/work}"
+  _cr_check "$1" "${CR_OUT}" "$2 $4${5:+ (cwd $5)}"
+}
+
+function _cr_copy_hook {
+  # Copy the hook to $1/hook with ONE literal changed: $2 becomes $3. Returns 1
+  # (and says why) when the copy is unchanged or lacks the new literal, so a
+  # drifted pattern cannot give a green case.
+  local dir="$1" old="$2" new="$3" body changed
+  body="$(<"$(_cr_hook)")" || body=''
+  changed="${body/"${old}"/"${new}"}"
+  if [[ -z "${body}" || "${changed}" == "${body}" || "${changed}" != *"${new}"* ]]; then
+    _fail "hook copy: literal not found or not changed: ${old}"
+    return 1
+  fi
+  print -r -- "${changed}" > "${dir}/hook"
+}
+
+function run_config_root {
+  _section "live agent config write guard hook"
+
+  # claude/ is gitignored, so the hook is absent on a clean clone and in CI.
+  if [[ ! -f "$(_cr_hook)" ]]; then
+    _skip "${CR_HOOK_REL} absent - claude/ not yet synced to this machine"
+    return 0
+  fi
+  if ! [[ -x "$(command -v jq)" ]]; then
+    _skip "jq not installed (brew install jq)"
+    return
+  fi
+
+  local p h
+  local -a denied allowed lookalike
+
+  # --- Write / Edit / NotebookEdit: lexical path check ---------------------
+  denied=(
+    /Users/tester/.claude/settings.json
+    /Users/tester/.claude/CLAUDE.md
+    /Users/tester/.claude/rules/x.md
+    /Users/tester/.claude/hooks/some-hook
+    /Users/tester/.claude/hooks/herdr-agent-state.sh.bak
+    /Users/tester/.claude
+    /Users/tester/.claude/projects
+    /Users/tester/.claude/projects-x/y
+    /Users/tester/.claude/dev-mods
+    /Users/tester/.claude/plans
+    /Users/tester/.claude/plans-x/y
+    /Users/tester/.codex/rules/default.rules
+    /Users/tester/.codex/config.toml.bak
+    /Users/tester/.codex/sessions
+    /Users/tester/.codex/log
+    /Users/tester/.config/muse/settings.json
+    /Users/tester/.config/muse/sessions
+    /Users/tester/.config/muse/logs
+    /Users/tester/.config/muse
+    '~/.claude/settings.json'
+    '~/.codex/rules/default.rules'
+    '~/.config/muse/settings.json'
+    '$HOME/.claude/CLAUDE.md'
+    '${HOME}/.codex/rules/default.rules'
+    /Users/tester//.claude/x
+    //Users/tester/.claude/x
+    /Users/tester/./.claude/x
+    /Users/tester/x/../.claude/x
+    /Users/tester/.claude/projects/../settings.json
+    /Users/tester/.claude/dev-mods/../../.codex/x
+    /Users/tester/.CLAUDE/x
+    /Users/Tester/.Claude/Rules/x
+    /Users/tester/.config/Muse/settings.json
+  )
+  for p in "${denied[@]}"; do
+    _cr_expect_path DENY Write file_path "${p}"
+  done
+  _cr_expect_path DENY Edit file_path /Users/tester/.claude/settings.json
+  _cr_expect_path DENY Edit file_path '~/.claude/CLAUDE.md'
+  _cr_expect_path DENY NotebookEdit notebook_path /Users/tester/.claude/n.ipynb
+  _cr_expect_path DENY NotebookEdit notebook_path '$HOME/.codex/n.ipynb'
+  # A relative path joins the working directory.
+  _cr_expect_path DENY Write file_path .claude/x /Users/tester
+  _cr_expect_path DENY Write file_path settings.json /Users/tester/.claude
+  _cr_expect_path DENY Write file_path ../settings.json /Users/tester/.claude/projects
+  _cr_expect_path PASS Write file_path x /Users/tester/.claude/projects/p
+  _cr_expect_path PASS Write file_path .claude/x /work
+  _cr_expect_path PASS Write file_path settings.json ''
+
+  # Every allowed prefix gets a passing case, through each tool and each
+  # spelling of the home directory.
+  allowed=(
+    /Users/tester/.claude/projects/-Users-x/memory/m.md
+    /Users/tester/.claude/projects/p/s.jsonl
+    /Users/tester/.claude/dev-mods/s/m/hooks/hooks.json
+    /Users/tester/.claude/plans/some-plan.md
+    /Users/tester/.claude/hooks/herdr-agent-state.sh
+    /Users/tester/.codex/config.toml
+    /Users/tester/.codex/sessions/2026/10/20/r.jsonl
+    /Users/tester/.codex/log/codex.log
+    /Users/tester/.config/muse/sessions/s.json
+    /Users/tester/.config/muse/logs/m.log
+    '~/.claude/projects/p/m.md'
+    '$HOME/.claude/dev-mods/s/x'
+    '${HOME}/.codex/sessions/x'
+    '~/.config/muse/logs/x'
+    /Users/tester/.claude/projects/./p/../q/m.md
+    /Users/tester/.CLAUDE/Projects/p/m.md
+  )
+  for p in "${allowed[@]}"; do
+    _cr_expect_path PASS Write file_path "${p}"
+  done
+  _cr_expect_path PASS Edit file_path /Users/tester/.claude/projects/p/m.md
+  _cr_expect_path PASS NotebookEdit notebook_path /Users/tester/.claude/dev-mods/s/n.ipynb
+
+  lookalike=(
+    /Users/tester/.claude.json
+    /Users/tester/.claudex/x
+    /Users/tester/.codex-old/x
+    /Users/tester/.codexrc
+    /Users/tester/dotfiles/claude/settings.json
+    /Users/tester/dotfiles/.codex/rules/default.rules
+    /Users/tester/dotfiles/.config/muse/settings.json
+    /Users/tester/.config/other/x
+    /Users/tester/.config/muse-x/y
+    /Users/tester/.config
+    /Users/other/.claude/x
+    /work/.claude/x
+    /tmp/x
+    '~other/.claude/x'
+    '$OTHER/.claude/x'
+    ''
+  )
+  for p in "${lookalike[@]}"; do
+    [[ -n "${p}" ]] || continue
+    _cr_expect_path PASS Write file_path "${p}"
+  done
+
+  # --- Bash: write redirects ----------------------------------------------
+  for h in '~' '$HOME' '${HOME}' /Users/tester '"$HOME"' '"${HOME}"' '"~"'; do
+    _cr_expect DENY "echo hi > ${h}/.claude/x"
+  done
+  _cr_expect DENY 'echo hi >~/.claude/x'
+  _cr_expect DENY 'echo hi >> ~/.claude/x'
+  _cr_expect DENY 'echo hi >| ~/.claude/x'
+  _cr_expect DENY 'echo hi >! ~/.claude/x'
+  _cr_expect DENY 'cmd &> ~/.codex/x'
+  _cr_expect DENY 'cmd &>> ~/.codex/x'
+  _cr_expect DENY 'cmd 2> ~/.config/muse/x'
+  _cr_expect DENY 'cmd 2>>~/.config/muse/x'
+  _cr_expect DENY 'cmd >& ~/.claude/x'
+  _cr_expect DENY 'cmd <>~/.claude/x' 'read-write redirect'
+  _cr_expect DENY 'cmd </dev/null >~/.claude/x' 'input redirect before a write redirect'
+  _cr_expect DENY 'a > o1 2> o2 >> o3 > ~/.claude/x' 'several redirects on one command'
+  _cr_expect DENY 'echo a >~/.claude/x #comment' 'comment after the redirect'
+  _cr_expect DENY 'cat > ~/.claude/CLAUDE.md <<EOF
+body
+EOF'
+  _cr_expect DENY 'echo hi > ~/.claude/x/../y'
+  _cr_expect DENY 'echo hi > ~/.CLAUDE/x'
+  _cr_expect PASS 'echo hi > ~/.claude/projects/p/m.md'
+  _cr_expect PASS 'echo hi >> $HOME/.claude/projects/p/m.md'
+  _cr_expect PASS 'echo hi > ${HOME}/.claude/dev-mods/s/x'
+  _cr_expect PASS 'echo hi > ~/.claude/plans/p.md'
+  _cr_expect DENY 'rm -rf ~/.claude/plans' 'the plans directory itself'
+  _cr_expect PASS 'echo hi > ~/.claude/hooks/herdr-agent-state.sh'
+  _cr_expect PASS 'echo hi > ~/.codex/config.toml'
+  _cr_expect PASS 'echo hi > ~/.codex/sessions/s.jsonl'
+  _cr_expect PASS 'echo hi > ~/.codex/log/x'
+  _cr_expect PASS 'echo hi > ~/.config/muse/sessions/s.json'
+  _cr_expect PASS 'echo hi > ~/.config/muse/logs/x'
+  _cr_expect PASS 'echo hi 2> ~/.claude/projects/e'
+  _cr_expect PASS 'echo hi > /dev/null'
+  _cr_expect PASS 'echo hi 2>&1'
+  _cr_expect PASS 'echo hi > ~/.claude.json'
+  _cr_expect PASS 'echo hi > ~/.claude/projects/../projects/p/x'
+  _cr_expect DENY 'echo hi > ~/.claude/projects/../x'
+
+  # --- Bash: command write positions --------------------------------------
+  _cr_expect DENY 'echo hi | tee ~/.claude/x'
+  _cr_expect DENY 'echo hi | tee -a ~/.claude/x'
+  _cr_expect DENY 'echo hi | tee a ~/.claude/x'
+  _cr_expect PASS 'echo hi | tee ~/.claude/projects/p/x'
+  _cr_expect DENY 'cp a ~/.claude/x'
+  _cr_expect DENY 'cp -R a ~/.codex/rules/'
+  _cr_expect DENY 'cp -t ~/.claude/rules a b' 'cp -t'
+  _cr_expect DENY 'cp --target-directory=~/.claude/rules a b'
+  _cr_expect DENY 'cp a b ~/.config/muse/'
+  _cr_expect PASS 'cp ~/.claude/settings.json /work/' 'cp reads the source'
+  _cr_expect PASS 'cp -R ~/.codex/rules /work/r'
+  _cr_expect PASS 'cp a ~/.claude/projects/p/b'
+  _cr_expect PASS 'cp a ~/.codex/config.toml'
+  _cr_expect DENY 'mv a ~/.claude/x'
+  _cr_expect DENY 'mv ~/.claude/x /work/x' 'a move removes its source'
+  _cr_expect DENY 'mv -f ~/.codex/rules/default.rules /work/'
+  _cr_expect DENY 'mv -t /work ~/.claude/a ~/.claude/b'
+  _cr_expect PASS 'mv ~/.claude/projects/p/a /work/a'
+  _cr_expect PASS 'mv a b'
+  _cr_expect DENY 'ln -s a ~/.claude/x'
+  _cr_expect DENY 'ln -sf /work/a ~/.codex/rules/default.rules'
+  _cr_expect PASS 'ln -s ~/.claude/x /work/link' 'the link name is the write'
+  _cr_expect DENY 'install -m 644 a ~/.claude/x'
+  _cr_expect DENY 'install -d ~/.claude/new'
+  _cr_expect DENY 'install -d ~/.claude/a ~/.claude/b'
+  _cr_expect PASS 'install -m 644 a /work/x'
+  _cr_expect DENY 'rsync -a src/ ~/.claude/rules/'
+  _cr_expect DENY 'rsync -av --delete src/ ~/.config/muse/'
+  _cr_expect PASS 'rsync -a ~/.claude/rules/ /work/r/'
+  _cr_expect DENY 'ditto src ~/.claude/rules'
+  _cr_expect DENY 'mkdir ~/.claude/new'
+  _cr_expect DENY 'mkdir -p ~/.codex/new/deeper'
+  _cr_expect DENY 'mkdir -m 700 ~/.config/muse/new'
+  _cr_expect PASS 'mkdir -p ~/.claude/projects/p'
+  _cr_expect DENY 'touch ~/.claude/x'
+  _cr_expect DENY 'touch -t 202001010000 ~/.claude/x'
+  _cr_expect DENY 'touch a ~/.codex/x'
+  _cr_expect PASS 'touch ~/.claude/projects/x'
+  _cr_expect DENY 'rm ~/.claude/x'
+  _cr_expect DENY 'rm -rf ~/.claude'
+  _cr_expect DENY 'rm -rf ~/.codex/rules ~/.config/muse/x'
+  _cr_expect DENY 'rm -- ~/.claude/x'
+  _cr_expect DENY 'rm -rf ~/.claude/projects' 'the allowed directory itself is a mass delete'
+  _cr_expect PASS 'rm ~/.claude/projects/p/old.md'
+  _cr_expect PASS 'rm -rf ~/.claude/dev-mods/s'
+  _cr_expect PASS 'rm /work/x'
+  _cr_expect DENY 'unlink ~/.claude/CLAUDE.md'
+  _cr_expect DENY 'rmdir ~/.claude/old'
+  _cr_expect DENY 'trash ~/.claude/x'
+  _cr_expect DENY 'trash a ~/.codex/x'
+  _cr_expect DENY 'shred -u ~/.claude/x'
+  _cr_expect DENY 'shred -n 3 ~/.claude/x'
+  _cr_expect DENY 'chmod 600 ~/.claude/settings.json'
+  _cr_expect DENY 'chmod -R go-rwx ~/.codex'
+  _cr_expect DENY 'chown tester ~/.config/muse/x'
+  _cr_expect PASS 'chmod 600 /work/x'
+  _cr_expect PASS 'chmod 755 x' 'a mode is not a path'
+  _cr_expect DENY 'sed -i "" s/a/b/ ~/.claude/CLAUDE.md'
+  _cr_expect DENY 'sed -i.bak s/a/b/ ~/.claude/CLAUDE.md'
+  _cr_expect DENY 'sed -i -e s/a/b/ ~/.codex/rules/default.rules'
+  _cr_expect DENY 'sed --in-place s/a/b/ ~/.claude/x'
+  _cr_expect PASS 'sed -n 1,5p ~/.claude/CLAUDE.md'
+  _cr_expect PASS 'sed s/a/b/ ~/.claude/CLAUDE.md'
+  _cr_expect DENY 'perl -pi -e s/a/b/ ~/.claude/x'
+  _cr_expect DENY 'perl -i.bak -pe s/a/b/ ~/.claude/x'
+  _cr_expect PASS 'perl -ne print ~/.claude/x'
+  _cr_expect DENY 'dd if=a of=~/.claude/x'
+  _cr_expect PASS 'dd if=~/.claude/x of=/work/x'
+  _cr_expect DENY 'curl -o ~/.claude/x https://example.invalid/a'
+  _cr_expect DENY 'curl https://example.invalid/a --output ~/.codex/x'
+  _cr_expect DENY 'curl --output-dir ~/.claude -O https://example.invalid/a'
+  _cr_expect DENY 'curl -c ~/.claude/jar https://example.invalid/a'
+  _cr_expect PASS 'curl -o /work/x https://example.invalid/a'
+  _cr_expect PASS 'curl https://example.invalid/a'
+  _cr_expect DENY 'wget -O ~/.claude/x https://example.invalid/a'
+  _cr_expect DENY 'wget -P ~/.codex https://example.invalid/a'
+  _cr_expect DENY 'wget --output-document=~/.claude/x https://example.invalid/a'
+  _cr_expect PASS 'wget -O /work/x https://example.invalid/a'
+  _cr_expect DENY 'tar -xf a.tar -C ~/.claude'
+  _cr_expect DENY 'tar -cf ~/.claude/a.tar x'
+  _cr_expect DENY 'tar -xzf a.tgz --directory ~/.claude/rules'
+  _cr_expect PASS 'tar -cf /work/a.tar -C ~/.claude rules' 'tar -C is a read location when creating'
+  _cr_expect PASS 'tar -tf ~/.claude/a.tar'
+  _cr_expect DENY 'unzip a.zip -d ~/.claude/x'
+  _cr_expect PASS 'unzip a.zip -d /work/x'
+  _cr_expect DENY 'git clone https://example.invalid/r.git ~/.claude/r'
+  _cr_expect DENY 'git init ~/.codex/r'
+  _cr_expect DENY 'git worktree add ~/.claude/w main'
+  _cr_expect PASS 'git clone https://example.invalid/r.git /work/r'
+  _cr_expect DENY 'cd ~/.claude && git init'
+  _cr_expect DENY 'git -C ~/.claude clone https://example.invalid/r.git'
+  _cr_expect PASS 'git -C ~/.claude status'
+  _cr_expect PASS 'git -C ~/.claude log --oneline'
+  _cr_expect DENY 'find ~/.claude -name x -delete'
+  _cr_expect DENY 'find ~/.codex/a ~/.codex/b -type f -delete'
+  _cr_expect DENY 'find -L ~/.claude -delete'
+  _cr_expect PASS 'find ~/.claude -name x'
+  _cr_expect PASS 'find ~/.claude -name x -print'
+  _cr_expect PASS 'find /work -name x -delete'
+  _cr_expect PASS 'find ~/.claude/projects/p -name x -delete'
+  _cr_expect DENY 'mktemp ~/.claude/x.XXXX'
+
+  # --- Reads pass ------------------------------------------------------------
+  _cr_expect PASS 'cat ~/.claude/settings.json'
+  _cr_expect PASS 'ls -la ~/.claude ~/.codex ~/.config/muse'
+  _cr_expect PASS 'jq . ~/.claude/settings.json'
+  _cr_expect PASS 'jq .env ~/.claude/settings.json > /work/out.json'
+  _cr_expect PASS 'diff ~/.claude/CLAUDE.md /work/claude/global-claude.md'
+  _cr_expect PASS 'grep -rn needle ~/.claude/rules'
+  _cr_expect PASS 'head -n 5 ~/.codex/rules/default.rules'
+  _cr_expect PASS 'wc -l < ~/.claude/CLAUDE.md'
+  _cr_expect PASS 'cat ~/.claude/CLAUDE.md | wc -c'
+  _cr_expect PASS 'shasum -a 256 ~/.claude/settings.json'
+  _cr_expect PASS 'ls -l ~/.config/muse/settings.json'
+  _cr_expect PASS 'echo ~/.claude'
+  _cr_expect PASS 'echo "write to ~/.claude/x is blocked"'
+  _cr_expect PASS 'git diff -- claude/settings.json'
+  _cr_expect PASS 'git commit -m "mention ~/.claude/x in the message"'
+  _cr_expect PASS $'git commit -m "$(cat <<\'EOF\'\nCopy to ~/.claude/x\nrm ~/.claude/y\nEOF\n)"' 'heredoc body is data'
+  _cr_expect PASS $'git commit -m "first line\n\nrm ~/.claude/y\ncp a ~/.codex/b"' 'multi-line message body'
+  _cr_expect PASS 'cat <<EOF > /work/x
+rm ~/.claude/y
+EOF' 'heredoc to a file outside'
+  _cr_expect PASS './bittersweet dotfiles'
+  _cr_expect PASS 'ls /Users/other/.claude'
+  _cr_expect PASS 'rm /Users/other/.claude/x'
+
+  # --- Working directory tracking ------------------------------------------
+  _cr_expect DENY 'cd ~/.claude && rm settings.json'
+  _cr_expect DENY 'cd ~/.claude; touch x'
+  _cr_expect DENY 'cd ~/.claude && echo hi > x'
+  _cr_expect DENY 'cd ~/.claude && cp a b'
+  _cr_expect DENY 'cd $HOME/.codex && mkdir x'
+  _cr_expect DENY 'cd ${HOME}/.config/muse && mkdir x'
+  _cr_expect DENY 'pushd ~/.claude && rm x'
+  _cr_expect DENY 'cd ~ && rm .claude/x'
+  _cr_expect DENY 'cd ~ && cd .claude && rm x' 'a relative cd keeps the state'
+  _cr_expect DENY 'cd ~/dotfiles && cd ../.claude && rm x'
+  _cr_expect DENY 'cd /Users/tester && touch .codex/x'
+  _cr_expect DENY 'cd && rm .claude/x' 'bare cd goes home'
+  _cr_expect DENY 'cd ~/.claude/projects && rm ../settings.json'
+  _cr_expect DENY 'cd ~/.claude/projects/p && cd .. && cd .. && rm settings.json'
+  _cr_expect DENY 'cd ~/.claude; curl -O https://example.invalid/a' 'curl -O with no target'
+  _cr_expect DENY 'cd ~/.claude; wget https://example.invalid/a' 'wget with no target'
+  _cr_expect DENY 'cd ~/.claude; unzip a.zip'
+  _cr_expect DENY 'cd ~/.claude; tar -xf a.tar'
+  _cr_expect DENY 'cd ~/.claude; git clone https://example.invalid/r.git'
+  _cr_expect DENY 'cd ~/.claude; git init'
+  _cr_expect DENY 'cd ~/.claude; find . -delete'
+  _cr_expect DENY 'cd ~/.claude; sed -i "" s/a/b/ CLAUDE.md'
+  _cr_expect PASS 'cd ~/.claude && ls'
+  _cr_expect PASS 'cd ~/.claude && cat settings.json'
+  _cr_expect PASS 'cd ~/.claude && cat settings.json > /work/out'
+  _cr_expect PASS 'cd ~/.claude && cp settings.json /work/s.json'
+  _cr_expect PASS 'cd ~/.claude && tar -cf /work/a.tar rules'
+  _cr_expect PASS 'cd ~/.claude && git status'
+  _cr_expect PASS 'cd ~/.claude/projects && touch x'
+  _cr_expect PASS 'cd ~/.claude/projects/p && rm old.md'
+  _cr_expect PASS 'cd ~/.claude/projects/p; echo hi > m.md'
+  _cr_expect PASS 'cd ~/.claude; cd /work; touch x' 'an absolute cd leaves the root'
+  _cr_expect PASS 'cd ~/.claude; cd ~/dotfiles; touch x' 'a home cd leaves the root'
+  _cr_expect PASS 'cd ~/.claude; cd ..; touch x' 'cd .. leaves the root'
+  _cr_expect PASS 'cd ~/.claude/rules; cd ../..; touch x'
+  _cr_expect PASS 'cd ~/.claude; cd -; touch x' 'cd - makes the directory unknown'
+  _cr_expect PASS 'cd ~/.claude; popd; touch x'
+  _cr_expect PASS '(cd ~/.claude && ls); touch x' 'a subshell cd does not leave the group'
+  _cr_expect PASS '(cd ~/.claude); touch x' 'a subshell cd does not leak out'
+  _cr_expect PASS 'cd /work; touch x'
+  _cr_expect PASS 'cd $UNKNOWN; touch x'
+  _cr_expect_in DENY /Users/tester/.claude 'rm x'
+  _cr_expect_in DENY /Users/tester/.codex/rules 'touch x'
+  _cr_expect_in DENY /Users/tester/.config/muse 'echo hi > x'
+  _cr_expect_in DENY /Users/tester/.claude 'cd rules && rm x'
+  _cr_expect_in DENY /Users/tester/.claude/projects 'rm ../x'
+  _cr_expect_in PASS /Users/tester/.claude 'cd .. && rm x'
+  _cr_expect_in PASS /Users/tester/.claude/projects/p 'rm x'
+  _cr_expect_in PASS /work 'rm x'
+  _cr_expect_in PASS '' 'rm x'
+  _cr_expect_in PASS /Users/tester/.claude 'ls'
+
+  # --- Nested commands ------------------------------------------------------
+  _cr_expect DENY 'sh -c "echo hi > ~/.claude/x"'
+  _cr_expect DENY 'bash -c "rm ~/.codex/x"'
+  _cr_expect DENY 'zsh -c "cd ~/.claude && rm x"'
+  _cr_expect DENY 'eval "cp a ~/.claude/b"'
+  _cr_expect DENY 'env -S "cp a ~/.claude/b"'
+  _cr_expect DENY 'sudo cp a ~/.claude/b'
+  _cr_expect DENY 'sudo -u root rm ~/.claude/b'
+  _cr_expect DENY 'FOO=1 BAR=2 cp a ~/.claude/b' 'several assignments'
+  _cr_expect DENY 'nice -n 5 timeout 9 cp a ~/.claude/b' 'several wrappers'
+  _cr_expect DENY 'xargs rm ~/.claude/x'
+  _cr_expect DENY 'echo $(cp a ~/.claude/b)'
+  _cr_expect DENY 'echo `rm ~/.claude/b`'
+  _cr_expect DENY 'cat <(cp a ~/.claude/b)'
+  _cr_expect DENY 'true && cp a ~/.claude/b'
+  _cr_expect DENY 'false || rm ~/.claude/b'
+  _cr_expect DENY 'echo a; echo b; rm ~/.claude/b'
+  _cr_expect DENY 'echo a & rm ~/.claude/b'
+  _cr_expect DENY 'echo a | cat | tee ~/.claude/b'
+  _cr_expect DENY $'echo a\nrm ~/.claude/b' 'second line'
+  _cr_expect DENY 'if true; then rm ~/.claude/b; fi'
+  _cr_expect DENY 'for f in a b; do cp $f ~/.claude/; done'
+  _cr_expect DENY 'cp a "$HOME/.claude/x"'
+  _cr_expect DENY "cp a '\$HOME/.claude/x'" 'single-quoted spelling is over-denied on purpose'
+  _cr_expect DENY 'r"m" ~/.claude/x' 'quote decoration inside the command word'
+  _cr_expect DENY 'rm ~/.cl"aude"/x' 'quote decoration inside the path'
+  _cr_expect DENY 'rm ~/.claude\/x'
+  _cr_expect DENY $'rm ~/.cla\\\nude/x' 'backslash-newline join'
+  _cr_expect DENY 'cat a b > ~/.claude/x'
+  _cr_expect DENY 'cp a ~/.claude/b ; echo done'
+  _cr_expect DENY 'cp /tmp/a ~/.claude/b'
+  _cr_expect DENY 'GREP=1 /bin/rm -f ~/.claude/x' 'absolute command path'
+  _cr_expect DENY 'RM -f ~/.claude/x' 'upper-case command word'
+
+  # --- Verdict shape --------------------------------------------------------
+  local reason rc want_reason
+  want_reason='live agent config blocked: edit the dotfiles copy (claude/, .codex/, .config/muse/), then ./bittersweet dotfiles.'
+  _cr_run 'echo hi > ~/.claude/x'
+  reason="$(jq -r '.hookSpecificOutput.permissionDecisionReason' <<< "${CR_OUT}")"
+  if [[ "${reason}" == "${want_reason}" ]]; then
+    _pass "deny reason is the one-line message"
+  else
+    _fail "deny reason unexpected: ${reason}"
+  fi
+  _cr_run_path Write file_path "${CR_HOME}/.claude/x"
+  if [[ "$(jq -r '.hookSpecificOutput.permissionDecisionReason' <<< "${CR_OUT}")" == "${want_reason}" ]]; then
+    _pass "a path-tool deny carries the same message"
+  else
+    _fail "a path-tool deny carries another message: ${CR_OUT}"
+  fi
+  if [[ "$(jq -r '.hookSpecificOutput.hookEventName' <<< "${CR_OUT}")" == PreToolUse ]]; then
+    _pass "deny names the PreToolUse event"
+  else
+    _fail "deny does not name the PreToolUse event"
+  fi
+  if (( ${#reason} <= 120 )); then
+    _pass "reason is ${#reason} chars (at most 120)"
+  else
+    _fail "reason is ${#reason} chars, over 120"
+  fi
+  if [[ "${reason}" == *$'\n'* ]]; then
+    _fail "deny reason is not one line"
+  else
+    _pass "deny reason is one line"
+  fi
+  if [[ "${reason}" == *[Bb]ypass* || "${reason}" == *SKIP* || "${reason}" == *export* ]]; then
+    _fail "deny reason offers a bypass"
+  else
+    _pass "deny reason offers no bypass"
+  fi
+  printf '%s' '{"tool_name":"Bash","tool_input":{"command":"echo hi > ~/.claude/x"},"cwd":"/work"}' \
+    | HOME="${CR_HOME}" /bin/zsh "$(_cr_hook)" >/dev/null
+  rc=$?
+  if (( rc == 0 )); then
+    _pass "exit status 0 on deny"
+  else
+    _fail "exit status ${rc} on deny"
+  fi
+  printf '%s' '{"tool_name":"Bash","tool_input":{"command":"ls"}}' \
+    | HOME="${CR_HOME}" /bin/zsh "$(_cr_hook)" >/dev/null
+  rc=$?
+  if (( rc == 0 )); then
+    _pass "exit status 0 on pass"
+  else
+    _fail "exit status ${rc} on pass"
+  fi
+
+  # --- Source checks ----------------------------------------------------------
+  if /usr/bin/grep -nE '^ {3,}local ' "$(_cr_hook)" >/dev/null; then
+    _fail "hook source declares a local below function level"
+  else
+    _pass "hook source declares every local at function level"
+  fi
+  if [[ "$(<"$(_cr_hook)")" == *_SKIP* ]]; then
+    _fail "hook source mentions a skip variable"
+  else
+    _pass "hook source has no skip variable"
+  fi
+
+  # --- Malformed payloads fail open, never block ---------------------------
+  local payload
+  for payload in '{}' 'not json' '' '[]' 'null' '{"tool_input":null}' \
+      '{"tool_input":{"command":5}}' '{"tool_input":{"command":""}}' \
+      '{"tool_input":{"command":null}}' '{"tool_input":{"file_path":5}}' \
+      '{"tool_input":{"file_path":""}}' '{"tool_input":"x"}' '{"tool_name":"Bash"}'; do
+    if [[ -z "$(printf '%s' "${payload}" | HOME="${CR_HOME}" /bin/zsh "$(_cr_hook)" 2>/dev/null)" ]]; then
+      _pass "fail-open: payload ${payload:-<empty>} allowed through"
+    else
+      _fail "fail-open: payload ${payload:-<empty>} produced output"
+    fi
+  done
+  # A cwd that is not a string is ignored; the command is still judged.
+  _cr_check DENY "$(printf '%s' '{"tool_name":"Bash","tool_input":{"command":"rm ~/.claude/x"},"cwd":5}' | HOME="${CR_HOME}" /bin/zsh "$(_cr_hook)" 2>/dev/null)" 'a non-string cwd does not hide a deny'
+  _cr_check DENY "$(printf '%s' '{"tool_name":"Bash","tool_input":{"command":"rm ~/.claude/x"}}' | HOME="${CR_HOME}" /bin/zsh "$(_cr_hook)" 2>/dev/null)" 'a missing cwd does not hide a deny'
+
+  # --- HOME that is not an absolute path fails open ------------------------
+  local bad_home
+  for bad_home in '' 'relative/home' '/'; do
+    _cr_check PASS "$(printf '%s' '{"tool_name":"Bash","tool_input":{"command":"rm ~/.claude/x"},"cwd":"/work"}' | HOME="${bad_home}" /bin/zsh "$(_cr_hook)" 2>/dev/null)" "HOME='${bad_home}' fails open"
+  done
+  _cr_check DENY "$(printf '%s' '{"tool_name":"Bash","tool_input":{"command":"rm ~/.claude/x"},"cwd":"/work"}' | HOME=/Users/tester/// /bin/zsh "$(_cr_hook)" 2>/dev/null)" 'a HOME with trailing slashes still resolves'
+
+  # --- Size and budget limits fail open --------------------------------------
+  local fixture_dir pad
+  fixture_dir="$(mktemp -d "${TMPDIR:-/tmp}/config-root-fixtures.XXXXXX")"
+  pad="$(printf 'x%.0s' {1..120000})"
+  printf '%s\n' "echo ${pad}" "cp a ~/.claude/b" > "${fixture_dir}/huge"
+  _cr_check PASS "$(jq -Rs '{tool_name:"Bash", tool_input:{command:.}, cwd:"/work"}' < "${fixture_dir}/huge" | HOME="${CR_HOME}" /bin/zsh "$(_cr_hook)")" 'command over the size cap (fail-open)'
+  pad="$(printf 'x%.0s' {1..15000})"
+  printf '%s\n' "echo ${pad} > ~/.claude/b" > "${fixture_dir}/okline"
+  _cr_check DENY "$(jq -Rs '{tool_name:"Bash", tool_input:{command:.}, cwd:"/work"}' < "${fixture_dir}/okline" | HOME="${CR_HOME}" /bin/zsh "$(_cr_hook)")" '15KB line is still scanned'
+  /bin/rm -rf "${fixture_dir}"
+
+  # --- Mutations: a hook copy with one literal changed must go the other way --
+  # Each copy proves the case it guards is not green by accident.
+  local copy_dir copy_out
+  local -i copy_rc
+  copy_dir="$(mktemp -d "${TMPDIR:-/tmp}/config-root-copy.XXXXXX")"
+  if _cr_copy_hook "${copy_dir}" 'readonly JQ=/usr/bin/jq' 'readonly JQ=/nonexistent/jq'; then
+    copy_rc=0
+    copy_out="$(printf '%s' '{"tool_name":"Bash","tool_input":{"command":"cp a ~/.claude/b"}}' | HOME="${CR_HOME}" /bin/zsh "${copy_dir}/hook" 2>/dev/null)" || copy_rc=$?
+    _cr_check PASS "${copy_out}" 'jq missing: a command that DENYs fails open'
+    if (( copy_rc == 0 )); then
+      _pass "jq missing: exit status 0"
+    else
+      _fail "jq missing: exit status ${copy_rc}"
+    fi
+  fi
+  if _cr_copy_hook "${copy_dir}" '"${h}/.codex/sessions"' '"${h}/.codex/sessions-x"'; then
+    copy_out="$(printf '%s' '{"tool_name":"Write","tool_input":{"file_path":"/Users/tester/.codex/sessions/x"},"cwd":"/work"}' | HOME="${CR_HOME}" /bin/zsh "${copy_dir}/hook" 2>/dev/null)" || true
+    _cr_check DENY "${copy_out}" 'mutation: dropping an allowed prefix turns its pass into a deny'
+  fi
+  if _cr_copy_hook "${copy_dir}" '"${h}/.codex" "${h}/.config/muse"' '"${h}/.codex-x" "${h}/.config/muse"'; then
+    copy_out="$(printf '%s' '{"tool_name":"Write","tool_input":{"file_path":"/Users/tester/.codex/rules/x"},"cwd":"/work"}' | HOME="${CR_HOME}" /bin/zsh "${copy_dir}/hook" 2>/dev/null)" || true
+    _cr_check PASS "${copy_out}" 'mutation: dropping a root turns its deny into a pass'
+  fi
+  /bin/rm -rf "${copy_dir}"
+
+  # --- Shell options from the user's startup files do not change a verdict -----
+  # zsh reads $ZDOTDIR/.zshenv for every invocation, scripts included.
+  local zdir zpayload
+  zdir="$(mktemp -d "${TMPDIR:-/tmp}/config-root-zdotdir.XXXXXX")"
+  print -r -- 'setopt ksharrays shwordsplit nobareglobqual nounset errexit noglob nomatch' > "${zdir}/.zshenv"
+  zpayload="$(jq -cn --arg c 'cp a ~/.claude/b' '{tool_name:"Bash", tool_input:{command:$c}, cwd:"/work"}')"
+  CR_OUT="$(ZDOTDIR="${zdir}" HOME="${CR_HOME}" /bin/zsh "$(_cr_hook)" <<< "${zpayload}" 2>&1 || true)"
+  _cr_check DENY "${CR_OUT}" 'deny under ksharrays, shwordsplit and errexit'
+  zpayload="$(jq -cn --arg c $'git commit -m "$(cat <<\'EOF\'\nmkdir ~/.claude/x\nEOF\n)"' '{tool_name:"Bash", tool_input:{command:$c}, cwd:"/work"}')"
+  CR_OUT="$(ZDOTDIR="${zdir}" HOME="${CR_HOME}" /bin/zsh "$(_cr_hook)" <<< "${zpayload}" 2>&1 || true)"
+  _cr_check PASS "${CR_OUT}" 'pass under ksharrays, shwordsplit and errexit, stdout and stderr empty'
+  zpayload="$(jq -cn --arg c 'cat ~/.claude/x' '{tool_name:"Bash", tool_input:{command:$c}, cwd:"/work"}')"
+  CR_OUT="$(ZDOTDIR="${zdir}" HOME="${CR_HOME}" /bin/zsh "$(_cr_hook)" <<< "${zpayload}" 2>&1 || true)"
+  _cr_check PASS "${CR_OUT}" 'read passes under ksharrays'
+  /bin/rm -rf "${zdir}"
+}

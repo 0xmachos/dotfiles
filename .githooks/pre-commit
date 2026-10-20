@@ -1,6 +1,7 @@
 #!/usr/bin/env zsh
 # .githooks/pre-commit
-# Scan staged changes for secrets/PII, then enforce bittersweet parity
+# Refuse staged claude/ paths, scan staged changes for secrets/PII, then
+# enforce bittersweet parity
 
 set -euo pipefail
 
@@ -16,6 +17,14 @@ completion_test_output=""
 # Materialise before matching: grep -q could exit early and SIGPIPE git,
 # making pipefail silently skip the completion gate on a large staged set.
 staged_paths="$(git diff --cached --name-only --diff-filter=d)"
+# claude/ is the gitignored global agent config and is never tracked: no
+# exceptions, so a forced add (git add -f) fails here. Pure zsh match on the
+# materialised path list; a deletion is allowed (--diff-filter=d), so
+# untracking a path still commits.
+if [[ $'\n'"${staged_paths}" == *$'\n'claude/* ]]; then
+  echo "[❌] claude/ is never tracked: unstage it (git restore --staged claude/)"
+  exit 1
+fi
 if [[ $'\n'"${staged_paths}"$'\n' == *$'\n'bittersweet$'\n'* ]]; then
   if [[ -x ./bittersweet ]]; then
     ./bittersweet completions >/dev/null

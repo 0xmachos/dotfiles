@@ -2,17 +2,23 @@
 # dotfiles/tests/session-host-context
 #
 # Pins claude/hooks/session-host-context, the SessionStart hook that prints one line
-# of host identity (hostname, macOS version+build, Claude Code version).
+# of host identity (hostname, macOS version+build, Claude Code version, clock,
+# and a worktree note when the cwd is in a linked git worktree).
 # Feeds SessionStart JSON on stdin and asserts stdout and exit code directly;
 # the hook emits no hookSpecificOutput verdict, so _hook_verdict is not used.
 #
 # The hook calls scutil/sw_vers/readlink by absolute path, so PATH-prefix
 # stubs (tests/git-sign) cannot intercept them; the suite uses the hook's
-# SESSION_HOST_CONTEXT_SCUTIL/_SW_VERS/_READLINK/_PAPERCUT seams (as
+# SESSION_HOST_CONTEXT_SCUTIL/_SW_VERS/_READLINK/_DATE/_PAPERCUT seams (as
 # GH_PUBLISH_*, PII_HOOK_*). Every run points _PAPERCUT at a missing path by
 # default, so a papercut CLI installed on the host never changes the exact-line
 # assertions; the papercuts cases override it. They pin each omit condition, the
 # full and "-"-oldest segments, and that the CLI runs in the payload's cwd.
+# _DATE defaults to a missing path the same way, so the Clock segment is absent
+# from every other assertion; the clock cases override it. The worktree cases
+# build fixture directories under the sandbox: a ".git" file pointing into
+# ".git/worktrees/" (linked worktree), one pointing at ".git/modules/"
+# (submodule), a ".git" directory (main checkout) and a plain directory.
 #
 # Run: ./test session-host-context
 # ShellCheck: lint with `shellcheck --shell=bash tests/session-host-context`.
@@ -29,6 +35,7 @@ function _shc_run {
   # shellcheck disable=SC2034  # out is read by the caller
   out="$(
     typeset -x SESSION_HOST_CONTEXT_PAPERCUT=/nonexistent/papercut
+    typeset -x SESSION_HOST_CONTEXT_DATE=/nonexistent/date
     while (( $# > 0 )); do
       case "$1" in
         -u) unset "$2"; shift 2 ;;
@@ -54,6 +61,12 @@ function _shc_mkstub {
   local f="$1" l
   shift
   { print -r -- '#!/bin/sh'; for l in "$@"; do print -r -- "${l}"; done; } > "${f}"
+}
+
+function _shc_mkdate {
+  # $1 = stub path, $2 = output for +%Z, $3 = output for +%z. Caller chmods.
+  # shellcheck disable=SC2016  # the stub body is a literal script: $1 must not expand here
+  _shc_mkstub "$1" 'case "$1" in' "  +%Z) echo \"$2\" ;;" "  +%z) echo \"$3\" ;;" 'esac'
 }
 
 function run_session_host_context {
@@ -429,6 +442,155 @@ function run_session_host_context {
       _fail "papercuts cwd: ${pc_label}: stub ran in '${pc_got}', want '${pc_want}'; out: ${out}"
     fi
   done
+
+  # --- Clock segment: stubbed date, args dispatched on +%Z / +%z ---------
+  _shc_mkdate "${stub_dir}/date-bst" BST +0100
+  _shc_mkdate "${stub_dir}/date-gmt" GMT +0000
+  _shc_mkdate "${stub_dir}/date-neg" EST -0500
+  _shc_mkstub "${stub_dir}/date-fail" 'exit 1'
+  _shc_mkdate "${stub_dir}/date-badzone" "B ST" +0100
+  _shc_mkdate "${stub_dir}/date-longzone" ABCDEFGHI +0100
+  _shc_mkdate "${stub_dir}/date-badoff" BST +01:00
+  _shc_mkdate "${stub_dir}/date-emptyoff" BST ""
+  _shc_mkstub "${stub_dir}/date-noexec" 'echo BST'
+  chmod 755 "${stub_dir}"/date-*
+  chmod 644 "${stub_dir}/date-noexec"
+
+  local -a clock_cases=(
+    'BST|date-bst|Clock: Europe/London, BST (UTC+01:00)'
+    'GMT|date-gmt|Clock: Europe/London, GMT (UTC+00:00)'
+    'negative offset|date-neg|Clock: Europe/London, EST (UTC-05:00)'
+  )
+  local clock_case clock_label clock_stub clock_want
+  for clock_case in "${clock_cases[@]}"; do
+    clock_label="${clock_case%%|*}"
+    clock_want="${clock_case##*|}"
+    clock_stub="${clock_case#*|}"
+    clock_stub="${clock_stub%|*}"
+    _shc_run '{"source":"startup"}' "${term_clear[@]}" "SESSION_HOST_CONTEXT_DATE=${stub_dir}/${clock_stub}"
+    if [[ "${out}" == *" · ${clock_want}" && "${out}" != *$'\n'* ]]; then
+      _pass "clock: ${clock_label}"
+    else
+      _fail "clock: ${clock_label}: expected '${clock_want}', got: ${out}"
+    fi
+    _shc_exit0 "clock ${clock_label}"
+  done
+
+  # Clock sits after Terminal and before Papercuts.
+  _shc_run '{"source":"startup"}' "${term_clear[@]}" HERDR_ENV=1 \
+    "SESSION_HOST_CONTEXT_DATE=${stub_dir}/date-bst" "SESSION_HOST_CONTEXT_PAPERCUT=${stub_dir}/pc-full"
+  if [[ "${out}" == *'Terminal: herdr pane · Clock: Europe/London, BST (UTC+01:00) · Papercuts: 3 open'* ]]; then
+    _pass "clock: order is Terminal, Clock, Papercuts"
+  else
+    _fail "clock: segment order wrong, got: ${out}"
+  fi
+
+  local -a clock_omit=(
+    'date fails|'"${stub_dir}"'/date-fail'
+    'date absent|/nonexistent/date'
+    'date not executable|'"${stub_dir}"'/date-noexec'
+    'zone abbreviation has a space|'"${stub_dir}"'/date-badzone'
+    'zone abbreviation over 8 chars|'"${stub_dir}"'/date-longzone'
+    'offset has a colon|'"${stub_dir}"'/date-badoff'
+    'offset empty|'"${stub_dir}"'/date-emptyoff'
+  )
+  local clock_omit_case
+  for clock_omit_case in "${clock_omit[@]}"; do
+    _shc_run '{"source":"startup"}' "${term_clear[@]}" "SESSION_HOST_CONTEXT_DATE=${clock_omit_case#*|}"
+    if [[ "${out}" == 'Host: '* && "${out}" != *'Clock'* && "${out}" != *$'\n'* ]]; then
+      _pass "clock: segment omitted, ${clock_omit_case%%|*}"
+    else
+      _fail "clock: segment should be omitted, ${clock_omit_case%%|*}, got: ${out}"
+    fi
+    _shc_exit0 "clock omitted, ${clock_omit_case%%|*}"
+  done
+
+  # resume and fork stay silent even with a working date.
+  _shc_run '{"source":"resume"}' "SESSION_HOST_CONTEXT_DATE=${stub_dir}/date-bst"
+  if [[ -z "${out}" ]]; then
+    _pass "clock: resume prints nothing"
+  else
+    _fail "clock: resume printed, got: ${out}"
+  fi
+
+  # --- Worktree segment: .git entry kinds under the payload cwd ----------
+  local wt_main="${stub_dir}/wt-main" wt_linked="${stub_dir}/wt-linked" wt_sub="${stub_dir}/wt-sub"
+  local wt_plain="${stub_dir}/wt-plain" wt_deep="${stub_dir}/wt-linked/a/b" wt_maindeep="${stub_dir}/wt-main/a"
+  local wt_link="${stub_dir}/wt-symlink" wt_empty="${stub_dir}/wt-emptygit" wt_multi="${stub_dir}/wt-multi"
+  local wt_seg='Worktree: commit on this branch, rebase onto main if it moved, land with git merge --ff-only from the main checkout, never a PR (internals/worktrees.md)'
+  mkdir -p "${wt_main}/.git" "${wt_maindeep}" "${wt_linked}/a/b" "${wt_sub}" "${wt_plain}" "${wt_link}" "${wt_empty}" "${wt_multi}"
+  print -r -- "gitdir: ${stub_dir}/repo/.git/worktrees/feature" > "${wt_linked}/.git"
+  print -r -- "gitdir: ${stub_dir}/repo/.git/modules/sub" > "${wt_sub}/.git"
+  print -r -- "gitdir: ${stub_dir}/repo/.git/worktrees/feature" > "${stub_dir}/real-gitfile"
+  ln -s "${stub_dir}/real-gitfile" "${wt_link}/.git"
+  : > "${wt_empty}/.git"
+  print -r -- "not a gitdir line" > "${wt_multi}/.git"
+  print -r -- "gitdir: ${stub_dir}/repo/.git/worktrees/second" >> "${wt_multi}/.git"
+
+  local -a wt_cases=(
+    'linked worktree (.git file into worktrees/)|'"${wt_linked}"'|yes'
+    'subdirectory of a linked worktree|'"${wt_deep}"'|yes'
+    'main checkout (.git directory)|'"${wt_main}"'|no'
+    'subdirectory of a main checkout|'"${wt_maindeep}"'|no'
+    'submodule (.git file into modules/)|'"${wt_sub}"'|no'
+    'plain directory, no .git|'"${wt_plain}"'|no'
+    '.git symlink is not trusted|'"${wt_link}"'|no'
+    'empty .git file|'"${wt_empty}"'|no'
+    'worktrees/ only on a later line|'"${wt_multi}"'|no'
+  )
+  local wt_case wt_label wt_path wt_want
+  for wt_case in "${wt_cases[@]}"; do
+    wt_label="${wt_case%%|*}"
+    wt_want="${wt_case##*|}"
+    wt_path="${wt_case#*|}"
+    wt_path="${wt_path%|*}"
+    _shc_run '{"source":"startup","cwd":"'"${wt_path}"'"}' "${term_clear[@]}"
+    if [[ "${wt_want}" == yes ]]; then
+      if [[ "${out}" == *" · ${wt_seg}" && "${out}" != *$'\n'* ]]; then
+        _pass "worktree: ${wt_label}"
+      else
+        _fail "worktree: ${wt_label}: expected the Worktree segment, got: ${out}"
+      fi
+    elif [[ "${out}" == 'Host: '* && "${out}" != *'Worktree'* && "${out}" != *$'\n'* ]]; then
+      _pass "worktree: segment omitted, ${wt_label}"
+    else
+      _fail "worktree: segment should be omitted, ${wt_label}, got: ${out}"
+    fi
+    _shc_exit0 "worktree ${wt_label}"
+  done
+
+  # No cwd, a relative cwd and a missing directory omit the segment.
+  local -a wt_nocwd=(
+    'no cwd field|{"source":"startup"}'
+    'relative cwd|{"source":"startup","cwd":"wt-linked"}'
+    'missing directory|{"source":"startup","cwd":"'"${stub_dir}"'/nope"}'
+  )
+  local wt_nc
+  for wt_nc in "${wt_nocwd[@]}"; do
+    _shc_run "${wt_nc#*|}" -C "${wt_linked}" "${term_clear[@]}"
+    if [[ "${out}" == 'Host: '* && "${out}" != *'Worktree'* ]]; then
+      _pass "worktree: segment omitted, ${wt_nc%%|*}"
+    else
+      _fail "worktree: segment should be omitted, ${wt_nc%%|*}, got: ${out}"
+    fi
+  done
+
+  # Order: Clock, then Worktree, then Papercuts, still one line.
+  _shc_run '{"source":"startup","cwd":"'"${wt_linked}"'"}' "${term_clear[@]}" \
+    "SESSION_HOST_CONTEXT_DATE=${stub_dir}/date-bst" "SESSION_HOST_CONTEXT_PAPERCUT=${stub_dir}/pc-full"
+  if [[ "${out}" == *"(UTC+01:00) · ${wt_seg} · Papercuts: 3 open (1 for this repo, oldest 2026-09-20)" && "${out}" != *$'\n'* ]]; then
+    _pass "worktree: order is Clock, Worktree, Papercuts on one line"
+  else
+    _fail "worktree: segment order wrong, got: ${out}"
+  fi
+
+  # resume stays silent inside a worktree.
+  _shc_run '{"source":"resume","cwd":"'"${wt_linked}"'"}'
+  if [[ -z "${out}" ]]; then
+    _pass "worktree: resume prints nothing"
+  else
+    _fail "worktree: resume printed, got: ${out}"
+  fi
 
   /bin/rm -rf "${stub_dir}"
 }

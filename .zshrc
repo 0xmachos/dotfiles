@@ -206,6 +206,12 @@ fi
 # shellcheck disable=SC1091
 source "$HOME/.aliases"
 
+# Bare `log` is zsh's login-watch builtin. A function outranks a builtin, so
+# `log show …` reaches the unified log here and in the Claude Code Bash tool
+# (its shell snapshot carries functions). Scripts and `ssh host log …` do not
+# source this file: write /usr/bin/log there.
+function log { /usr/bin/log "$@"; }
+
 
 ### History ###
 

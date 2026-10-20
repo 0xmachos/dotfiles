@@ -1,0 +1,226 @@
+#!/bin/zsh
+# dotfiles/tests/uv-guard
+#
+# Behavioural test for claude/hooks/uv-guard-hook (PreToolUse, Bash and Monitor:
+# denies pip install, python -m pip/venv, virtualenv, conda, mamba, pyenv and
+# the literal /usr/bin/python3, and points at uv). Feeds commands as stdin
+# JSON and asserts the verdict through _hook_verdict: DENY at a command
+# position (through wrappers, subshells, command substitution, shell -c
+# strings and shell heredocs), PASS for bare python3, uv pip, uv venv,
+# anything under `uv run`, lookalikes (pipefail, .venv, `echo pip install`)
+# and the one sanctioned CLT use, bin/agent-reset. The hook has no override.
+# Also drives the hook through the pretool-dispatch seam (DENY<US>reason).
+#
+# Run: ./test uv-guard    (or ./test for the full suite)
+#
+# ShellCheck: lint with `shellcheck --shell=bash tests/uv-guard`.
+# This file is sourced, not executed - chmod 644.
+#
+# shellcheck source=tests/lib
+
+function _uv_guard_run {
+  jq -n --arg c "$1" '{tool_name:"Bash", tool_input:{command:$c}}' \
+    | /bin/zsh "${SCRIPT_DIR}/claude/hooks/uv-guard-hook"
+}
+
+function _uv_guard_expect {
+  local want="$1" cmd="$2" label="${3:-$2}" out got
+  out="$(_uv_guard_run "${cmd}")"
+  got="$(_hook_verdict "${out}")"
+  if [[ "${got}" == "${want}" ]]; then
+    _pass "${want}: ${label}"
+  else
+    _fail "${label} - expected ${want}, got ${got}"
+  fi
+}
+
+function run_uv_guard {
+  _section "uv guard hook (pip, venv, conda, CLT python)"
+
+  # claude/ syncs out of band: an absent hook is pending sync, so skip.
+  if [[ ! -f "${SCRIPT_DIR}/claude/hooks/uv-guard-hook" ]]; then
+    _skip "claude/hooks/uv-guard-hook absent - claude/ not yet synced to this machine"
+    return 0
+  fi
+  if ! [[ -x "$(command -v jq)" ]]; then
+    _skip "jq not installed (brew install jq)"
+    return 0
+  fi
+
+  # pip install in every spelling -> DENY.
+  _uv_guard_expect DENY 'pip install requests'
+  _uv_guard_expect DENY 'pip3 install requests'
+  _uv_guard_expect DENY 'pip3.12 install requests'
+  _uv_guard_expect DENY 'pip --quiet install requests' 'flags before install'
+  _uv_guard_expect DENY 'pip  install  requests' 'two spaces'
+  _uv_guard_expect DENY 'PIP install requests' 'upper case (case-insensitive volume)'
+  _uv_guard_expect DENY '/usr/local/bin/pip install x' 'path-qualified pip'
+  _uv_guard_expect DENY '"pip" install x' 'quoted command word'
+  _uv_guard_expect DENY '\pip install x' 'escaped command word'
+  _uv_guard_expect DENY 'p"i"p install x' 'quote inside the word'
+
+  # python -m pip / venv / virtualenv -> DENY.
+  _uv_guard_expect DENY 'python3 -m pip install x'
+  _uv_guard_expect DENY 'python -m pip list' '-m pip with any subcommand'
+  _uv_guard_expect DENY 'python3.12 -m venv .venv'
+  _uv_guard_expect DENY 'python3 -m venv'
+  _uv_guard_expect DENY 'python3 -mpip install x' 'attached -mpip'
+  _uv_guard_expect DENY 'python3 -Im pip install x' 'flag cluster ending in m'
+  _uv_guard_expect DENY 'python3 -W ignore -m pip list' '-W operand before -m'
+  _uv_guard_expect DENY 'python3 -m virtualenv .v'
+  _uv_guard_expect DENY 'python3 -m pip.__main__ x' 'dotted pip module'
+
+  # Other environment managers -> DENY.
+  _uv_guard_expect DENY 'virtualenv .venv'
+  _uv_guard_expect DENY 'conda install numpy'
+  _uv_guard_expect DENY 'mamba create -n x'
+  _uv_guard_expect DENY 'micromamba install x'
+  _uv_guard_expect DENY 'pyenv install 3.12'
+  _uv_guard_expect DENY '/opt/homebrew/bin/pyenv versions' 'path-qualified pyenv'
+
+  # The CLT interpreter by literal path -> DENY, whatever the arguments.
+  _uv_guard_expect DENY '/usr/bin/python3 script.py'
+  _uv_guard_expect DENY '/usr/bin/python3 -c "print(1)"'
+  _uv_guard_expect DENY '/usr/bin/python3 -m json.tool f'
+  _uv_guard_expect DENY '/usr/bin/python3' 'bare literal path'
+  _uv_guard_expect DENY '/usr/bin/python3 -m pip install x'
+  _uv_guard_expect DENY '/Library/Developer/CommandLineTools/usr/bin/python3 x.py' 'Developer Tools copy'
+  _uv_guard_expect DENY '/usr/bin/python3 bin/agent-reset.py' 'near-miss script name'
+  _uv_guard_expect DENY '/usr/bin/python3 other/bin/agent-reset' 'agent-reset under another dir'
+  _uv_guard_expect DENY '/usr/bin/python3 -m x bin/agent-reset' '-m before the allowed script'
+  _uv_guard_expect DENY '/usr/bin/python3 -c x bin/agent-reset' '-c before the allowed script'
+  _uv_guard_expect DENY '/usr/bin/python3 /a/dotfiles/bin/../agent-reset' 'dotdot in the absolute path'
+  _uv_guard_expect DENY '/usr/bin/python3 /a/../dotfiles/bin/agent-reset' 'dotdot elsewhere in the path'
+  _uv_guard_expect DENY '/usr/bin/python3 /a/dotfiles/bin/agent-reset-evil' 'longer name'
+  _uv_guard_expect DENY '/usr/bin/python3 scripts/foo bin/agent-reset' 'allowed path as a second operand'
+
+  # Seen through wrappers, compounds and substitutions -> DENY.
+  _uv_guard_expect DENY 'sudo pip install x'
+  _uv_guard_expect DENY 'env FOO=1 pip install x'
+  _uv_guard_expect DENY 'env -u FOO pip install x'
+  _uv_guard_expect DENY 'time pip install x'
+  _uv_guard_expect DENY 'timeout 5 python3 -m pip install x'
+  _uv_guard_expect DENY 'FOO=bar pip install x'
+  _uv_guard_expect DENY 'xargs pip install'
+  _uv_guard_expect DENY 'a && pip install x'
+  _uv_guard_expect DENY 'a; pip install x'
+  _uv_guard_expect DENY 'a | pip install x'
+  _uv_guard_expect DENY '(pip install x)'
+  # Single quotes on purpose: the fixture is a literal command string.
+  # shellcheck disable=SC2016
+  _uv_guard_expect DENY 'echo $(pip install x)' 'command substitution'
+  # shellcheck disable=SC2016
+  _uv_guard_expect DENY 'x `pip install x`' 'backtick substitution'
+  _uv_guard_expect DENY $'ls\npip install x' 'ls<NL>pip install x (multiline)'
+  # shellcheck disable=SC2016
+  _uv_guard_expect DENY 'echo "$(pip install x)"' 'substitution inside double quotes'
+  _uv_guard_expect DENY 'sh -c "pip install x"' 'sh -c string'
+  _uv_guard_expect DENY "bash -lc 'cd d && python3 -m venv .v'" 'bash -lc string'
+  _uv_guard_expect DENY "sh -c \"sh -c 'pip install x'\"" 'nested shell strings'
+  _uv_guard_expect DENY 'eval "conda activate x"' 'eval text'
+  _uv_guard_expect DENY $'bash <<EOF\npip install x\nEOF' 'heredoc fed to a shell'
+  _uv_guard_expect DENY $'cat <<EOF\n$(pip install x)\nEOF' 'unquoted heredoc expands a substitution'
+
+  # uv itself and everything under it -> PASS.
+  _uv_guard_expect PASS 'uv sync'
+  _uv_guard_expect PASS 'uv add requests'
+  _uv_guard_expect PASS 'uv run pytest'
+  _uv_guard_expect PASS 'uv pip install requests' 'uv pip'
+  _uv_guard_expect PASS 'uv venv' 'uv venv'
+  _uv_guard_expect PASS 'uv run pip install x' 'pip inside uv run'
+  _uv_guard_expect PASS 'uv run -- pip install x' 'pip inside uv run --'
+  _uv_guard_expect PASS 'uv run python -m pip list' 'python -m pip inside uv run'
+  _uv_guard_expect PASS 'uv run python -m venv x' 'python -m venv inside uv run'
+  _uv_guard_expect PASS 'uvx ruff check' 'uvx'
+
+  # Bare python and its normal uses -> PASS.
+  _uv_guard_expect PASS 'python3 script.py'
+  _uv_guard_expect PASS 'python3 -c "print(1)"'
+  _uv_guard_expect PASS 'python3 -m pytest'
+  _uv_guard_expect PASS 'python3 -m json.tool f'
+  _uv_guard_expect PASS 'python3 -m http.server 8000'
+  _uv_guard_expect PASS 'python3 -'
+
+  # Lookalikes that are not a command word, and pip without install -> PASS.
+  _uv_guard_expect PASS 'echo pip install x'
+  _uv_guard_expect PASS 'grep pip requirements.txt'
+  _uv_guard_expect PASS 'git log --grep=pip'
+  _uv_guard_expect PASS 'brew install pyenv' 'pyenv is an argument'
+  _uv_guard_expect PASS 'brew install conda' 'conda is an argument'
+  _uv_guard_expect PASS 'set -o pipefail; ls' 'pipefail'
+  _uv_guard_expect PASS 'source .venv/bin/activate' '.venv path'
+  _uv_guard_expect PASS 'ls .venv/bin' '.venv path'
+  _uv_guard_expect PASS 'pip list' 'pip without install'
+  _uv_guard_expect PASS 'pip --version'
+  _uv_guard_expect PASS 'pipx run x' 'pipx is not pip'
+  _uv_guard_expect PASS 'cat /usr/bin/python3' '/usr/bin/python3 as an argument'
+  _uv_guard_expect PASS 'ls -l /usr/bin/python3' '/usr/bin/python3 as an argument'
+  _uv_guard_expect PASS "echo 'a|pip install|b'" 'pipe inside quotes'
+  _uv_guard_expect PASS 'echo "pip install x" > note.txt' 'quoted text'
+
+  # Heredoc bodies are data unless the consumer is a shell.
+  _uv_guard_expect PASS $'cat <<\'EOF\'\npip install x\nEOF' 'cat heredoc body'
+  _uv_guard_expect PASS $'python3 - <<\'PY\'\nprint("pip install x")\nPY' 'python heredoc body'
+  _uv_guard_expect PASS $'cat <<EOF\npip install x\nEOF' 'unquoted heredoc without substitution'
+  _uv_guard_expect PASS $'cat <<EOF\n\\$(pip install x)\nEOF' 'escaped substitution in a heredoc'
+
+  # The one sanctioned use of the CLT interpreter: bin/agent-reset.
+  _uv_guard_expect PASS '/usr/bin/python3 bin/agent-reset self-test'
+  _uv_guard_expect PASS '/usr/bin/python3 ./bin/agent-reset self-test'
+  _uv_guard_expect PASS '/usr/bin/python3 /Users/x/dotfiles/bin/agent-reset self-test' 'absolute dotfiles path'
+  _uv_guard_expect PASS '/usr/bin/python3 -I bin/agent-reset' 'flag before the script'
+  _uv_guard_expect PASS 'AGENT_RESET_HOME=/x /usr/bin/python3 bin/agent-reset self-test' 'env prefix'
+  _uv_guard_expect PASS 'cd /a/dotfiles && /usr/bin/python3 ./bin/agent-reset' 'after cd'
+  _uv_guard_expect PASS '/Library/Developer/CommandLineTools/usr/bin/python3 bin/agent-reset' 'Developer Tools copy runs agent-reset'
+
+  # No override: the hook reads no skip variable.
+  local out
+  out="$(jq -n --arg c 'pip install x' '{tool_name:"Bash", tool_input:{command:$c}}' \
+    | env UV_GUARD_SKIP=1 /bin/zsh "${SCRIPT_DIR}/claude/hooks/uv-guard-hook")"
+  if [[ "$(_hook_verdict "${out}")" == DENY ]]; then
+    _pass "DENY: an exported UV_GUARD_SKIP exempts nothing"
+  else
+    _fail "an exported UV_GUARD_SKIP exempted the command"
+  fi
+  _uv_guard_expect DENY 'UV_GUARD_SKIP=1 pip install x' 'skip prefix exempts nothing'
+
+  # The deny reason names the replacement.
+  out="$(_uv_guard_run 'pip install x')"
+  if [[ "${out}" == *"uv sync, uv run, uv add"* && "${out}" == *"per-project uv.toml"* && "${out}" == *"the user approves"* ]]; then
+    _pass "deny reason names uv sync, uv run, uv add and the uv.toml route"
+  else
+    _fail "deny reason lacks the uv replacement text"
+  fi
+  if [[ "${out}" != *SKIP* && "${out}" != *bypass* && "${out}" != *override* ]]; then
+    _pass "deny reason offers no bypass"
+  else
+    _fail "deny reason mentions a bypass"
+  fi
+
+  # Under the pretool-dispatch seam the guard prints DENY<US>reason, no JSON.
+  local seam us=$'\x1f'
+  seam="$(/bin/zsh -c 'HOOK_PRE_DISPATCH=1; HOOK_PRE_COMMAND="python3 -m venv x"; source "$1"' _ "${SCRIPT_DIR}/claude/hooks/uv-guard-hook" </dev/null)"
+  if [[ "${seam}" == "DENY${us}pip, venv, conda"* ]]; then
+    _pass "seam: a denied command prints DENY<US>reason"
+  else
+    _fail "seam: expected DENY<US>reason, got: ${seam}"
+  fi
+  seam="$(/bin/zsh -c 'HOOK_PRE_DISPATCH=1; HOOK_PRE_COMMAND="uv run pytest"; source "$1"' _ "${SCRIPT_DIR}/claude/hooks/uv-guard-hook" </dev/null)"
+  if [[ -z "${seam}" ]]; then
+    _pass "seam: an allowed command prints nothing"
+  else
+    _fail "seam: allowed command printed: ${seam}"
+  fi
+
+  # Malformed and empty payloads fail open, never block.
+  if [[ -z "$(printf '%s' '{}' | /bin/zsh "${SCRIPT_DIR}/claude/hooks/uv-guard-hook")" ]]; then
+    _pass "fail-open: payload with no command allowed through"
+  else
+    _fail "fail-open: payload with no command produced a verdict"
+  fi
+  if [[ -z "$(printf '%s' 'not json' | /bin/zsh "${SCRIPT_DIR}/claude/hooks/uv-guard-hook")" ]]; then
+    _pass "fail-open: unparseable payload allowed through"
+  else
+    _fail "fail-open: unparseable payload produced a verdict"
+  fi
+}

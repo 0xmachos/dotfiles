@@ -4,9 +4,12 @@
 # Test for claude/hooks/fetch-route-hook (PreToolUse). The hook denies:
 #   - a GitHub host fetch on every matched tool, naming the gh command for
 #     that URL's shape
-#   - an X status post via WebFetch/Exa, naming X's oEmbed endpoint (allowed
-#     via mcp__parallel__web_fetch)
+#   - an X status post via the Exa tools, naming fetch-post (allowed via
+#     mcp__parallel__web_fetch)
 #   - every WebSearch and mcp__parallel__web_search call, naming Exa
+#   - every WebFetch call (rule e), whatever the URL, with one fixed reason
+#     (the URL-shape cases above use the Exa tools: WebFetch never reaches
+#     the per-URL rules)
 # Payloads are stdin JSON (same shape as tests/md5-write); asserts the verdict
 # and, for GitHub, the gh command named. Fixture URLs are invented
 # (example-org/example-repo), never a real repo or X post.
@@ -128,82 +131,82 @@ function run_fetch_route {
 
   # --- GitHub: every shape gets the right gh command, for every matched tool ---
 
-  local -a tools=(WebFetch mcp__exa__web_fetch_exa mcp__exa__crawling_exa mcp__parallel__web_fetch)
+  local -a tools=(mcp__exa__web_fetch_exa mcp__exa__crawling_exa mcp__parallel__web_fetch)
   local tool out mixed_reason
   local -a reason_lines
   for tool in "${tools[@]}"; do
     _fr_expect_url DENY "${tool}" 'https://github.com/example-org/example-repo' "github root denied for ${tool}"
   done
 
-  _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/blob/main/src/foo.py' \
+  _fr_expect_reason_has mcp__exa__web_fetch_exa 'https://github.com/example-org/example-repo/blob/main/src/foo.py' \
     "gh api 'repos/example-org/example-repo/contents/src/foo.py?ref=main' -H \"Accept: application/vnd.github.raw\"" 'blob'
-  _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/tree/main/src' \
+  _fr_expect_reason_has mcp__exa__web_fetch_exa 'https://github.com/example-org/example-repo/tree/main/src' \
     "gh api 'repos/example-org/example-repo/contents/src?ref=main'" 'tree'
-  _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/issues/42' \
+  _fr_expect_reason_has mcp__exa__web_fetch_exa 'https://github.com/example-org/example-repo/issues/42' \
     "gh issue view '42' -R 'example-org/example-repo' --comments" 'issue'
-  _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/issues?q=is%3Aopen' \
+  _fr_expect_reason_has mcp__exa__web_fetch_exa 'https://github.com/example-org/example-repo/issues?q=is%3Aopen' \
     "gh search issues --repo 'example-org/example-repo'" 'issue search'
-  _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/pulls?q=is%3Aopen' \
+  _fr_expect_reason_has mcp__exa__web_fetch_exa 'https://github.com/example-org/example-repo/pulls?q=is%3Aopen' \
     "gh search prs --repo 'example-org/example-repo'" 'pulls search'
-  _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/pull/7' \
+  _fr_expect_reason_has mcp__exa__web_fetch_exa 'https://github.com/example-org/example-repo/pull/7' \
     "gh pr view '7' -R 'example-org/example-repo' --comments" 'PR view'
-  _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/pull/7' \
+  _fr_expect_reason_has mcp__exa__web_fetch_exa 'https://github.com/example-org/example-repo/pull/7' \
     "gh pr diff '7' -R 'example-org/example-repo'" 'PR diff (same reason as PR view)'
-  _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/pull/7/files' \
+  _fr_expect_reason_has mcp__exa__web_fetch_exa 'https://github.com/example-org/example-repo/pull/7/files' \
     "gh pr view '7' -R 'example-org/example-repo' --comments" 'PR /files subpage'
-  _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/pull/7/commits' \
+  _fr_expect_reason_has mcp__exa__web_fetch_exa 'https://github.com/example-org/example-repo/pull/7/commits' \
     "gh pr view '7' -R 'example-org/example-repo' --comments" 'PR /commits subpage'
-  _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/pull/7.diff' \
+  _fr_expect_reason_has mcp__exa__web_fetch_exa 'https://github.com/example-org/example-repo/pull/7.diff' \
     "gh pr diff '7' -R 'example-org/example-repo'" 'PR .diff'
-  _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/pull/7.patch' \
+  _fr_expect_reason_has mcp__exa__web_fetch_exa 'https://github.com/example-org/example-repo/pull/7.patch' \
     "gh pr diff '7' -R 'example-org/example-repo'" 'PR .patch'
-  _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/commit/deadbeef' \
+  _fr_expect_reason_has mcp__exa__web_fetch_exa 'https://github.com/example-org/example-repo/commit/deadbeef' \
     "gh api 'repos/example-org/example-repo/commits/deadbeef' -H \"Accept: application/vnd.github.patch\"" 'commit'
-  _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/commit/deadbeef.patch' \
+  _fr_expect_reason_has mcp__exa__web_fetch_exa 'https://github.com/example-org/example-repo/commit/deadbeef.patch' \
     "gh api 'repos/example-org/example-repo/commits/deadbeef' -H \"Accept: application/vnd.github.patch\"" 'commit .patch suffix stripped'
-  _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/commit/deadbeef.diff' \
+  _fr_expect_reason_has mcp__exa__web_fetch_exa 'https://github.com/example-org/example-repo/commit/deadbeef.diff' \
     "gh api 'repos/example-org/example-repo/commits/deadbeef' -H \"Accept: application/vnd.github.patch\"" 'commit .diff suffix stripped'
-  _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/releases' \
+  _fr_expect_reason_has mcp__exa__web_fetch_exa 'https://github.com/example-org/example-repo/releases' \
     "gh release list -R 'example-org/example-repo'" 'releases root'
-  _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/releases/tag/v1.0' \
+  _fr_expect_reason_has mcp__exa__web_fetch_exa 'https://github.com/example-org/example-repo/releases/tag/v1.0' \
     "gh release view 'v1.0' -R 'example-org/example-repo'" 'release tag'
-  _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo' \
+  _fr_expect_reason_has mcp__exa__web_fetch_exa 'https://github.com/example-org/example-repo' \
     "gh repo view 'example-org/example-repo'" 'repo root'
-  _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/discussions/3' \
+  _fr_expect_reason_has mcp__exa__web_fetch_exa 'https://github.com/example-org/example-repo/discussions/3' \
     'gh api graphql' 'discussions'
-  _fr_expect_reason_has WebFetch 'https://api.github.com/repos/example-org/example-repo' \
+  _fr_expect_reason_has mcp__exa__web_fetch_exa 'https://api.github.com/repos/example-org/example-repo' \
     "gh api 'repos/example-org/example-repo'" 'api.github.com'
-  _fr_expect_reason_has WebFetch 'https://raw.githubusercontent.com/example-org/example-repo/main/src/foo.py' \
+  _fr_expect_reason_has mcp__exa__web_fetch_exa 'https://raw.githubusercontent.com/example-org/example-repo/main/src/foo.py' \
     "gh api 'repos/example-org/example-repo/contents/src/foo.py?ref=main' -H \"Accept: application/vnd.github.raw\"" 'raw.githubusercontent.com'
-  _fr_expect_reason_has WebFetch 'https://raw.githubusercontent.com/example-org/example-repo/main/src/foo.py' \
+  _fr_expect_reason_has mcp__exa__web_fetch_exa 'https://raw.githubusercontent.com/example-org/example-repo/main/src/foo.py' \
     'ref may contain slashes' 'raw.githubusercontent.com ambiguity noted'
 
   # No shape-specific branch: generic gh pointer.
-  _fr_expect_reason_has WebFetch 'https://gist.github.com/example-user/deadbeefcafe' 'gh api' 'gist.github.com generic'
-  _fr_expect_reason_has WebFetch 'https://gist.githubusercontent.com/example-user/deadbeef/raw/file.py' 'gh api' 'gist.githubusercontent.com generic'
-  _fr_expect_reason_has WebFetch 'https://codeload.github.com/example-org/example-repo/zip/refs/heads/main' 'gh api' 'codeload.github.com generic'
-  _fr_expect_reason_has WebFetch 'https://objects.githubusercontent.com/example-blob' 'gh api' 'objects.githubusercontent.com generic'
-  _fr_expect_reason_has WebFetch 'https://github.com/example-org/example-repo/settings' 'gh api' 'unrecognised github.com shape falls to generic'
+  _fr_expect_reason_has mcp__exa__web_fetch_exa 'https://gist.github.com/example-user/deadbeefcafe' 'gh api' 'gist.github.com generic'
+  _fr_expect_reason_has mcp__exa__web_fetch_exa 'https://gist.githubusercontent.com/example-user/deadbeef/raw/file.py' 'gh api' 'gist.githubusercontent.com generic'
+  _fr_expect_reason_has mcp__exa__web_fetch_exa 'https://codeload.github.com/example-org/example-repo/zip/refs/heads/main' 'gh api' 'codeload.github.com generic'
+  _fr_expect_reason_has mcp__exa__web_fetch_exa 'https://objects.githubusercontent.com/example-blob' 'gh api' 'objects.githubusercontent.com generic'
+  _fr_expect_reason_has mcp__exa__web_fetch_exa 'https://github.com/example-org/example-repo/settings' 'gh api' 'unrecognised github.com shape falls to generic'
 
-  _fr_expect_url DENY WebFetch 'https://GitHub.com/example-org/example-repo' 'host matched case-insensitively'
-  _fr_expect_url DENY WebFetch 'https://github.com:443/example-org/example-repo' 'host matched with a port'
+  _fr_expect_url DENY mcp__exa__web_fetch_exa 'https://GitHub.com/example-org/example-repo' 'host matched case-insensitively'
+  _fr_expect_url DENY mcp__exa__web_fetch_exa 'https://github.com:443/example-org/example-repo' 'host matched with a port'
 
   # Not GitHub code hosts: *.github.io, docs.github.com.
-  _fr_expect_url PASS WebFetch 'https://example-org.github.io/some-page' 'github.io allowed'
-  _fr_expect_url PASS WebFetch 'https://docs.github.com/en/actions' 'docs.github.com allowed'
+  _fr_expect_url PASS mcp__exa__web_fetch_exa 'https://example-org.github.io/some-page' 'github.io allowed'
+  _fr_expect_url PASS mcp__exa__web_fetch_exa 'https://docs.github.com/en/actions' 'docs.github.com allowed'
 
   # --- URL authority parsing edge cases -------------------------------------
   # Scheme, userinfo, port and trailing-dot handling in _fr_split_url.
 
-  _fr_expect_url PASS WebFetch 'https://github.com:pass@evil.com/o/r' \
+  _fr_expect_url PASS mcp__exa__web_fetch_exa 'https://github.com:pass@evil.com/o/r' \
     'userinfo before the host must not be mistaken for it — the real host is evil.com, not github.com'
-  _fr_expect_url DENY WebFetch 'https://user@github.com/o/r' \
+  _fr_expect_url DENY mcp__exa__web_fetch_exa 'https://user@github.com/o/r' \
     'a userinfo@ prefix does not hide the real github.com host'
-  _fr_expect_url DENY WebFetch 'https://github.com./o/r' \
+  _fr_expect_url DENY mcp__exa__web_fetch_exa 'https://github.com./o/r' \
     'one trailing dot on the host is stripped before matching'
-  _fr_expect_url PASS WebFetch 'garbage://github.com/o/r' \
+  _fr_expect_url PASS mcp__exa__web_fetch_exa 'garbage://github.com/o/r' \
     'a non-http(s) scheme is never routed'
-  _fr_expect_url PASS WebFetch 'https://github.com:bad/o/r' \
+  _fr_expect_url PASS mcp__exa__web_fetch_exa 'https://github.com:bad/o/r' \
     'a non-digit port makes the URL unparseable and fails open'
 
   # --- Shell-quoting in suggested commands ----------------------------------
@@ -214,7 +217,7 @@ function run_fetch_route {
   # inside the backticks, not the whole reason.
 
   local quote_out quote_reason want_quoted cmd_part
-  quote_out="$(_fr_run_url WebFetch 'https://github.com/o/$(id)')"
+  quote_out="$(_fr_run_url mcp__exa__web_fetch_exa 'https://github.com/o/$(id)')"
   quote_reason="$(_fr_reason "${quote_out}" || true)"
   want_quoted="'o/\$(id)'"
   if [[ "${quote_reason}" == *"${want_quoted}"* ]]; then
@@ -230,7 +233,7 @@ function run_fetch_route {
     _fail "an unquoted \$(id) leaked into the suggested command: ${quote_reason}"
   fi
 
-  quote_out="$(_fr_run_url WebFetch 'https://x.com/someuser/status/1234567890?s=20&x=1')"
+  quote_out="$(_fr_run_url mcp__exa__web_fetch_exa 'https://x.com/someuser/status/1234567890?s=20&x=1')"
   quote_reason="$(_fr_reason "${quote_out}" || true)"
   cmd_part="${quote_reason#*\`}"
   cmd_part="${cmd_part%%\`*}"
@@ -247,7 +250,7 @@ function run_fetch_route {
 
   # --- api.github.com: query string preserved and quoted --------------------
 
-  _fr_expect_reason_has WebFetch 'https://api.github.com/repos/example-org/example-repo/issues?state=closed' \
+  _fr_expect_reason_has mcp__exa__web_fetch_exa 'https://api.github.com/repos/example-org/example-repo/issues?state=closed' \
     "gh api 'repos/example-org/example-repo/issues?state=closed'" 'api.github.com query string preserved and quoted'
 
   # urls[] (MCP) shape.
@@ -260,27 +263,27 @@ function run_fetch_route {
 
   # --- X status posts -----------------------------------------------------
 
-  local -a x_deny_tools=(WebFetch mcp__exa__web_fetch_exa mcp__exa__crawling_exa)
+  local -a x_deny_tools=(mcp__exa__web_fetch_exa mcp__exa__crawling_exa)
   for tool in "${x_deny_tools[@]}"; do
     _fr_expect_reason_has "${tool}" 'https://x.com/someuser/status/1234567890' 'mcp__parallel__web_fetch' "X fallback named for ${tool}"
   done
   _fr_expect_url PASS mcp__parallel__web_fetch 'https://x.com/someuser/status/1234567890' 'X status allowed through mcp__parallel__web_fetch'
 
   # Every status-URL shape and host alias.
-  _fr_expect_url DENY WebFetch 'https://twitter.com/someuser/status/1234567890' 'twitter.com status'
-  _fr_expect_url DENY WebFetch 'https://www.twitter.com/someuser/status/1234567890' 'www.twitter.com status'
-  _fr_expect_url DENY WebFetch 'https://mobile.twitter.com/someuser/status/1234567890' 'mobile.twitter.com status'
-  _fr_expect_url DENY WebFetch 'https://mobile.x.com/someuser/status/1234567890' 'mobile.x.com status'
-  _fr_expect_url DENY WebFetch 'https://www.x.com/someuser/status/1234567890' 'www.x.com status'
-  _fr_expect_url DENY WebFetch 'https://x.com/i/status/1234567890' 'x.com/i/status'
-  _fr_expect_url DENY WebFetch 'https://x.com/i/web/status/1234567890' 'x.com/i/web/status'
+  _fr_expect_url DENY mcp__exa__web_fetch_exa 'https://twitter.com/someuser/status/1234567890' 'twitter.com status'
+  _fr_expect_url DENY mcp__exa__web_fetch_exa 'https://www.twitter.com/someuser/status/1234567890' 'www.twitter.com status'
+  _fr_expect_url DENY mcp__exa__web_fetch_exa 'https://mobile.twitter.com/someuser/status/1234567890' 'mobile.twitter.com status'
+  _fr_expect_url DENY mcp__exa__web_fetch_exa 'https://mobile.x.com/someuser/status/1234567890' 'mobile.x.com status'
+  _fr_expect_url DENY mcp__exa__web_fetch_exa 'https://www.x.com/someuser/status/1234567890' 'www.x.com status'
+  _fr_expect_url DENY mcp__exa__web_fetch_exa 'https://x.com/i/status/1234567890' 'x.com/i/status'
+  _fr_expect_url DENY mcp__exa__web_fetch_exa 'https://x.com/i/web/status/1234567890' 'x.com/i/web/status'
 
-  _fr_expect_url DENY WebFetch 'https://x.com/someuser/status/1234567890/' 'x.com status with one trailing slash'
-  _fr_expect_url DENY WebFetch 'https://x.com/i/status/1234567890/' 'x.com/i/status with one trailing slash'
-  _fr_expect_url DENY WebFetch 'https://x.com/i/web/status/1234567890/' 'x.com/i/web/status with one trailing slash'
+  _fr_expect_url DENY mcp__exa__web_fetch_exa 'https://x.com/someuser/status/1234567890/' 'x.com status with one trailing slash'
+  _fr_expect_url DENY mcp__exa__web_fetch_exa 'https://x.com/i/status/1234567890/' 'x.com/i/status with one trailing slash'
+  _fr_expect_url DENY mcp__exa__web_fetch_exa 'https://x.com/i/web/status/1234567890/' 'x.com/i/web/status with one trailing slash'
 
-  _fr_expect_url PASS WebFetch 'https://x.com/someuser' 'x.com profile page allowed'
-  _fr_expect_url PASS WebFetch 'https://x.com/search?q=example' 'x.com search allowed'
+  _fr_expect_url PASS mcp__exa__web_fetch_exa 'https://x.com/someuser' 'x.com profile page allowed'
+  _fr_expect_url PASS mcp__exa__web_fetch_exa 'https://x.com/search?q=example' 'x.com search allowed'
 
   # --- WebSearch / mcp__parallel__web_search: denied outright, any query ----
 
@@ -347,8 +350,8 @@ function run_fetch_route {
 
   # --- unrelated URLs -------------------------------------------------------
 
-  _fr_expect_url PASS WebFetch 'https://example.com/whatever' 'unrelated host allowed'
-  _fr_expect_url PASS WebFetch 'https://example.com/github.com/not-actually-github' 'github.com only in the path, not the host'
+  _fr_expect_url PASS mcp__exa__web_fetch_exa 'https://example.com/whatever' 'unrelated host allowed'
+  _fr_expect_url PASS mcp__exa__web_fetch_exa 'https://example.com/github.com/not-actually-github' 'github.com only in the path, not the host'
 
   # --- mixed batch: deny the whole call, name only the offenders -----------
 
@@ -390,6 +393,82 @@ function run_fetch_route {
     _fail "all-innocent batch was denied"
   fi
 
+  # --- WebFetch: denied outright (rule e), any URL ---------------------------
+
+  local wf_want wf_out wf_reason wf_url
+  wf_want='WebFetch blocked: use mcp__exa__web_fetch_exa, or mcp__parallel__web_fetch (full_content: true) for a JS-heavy page; GitHub through gh, an X post through fetch-post.'
+
+  # Plain https URL that no other rule routes: the case that used to PASS.
+  _fr_expect_url DENY WebFetch 'https://example.com/whatever' 'WebFetch: plain https URL'
+  _fr_expect_url DENY WebFetch 'https://example.com/github.com/not-actually-github' 'WebFetch: github.com only in the path'
+  _fr_expect_url DENY WebFetch 'https://example-org.github.io/some-page' 'WebFetch: github.io page'
+  _fr_expect_url DENY WebFetch 'https://x.com/someuser' 'WebFetch: x.com profile page'
+  _fr_expect_url DENY WebFetch 'garbage://example.com/x' 'WebFetch: non-http scheme the URL rules skip'
+  _fr_expect_url DENY WebFetch 'https://github.com/example-org/example-repo' 'WebFetch: github.com URL'
+  _fr_expect_url DENY WebFetch 'https://x.com/someuser/status/1234567890' 'WebFetch: X status URL'
+
+  for wf_url in 'https://example.com/whatever' 'https://github.com/example-org/example-repo' 'https://x.com/someuser/status/1234567890'; do
+    wf_out="$(_fr_run_url WebFetch "${wf_url}")"
+    wf_reason="$(_fr_reason "${wf_out}" || true)"
+    if [[ "${wf_reason}" == "${wf_want}" ]]; then
+      _pass "WebFetch deny reason is the one fixed line for ${wf_url}"
+    else
+      _fail "WebFetch deny reason unexpected for ${wf_url}: ${wf_reason}"
+    fi
+  done
+  if [[ -n "${wf_reason}" && "${wf_reason}" != *$'\n'* ]]; then
+    _pass "WebFetch deny reason is a single line"
+  else
+    _fail "WebFetch deny reason is not one line: ${wf_reason}"
+  fi
+
+  # No URL at all, and an empty URL.
+  wf_out="$(jq -n '{tool_name:"WebFetch", tool_input:{}}' | /bin/zsh "${SCRIPT_DIR}/claude/hooks/fetch-route-hook")"
+  wf_reason="$(_fr_reason "${wf_out}" || true)"
+  if [[ "$(_hook_verdict "${wf_out}")" == DENY && "${wf_reason}" == "${wf_want}" ]]; then
+    _pass "DENY: WebFetch with no URL, fixed reason"
+  else
+    _fail "WebFetch with no URL — verdict=$(_hook_verdict "${wf_out}") reason=${wf_reason}"
+  fi
+  wf_out="$(jq -n '{tool_name:"WebFetch"}' | /bin/zsh "${SCRIPT_DIR}/claude/hooks/fetch-route-hook")"
+  if [[ "$(_hook_verdict "${wf_out}")" == DENY ]]; then
+    _pass "DENY: WebFetch with no tool_input"
+  else
+    _fail "WebFetch with no tool_input was not denied"
+  fi
+  wf_out="$(jq -n '{tool_name:"WebFetch", tool_input:{url:""}}' | /bin/zsh "${SCRIPT_DIR}/claude/hooks/fetch-route-hook")"
+  if [[ "$(_hook_verdict "${wf_out}")" == DENY ]]; then
+    _pass "DENY: WebFetch with an empty URL"
+  else
+    _fail "WebFetch with an empty URL was not denied"
+  fi
+
+  # Several URLs (a urls[] shape): one denial, the fixed reason.
+  wf_out="$(_fr_run_urls WebFetch 'https://example.com/a' 'https://example.com/b' 'https://github.com/example-org/example-repo')"
+  wf_reason="$(_fr_reason "${wf_out}" || true)"
+  if [[ "$(_hook_verdict "${wf_out}")" == DENY && "${wf_reason}" == "${wf_want}" ]]; then
+    _pass "DENY: WebFetch with several URLs, fixed reason"
+  else
+    _fail "WebFetch with several URLs — verdict=$(_hook_verdict "${wf_out}") reason=${wf_reason}"
+  fi
+  wf_out="$(_fr_run_urls WebFetch 'https://example.com/a' 'https://example.com/b')"
+  if [[ "$(_hook_verdict "${wf_out}")" == DENY ]]; then
+    _pass "DENY: WebFetch with several innocent URLs"
+  else
+    _fail "WebFetch with several innocent URLs was not denied"
+  fi
+
+  # Raw payload shapes (single-parse and legacy parse paths).
+  _fr_raw_case 'WebFetch with a non-object tool_input' DENY '' '{"tool_name":"WebFetch","tool_input":"x"}'
+  _fr_raw_case 'WebFetch with a trailing newline in tool_name' DENY '' '{"tool_name":"WebFetch\\n","tool_input":{"url":"https://example.com/"}}'
+  _fr_raw_case 'two JSON values on stdin, the second a WebFetch (legacy parse)' DENY '' '{}{"tool_name":"WebFetch","tool_input":{"url":"https://example.com/"}}'
+  _fr_raw_case 'NUL (JSON escape) in a WebFetch URL (legacy parse)' DENY '' '{"tool_name":"WebFetch","tool_input":{"url":"https://example.com/\\u0000x"}}'
+
+  # Not WebFetch: a similarly named tool is untouched by rule (e).
+  _fr_expect_url PASS WebFetchX 'https://example.com/whatever' 'a tool named WebFetchX is not WebFetch'
+  _fr_expect_url PASS mcp__parallel__web_fetch 'https://example.com/whatever' 'mcp__parallel__web_fetch still allowed for an unrouted URL'
+  _fr_expect_url PASS mcp__exa__web_fetch_exa 'https://example.com/whatever' 'mcp__exa__web_fetch_exa still allowed for an unrouted URL'
+
   # --- fail-open --------------------------------------------------------------
   # Every fail-open path must print nothing AND exit 0: a nonzero exit with
   # empty stdout still reads as a hook error, not a clean allow.
@@ -418,7 +497,7 @@ function run_fetch_route {
   fi
 
   # tool_name present, no url/urls.
-  fo_out="$(jq -n '{tool_name:"WebFetch", tool_input:{}}' | /bin/zsh "${SCRIPT_DIR}/claude/hooks/fetch-route-hook")"; fo_rc=$?
+  fo_out="$(jq -n '{tool_name:"mcp__exa__web_fetch_exa", tool_input:{}}' | /bin/zsh "${SCRIPT_DIR}/claude/hooks/fetch-route-hook")"; fo_rc=$?
   if [[ -z "${fo_out}" && "${fo_rc}" -eq 0 ]]; then
     _pass "fail-open: tool_input with no url/urls allows the fetch (status 0, empty stdout)"
   else
@@ -435,14 +514,14 @@ function run_fetch_route {
   _fr_raw_case 'tool_name WebSearch with a trailing newline is still a search' DENY '' '{"tool_name":"WebSearch\\n"}'
   _fr_raw_case 'trailing garbage after a search payload' PASS 'could not parse tool_name' '{"tool_name":"WebSearch"} garbage'
   _fr_raw_case 'search with a non-object tool_input is still denied' DENY '' '{"tool_name":"WebSearch","tool_input":"x"}'
-  _fr_raw_case 'fetch with a non-object tool_input' PASS 'could not parse tool_input' '{"tool_name":"WebFetch","tool_input":"x"}'
-  _fr_raw_case 'two JSON values on stdin, the second routed' DENY '' '{}{"tool_name":"WebFetch","tool_input":{"url":"'"${fr_gh}"'"}}'
+  _fr_raw_case 'fetch with a non-object tool_input' PASS 'could not parse tool_input' '{"tool_name":"mcp__exa__web_fetch_exa","tool_input":"x"}'
+  _fr_raw_case 'two JSON values on stdin, the second routed' DENY '' '{}{"tool_name":"mcp__exa__web_fetch_exa","tool_input":{"url":"'"${fr_gh}"'"}}'
   _fr_raw_case 'two search values are not one search name' PASS '' '{"tool_name":"WebSearch"}{"tool_name":"WebSearch"}'
-  _fr_raw_case 'URL holding a newline hides a second URL' DENY '' '{"tool_name":"WebFetch","tool_input":{"url":"https://example.com/\\nhttps://github.com/example-org/example-repo"}}'
-  _fr_raw_case 'NUL (JSON escape) in tool_name, routed URL' DENY '' '{"tool_name":"WebFetch\\u0000","tool_input":{"url":"'"${fr_gh}"'"}}'
+  _fr_raw_case 'URL holding a newline hides a second URL' DENY '' '{"tool_name":"mcp__exa__web_fetch_exa","tool_input":{"url":"https://example.com/\\nhttps://github.com/example-org/example-repo"}}'
+  _fr_raw_case 'NUL (JSON escape) in tool_name, routed URL' DENY '' '{"tool_name":"mcp__exa__web_fetch_exa\\u0000","tool_input":{"url":"'"${fr_gh}"'"}}'
   _fr_raw_case 'NUL (JSON escape) in tool_name is not WebSearch' PASS '' '{"tool_name":"WebSearch\\u0000"}'
-  _fr_raw_case 'NUL (JSON escape) in one URL does not hide the routed URL after it' DENY '' '{"tool_name":"WebFetch","tool_input":{"urls":["https://example.com/\\u0000a","'"${fr_gh}"'"]}}'
-  _fr_raw_case 'NUL (JSON escape) in a routed URL' DENY '' '{"tool_name":"WebFetch","tool_input":{"url":"https://github.com/example-org/example-repo\\u0000/x"}}'
+  _fr_raw_case 'NUL (JSON escape) in one URL does not hide the routed URL after it' DENY '' '{"tool_name":"mcp__exa__web_fetch_exa","tool_input":{"urls":["https://example.com/\\u0000a","'"${fr_gh}"'"]}}'
+  _fr_raw_case 'NUL (JSON escape) in a routed URL' DENY '' '{"tool_name":"mcp__exa__web_fetch_exa","tool_input":{"url":"https://github.com/example-org/example-repo\\u0000/x"}}'
   _fr_raw_case 'raw NUL byte after a search payload' PASS 'could not parse tool_name' '{"tool_name":"WebSearch"}\0'
   _fr_raw_case 'raw NUL byte then garbage after a search payload' PASS 'could not parse tool_name' '{"tool_name":"WebSearch"}\0garbage'
   _fr_raw_case 'raw NUL byte alone' PASS 'could not parse tool_name' '\0'
@@ -452,8 +531,9 @@ function run_fetch_route {
   local fr_empty='' fr_pad
   # shellcheck disable=SC2296  # zsh (l) pads the empty parameter to 200000 bytes
   fr_pad="${(l:200000::x:)fr_empty}"
-  _fr_raw_case '200 KB payload, routed URL after the padding' DENY '' '{"pad":"'"${fr_pad}"'","tool_name":"WebFetch","tool_input":{"url":"'"${fr_gh}"'"}}'
+  _fr_raw_case '200 KB payload, routed URL after the padding' DENY '' '{"pad":"'"${fr_pad}"'","tool_name":"mcp__exa__web_fetch_exa","tool_input":{"url":"'"${fr_gh}"'"}}'
   _fr_raw_case '200 KB payload, WebSearch' DENY '' '{"pad":"'"${fr_pad}"'","tool_name":"WebSearch"}'
+  _fr_raw_case '200 KB payload, WebFetch' DENY '' '{"pad":"'"${fr_pad}"'","tool_name":"WebFetch","tool_input":{"url":"https://example.com/"}}'
   _fr_raw_case '200 KB payload then a raw NUL byte' PASS 'could not parse tool_name' '{"pad":"'"${fr_pad}"'","tool_name":"WebSearch"}\0'
 
   /bin/rm -rf "${_FR_TMP}"

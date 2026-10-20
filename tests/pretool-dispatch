@@ -4,7 +4,7 @@
 # Behavioural test for claude/hooks/pretool-dispatch, the single PreToolUse
 # process that sources the guards (md5-guard-hook gh-publish-hook
 # git-bypass-hook muse-exec-hook rm-redirect-hook ssh-redirect-hook
-# sudo-askpass-hook container-tmp-hook tmp-guard-hook md5-write-hook) in forked
+# sudo-askpass-hook container-tmp-hook tmp-guard-hook config-root-hook md5-write-hook uv-guard-hook) in forked
 # subshells. Three parts:
 #   1. Fault injection: a sandbox COPY of the dispatcher beside stub guards
 #      (it finds its guards in its own directory). A stub that fails, prints
@@ -37,7 +37,7 @@ typeset -g PTD_DISPATCHER=''
 typeset -g PTD_DIRS='' PTD_ROUTES='' PTD_HOOKS=''
 typeset -gi PTD_RC=0
 
-typeset -ga PTD_BASH=(md5-guard-hook gh-publish-hook git-bypass-hook muse-exec-hook rm-redirect-hook ssh-redirect-hook sudo-askpass-hook container-tmp-hook tmp-guard-hook mcp-secret-hook)
+typeset -ga PTD_BASH=(md5-guard-hook gh-publish-hook git-bypass-hook muse-exec-hook rm-redirect-hook ssh-redirect-hook sudo-askpass-hook container-tmp-hook tmp-guard-hook config-root-hook mcp-secret-hook uv-guard-hook)
 typeset -ga PTD_ALL=("${PTD_BASH[@]}" md5-write-hook)
 
 function _ptd_bash {
@@ -358,15 +358,15 @@ function _ptd_fault_injection {
 
   _ptd_run "$(_ptd_write /x/a.txt body)"
   _ptd_expect PASS 'a Write call'
-  _ptd_eq "Write runs tmp-guard-hook, md5-write-hook then mcp-secret-hook only" "$(_ptd_marker)" 'tmp-guard-hook md5-write-hook mcp-secret-hook'
+  _ptd_eq "Write runs tmp-guard-hook, config-root-hook, md5-write-hook then mcp-secret-hook only" "$(_ptd_marker)" 'tmp-guard-hook config-root-hook md5-write-hook mcp-secret-hook'
 
   _ptd_run "$(jq -cn '{tool_name:"Edit", tool_input:{file_path:"/x/a", old_string:"a", new_string:"b"}, cwd:"/work"}')"
   _ptd_expect PASS 'an Edit call'
-  _ptd_eq "Edit runs tmp-guard-hook, md5-write-hook then mcp-secret-hook only" "$(_ptd_marker)" 'tmp-guard-hook md5-write-hook mcp-secret-hook'
+  _ptd_eq "Edit runs tmp-guard-hook, config-root-hook, md5-write-hook then mcp-secret-hook only" "$(_ptd_marker)" 'tmp-guard-hook config-root-hook md5-write-hook mcp-secret-hook'
 
   _ptd_run "$(jq -cn '{tool_name:"NotebookEdit", tool_input:{notebook_path:"/x/n.ipynb", new_source:"1"}, cwd:"/work"}')"
   _ptd_expect PASS 'a NotebookEdit call'
-  _ptd_eq "NotebookEdit runs tmp-guard-hook only" "$(_ptd_marker)" 'tmp-guard-hook'
+  _ptd_eq "NotebookEdit runs tmp-guard-hook then config-root-hook only" "$(_ptd_marker)" 'tmp-guard-hook config-root-hook'
 
   # A tool the matcher sends but the route table lacks means the two disagree:
   # a configuration bug, denied loudly, no guard run
@@ -599,7 +599,7 @@ function _ptd_fault_injection {
   _ptd_new_box routes
   PTD_RC=0
   PTD_OUT="$(/bin/zsh "${PTD_BOX}/pretool-dispatch" --print-routes </dev/null 2>&1)" || PTD_RC=$?
-  if [[ ${PTD_RC} -eq 0 && "${PTD_OUT}" == "Bash: ${PTD_BASH[*]}"$'\nMonitor: '"${PTD_BASH[*]}"$'\nWrite: tmp-guard-hook md5-write-hook mcp-secret-hook\nEdit: tmp-guard-hook md5-write-hook mcp-secret-hook\nNotebookEdit: tmp-guard-hook' ]]; then
+  if [[ ${PTD_RC} -eq 0 && "${PTD_OUT}" == "Bash: ${PTD_BASH[*]}"$'\nMonitor: '"${PTD_BASH[*]}"$'\nWrite: tmp-guard-hook config-root-hook md5-write-hook mcp-secret-hook\nEdit: tmp-guard-hook config-root-hook md5-write-hook mcp-secret-hook\nNotebookEdit: tmp-guard-hook config-root-hook' ]]; then
     _pass "--print-routes prints one line per tool, guards in run order"
   else
     _fail "--print-routes prints one line per tool, guards in run order — ""${PTD_OUT}"
@@ -636,7 +636,10 @@ function _ptd_real_guards {
   _ptd_real_deny container-tmp-hook "$(jq -cn '{tool_name:"Bash", tool_input:{command:"container build -t x /tmp/ctx"}, cwd:"/work"}')" 'is under a tmp dir' 'container-tmp-hook: build context in tmp'
   _ptd_real_deny tmp-guard-hook "$(_ptd_write /tmp/x body)" 'write to /tmp blocked' 'tmp-guard-hook: Write to /tmp/x'
   _ptd_real_deny tmp-guard-hook "$(_ptd_bash 'echo hi > /tmp/x')" 'write to /tmp blocked' 'tmp-guard-hook: Bash redirect into /tmp'
+  _ptd_real_deny config-root-hook "$(_ptd_write "${HOME}/.claude/settings.json" body)" 'live agent config blocked' 'config-root-hook: Write to the live ~/.claude'
+  _ptd_real_deny config-root-hook "$(_ptd_bash 'echo hi > ~/.codex/x')" 'live agent config blocked' 'config-root-hook: Bash redirect into ~/.codex'
   _ptd_real_deny md5-write-hook "$(_ptd_write /x/a.py "h = ${md5_call}")" 'puts MD5 into /x/a.py' 'md5-write-hook: Write with an MD5 call'
+  _ptd_real_deny uv-guard-hook "$(_ptd_bash 'pip install requests')" 'pip, venv, conda and the CLT python are not used here' 'uv-guard-hook: pip install'
 
   _ptd_real "$(jq -cn '{tool_name:"Edit", tool_input:{file_path:"/tmp/x", old_string:"a", new_string:"b"}}')"
   _ptd_expect DENY 'Edit of a /tmp path (tmp-guard-hook)'
@@ -655,6 +658,7 @@ function _ptd_real_guards {
   _ptd_real_deny git-bypass-hook "$(_ptd_monitor 'git commit --no-verify -m x')" 'git commit --no-verify: give the user the exact command' 'git-bypass-hook: Monitor git commit --no-verify'
   _ptd_monitor_as_bash 'git commit --no-verify -m x' 'git commit --no-verify (git-bypass-hook)'
   _ptd_monitor_as_bash 'md5 file.txt' 'md5 file.txt (md5-guard-hook)'
+  _ptd_monitor_as_bash 'python3 -m venv .venv' 'python3 -m venv (uv-guard-hook)'
   _ptd_monitor_as_bash 'echo hi > /tmp/x' 'redirect into /tmp (tmp-guard-hook)'
   _ptd_monitor_as_bash "claude mcp add exa ${key_flag} -- prog" 'claude mcp add with a key flag (mcp-secret-hook)'
   _ptd_monitor_as_bash "${gh_word} issue create -t t --body \"inline body\"" 'inline --body (gh-publish-hook)' "${gh_env[@]}"
@@ -677,7 +681,9 @@ function _ptd_real_guards {
     "muse-exec-hook|$(_ptd_bash 'timeout 90 muse exec --workspace /w < /dev/null')" \
     "container-tmp-hook|$(jq -cn '{tool_name:"Bash", tool_input:{command:"container build -t x /tmp/ctx"}, cwd:"/work"}')" \
     "tmp-guard-hook|$(_ptd_write /tmp/x body)" \
+    "config-root-hook|$(_ptd_write "${HOME}/.claude/x" body)" \
     "md5-write-hook|$(_ptd_write /x/a.py "h = ${md5_call}")" \
+    "uv-guard-hook|$(_ptd_bash 'pip install requests')" \
     "gh-publish-hook|$(_ptd_bash "${gh_word} issue create -t t --body \"inline body\"")"; do
     extra_env=()
     [[ "${c%%|*}" == gh-publish-hook ]] && extra_env=("${gh_env[@]}")
@@ -757,14 +763,14 @@ function _ptd_coverage {
   PTD_ROUTES="$("${SCRIPT_DIR}/claude/hooks/pretool-dispatch" --print-routes)"
   PTD_HOOKS="$(jq -r '.hooks.PreToolUse[]? | .matcher as $m | .hooks[]? | [($m // ""), .command] | @tsv' "${settings}")"
   _ptd_expect_reach Bash "${PTD_BASH[@]}"
-  _ptd_expect_reach Write tmp-guard-hook md5-write-hook mcp-secret-hook
-  _ptd_expect_reach Edit tmp-guard-hook md5-write-hook mcp-secret-hook
+  _ptd_expect_reach Write tmp-guard-hook config-root-hook md5-write-hook mcp-secret-hook
+  _ptd_expect_reach Edit tmp-guard-hook config-root-hook md5-write-hook mcp-secret-hook
   if _ptd_mod_registers Monitor; then
     _ptd_expect_reach Monitor "${PTD_BASH[@]}"
   else
     _skip "coverage: Monitor is not registered by the prefilter mod yet (the dispatcher row is live; copy the new mod, TODOs.md)"
   fi
-  _ptd_expect_reach NotebookEdit tmp-guard-hook
+  _ptd_expect_reach NotebookEdit tmp-guard-hook config-root-hook
   for g in "${PTD_ALL[@]}"; do
     if [[ -r "${SCRIPT_DIR}/claude/hooks/${g}" ]]; then
       _pass "routed guard exists: ${g}"

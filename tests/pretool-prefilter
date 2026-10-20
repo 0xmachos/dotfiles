@@ -223,7 +223,7 @@ function _pf_minimums {
   # A guard with no early exit is covered by the deny cases below.
   _section "pretool-prefilter: token list covers each guard's own probe"
   local want tok found
-  for want in md5 gh issue release gist discussion git muse rm unlink shred find clean ssh scp sftp rsync mosh sudo container tmp folders; do
+  for want in md5 gh issue release gist discussion git muse rm unlink shred find clean ssh scp sftp rsync mosh sudo container tmp folders .claude .codex pip3 virtualenv conda mamba pyenv /usr/bin/python3; do
     found=0
     # shellcheck disable=SC2034  # read through the (L) expansion below
     for tok in "${PF_TOKENS[@]}"; do
@@ -274,6 +274,20 @@ function _pf_cases {
   _pf_deny_case 'tmp-guard: redirect into /tmp' 'echo hi > /tmp/x'
   _pf_deny_case 'tmp-guard: mktemp under /tmp' 'mktemp -d /tmp/foo.XXXX'
   _pf_deny_case 'tmp-guard: cp into /var/folders' 'cp a /var/folders/x/b'
+  _pf_deny_case 'uv-guard: pip install' 'pip install requests'
+  _pf_deny_case 'uv-guard: pip with a flag before install' 'pip --quiet install requests'
+  _pf_deny_case 'uv-guard: pip3 install' 'pip3 install requests'
+  _pf_deny_case 'uv-guard: python -m pip' 'python3 -m pip list'
+  _pf_deny_case 'uv-guard: python -m venv' 'python3 -m venv .venv'
+  _pf_deny_case 'uv-guard: attached -mpip' 'python3 -mpip list'
+  _pf_deny_case 'uv-guard: virtualenv' 'virtualenv .venv'
+  _pf_deny_case 'uv-guard: conda' 'conda install numpy'
+  _pf_deny_case 'uv-guard: mamba' 'mamba create -n x'
+  _pf_deny_case 'uv-guard: pyenv' 'pyenv install 3.12'
+  _pf_deny_case 'uv-guard: CLT python by path' '/usr/bin/python3 script.py'
+  _pf_deny_case 'config-root: touch under ~/.claude' 'touch ~/.claude/x'
+  _pf_deny_case 'config-root: redirect into ~/.codex' 'echo hi > ~/.codex/x'
+  _pf_deny_case 'config-root: mkdir under ~/.config/muse' 'mkdir ~/.config/muse/x'
 
   # Decoration cannot split a token (the guards delete it before probing).
   # shellcheck disable=SC2016  # literal command text
@@ -298,6 +312,9 @@ function _pf_cases {
   # shellcheck disable=SC2016  # literal command text
   _pf_pass_case 'command substitution without a token' 'echo $(printf x) ${HOME}'
   _pf_pass_case 'printf is not a publish shape' 'printf "%s\n" hello'
+  _pf_pass_case 'pipefail is not a pip call' 'set -o pipefail'
+  _pf_pass_case '.venv path is not a venv call' 'ls .venv/bin'
+  _pf_pass_case 'uv run is not dispatched without a token' 'uv run pytest'
   _pf_pass_case 'api inside a hostname' 'curl -s api.example.com/v1/status'
 
   _pf_innocent_case 'rm inside FORMAT' 'cat FORMAT.txt'
