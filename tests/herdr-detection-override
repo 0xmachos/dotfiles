@@ -89,6 +89,34 @@ function _hcd_exists {
 }
 function _hcd_calls { print -r -- "$(< "${_HCD_BOX}/calls.log")"; }
 
+# _hcd_footer_regex <override text>: run the rule's footer regex over sample
+# footer lines with perl (the pattern uses only syntax that Rust and Perl share).
+function _hcd_footer_regex {
+  local re line want
+  re="${1#*line_regex = \[\'^}"
+  re="^${re%%\']*}"
+  local -a cases=(
+    "yes|  ⏵⏵ auto mode on · 1 shell"
+    "yes|  ⏵⏵ auto mode on · 1 shell, 1 monitor · ← 2 agents"
+    "yes|  ⏵⏵ auto mode on (shift+tab to cycle) · 2 shells"
+    "yes|  ⏸ plan mode on · 3 monitors"
+    "no|  ⏵⏵ auto mode on · 0 shells"
+    "no|  ⏵⏵ auto mode on"
+    "no|  ⏵⏵ auto mode on · ← 2 agents"
+    "no|  ? for shortcuts · 1 shell"
+    "no|❯ note: the build prints 1 shell to run"
+  )
+  for line in "${cases[@]}"; do
+    want="${line%%|*}"
+    line="${line#*|}"
+    if /usr/bin/perl -CSDA -Mutf8 -e 'my $re = shift; exit(($ARGV[0] =~ /$re/) ? 0 : 1)' "${re}" "${line}"; then
+      _hcd_eq "footer regex on [${line}]" "${want}" "yes"
+    else
+      _hcd_eq "footer regex on [${line}]" "${want}" "no"
+    fi
+  done
+}
+
 function run_herdr_detection_override {
   _section "herdr claude detection override"
 
@@ -116,7 +144,17 @@ function run_herdr_detection_override {
   _hcd_has "apply: keeps the remote rules" "${text}" 'id = "live_prompt_box"'
   _hcd_has "apply: adds the rule" "${text}" 'id = "background_shell_or_monitor_working"'
   _hcd_has "apply: rule is working at priority 960" "${text}" $'state = "working"\npriority = 960'
-  _hcd_has "apply: rule keeps the permission guard" "${text}" '{ contains = ["do you want to proceed?"] }'
+  _hcd_has "apply: rule reads the bottom 12 lines" "${text}" 'region = "bottom_non_empty_lines(12)"'
+  _hcd_has "apply: rule needs a visible working signal" "${text}" 'visible_working = true'
+  local g
+  for g in '{ contains = ["do you want to proceed?"] }' '{ contains = ["esc to cancel"] }' \
+    '{ contains = ["waiting for permission"] }' '{ contains = ["do you want to allow this connection?"] }' \
+    '{ contains = ["tab to amend"] }' '{ contains = ["ctrl+e to explain"] }' \
+    '{ contains = ["review your answers"] }' '{ contains = ["skip interview and plan immediately"] }' \
+    "{ line_regex = ['(?i)^[\\s│]*❯?\\s*[1-3]\\.\\s*(?:yes|no)\\b'] }"; do
+    _hcd_has "apply: rule keeps the guard ${g}" "${text}" "${g}"
+  done
+  _hcd_footer_regex "${text}"
   _hcd_eq "apply: reloads the server once" "server reload-agent-manifests" "$(_hcd_calls)"
   _hcd_eq "apply: only the override is in the directory" "claude.toml" \
     "$(/bin/ls -A "${ov:h}")"
@@ -222,16 +260,14 @@ function run_herdr_detection_override {
   _hcd_eq "sync: no remote manifest exits 0" 0 "${_HCD_RC}"
 
   # a failed sync is remembered for that remote version only; the failure here
-  # (the remote holds the rule) writes nothing, so only the memory stops a retry
+  # (the remote is another agent's) writes nothing, so only the memory stops a retry
   _hcd_reset
   _hcd_remote 2026.10.11.1
   _hcd_run apply
-  _hcd_remote 2026.11.01.1
-  print -r -- 'id = "background_shell_or_monitor_working"' >> \
-    "${_HCD_BOX}/home/.local/state/herdr/agent-detection/remote/claude.toml"
+  _hcd_remote 2026.11.01.1 codex
   _hcd_run sync
   _hcd_eq "sync: a failed rebuild exits 1" 1 "${_HCD_RC}"
-  _hcd_has "sync: a failed rebuild says why" "${_HCD_ERR}" "already holds the rule"
+  _hcd_has "sync: a failed rebuild says why" "${_HCD_ERR}" "is not the claude manifest"
   _hcd_run sync
   _hcd_eq "sync: the same failed version is not retried" 0 "${_HCD_RC}"
   _hcd_eq "sync: the same failed version prints nothing" "" "${_HCD_OUT}${_HCD_ERR}"
@@ -244,6 +280,46 @@ function run_herdr_detection_override {
     "$(< "$(_hcd_override)")" "version 2026.12.01.1."
   _hcd_eq "sync: success clears the failure memory" "no" \
     "$(_hcd_exists "${_HCD_BOX}/home/Library/Caches/herdr-detection-override/failed")"
+
+  # a failed reload leaves the new file in place; later syncs retry the reload alone
+  _hcd_reset
+  _hcd_remote 2026.10.11.1
+  _hcd_run apply
+  _hcd_remote 2026.11.01.1
+  _hcd_run sync FAKE_FAIL=1
+  _hcd_eq "sync: a failed reload exits 1" 1 "${_HCD_RC}"
+  _hcd_has "sync: a failed reload keeps the rebuilt file" \
+    "$(< "$(_hcd_override)")" "version 2026.11.01.1."
+  _hcd_run sync FAKE_FAIL=1
+  _hcd_eq "sync: a reload that keeps failing exits 0" 0 "${_HCD_RC}"
+  _hcd_eq "sync: a reload that keeps failing is tried again" "server reload-agent-manifests" "$(_hcd_calls)"
+  _hcd_run sync
+  _hcd_eq "sync: the retried reload succeeds" "server reload-agent-manifests" "$(_hcd_calls)"
+  _hcd_eq "sync: the retried reload clears the failure memory" "no" \
+    "$(_hcd_exists "${_HCD_BOX}/home/Library/Caches/herdr-detection-override/failed")"
+  _hcd_run sync
+  _hcd_eq "sync: after the retry it is quiet again" "" "$(_hcd_calls)"
+
+  # upstream ships the rule: the override has no job left and moves aside
+  _hcd_reset
+  _hcd_remote 2026.10.11.1
+  _hcd_run apply
+  _hcd_remote 2026.11.01.1
+  print -r -- 'id = "background_shell_or_monitor_working"' >> \
+    "${_HCD_BOX}/home/.local/state/herdr/agent-detection/remote/claude.toml"
+  _hcd_run sync
+  _hcd_eq "sync: a remote that holds the rule exits 0" 0 "${_HCD_RC}"
+  _hcd_eq "sync: a remote that holds the rule removes the override" "no" "$(_hcd_exists)"
+  _hcd_eq "sync: a remote that holds the rule keeps the old override aside" "yes" \
+    "$(_hcd_exists "$(_hcd_override).upstream-has-rule")"
+  _hcd_eq "sync: a remote that holds the rule reloads the server" "server reload-agent-manifests" "$(_hcd_calls)"
+
+  # check without a remote manifest names the problem, with no raw shell error
+  _hcd_reset
+  _hcd_run check
+  _hcd_eq "check: no remote manifest exits 1" 1 "${_HCD_RC}"
+  _hcd_has "check: no remote manifest says so" "${_HCD_ERR}" "no remote manifest at"
+  _hcd_eq "check: no remote manifest prints one line" "1" "$(print -r -- "${_HCD_ERR}" | /usr/bin/wc -l | /usr/bin/tr -d ' ')"
 
   # usage
   _hcd_run bogus

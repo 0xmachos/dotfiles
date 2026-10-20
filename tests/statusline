@@ -574,8 +574,12 @@ function _sl_ttl_case {
 
 # _sl_expect_not_expired <label> — the last output has no cache takeover
 function _sl_expect_not_expired {
-  if [[ "$(_sl_plain "${_SL_OUT}")" == *"Cache Expired"* ]]; then
+  local plain
+  plain="$(_sl_plain "${_SL_OUT}")"
+  if [[ "${plain}" == *"Cache Expired"* ]]; then
     _fail "$1 — flagged cold: $(printf '%q' "${_SL_OUT}")"
+  elif [[ -z "${plain}" ]]; then
+    _fail "$1 — the status line printed nothing"
   else
     _pass "$1"
   fi
@@ -598,6 +602,13 @@ function _sl_resumed_cold {
     $'Cache Expired!\n142K tokens to Opus Med is £1.14'
   _sl_run 100 "$(_sl_json "${payload}")"
   _sl_expect_has "resumed: also at medium width" "$(_sl_plain "${_SL_OUT}")" "Cache Expired!"
+  # The boundary is 3600 s: one second short is warm, exactly 3600 is cold
+  touch -t "$(date -r $(( _SL_NOW - 3599 )) +%Y%m%d%H%M.%S)" "${t}"
+  _sl_run 140 "$(_sl_json "${payload}")"
+  _sl_expect_not_expired "resumed: 3599 s old is left alone"
+  touch -t "$(date -r $(( _SL_NOW - 3600 )) +%Y%m%d%H%M.%S)" "${t}"
+  _sl_run 140 "$(_sl_json "${payload}")"
+  _sl_expect_has "resumed: 3600 s old is cold" "$(_sl_plain "${_SL_OUT}")" "Cache Expired!"
   # 30 min old: inside the TTL, so no takeover
   touch -t "$(date -r $(( _SL_NOW - 1800 )) +%Y%m%d%H%M.%S)" "${t}"
   _sl_run 140 "$(_sl_json "${payload}")"
@@ -830,7 +841,7 @@ function _sl_herdr_stub {
 }
 
 # _sl_herdr_run <session> <warm> <seconds left> [extra jq filter] — one run
-# with the herdr env set; waits for the backgrounded call, or 300 ms for none.
+# with the herdr env set; waits for the backgrounded call, or about 700 ms for none.
 function _sl_herdr_run {
   local i
   : > "${_SL_SB}/herdr.log"
@@ -883,10 +894,17 @@ function _sl_herdr_token {
   _sl_herdr_run h5 false 0
   _sl_expect_eq "herdr: cold is not set again inside the refresh window" "$(_sl_herdr_log)" ""
   touch -t "$(date -r $(( _SL_NOW - 700 )) +%Y%m%d%H%M.%S)" \
-    "${_SL_SB}/Library/Caches/statusline/herdr-cache-h5"
+    "${_SL_SB}/Library/Caches/statusline/herdr-cache-h5-w1_p1"
   _sl_herdr_run h5 false 0
   _sl_expect_eq "herdr: cold is set again after the refresh window" "$(_sl_herdr_log)" \
     "${want} --token cache_low=cache cold --clear-token cache --ttl-ms 86400000"
+  # The same session in another pane has its own marker and sets its token at once
+  : > "${_SL_SB}/herdr.log"
+  _sl_run 140 "$(_sl_json ".session_id = \"h5\" | .prompt_cache = {warm: false, caching_observed: true,
+    recache_tokens_if_cold: 142000}")" HERDR_PANE_ID=w2:p1 HERDR_BIN_PATH="${_SL_SB}/herdr-stub"
+  zselect -t 30 || :
+  _sl_expect_eq "herdr: the same session in another pane sets its token" "$(_sl_herdr_log)" \
+    "pane report-metadata w2:p1 --source user:cache --token cache_low=cache cold --clear-token cache --ttl-ms 86400000"
   # A resumed session with no prompt_cache and a 2 h old transcript is cold
   printf '{}\n' > "${t}"
   touch -t "$(date -r $(( _SL_NOW - 7200 )) +%Y%m%d%H%M.%S)" "${t}"
@@ -910,7 +928,7 @@ function _sl_herdr_token {
     recache_tokens_if_cold: 142000}")" HERDR_PANE_ID=w1:p1 HERDR_BIN_PATH="${_SL_SB}/herdr-fail"
   zselect -t 10 || :
   _sl_expect_eq "herdr: a failed call writes no marker" \
-    "$(/bin/ls "${_SL_SB}/Library/Caches/statusline" | /usr/bin/grep -c '^herdr-cache-h8$' || :)" "0"
+    "$(/bin/ls "${_SL_SB}/Library/Caches/statusline" | /usr/bin/grep -c '^herdr-cache-h8-' || :)" "0"
 }
 
 # ── (9) cache_alert ────────────────────────────────────────────────────────

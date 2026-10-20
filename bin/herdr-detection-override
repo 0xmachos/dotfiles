@@ -21,8 +21,10 @@
 # whole manifest and always wins over the remote one. So `apply` copies the
 # cached remote manifest (~/.local/state/herdr/agent-detection/remote/) and
 # appends one `working` rule at priority 960, above the idle rule (950) and
-# below the blocked rules (980), with the same `not` guards as the upstream MCP
-# task rule so a permission dialog still wins. No upstream text is stored in
+# below the blocked rules (980). Upstream's permission rules rank below 960, so
+# the rule's `not` guards keep a permission dialog blocked: the upstream MCP
+# task guards, plus the numbered Yes/No option lines and the interview prompts,
+# all read over the bottom 12 non-empty lines. No upstream text is stored in
 # the repo. The first line of the override records the remote version it was
 # built from.
 #
@@ -32,7 +34,10 @@
 # `sync` never creates an override: remove the file and it stays removed. A
 # failed `sync` is remembered per remote version in
 # ~/Library/Caches/herdr-detection-override/failed, so it is not retried on
-# every event; the next remote version retries. Limit: the rule's priority 960
+# every event; the next remote version retries. When the file was written but
+# the reload failed, each later `sync` retries the reload alone. When the new
+# remote manifest holds the rule itself, `sync` moves the override to
+# claude.toml.upstream-has-rule and reloads. Limit: the rule's priority 960
 # assumes upstream keeps the idle rule below it and the blocked rules above it.
 # If upstream renumbers, the rule may lose (the old idle behaviour returns).
 # Undo: move the override aside and run `herdr server reload-agent-manifests`.
@@ -79,7 +84,7 @@ rule_block() {
 id = "background_shell_or_monitor_working"
 state = "working"
 priority = 960
-region = "bottom_non_empty_lines(4)"
+region = "bottom_non_empty_lines(12)"
 visible_working = true
 line_regex = ['^\s*[⏸⏵]+.*·\s+[1-9]\d*\s+(?:shells?|monitors?)\b']
 not = [
@@ -89,6 +94,9 @@ not = [
   { contains = ["do you want to allow this connection?"] },
   { contains = ["tab to amend"] },
   { contains = ["ctrl+e to explain"] },
+  { contains = ["review your answers"] },
+  { contains = ["skip interview and plan immediately"] },
+  { line_regex = ['(?i)^[\s│]*❯?\s*[1-3]\.\s*(?:yes|no)\b'] },
 ]
 EOF
 }
@@ -115,7 +123,8 @@ apply() {
 
 check() {
   local remote_version base line
-  manifest_version "$REMOTE" || die "no remote manifest at $REMOTE"
+  [[ -r $REMOTE ]] || die "no remote manifest at $REMOTE"
+  manifest_version "$REMOTE" || die "no version line in $REMOTE"
   remote_version=$REPLY
   [[ -r $OVERRIDE ]] || die "no override at $OVERRIDE (remote is $remote_version)"
   read -r line < "$OVERRIDE" || true
@@ -139,8 +148,21 @@ sync() {
   [[ $line == "$BASE_TAG"*'.' ]] || return 0
   base=${line#"$BASE_TAG"}
   base=${base%.}
-  [[ $base != "$remote_version" ]] || return 0
+  if [[ $base == "$remote_version" ]]; then
+    # A failed reload leaves the new file in place: retry only the reload.
+    if [[ -r $FAILED && "$(< "$FAILED")" == "$remote_version" ]] \
+      && "$HERDR" server reload-agent-manifests > /dev/null 2>&1; then
+      zf_rm -f -- "$FAILED"
+    fi
+    return 0
+  fi
   if [[ -r $FAILED && "$(< "$FAILED")" == "$remote_version" ]]; then
+    return 0
+  fi
+  # Upstream now ships the rule: the override has no job left. Move it aside.
+  if [[ "$(< "$REMOTE")" == *"id = \"$RULE_ID\""* ]]; then
+    /bin/mv -f -- "$OVERRIDE" "$OVERRIDE.upstream-has-rule" \
+      && "$HERDR" server reload-agent-manifests > /dev/null 2>&1 || true
     return 0
   fi
   if ( apply ); then
