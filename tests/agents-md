@@ -10,8 +10,9 @@
 # Claude Code needs the CLAUDE.md name through 2.1.263; 2.1.277 (2026-09-18)
 # added native AGENTS.md fallback behind a GrowthBook flag
 # (tengu_agents_md_mod) not guaranteed on, so the symlink stays. Codex ignores
-# CLAUDE.md (project_doc_fallback_filenames defaults to empty). Muse dedupes by
-# RESOLVED path, so the symlink loads once with no skipped-candidate warning.
+# CLAUDE.md (project_doc_fallback_filenames defaults to empty). Muse reads
+# ~/.config/muse/AGENTS.md first and skips ~/.claude/CLAUDE.md while its own
+# file exists (probed 2026-10-20 with two different files behind the links).
 #
 # Breakage is invisible otherwise:
 #   * the global `*claude*` rule in .config/git/ignore hides CLAUDE.md in every
