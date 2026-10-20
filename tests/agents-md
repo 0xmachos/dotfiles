@@ -4,8 +4,8 @@
 # Guards the one-file agent-guidance design (adopted 2026-09-06 against Claude
 # Code 2.1.263, Codex CLI 0.153.4, Muse Code 1.0.3-R2198.1):
 #   repo scope    AGENTS.md is the real file; CLAUDE.md is a symlink to it.
-#   global scope  claude/global-claude.md is the real file; both
-#                 ~/.claude/CLAUDE.md and ~/.codex/AGENTS.md link to it.
+#   global scope  claude/global-claude.md is the real file; ~/.claude/CLAUDE.md,
+#                 ~/.codex/AGENTS.md and ~/.config/muse/AGENTS.md link to it.
 # Claude Code needs the CLAUDE.md name through 2.1.263; 2.1.277 (2026-09-18)
 # added native AGENTS.md fallback behind a GrowthBook flag
 # (tengu_agents_md_mod) not guaranteed on, so the symlink stays. Codex ignores
