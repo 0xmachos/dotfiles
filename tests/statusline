@@ -916,6 +916,30 @@ function _sl_herdr_token {
   zselect -t 30 || :
   _sl_expect_eq "herdr: a cold resumed transcript sets cold" "$(_sl_herdr_log)" \
     "${want} --token cache_low=cache cold --clear-token cache --ttl-ms 86400000"
+  # After a compaction (idle compaction included) Claude Code reports
+  # recache_tokens_if_cold as null and a zero current_usage until the next
+  # request: still cold for the token, but no takeover (the size is unknown)
+  : > "${_SL_SB}/herdr.log"
+  # shellcheck disable=SC2016  # $now is a jq variable, expanded by _sl_json
+  _sl_run 140 "$(_sl_json '.session_id = "h6b" | .prompt_cache = {warm: false, caching_observed: true,
+    ttl: "1h", expires_at: ($now - 10), recache_tokens_if_cold: null}
+    | .context_window.current_usage = {input_tokens: 0, output_tokens: 0,
+      cache_creation_input_tokens: 0, cache_read_input_tokens: 0}')" \
+    HERDR_PANE_ID=w1:p1 HERDR_BIN_PATH="${_SL_SB}/herdr-stub"
+  zselect -t 30 || :
+  _sl_expect_eq "herdr: a compacted session with an unknown re-cache size sets cold" "$(_sl_herdr_log)" \
+    "${want} --token cache_low=cache cold --clear-token cache --ttl-ms 86400000"
+  _sl_expect_eq "compacted: an unknown re-cache size makes no takeover" \
+    "$(_sl_plain "$(_sl_line 2)")" "░░░░░░░░░░ 0K · Cache Expired"
+  # The same null size with a warm cache sets nothing
+  : > "${_SL_SB}/herdr.log"
+  # shellcheck disable=SC2016  # $now is a jq variable, expanded by _sl_json
+  _sl_run 140 "$(_sl_json '.session_id = "h6c" | .prompt_cache = {warm: true, caching_observed: true,
+    ttl: "1h", expires_at: ($now + 1800), recache_tokens_if_cold: null}')" \
+    HERDR_PANE_ID=w1:p1 HERDR_BIN_PATH="${_SL_SB}/herdr-stub"
+  zselect -t 30 || :
+  _sl_expect_eq "herdr: a warm cache with an unknown re-cache size clears the token" "$(_sl_herdr_log)" \
+    "${want} --clear-token cache --clear-token cache_low"
   # No herdr env: no call
   : > "${_SL_SB}/herdr.log"
   _sl_run 140 "$(_sl_json ".session_id = \"h7\" | .prompt_cache = {warm: false, caching_observed: true,
