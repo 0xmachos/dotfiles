@@ -241,6 +241,25 @@ function verify_signature {
 }
 
 
+function _dmg_app_volume {
+  # _dmg_app_volume PLIST APP_NAME
+  # Prints the mount point in `diskutil image attach --plist` output that holds
+  # APP_NAME.app. One image can mount several volumes, and entities with no
+  # file system have no mount-point key.
+  local -r plist="${1:?plist not passed}" app="${2:?application_name not passed}"
+  local count i mount_point
+  count="$(plutil -extract system-entities raw -o - - <<< "${plist}" 2>/dev/null)" || return 1
+  for (( i = 0; i < count; i++ )); do
+    mount_point="$(plutil -extract "system-entities.${i}.mount-point" raw -o - - <<< "${plist}" 2>/dev/null)" || continue
+    if [[ -d "${mount_point}/${app}.app" ]]; then
+      printf '%s\n' "${mount_point}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+
 function install_application {
   # Installs apps packaged as .dmg or .zip, not .pkg installers; verifies the
   # .app signature before installing.
@@ -249,6 +268,7 @@ function install_application {
   local downloaded_file_path=${2:?downloaded_file_path not passed}
   local downloaded_file_name
   local dmg_mount_path
+  local attach_plist
   downloaded_file_name="$(awk -F '/' '{print $NF}' <<< "${downloaded_file_path}")"
 
 
@@ -282,10 +302,15 @@ function install_application {
   elif file "${downloaded_file_path}" | grep --quiet 'dmg'; then
     
     echo "[🍺] Attempting to mount ${downloaded_file_path}"
-    dmg_mount_path="$(hdiutil attach -nobrowse "${downloaded_file_path}" | grep -o '/Volumes/.*')"
-
-    if [[ -z "${dmg_mount_path}" ]]; then
+    # diskutil image replaces `hdiutil attach -nobrowse` (deprecated, macOS 27).
+    if ! attach_plist="$(diskutil image attach --plist --nobrowse "${downloaded_file_path}")"; then
       echo "[❌] Failed to mount ${downloaded_file_path}"
+      exit 1
+    fi
+
+    if ! dmg_mount_path="$(_dmg_app_volume "${attach_plist}" "${application_name}")"; then
+      echo "[❌] No volume of ${downloaded_file_name} holds ${application_name}.app"
+      hdiutil detach -quiet "/dev/$(plutil -extract system-entities.0.dev-entry raw -o - - <<< "${attach_plist}")"
       exit 1
     fi
 

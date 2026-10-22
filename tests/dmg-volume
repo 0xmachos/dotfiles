@@ -1,0 +1,67 @@
+#!/bin/zsh
+# dotfiles/tests/dmg-volume
+#
+# Checks _dmg_app_volume (bittersweet install_application) against a fixture
+# `diskutil image attach --plist` document: one image with a partition map,
+# two mounted volumes and the app on the second. No disk image is attached.
+#
+# Run: ./test dmg-volume
+# ShellCheck: lint with `shellcheck --shell=bash tests/dmg-volume`.
+# This file is sourced, not executed — chmod 644.
+#
+# shellcheck source=tests/lib
+
+# _dmg_volume_plist MOUNT_A MOUNT_B — the attach output for a two-volume image
+function _dmg_volume_plist {
+  cat <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>system-entities</key>
+  <array>
+    <dict><key>content-hint</key><string>GUID_partition_scheme</string><key>dev-entry</key><string>disk9</string></dict>
+    <dict><key>content-hint</key><string>Apple_HFS</string><key>dev-entry</key><string>disk9s1</string><key>mount-point</key><string>$1</string></dict>
+    <dict><key>content-hint</key><string>Apple_HFS</string><key>dev-entry</key><string>disk9s2</string><key>mount-point</key><string>$2</string></dict>
+  </array>
+</dict>
+</plist>
+EOF
+}
+
+# _dmg_volume_case APP — prints "rc<TAB>result" with the fixture dir as FIX
+function _dmg_volume_case {
+  (
+    local fixture out rc=0
+    fixture="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/dmg-volume.XXXXXX")" || return 1
+    trap '/bin/rm -rf -- "${fixture}"' EXIT
+    # shellcheck disable=SC1090,SC1091
+    source <(/usr/bin/awk '
+      /^function _dmg_app_volume / { block = 1 }
+      block { print }
+      /^}$/ { block = 0 }
+    ' "${SCRIPT_DIR}/bittersweet")
+    /bin/mkdir -p "${fixture}/Vol A" "${fixture}/Vol B/Foo.app"
+    out="$(_dmg_app_volume "$(_dmg_volume_plist "${fixture}/Vol A" "${fixture}/Vol B")" "$1")" || rc=$?
+    printf '%s\t%s\n' "${rc}" "${out/#${fixture}/FIX}"
+  )
+}
+
+function run_dmg_volume {
+  _section "bittersweet install_application: dmg volume"
+
+  local out
+  out="$(_dmg_volume_case Foo)"
+  if [[ "${out}" == $'0\tFIX/Vol B' ]]; then
+    _pass "picks the one volume that holds the app, past a partition map and a space"
+  else
+    _fail "two volumes: expected rc 0 and 'FIX/Vol B', got '${out}'"
+  fi
+
+  out="$(_dmg_volume_case Bar)"
+  if [[ "${out}" == $'1\t' ]]; then
+    _pass "fails with no output when no volume holds the app"
+  else
+    _fail "app absent: expected rc 1 and no output, got '${out}'"
+  fi
+}
