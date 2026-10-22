@@ -31,6 +31,7 @@ function fslayout {
   rows+=(
     "├── |Dev/|Dev|every other project|One folder per project or clone; INDEX.md maps their docs. Outside iCloud, so builds and venvs stay local."
     "│   └── |INDEX.md|Dev/INDEX.md|cross-project index|A navigable map of each project's documentation."
+    "├── |Research/|Research|security research|Vulnerability research, reverse engineering, security guides and security tools, own or cloned. Dev/INDEX.md maps their docs too."
     "├── |Tempora/|Tempora|kept downloads|Downloads worth keeping, as Tempora/<kind>/<name>/; tmutil addexclusion on each item, never on Tempora or <kind>."
     "│   └── |<kind>/SOURCES.md||provenance|One section per item: URL, pinned revision or SHA-256, how to regenerate it. Backed up; the items are not."
     "├── |Sandbox/|Sandbox|container VM share|The one host dir bind-mounted into Apple container VMs (at /sandbox) by \`container run\`; file sharing is \$HOME-scoped, so nothing else is exposed by default. Time Machine-excluded; contents are disposable."

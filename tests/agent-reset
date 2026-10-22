@@ -160,6 +160,14 @@ EOF
     git -C "${homerepo}" add CLAUDE.md &&
     git -C "${homerepo}" commit -q -m 'fixture' || return 1
 
+  # A repo under the ~/Research container: in scope, handled like ~/Dev.
+  local researchrepo="${fix}/Research/researchrepo"
+  zf_mkdir -p "${researchrepo}"
+  git -C "${researchrepo}" init -q &&
+    echo '# tracked instructions' > "${researchrepo}/CLAUDE.md" &&
+    git -C "${researchrepo}" add CLAUDE.md &&
+    git -C "${researchrepo}" commit -q -m 'fixture' || return 1
+
   # Agent state OUTSIDE every project root: skip-and-report, untouched.
   zf_mkdir -p "${fix}/Desktop/strayrepo"
   echo '# stray instructions' > "${fix}/Desktop/strayrepo/CLAUDE.md"
@@ -438,6 +446,14 @@ EOF
     _pass "home-root repo (dotfiles layout) reset, neutral commit"
   else
     _fail "home-root repo mishandled (last commit: ${msg})"
+  fi
+  # ~/Research container repo: discovered and inside the delete boundary.
+  msg="$(git -C "${fix}/Research/researchrepo" log -1 --format=%s 2> /dev/null)"
+  if [[ ! -e "${fix}/Research/researchrepo/CLAUDE.md" \
+     && "${msg}" == "Reset agent instruction state (2026-08 ablation)" ]]; then
+    _pass "Research container repo reset, neutral commit"
+  else
+    _fail "Research container repo mishandled (last commit: ${msg})"
   fi
   # worktree-dirty repo: RESET, with the unrelated edit left uncommitted
   if [[ ! -e "${fix}/Dev/dirtyrepo/CLAUDE.md" ]]; then

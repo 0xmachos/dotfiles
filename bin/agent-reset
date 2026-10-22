@@ -51,6 +51,9 @@ VSCODE_DIR = (HOME / "Library" / "Application Support" / "Code" / "User"
               / "globalStorage" / "anthropic.claude-code")
 DOWNLOADS_DIR = HOME / "Downloads"
 DEV_DIR = HOME / "Dev"
+RESEARCH_DIR = HOME / "Research"
+# Containers: their children are repos, their children monorepo members.
+CONTAINER_DIRS = (DEV_DIR, RESEARCH_DIR)
 
 
 def _home_root_repos():
@@ -67,11 +70,11 @@ def _home_root_repos():
     return repos
 
 
-# Agent-artifact scope roots after the 2026-10-01 move off iCloud. ~/Dev is a
-# container (its children are repos, their children monorepo members); the
-# home-root checkouts are repos themselves. Replaces the single pre-move
+# Agent-artifact scope roots after the 2026-10-01 move off iCloud. ~/Dev and
+# ~/Research (split from ~/Dev on 2026-10-22) are containers; the home-root
+# checkouts are repos themselves. Replaces the single pre-move
 # ~/Documents/Projects container.
-PROJECT_ROOTS = (DEV_DIR,) + tuple(_home_root_repos())
+PROJECT_ROOTS = CONTAINER_DIRS + tuple(_home_root_repos())
 
 # Not in WIPE and not matching KEEP = UNKNOWN: protected, reported, never
 # deleted (fail-closed for state the CLI grows between runs).
@@ -240,8 +243,8 @@ def codex_entry_action(name):
 
 def discover_repos():
     """Union of ~/.claude.json project keys, decoded transcript slugs, and a
-    depth-2 artifact sweep of the project roots (~/Dev container plus the
-    home-root repos). Returns
+    depth-2 artifact sweep of the project roots (~/Dev and ~/Research
+    containers plus the home-root repos). Returns
     {repo_path: {"artifacts": [paths], "backup_only": [paths],
                  "git": bool, "stale": bool}}."""
     candidates = set()
@@ -258,10 +261,12 @@ def discover_repos():
             decoded = slug_dir.name.replace("-", "/")
             if decoded.startswith("/") and Path(decoded).is_dir():
                 candidates.add(decoded)
-    # ~/Dev is a container: its children are repos, their children monorepo
-    # members (depth-2, as ~/Documents/Projects was before the move).
-    if DEV_DIR.is_dir():
-        for child in DEV_DIR.iterdir():
+    # The containers' children are repos, their children monorepo members
+    # (depth-2, as ~/Documents/Projects was before the move).
+    for container in CONTAINER_DIRS:
+        if not container.is_dir():
+            continue
+        for child in container.iterdir():
             if child.is_dir() and not child.is_symlink():
                 candidates.add(str(child))
                 for sub in child.iterdir():
@@ -307,7 +312,8 @@ def discover_repos():
         if any(root_str == e or root_str.startswith(e + "/")
                for e in excluded):
             continue
-        # Only repos under a project root (~/Dev or a home-root repo) are
+        # Only repos under a project root (~/Dev, ~/Research or a home-root
+        # repo) are
         # handled; others (a clone in ~/Desktop, an old /opt path) are
         # skip-and-report, never an abort.
         if not any(root_str == r or root_str.startswith(r + "/")

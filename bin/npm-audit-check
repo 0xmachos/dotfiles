@@ -2,7 +2,8 @@
 # dotfiles/bin/npm-audit-check
 #
 # Audits npm projects for vulnerabilities and verifies package signatures, for
-# every project with a package-lock.json under ~/Dev/. Called
+# every project with a package-lock.json under ~/Dev/ and, when it exists,
+# ~/Research/ (not every Mac has one). Called
 # from jump-user via run_and_log or interactively. Production vulnerabilities
 # and signature failures are errors; dev-only vulnerabilities warn.
 #
@@ -15,6 +16,7 @@ IFS=$'\n\t'
 
 readonly NPM_BINARY="/opt/homebrew/bin/npm"
 readonly PROJECTS_DIR="${HOME}/Dev"
+readonly RESEARCH_DIR="${HOME}/Research"
 
 function audit_project {
   local project_dir="$1"
@@ -77,16 +79,19 @@ function main {
     return 1
   fi
 
+  local roots=("${PROJECTS_DIR}")
+  [[ -d "${RESEARCH_DIR}" ]] && roots+=("${RESEARCH_DIR}")
+
   local lockfiles=()
   local lockfile
   while IFS= read -r lockfile; do
     lockfiles+=("${lockfile}")
-  done < <(/usr/bin/find "${PROJECTS_DIR}" -maxdepth 4 \
+  done < <(/usr/bin/find "${roots[@]}" -maxdepth 4 \
             -type d -name node_modules -prune -o \
             -name "package-lock.json" -type f -print 2>/dev/null | /usr/bin/sort)
 
   if (( ${#lockfiles[@]} == 0 )); then
-    echo "No npm projects found under ${PROJECTS_DIR}"
+    printf 'No npm projects found under %s\n' "${roots[@]}"
     return 0
   fi
 
