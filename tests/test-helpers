@@ -5,6 +5,16 @@
 function run_test_helpers {
   _section "Hook verdict and frontmatter regressions"
   local out expected
+
+  # A message prints as written: a backslash in it is no escape, so `\u`
+  # stays text and never becomes a NUL byte in the run log.
+  out="$(_pass 'a \u-escaped \n name')"
+  if [[ "${out}" == *'a \u-escaped \n name' && "${out}" != *$'\0'* ]]; then
+    _pass "a message with backslashes prints as written"
+  else
+    _fail "a message with backslashes changed in output: ${out//$'\0'/<NUL>}"
+  fi
+
   local -a outputs=(
     ''
     '{"hookSpecificOutput":{"permissionDecision":"deny"}}'

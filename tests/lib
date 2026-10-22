@@ -17,18 +17,20 @@ typeset -gi pass_count=0
 typeset -gi fail_count=0
 typeset -gi skip_count=0
 
+# print -r, not echo: zsh echo turns a backslash in a message into an escape
+# (a `\u` became a NUL byte, and grep then reads the run log as binary).
 function _pass {
-  echo "${GREEN}PASS${RESET}  $1"
+  print -r -- "${GREEN}PASS${RESET}  $1"
   (( pass_count += 1 ))
 }
 
 function _fail {
-  echo "${RED}FAIL${RESET}  $1"
+  print -r -- "${RED}FAIL${RESET}  $1"
   (( fail_count += 1 ))
 }
 
 function _skip {
-  echo "${YELLOW}SKIP${RESET}  $1"
+  print -r -- "${YELLOW}SKIP${RESET}  $1"
   (( skip_count += 1 ))
 }
 
@@ -37,7 +39,7 @@ function _skip {
 # so it shows where the queue stalled and matches `/usr/bin/log show` times.
 function _section {
   echo ""
-  echo "$(strftime '%H:%M:%S' "${EPOCHSECONDS}") ${BOLD}── $1 ──${RESET}"
+  print -r -- "$(strftime '%H:%M:%S' "${EPOCHSECONDS}") ${BOLD}── $1 ──${RESET}"
 }
 
 # Hooks emit nothing (PASS) or one deny object (DENY); an allow response,
