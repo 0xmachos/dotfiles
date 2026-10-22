@@ -344,6 +344,36 @@ function _sl_usage {
   _sl_expect_has "7d pace 30 ahead is red" "$(_sl_line 3)" "${RED}⇡30${RESET}"
   _sl_run 140 "$(_sl_json '.rate_limits.seven_day = {used_percentage: 34, resets_at: ($now + 453600)}')"
   _sl_expect_hidden "7d 9 points ahead stays hidden"
+  # Pace turns red at 20 points ahead, not 19 (25% elapsed: 44 and 45 used)
+  _sl_run 140 "$(_sl_json '.rate_limits.seven_day = {used_percentage: 44, resets_at: ($now + 453600)}')"
+  _sl_expect_has "7d pace 19 ahead is yellow" "$(_sl_line 3)" "${YELLOW}⇡19${RESET}"
+  _sl_run 140 "$(_sl_json '.rate_limits.seven_day = {used_percentage: 45, resets_at: ($now + 453600)}')"
+  _sl_expect_has "7d pace 20 ahead is red" "$(_sl_line 3)" "${RED}⇡20${RESET}"
+
+  # Medium tier row 2: 7d with its countdown in brackets, the pace arrow and
+  # the cost; the 7d red threshold holds in the medium, compact and tiny tiers
+  # too (74% shows there only while pace warns, and is yellow)
+  local seven75='.rate_limits.seven_day = {used_percentage: 75, resets_at: ($now + 453600)} | .cost.total_cost_usd = 3'
+  local seven74='.rate_limits.seven_day = {used_percentage: 74, resets_at: ($now + 453600)}'
+  _sl_run 80 "$(_sl_json "${seven75}")"
+  _sl_expect_eq "medium tier: 7d, countdown, pace and cost on row 2" "$(_sl_plain "$(_sl_line 2)")" \
+    "░░░░░ 0K · 7d 75% (5d) ⇡50 · £3.00"
+  _sl_expect_has "medium tier: 7d 75% red" "$(_sl_line 2)" "${RED}${BOLD}75%${RESET}"
+  _sl_run 80 "$(_sl_json "${seven74}")"
+  _sl_expect_eq "medium tier: 7d 74% yellow, no countdown" "$(_sl_plain "$(_sl_line 2)")" "░░░░░ 0K · 7d 74% ⇡49"
+  _sl_expect_has "medium tier: 7d 74% yellow colour" "$(_sl_line 2)" "${YELLOW}${BOLD}74%${RESET}"
+  _sl_run 50 "$(_sl_json "${seven75}")"
+  _sl_expect_has "compact tier: 7d 75% red" "${_SL_OUT}" "${_SL_DIM}7d${RESET} ${RED}75%${RESET}"
+  _sl_run 50 "$(_sl_json "${seven74}")"
+  _sl_expect_has "compact tier: 7d 74% yellow" "${_SL_OUT}" "${_SL_DIM}7d${RESET} ${YELLOW}74%${RESET}"
+  _sl_run 30 "$(_sl_json "${seven75}")"
+  _sl_expect_has "tiny tier: 7d 75% red" "${_SL_OUT}" "${_SL_DIM}7d${RESET} ${RED}75%${RESET}"
+  _sl_run 30 "$(_sl_json "${seven74}")"
+  _sl_expect_has "tiny tier: 7d 74% yellow" "${_SL_OUT}" "${_SL_DIM}7d${RESET} ${YELLOW}74%${RESET}"
+
+  # 5h with a reset more than the window away: the bare percentage
+  _sl_run 140 "$(_sl_json '.rate_limits.five_hour = {used_percentage: 60, resets_at: ($now + 18000)}')"
+  _sl_expect_eq "5h reset 18000 s away: bare percentage" "$(_sl_plain "$(_sl_line 3)")" "5h 60%"
 }
 
 # 5h recent rate: a least-squares fit through the ledger samples in the last
@@ -376,6 +406,23 @@ function _sl_recent_rate {
   printf '%s 40\n' $(( _SL_NOW - 300 )) > "${u}/five"
   _sl_run 140 "$(_sl_json '.rate_limits.five_hour = {used_percentage: 55, resets_at: ($now + 7200)}')"
   _sl_expect_hidden "recent rate: under 10 minutes falls back to the average"
+  # FIVE_RECENT: a sample 1801 s old is outside the fit, so the average
+  # decides (55% at 60% elapsed lasts); at 1800 s it is in, 35 → 55 over 30 min
+  printf '%s 35\n' $(( _SL_NOW - 1801 )) > "${u}/five"
+  _sl_run 140 "$(_sl_json '.rate_limits.five_hour = {used_percentage: 55, resets_at: ($now + 7200)}')"
+  _sl_expect_hidden "recent rate: a sample 1801 s old is outside the fit"
+  printf '%s 35\n' $(( _SL_NOW - 1800 )) > "${u}/five"
+  _sl_run 140 "$(_sl_json '.rate_limits.five_hour = {used_percentage: 55, resets_at: ($now + 7200)}')"
+  _sl_expect_eq "recent rate: a sample 1800 s old is inside the fit" "$(_sl_plain "$(_sl_line 3)")" \
+    "5h 55% · out in 1h 7m · resets in 2h 0m · use 50% fewer tokens"
+  # FIVE_RECENT_MIN: history of 599 s is too short, 600 s is enough
+  printf '%s 35\n' $(( _SL_NOW - 599 )) > "${u}/five"
+  _sl_run 140 "$(_sl_json '.rate_limits.five_hour = {used_percentage: 55, resets_at: ($now + 7200)}')"
+  _sl_expect_hidden "recent rate: 599 s of history falls back to the average"
+  printf '%s 35\n' $(( _SL_NOW - 600 )) > "${u}/five"
+  _sl_run 140 "$(_sl_json '.rate_limits.five_hour = {used_percentage: 55, resets_at: ($now + 7200)}')"
+  _sl_expect_eq "recent rate: 600 s of history is fitted" "$(_sl_plain "$(_sl_line 3)")" \
+    "5h 55% · out in 22m · resets in 2h 0m · use 90% fewer tokens"
   # A sample from before this window began (95% last window) is ignored, so
   # the average decides: 60% in the first 1000s
   printf '%s 95\n' $(( _SL_NOW - 1500 )) > "${u}/five"
@@ -445,6 +492,12 @@ function _sl_identity {
 
   _sl_run 140 "$(_sl_json "${opus}")"
   _sl_expect_eq "no effort field → no badge; model → Opus" "$(_sl_plain "$(_sl_line 1)")" "work Opus"
+  # A generic claude-* id defaults to high; a non-claude id has no default,
+  # so the badge keeps its colour and gets no arrow
+  _sl_run 140 "$(_sl_json '.model = {id: "claude-opus-4-8", display_name: "Opus 4.8"} | .effort.level = "high"')"
+  _sl_expect_has "generic claude-* high is its default: dim" "$(_sl_line 1)" "${_SL_DIM}▲ high${RESET}"
+  _sl_run 140 "$(_sl_json '.model = {id: "gpt-x", display_name: "Other"} | .effort.level = "high"')"
+  _sl_expect_has "non-claude id: coloured badge, no arrow" "$(_sl_line 1)" "${_SL_MAGENTA}▲ high${RESET}"
   _sl_run 140 "$(_sl_json "${fable}")"
   _sl_expect_eq "Fable 5.1 (1M context) → Fable" "$(_sl_plain "$(_sl_line 1)")" "work Fable"
 
@@ -526,6 +579,14 @@ function _sl_git {
   git -C "${_SL_SB}/repo" rm -q --cached a.txt
   _sl_git_case "git segment: branch alone" 140 "repo Opus · main"
 
+  # Cache hit: a second render inside 5 s reads the cache and shows the same row
+  _sl_run 140 "$(jq -cn --arg cwd "${_SL_SB}/repo" '{workspace: {current_dir: $cwd},
+    model: {id: "claude-opus-5-5[1m]", display_name: "Opus 5.5 (1M context)"}}')"
+  _sl_run 140 "$(jq -cn --arg cwd "${_SL_SB}/repo" '{workspace: {current_dir: $cwd},
+    model: {id: "claude-opus-5-5[1m]", display_name: "Opus 5.5 (1M context)"}}')"
+  _sl_expect_eq "git segment: cached read matches the uncached render" "$(_sl_plain "$(_sl_line 1)")" "repo Opus · main"
+  /bin/rm -f "$(_sl_git_cache)"
+
   # Detached HEAD: no branch, so no segment, on the uncached render and on the
   # cached one 5 s later. The cache once joined the fields on tabs, which
   # IFS dropped before an empty branch: the second render showed the staged
@@ -592,8 +653,12 @@ function _sl_fx_fetch {
   _sl_run 140 "$(_sl_json '.cost.total_cost_usd = 2')" PATH="${shim}:${PATH}"
   _sl_expect_eq "FX back-off: no second curl call inside the hour" "$(wc -l < "${log}" | tr -d ' ')" "1"
 
-  # An hour on, the fetch runs again and a good answer rewrites the cache
-  _sl_touch_old "${cache}.failed" 3600
+  # The back-off lasts an hour: no call at 3599 s, a call at 3601 s, and a
+  # good answer then rewrites the cache
+  _sl_touch_old "${cache}.failed" 3599
+  _sl_run 140 "$(_sl_json '.cost.total_cost_usd = 2')" PATH="${shim}:${PATH}"
+  _sl_expect_eq "FX back-off: no call at 3599 s" "$(wc -l < "${log}" | tr -d ' ')" "1"
+  _sl_touch_old "${cache}.failed" 3601
   # shellcheck disable=SC2016  # $@ belongs to the stub, not this shell
   printf '#!/bin/zsh\nprint -r -- "$@" >> %q\nprint -r -- %s\n' "${log}" \
     "'{\"rate\":0.8,\"base\":\"USD\"}'" > "${shim}/curl"
@@ -605,13 +670,30 @@ function _sl_fx_fetch {
   _sl_run 140 "$(_sl_json '.cost.total_cost_usd = 2')" PATH="${shim}:${PATH}"
   _sl_expect_eq "FX cached: no fetch inside the day" "$(wc -l < "${log}" | tr -d ' ')" "2"
   _sl_expect_eq "FX cache: no temp file left" "$(/bin/ls "${cache:h}" | /usr/bin/grep -c 'usd-gbp.tmp')" "0"
+  # The cache lasts a day: no call at 86399 s, a call at 86401 s
+  _sl_touch_old "${cache}" 86399
+  _sl_run 140 "$(_sl_json '.cost.total_cost_usd = 2')" PATH="${shim}:${PATH}"
+  _sl_expect_eq "FX cache: no fetch at 86399 s" "$(wc -l < "${log}" | tr -d ' ')" "2"
+  _sl_touch_old "${cache}" 86401
+  _sl_run 140 "$(_sl_json '.cost.total_cost_usd = 2')" PATH="${shim}:${PATH}"
+  _sl_expect_eq "FX cache: fetched at 86401 s" "$(wc -l < "${log}" | tr -d ' ')" "3"
+  # No cache file and a failing fetch: the 0.79 default
+  /bin/rm -f "${cache}" "${cache}.failed"
+  printf '#!/bin/zsh\nexit 6\n' > "${shim}/curl"
+  _sl_run 140 "$(_sl_json '.cost.total_cost_usd = 2')" PATH="${shim}:${PATH}"
+  _sl_expect_eq "FX no cache and no fetch: the 0.79 default" \
+    "$(_sl_plain "$(_sl_line 2)")" "░░░░░░░░░░ 0K · £1.58"
+  # shellcheck disable=SC2016  # $@ belongs to the stub, not this shell
+  printf '#!/bin/zsh\nprint -r -- "$@" >> %q\nprint -r -- %s\n' "${log}" \
+    "'{\"rate\":0.8,\"base\":\"USD\"}'" > "${shim}/curl"
+  /bin/rm -f "${cache}.failed"
 
   # A fresh but empty cache (a write cut short) is no cache: fetched again
   : > "${cache}"
   _sl_run 140 "$(_sl_json '.cost.total_cost_usd = 2')" PATH="${shim}:${PATH}"
   _sl_expect_eq "FX empty cache: fetched again, new rate shown" \
     "$(_sl_plain "$(_sl_line 2)")" "░░░░░░░░░░ 0K · £1.60"
-  _sl_expect_eq "FX empty cache: curl called" "$(wc -l < "${log}" | tr -d ' ')" "3"
+  _sl_expect_eq "FX empty cache: curl called" "$(wc -l < "${log}" | tr -d ' ')" "4"
   # Empty, and the fetch fails: the 0.79 default, not £0.00
   : > "${cache}"
   printf '#!/bin/zsh\nexit 6\n' > "${shim}/curl"
@@ -635,6 +717,10 @@ function _sl_economics {
   _sl_expect_eq "session time, no API share" "$(_sl_plain "$(_sl_line 2)")" "░░░░░░░░░░ 0K · 10m"
   _sl_run 140 "$(_sl_json ".cost = {total_cost_usd: 0, total_duration_ms: 70920000}")"
   _sl_expect_eq "session time in hours" "$(_sl_plain "$(_sl_line 2)")" "░░░░░░░░░░ 0K · 19h 42m"
+  _sl_run 140 "$(_sl_json ".cost = {total_cost_usd: 0, total_duration_ms: 3540000}")"
+  _sl_expect_eq "session time: 59 minutes stay minutes" "$(_sl_plain "$(_sl_line 2)")" "░░░░░░░░░░ 0K · 59m"
+  _sl_run 140 "$(_sl_json ".cost = {total_cost_usd: 0, total_duration_ms: 3600000}")"
+  _sl_expect_eq "session time: 60 minutes are an hour" "$(_sl_plain "$(_sl_line 2)")" "░░░░░░░░░░ 0K · 1h 0m"
 
   _sl_cost_case 4.99 "${GREEN}"
   _sl_cost_case 5 "${YELLOW}"
@@ -687,6 +773,8 @@ function _sl_economics {
   local expired="${_SL_DIM}·${RESET} ${RED}Cache Expired${RESET}"
   _sl_ttl_case "TTL dim while comfortable" true 1800 "${warm} ${_SL_DIM}30m${RESET}"
   _sl_ttl_case "TTL yellow inside 5 min" true 240 "${warm} ${YELLOW}4m${RESET}"
+  _sl_ttl_case "TTL yellow at exactly 300 s" true 300 "${warm} ${YELLOW}5m${RESET}"
+  _sl_ttl_case "TTL dim at 301 s" true 301 "${warm} ${_SL_DIM}5m${RESET}"
   _sl_ttl_case "expired once past expiry" true 0 "${expired}"
   _sl_ttl_case "expired when not warm" false 1800 "${expired}"
 }
@@ -733,7 +821,7 @@ function _sl_resumed_cold {
   _sl_run 140 "$(_sl_json "${payload}")"
   _sl_expect_eq "resumed: cold transcript takes over the line" "$(_sl_plain "${_SL_OUT}")" \
     $'Cache Expired!\n142K tokens to Opus Med is £1.14'
-  _sl_run 100 "$(_sl_json "${payload}")"
+  _sl_run 80 "$(_sl_json "${payload}")"
   _sl_expect_has "resumed: also at medium width" "$(_sl_plain "${_SL_OUT}")" "Cache Expired!"
   # The boundary is 3600 s: one second short is warm, exactly 3600 is cold
   touch -t "$(date -r $(( _SL_NOW - 3599 )) +%Y%m%d%H%M.%S)" "${t}"
@@ -828,6 +916,10 @@ function _sl_expired {
     "142K tokens to New Med"
   _sl_run 80 "$(_sl_json "${_SL_EXPIRED}")"
   _sl_expect_eq "expired: medium tier takes over too" "$(_sl_plain "$(_sl_line 1)")" "Cache Expired!"
+  _sl_run 70 "$(_sl_json "${_SL_EXPIRED}")"
+  _sl_expect_eq "expired: takeover from 70 cols" "$(_sl_plain "$(_sl_line 1)")" "Cache Expired!"
+  _sl_run 69 "$(_sl_json "${_SL_EXPIRED}")"
+  _sl_expect_eq "expired: no takeover at 69 cols" "$(_sl_plain "${_SL_OUT}")" "work · Opus · 0K"
   _sl_run 50 "$(_sl_json "${_SL_EXPIRED}")"
   _sl_expect_eq "expired: compact tier unchanged" "$(_sl_plain "${_SL_OUT}")" "work · Opus · 0K"
   _sl_run 140 "$(_sl_json "${_SL_EXPIRED} | .prompt_cache.warm = true
@@ -845,6 +937,31 @@ function _sl_expired {
   _sl_run 140 "$(_sl_json "${_SL_EXPIRED} | .rate_limits.five_hour.used_percentage = 10.5")"
   _sl_expect_eq "expired: under a point of signal → no %" "$(_sl_plain "$(_sl_line 2)")" \
     "142K tokens to Opus Med is £1.14"
+  # The baseline sample comes from the last 5h: a sample 18001 s old is
+  # ignored (20 → 30 over $1 is 10 points per dollar, ~11%); at 18000 s it is
+  # the baseline (10 → 30, ~23%)
+  printf '%s 10\n%s 20\n' $(( _SL_NOW - 18001 )) $(( _SL_NOW - 3000 )) > "${u}/five"
+  printf '%s 1.0\n' $(( _SL_NOW - 1000 )) > "${u}/spend"
+  _sl_run 140 "$(_sl_json "${_SL_EXPIRED} | .rate_limits.five_hour.used_percentage = 30")"
+  _sl_expect_eq "expired: a 5h sample 18001 s old is not the baseline" "$(_sl_plain "$(_sl_line 2)")" \
+    "142K tokens to Opus Med is £1.14 (~11% of 5h)"
+  printf '%s 10\n%s 20\n' $(( _SL_NOW - 18000 )) $(( _SL_NOW - 3000 )) > "${u}/five"
+  _sl_run 140 "$(_sl_json "${_SL_EXPIRED} | .rate_limits.five_hour.used_percentage = 30")"
+  _sl_expect_eq "expired: a 5h sample 18000 s old is the baseline" "$(_sl_plain "$(_sl_line 2)")" \
+    "142K tokens to Opus Med is £1.14 (~23% of 5h)"
+  # Spend floor: $0.49 of spend gives no rate, $0.50 does (20 points / $0.5)
+  printf '%s 10\n' $(( _SL_NOW - 3000 )) > "${u}/five"
+  printf '%s 0.49\n' $(( _SL_NOW - 1000 )) > "${u}/spend"
+  _sl_run 140 "$(_sl_json "${_SL_EXPIRED} | .rate_limits.five_hour.used_percentage = 30")"
+  _sl_expect_eq "expired: under \$0.50 of spend → no %" "$(_sl_plain "$(_sl_line 2)")" \
+    "142K tokens to Opus Med is £1.14"
+  printf '%s 0.5\n' $(( _SL_NOW - 1000 )) > "${u}/spend"
+  _sl_run 140 "$(_sl_json "${_SL_EXPIRED} | .rate_limits.five_hour.used_percentage = 30")"
+  _sl_expect_eq "expired: \$0.50 of spend → %" "$(_sl_plain "$(_sl_line 2)")" \
+    "142K tokens to Opus Med is £1.14 (~45% of 5h)"
+  # Back to the seeded ledger (20 points per dollar) for the cases below
+  printf '%s 20\n%s 10\n' $(( _SL_NOW - 7000 )) $(( _SL_NOW - 3000 )) > "${u}/five"
+  printf '%s 5.0\n%s 1.0\n' $(( _SL_NOW - 3500 )) $(( _SL_NOW - 1000 )) > "${u}/spend"
   # Percent of 5h: 1.125 × 20 = 22.5 rounds half to even (22); 0.04 × 20 is under 1
   _sl_expired_case 140625 1 "140K tokens to Opus Med is £1.12 (~22% of 5h)" 30
   _sl_expired_case 156250 1 "156K tokens to Opus Med is £1.25 (~25% of 5h)" 30
@@ -912,39 +1029,46 @@ function _sl_ledger_prune {
   # session rewrites its own every render, so an old one is a dead session's
   printf '1 2 x\n' > "${c}/cache-state-stale"
   printf '1 2 x\n' > "${c}/cache-state-fresh"
-  _sl_touch_old "${c}/cache-state-stale" 259200
+  _sl_touch_old "${c}/cache-state-stale" 90000
+  # The herdr marker sweep is 48 h: 49 h old goes, 47 h old stays
   printf 'x none\n' > "${c}/herdr-cache-stale"
   printf 'x none\n' > "${c}/herdr-cache-fresh"
-  _sl_touch_old "${c}/herdr-cache-stale" 259200
-  _sl_touch_old "${c}/herdr-cache-fresh" 86400
+  _sl_touch_old "${c}/herdr-cache-stale" 176400
+  _sl_touch_old "${c}/herdr-cache-fresh" 169200
   : > "${c}/git-stale"
-  _sl_touch_old "${c}/git-stale" 259200
-  # Lines 7h and 5h old; a 5h sample over a minute old, so this render ticks
-  printf '%s 9.0\n%s 1.0\n' $(( _SL_NOW - 25200 )) $(( _SL_NOW - 18000 )) > "${u}/spend"
+  _sl_touch_old "${c}/git-stale" 90000
+  # Lines 7h, 21601 s, 21599 s and 5h old; a 5h sample over a minute old, so
+  # this render ticks
+  printf '%s 9.0\n%s 4.0\n%s 2.0\n%s 1.0\n' $(( _SL_NOW - 25200 )) $(( _SL_NOW - 21601 )) \
+    $(( _SL_NOW - 21599 )) $(( _SL_NOW - 18000 )) > "${u}/spend"
   printf '%s 50\n%s 20\n' $(( _SL_NOW - 25200 )) $(( _SL_NOW - 18000 )) > "${u}/five"
   _sl_touch_old "${u}/five" 120
   printf '1' > "${u}/last-pr"
   printf '1' > "${u}/last-stale"
   printf '1' > "${u}/last-fresh"
-  _sl_touch_old "${u}/last-stale" 345600
+  # The last-* sweep is 48 h: 49 h old goes, 47 h old stays
+  _sl_touch_old "${u}/last-stale" 176400
+  _sl_touch_old "${u}/last-fresh" 169200
+  # 24 h sweeps: 25 h old goes, 23 h old stays
+  printf 'x\n' > "${c}/guards-stale"
+  printf 'x\n' > "${c}/guards-fresh"
+  _sl_touch_old "${c}/guards-stale" 90000
+  _sl_touch_old "${c}/guards-fresh" 82800
+  _sl_touch_old "${c}/cache-state-fresh" 82800
   _sl_run 140 "$(_sl_json '.session_id = "pr" | .cost.total_cost_usd = 2
     | .rate_limits.five_hour.used_percentage = 30')"
-  _sl_expect_eq "prune: spend keeps only the last 6h" "$(cat "${u}/spend")" \
-    "$(( _SL_NOW - 18000 )) 1.0"$'\n'"${_SL_NOW} 1.000000"
+  _sl_expect_eq "prune: spend keeps only the last 6h (21599 s stays, 21601 s goes)" "$(cat "${u}/spend")" \
+    "$(( _SL_NOW - 21599 )) 2.0"$'\n'"$(( _SL_NOW - 18000 )) 1.0"$'\n'"${_SL_NOW} 1.000000"
   _sl_expect_eq "prune: 5h samples keep only the last 6h" "$(cat "${u}/five")" \
     "$(( _SL_NOW - 18000 )) 20"$'\n'"${_SL_NOW} 30"
   _sl_expect_eq "prune: no temp files left" "$(/bin/ls "${u}" | /usr/bin/grep -c prune)" "0"
-  _sl_expect_eq "sweep: 4-day-old session baseline removed" \
-    "$([[ -f "${u}/last-stale" ]] && echo kept || echo gone)" "gone"
-  _sl_expect_eq "sweep: recent session baseline kept" \
-    "$([[ -f "${u}/last-fresh" ]] && echo kept || echo gone)" "kept"
-  _sl_expect_eq "sweep: 3-day-old cache-state hand-off removed" \
-    "$([[ -f "${c}/cache-state-stale" ]] && echo kept || echo gone)" "gone"
-  _sl_expect_eq "sweep: recent cache-state hand-off kept" \
-    "$([[ -f "${c}/cache-state-fresh" ]] && echo kept || echo gone)" "kept"
-  _sl_expect_eq "sweep: 3-day-old herdr marker removed, 1-day-old kept, old git cache removed" \
-    "$(for f in herdr-cache-stale herdr-cache-fresh git-stale; do [[ -e "${c}/${f}" ]] && printf k || printf g; done)" "gkg"
-  /bin/rm -f "${c}/herdr-cache-fresh" "${c}/cache-state-fresh"
+  _sl_expect_eq "sweep: 49 h old session baseline removed, 47 h old kept" \
+    "$(for f in last-stale last-fresh; do [[ -e "${u}/${f}" ]] && printf k || printf g; done)" "gk"
+  _sl_expect_eq "sweep: 25 h old cache-state, guards and git cache removed, 23 h old kept" \
+    "$(for f in cache-state-stale cache-state-fresh guards-stale guards-fresh git-stale; do [[ -e "${c}/${f}" ]] && printf k || printf g; done)" "gkgkg"
+  _sl_expect_eq "sweep: 49 h old herdr marker removed, 47 h old kept" \
+    "$(for f in herdr-cache-stale herdr-cache-fresh; do [[ -e "${c}/${f}" ]] && printf k || printf g; done)" "gk"
+  /bin/rm -f "${c}/herdr-cache-fresh" "${c}/cache-state-fresh" "${c}/guards-fresh"
   # An append during the prune survives. Deterministic, unlike the concurrent
   # case below (40 parallel runs never lost a line against a rewrite-in-place
   # prune, 2026-09-25).
@@ -1000,7 +1124,9 @@ function _sl_ledger_orphans {
 }
 
 # Eight sessions render at once, each with a baseline, each ticking the prune:
-# no appended line may be lost
+# no appended line may be lost. A smoke test for a crash, a leftover lock or
+# temp file: it never went red against the old rewrite-in-place prune, so
+# the hook case above is the guard for a lost append.
 function _sl_ledger_concurrent {
   local u="${_SL_SB}/Library/Caches/statusline/usage" i rcs=""
   _sl_usage_reset
@@ -1094,9 +1220,12 @@ function _sl_herdr_token {
     "${want} --token cache_low=cache cold --clear-token cache --ttl-ms 86400000"
   _sl_herdr_run h5 false 0
   _sl_expect_eq "herdr: cold is not set again inside the refresh window" "$(_sl_herdr_log)" ""
-  _sl_touch_old "${_SL_SB}/Library/Caches/statusline/herdr-cache-w1_p1" 700
+  _sl_touch_old "${_SL_SB}/Library/Caches/statusline/herdr-cache-w1_p1" 599
   _sl_herdr_run h5 false 0
-  _sl_expect_eq "herdr: cold is set again after the refresh window" "$(_sl_herdr_log)" \
+  _sl_expect_eq "herdr: cold is not set again at 599 s" "$(_sl_herdr_log)" ""
+  _sl_touch_old "${_SL_SB}/Library/Caches/statusline/herdr-cache-w1_p1" 601
+  _sl_herdr_run h5 false 0
+  _sl_expect_eq "herdr: cold is set again after the refresh window (601 s)" "$(_sl_herdr_log)" \
     "${want} --token cache_low=cache cold --clear-token cache --ttl-ms 86400000"
   # The same session in another pane has its own marker and sets its token at once
   : > "${_SL_SB}/herdr.log"
@@ -1145,14 +1274,30 @@ function _sl_herdr_token {
     recache_tokens_if_cold: 142000}")"
   zselect -t 10 || :
   _sl_expect_eq "herdr: outside a herdr pane nothing runs" "$(_sl_herdr_log)" ""
-  # A failed herdr call leaves no marker, so the next run retries
-  printf '#!/bin/zsh\nexit 1\n' > "${_SL_SB}/herdr-fail"
+  # A failed herdr call leaves no marker, so the next run retries. The stub
+  # logs its call, so "ran and wrote nothing" is told from "never ran".
+  # shellcheck disable=SC2016  # $@ belongs to the stub, not this shell
+  printf '#!/bin/zsh\nprint -r -- "$@" >> %q\nexit 1\n' "${_SL_SB}/herdr-fail.log" > "${_SL_SB}/herdr-fail"
   chmod 755 "${_SL_SB}/herdr-fail"
+  "${_SL_SB}/herdr-fail" warm-up >/dev/null 2>&1 || :
+  : > "${_SL_SB}/herdr-fail.log"
   _sl_run 140 "$(_sl_json ".session_id = \"h8\" | .prompt_cache = {warm: false, caching_observed: true,
     recache_tokens_if_cold: 142000}")" HERDR_PANE_ID=w1:p1 HERDR_BIN_PATH="${_SL_SB}/herdr-fail"
+  for (( i = 0; i < 50; i++ )); do
+    [[ -s "${_SL_SB}/herdr-fail.log" ]] && break
+    zselect -t 3 || :
+  done
   zselect -t 10 || :
+  _sl_expect_eq "herdr: the failing call ran" "$(wc -l < "${_SL_SB}/herdr-fail.log" | tr -d ' ')" "1"
   _sl_expect_lacks "herdr: a failed call writes no marker" \
     "$(cat "${_SL_SB}/Library/Caches/statusline/herdr-cache-w1_p1" 2>/dev/null)" "h8 "
+  _sl_run 140 "$(_sl_json ".session_id = \"h8\" | .prompt_cache = {warm: false, caching_observed: true,
+    recache_tokens_if_cold: 142000}")" HERDR_PANE_ID=w1:p1 HERDR_BIN_PATH="${_SL_SB}/herdr-fail"
+  for (( i = 0; i < 50; i++ )); do
+    (( $(wc -l < "${_SL_SB}/herdr-fail.log") >= 2 )) && break
+    zselect -t 3 || :
+  done
+  _sl_expect_eq "herdr: the next run retries a failed call" "$(wc -l < "${_SL_SB}/herdr-fail.log" | tr -d ' ')" "2"
 
   # The token belongs to the pane. Session A cold, then session B (after
   # /clear) warm in the same pane clears it, then A again (/resume): A must
@@ -1255,17 +1400,35 @@ function _sl_cache_alert {
   _sl_run 140 "$(_sl_alert_payload '"s8"' true 301 160000)"
   _sl_expect_eq "cache_alert at 301 s claims the 15 min mark, not 5" \
     "$(/usr/bin/find "${_SL_SB}/Library/Caches/statusline" -maxdepth 1 -name 'cache-alert-s8-*' | /usr/bin/sed 's/.*-//')" "900"
+  # Minutes round up: 241 s left reads "5m", not "4m" (170K tokens, so the
+  # needle matches no other alert in the shared log: s8 at 301 s would read
+  # "5m (160K" under a floor). Old alert markers go with the delivery: a 25 h
+  # old one is swept, a 23 h old one kept.
+  mkdir -p "${_SL_SB}/Library/Caches/statusline/cache-alert-old-1-900" \
+    "${_SL_SB}/Library/Caches/statusline/cache-alert-recent-1-900"
+  _sl_touch_old "${_SL_SB}/Library/Caches/statusline/cache-alert-old-1-900" 90000
+  _sl_touch_old "${_SL_SB}/Library/Caches/statusline/cache-alert-recent-1-900" 82800
+  _sl_run 140 "$(_sl_alert_payload '"s9"' true 241 170000)"
+  for (( i = 0; i < 100; i++ )); do
+    /usr/bin/grep -q 'cold in 5m (170K' "${log}" 2>/dev/null && break
+    zselect -t 10 || :
+  done
+  _sl_expect_has "cache_alert at 241 s says 5m" "$(cat "${log}" 2>/dev/null)" \
+    "work · Opus — cache goes cold in 5m (170K tokens to re-cache)"
+  zselect -t 20 || :
+  _sl_expect_eq "cache_alert sweep: 25 h old marker gone, 23 h old kept" \
+    "$(for f in cache-alert-old-1-900 cache-alert-recent-1-900; do [[ -d "${_SL_SB}/Library/Caches/statusline/${f}" ]] && printf k || printf g; done)" "gk"
 
-  # Delivery is backgrounded, so settle first. Expected: s1, s6, s7 and s8
-  # only. Timing can only hide an extra notification (a false pass under
+  # Delivery is backgrounded, so settle first. Expected: s1, s6, s7, s8 and
+  # s9 only. Timing can only hide an extra notification (a false pass under
   # load), never invent one.
   for (( i = 0; i < 20; i++ )); do
-    [[ -f "${log}" ]] && (( $(/usr/bin/grep -c 'cache goes cold' "${log}") >= 4 )) && break
+    [[ -f "${log}" ]] && (( $(/usr/bin/grep -c 'cache goes cold' "${log}") >= 5 )) && break
     zselect -t 10 || :
   done
   zselect -t 100 || :
-  _sl_expect_eq "cache_alert delivered exactly four times (s1 once, s6, s7, s8)" \
-    "$(/usr/bin/grep -c 'cache goes cold' "${log}" 2>/dev/null)" "4"
+  _sl_expect_eq "cache_alert delivered exactly five times (s1 once, s6, s7, s8, s9)" \
+    "$(/usr/bin/grep -c 'cache goes cold' "${log}" 2>/dev/null)" "5"
 }
 
 # ── (10) subagent-statusline ───────────────────────────────────────────────
