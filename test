@@ -238,6 +238,32 @@ function _child_main {
   return $(( fail_count > 0 ))
 }
 
+# One full run at a time for each user, from every clone: full runs started
+# together by several agent sessions slowed each other down. A later full run
+# waits for the lock, then runs. A one-suite run takes no lock. The fcntl lock
+# ends with the process, so a killed run leaves no stale lock. The holder's pid
+# and start time go in a separate .holder file, for the wait message only: a
+# close of any other descriptor on the lock file drops an fcntl lock.
+# DOTFILES_TEST_LOCK moves the lock file (the runner tests use a sandbox path).
+readonly LOCK_WAIT_SECONDS=600
+function _lock_full_run {
+  local lock="${DOTFILES_TEST_LOCK:-${HOME}/Library/Caches/dotfiles-test/full-run.lock}"
+  local info="${lock}.holder" holder=""
+  zmodload zsh/system
+  /bin/mkdir -p "${lock:h}"
+  : >> "${lock}"
+  # -t 0: one try, no wait. LOCK_FD stays global so the lock lasts until exit.
+  if ! zsystem flock -t 0 -f LOCK_FD "${lock}" 2>/dev/null; then
+    { holder="$(<"${info}")"; } 2>/dev/null || :
+    echo "./test: another full run holds the lock (${holder:-holder unknown}). This run waits up to ${LOCK_WAIT_SECONDS} s."
+    if ! zsystem flock -t "${LOCK_WAIT_SECONDS}" -i 1 -f LOCK_FD "${lock}"; then
+      echo "[FAIL] another full run held ${lock} for ${LOCK_WAIT_SECONDS} s. Run ./test <suite>, or try again later."
+      exit 1
+    fi
+  fi
+  print -r -- "pid $$ started $(strftime '%H:%M:%S' "${EPOCHSECONDS}")" > "${info}"
+}
+
 function main {
   local jobs="${TEST_JOBS:-}" show_time=0
   while (( $# )); do
@@ -269,6 +295,8 @@ function main {
 
   case "${filter}" in
     all)
+      _lock_full_run
+      t_start="${EPOCHREALTIME}"
       # Print first: the parallel parent is silent until the first suite in
       # SUITES order finishes, which reads as a hang. Children never get here.
       mode="${jobs} workers"; (( jobs == 1 )) && mode="serial"

@@ -180,12 +180,88 @@ function run_test_helpers {
     [[ "${mode}" == -j* ]] && want="zz-abort"
     rc=0
     # shellcheck disable=SC2086  # $mode splits into the runner's arguments
-    out="$(/usr/bin/env -u DOTFILES_TEST_CHILD "${ZSH_BIN}" "${rdir}/test" ${=mode} 2>&1)" || rc=$?
+    out="$(/usr/bin/env -u DOTFILES_TEST_CHILD DOTFILES_TEST_LOCK="${rdir}/full-run.lock" \
+      "${ZSH_BIN}" "${rdir}/test" ${=mode} 2>&1)" || rc=$?
     if (( rc != 0 )) && [[ "${out}" == *"FAIL"*"${want}: suite aborted"* && "${out}" != *"PASS"*after* ]]; then
       _pass "runner: an aborted suite is a FAIL naming it and a nonzero exit (${label})"
     else
       _fail "runner: aborted suite (${label}) exit ${rc}: ${out}"
     fi
   done
+
+  # A full run waits while another full run holds the lock, then runs. A
+  # one-suite run never waits. A fixture holds the sandbox lock until the
+  # release file exists. Every poll stops after 20 s.
+  local lock="${rdir}/full-run.lock" release="${rdir}/release" holder_pid i
+  print -r -- zz-pass > "${rdir}/.extra_test_suites"
+  print -r -- 'function run_zz_pass { _pass ok }' > "${rdir}/tests/zz-pass"
+  : > "${lock}"
+  : > "${lock}.holder"
+  # shellcheck disable=SC2016  # the fixture shell expands $1, $2 and $$
+  "${ZSH_BIN}" -c 'zmodload zsh/system zsh/zselect; zsystem flock -f fd "$1"
+    print -r -- "pid $$ started fixture" > "$1.holder"
+    for (( i = 0; i < 200; i++ )); do [[ -e "$2" ]] && break; zselect -t 10 || :; done' \
+    _ "${lock}" "${release}" &
+  holder_pid=$!
+  for (( i = 0; i < 200; i++ )); do
+    [[ -s "${lock}.holder" ]] && break
+    zselect -t 10 || :
+  done
+  rc=0
+  out="$(/usr/bin/env -u DOTFILES_TEST_CHILD DOTFILES_TEST_LOCK="${lock}" \
+    "${ZSH_BIN}" "${rdir}/test" zz-pass 2>&1)" || rc=$?
+  if (( rc == 0 )) && [[ "${out}" == *"PASS"*ok* && "${out}" != *"holds the lock"* ]]; then
+    _pass "runner: a one-suite run does not wait for the full-run lock"
+  else
+    _fail "runner: one-suite run under a held lock, exit ${rc}: ${out}"
+  fi
+  # shellcheck disable=SC2016  # the child shell expands $1..$3 and $?
+  /usr/bin/env -u DOTFILES_TEST_CHILD DOTFILES_TEST_LOCK="${lock}" \
+    "${ZSH_BIN}" -c '"$1" "$2" -j 1 > "$3/full.out" 2>&1; print -r -- $? > "$3/full.rc"' \
+    _ "${ZSH_BIN}" "${rdir}/test" "${rdir}" &
+  for (( i = 0; i < 200; i++ )); do
+    [[ "$(<"${rdir}/full.out")" == *"holds the lock"* ]] 2>/dev/null && break
+    zselect -t 10 || :
+  done
+  local waited=0
+  [[ ! -e "${rdir}/full.rc" && "$(<"${rdir}/full.out")" != *"PASS"*ok* ]] && waited=1
+  : > "${release}"
+  for (( i = 0; i < 200; i++ )); do
+    [[ -s "${rdir}/full.rc" ]] && break
+    zselect -t 10 || :
+  done
+  rc="$(<"${rdir}/full.rc")" 2>/dev/null || rc=none
+  out="$(<"${rdir}/full.out")"
+  if (( waited )) && [[ "${rc}" == 0 && "${out}" == *"holds the lock (pid "*" started fixture)"*"PASS"*ok* ]]; then
+    _pass "runner: a full run waits for the holder of the full-run lock, then runs"
+  else
+    _fail "runner: full run under a held lock, waited ${waited}, exit ${rc}: ${out}"
+  fi
+  wait "${holder_pid}" 2>/dev/null || :
+
+  # A running full run keeps its own lock: a second try to take it fails.
+  print -r -- zz-hold > "${rdir}/.extra_test_suites"
+  # shellcheck disable=SC2016  # the fixture suite expands its own variables
+  print -r -- 'function run_zz_hold { local i; for (( i = 0; i < 200; i++ )); do
+    [[ -e "${HOLD_RELEASE}" ]] && break; zselect -t 10 || :; done; _pass held }' \
+    > "${rdir}/tests/zz-hold"
+  : > "${lock}.holder"
+  /usr/bin/env -u DOTFILES_TEST_CHILD DOTFILES_TEST_LOCK="${lock}" HOLD_RELEASE="${rdir}/release2" \
+    "${ZSH_BIN}" "${rdir}/test" -j 1 > "${rdir}/hold.out" 2>&1 &
+  holder_pid=$!
+  for (( i = 0; i < 200; i++ )); do
+    [[ -s "${lock}.holder" ]] && break
+    zselect -t 10 || :
+  done
+  rc=0
+  # shellcheck disable=SC2016  # the probe shell expands $1
+  "${ZSH_BIN}" -c 'zmodload zsh/system; zsystem flock -t 0 -f fd "$1"' _ "${lock}" 2>/dev/null || rc=$?
+  : > "${rdir}/release2"
+  wait "${holder_pid}" 2>/dev/null || :
+  if (( rc != 0 )) && [[ "$(<"${rdir}/hold.out")" == *"PASS"*held* ]]; then
+    _pass "runner: a full run holds the full-run lock until it ends"
+  else
+    _fail "runner: a second process took the lock of a running full run (flock exit ${rc})"
+  fi
   /bin/rm -rf "${rdir}"
 }
