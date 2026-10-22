@@ -1,0 +1,117 @@
+#!/bin/zsh
+# dotfiles/tests/spotlight
+#
+# Checks exclude_spotlight_paths (bittersweet spotlight) against a stubbed
+# _spotlight_helper and a fixture HOME. The real Search Privacy list is never
+# read or written, except one call with an unknown verb, which exits before it
+# touches the list and proves the Swift snippet still resolves both symbols.
+#
+# Run: ./test spotlight
+# ShellCheck: lint with `shellcheck --shell=bash tests/spotlight`.
+# This file is sourced, not executed — chmod 644.
+#
+# shellcheck source=tests/lib
+# shellcheck disable=SC2034,SC2329,SC2296  # stubs called by sourced code; zsh parameter flags
+
+# _spotlight_case [STUB_MODE]
+#   Runs exclude_spotlight_paths in a subshell with a fixture HOME holding
+#   Dev, .Trash, Library/Caches and Private, and a fixture extra file that
+#   names Private and repeats .Trash (after a comment line). The starting
+#   list holds $HOME/Dev.
+#   STUB_MODE: "" (adds stick), nostick (adds are lost), listfail (list fails).
+#   Prints "rc<TAB>adds" with adds joined by spaces, relative to HOME.
+function _spotlight_case {
+  local mode="${1:-}"
+  (
+    local fixture_home
+    fixture_home="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/spotlight-home.XXXXXX")" || return 1
+    trap '/bin/rm -rf -- "${fixture_home}"' EXIT
+    export HOME="${fixture_home}"
+    /bin/mkdir -p "${HOME}/Dev" "${HOME}/.Trash" "${HOME}/Library/Caches" "${HOME}/Private"
+    local list="${fixture_home}/list" adds="${fixture_home}/adds" extra="${fixture_home}/extra"
+    print -l -- '# private paths' 'Private' '.Trash' > "${extra}"
+    print -r -- "${HOME}/Dev" > "${list}"
+    : > "${adds}"
+    # shellcheck disable=SC1090,SC1091
+    source <(/usr/bin/awk '
+      /^typeset -ra SPOTLIGHT_EXCLUSIONS=\(/ || /^function exclude_spotlight_paths / { block = 1 }
+      block { print }
+      /^}$/ || /^\)$/ { block = 0 }
+    ' "${SCRIPT_DIR}/bittersweet")
+    _spotlight_helper() {
+      case "$1" in
+        list)
+          [[ "${mode}" == listfail ]] && return 1
+          /bin/cat "${list}"
+          ;;
+        add)
+          print -r -- "${2#"${HOME}"/}" >> "${adds}"
+          [[ "${mode}" == nostick ]] || print -r -- "$2" >> "${list}"
+          ;;
+      esac
+    }
+    local rc=0
+    exclude_spotlight_paths "${extra}" > /dev/null || rc=$?
+    local first_adds
+    first_adds="$(/usr/bin/paste -sd ' ' "${adds}")"
+    # Second run: idempotence (only meaningful when the first run passed).
+    if (( rc == 0 )); then
+      : > "${adds}"
+      exclude_spotlight_paths "${extra}" > /dev/null || rc=$?
+      [[ -s "${adds}" ]] && first_adds+=" SECOND-RUN-ADDED"
+    fi
+    printf '%s\t%s\n' "${rc}" "${first_adds}"
+  )
+}
+
+function run_spotlight {
+  _section "bittersweet spotlight: exclusion list"
+
+  local out
+  out="$(_spotlight_case "")"
+  if [[ "${out}" == $'0\t.Trash Library/Caches Private' ]]; then
+    _pass "adds missing and extra-file folders once each, skips listed and absent ones, second run adds nothing"
+  else
+    _fail "normal run: expected rc 0 and adds '.Trash Library/Caches Private', got '${out}'"
+  fi
+
+  out="$(_spotlight_case nostick)"
+  if [[ "${out%%$'\t'*}" == 1 ]]; then
+    _pass "an add that does not reach the list fails the run"
+  else
+    _fail "lost add: expected rc 1, got '${out}'"
+  fi
+
+  out="$(_spotlight_case listfail)"
+  if [[ "${out}" == $'1\t' ]]; then
+    _pass "a failed list read fails the run before any add"
+  else
+    _fail "list failure: expected rc 1 and no adds, got '${out}'"
+  fi
+
+  local entry bad=""
+  local -a entries
+  entries=( "${(@f)$(/usr/bin/awk '/^typeset -ra SPOTLIGHT_EXCLUSIONS=\(/ { b = 1; next } b && /^\)$/ { b = 0 } b { sub(/^ +/, ""); print }' "${SCRIPT_DIR}/bittersweet")}" )
+  for entry in "${entries[@]}"; do
+    [[ "${entry}" == /* || "${entry}" == *..* || -z "${entry}" ]] && bad+=" '${entry}'"
+  done
+  if (( ${#entries} > 0 )) && [[ -z "${bad}" ]]; then
+    _pass "SPOTLIGHT_EXCLUSIONS holds ${#entries} HOME-relative paths"
+  else
+    _fail "SPOTLIGHT_EXCLUSIONS: bad or empty entries:${bad}"
+  fi
+
+  if [[ ! -x /usr/bin/swift ]]; then
+    _skip "helper snippet: /usr/bin/swift not found"
+    return 0
+  fi
+  local helper rc=0
+  helper="$(/usr/bin/awk '/^function _spotlight_helper / { b = 1 } b { print } b && /^}$/ { b = 0 }' "${SCRIPT_DIR}/bittersweet")"
+  # An unknown verb exits 64 after both symbols resolve (2 = symbol missing).
+  ( eval "${helper}"; _spotlight_helper bogus-verb > /dev/null 2>&1 ) || rc=$?
+  if (( rc == 64 )); then
+    _pass "helper snippet compiles and resolves both Metadata symbols"
+  else
+    _fail "helper snippet: expected exit 64 for an unknown verb, got ${rc}"
+  fi
+}

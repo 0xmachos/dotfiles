@@ -335,6 +335,7 @@ function run_linkage {
     [.extra_gitexclude]=install_dotfiles   # .git/info/exclude (gitignored source)
     [.extra_test_suites]=repo              # per-clone optional suites, read by ./test (gitignored)
     [.extra_bin_files]=repo                # per-clone bin tools, read by install_scripts (gitignored)
+    [.extra_spotlight_exclusions]=repo     # per-clone Spotlight exclusions, read by exclude_spotlight_paths (gitignored)
 
     # Other bittersweet subcommands
     [bin]=install_scripts

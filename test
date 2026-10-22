@@ -50,7 +50,7 @@ cd "${SCRIPT_DIR}"
 # shellcheck source=tests/lib disable=SC1091
 source "${SCRIPT_DIR}/tests/lib"
 
-readonly -a SUITES=(shellcheck test-helpers sha sidebar extensions plutil profiles linkage completions okf agents-md agent-rules jump brew-upgrade-selected rm-redirect ssh-redirect git-sign gh-auth container-tmp container-sandbox md5-guard md5-write uv-guard gh-publish hook-links pii-hook agent-reset bao-mcp-env papercut pii-tree message-policy statusline fetch-route herdr-notify-detail herdr-harness-marker herdr-detection-override herdr-shell-tab herdr-tab-chpwd muse-herdr muse-exec session-host-context pre-compact-hooks lint-hook git-bypass tmp-guard config-root scratch-sweep herdr-handoff herdr-watch sudo-askpass pretool-dispatch pretool-prefilter mcp-secrets mcp-secret-hook mcp-proxy-env)
+readonly -a SUITES=(shellcheck test-helpers sha sidebar extensions plutil profiles linkage completions okf agents-md agent-rules jump brew-upgrade-selected rm-redirect ssh-redirect git-sign gh-auth container-tmp container-sandbox md5-guard md5-write uv-guard gh-publish hook-links pii-hook agent-reset bao-mcp-env papercut pii-tree message-policy statusline fetch-route herdr-notify-detail herdr-harness-marker herdr-detection-override herdr-shell-tab herdr-tab-chpwd muse-herdr muse-exec session-host-context pre-compact-hooks lint-hook git-bypass tmp-guard config-root scratch-sweep herdr-handoff herdr-watch sudo-askpass pretool-dispatch pretool-prefilter mcp-secrets mcp-secret-hook mcp-proxy-env spotlight)
 
 # Per-clone suites: one name per line in .extra_test_suites (gitignored via
 # .extra*), for private tools that must not be named in the tracked SUITES.

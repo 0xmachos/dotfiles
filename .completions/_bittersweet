@@ -8,6 +8,7 @@
 local -a subcommands
 subcommands=(
   'defaults:Write new system and application default settings'
+  'spotlight:Exclude dev, cache and Trash folders from Spotlight indexing'
   'dotfiles:Symlink various config files into $HOME'
   'scripts:Symlink scripts in bin into /usr/local/bin'
   'sudotouch:Enable TouchID to sudo'
@@ -31,7 +32,7 @@ subcommands=(
   'completions:Regenerate .completions/_bittersweet from BITTERSWEET_SUBCOMMANDS'
   'okf-index:Regenerate internals/index.md from OKF concept frontmatter'
   'test:Run test suite'
-  'deploy:Run the local deploy steps (completions, defaults, dotfiles, scripts, sudotouch, compinit, launchagents)'
+  'deploy:Run the local deploy steps (completions, defaults, spotlight, dotfiles, scripts, sudotouch, compinit, launchagents)'
   'hailmary:Run every function in order'
 )
 

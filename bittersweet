@@ -49,6 +49,7 @@ readonly RESET BOLD RED
 # Descriptions contain a literal `$HOME` (documentation, not a reference).
 typeset -ra BITTERSWEET_SUBCOMMANDS=(
   'defaults:Write new system and application default settings'
+  'spotlight:Exclude dev, cache and Trash folders from Spotlight indexing'
   'dotfiles:Symlink various config files into $HOME'
   'scripts:Symlink scripts in bin into /usr/local/bin'
   'sudotouch:Enable TouchID to sudo'
@@ -72,7 +73,7 @@ typeset -ra BITTERSWEET_SUBCOMMANDS=(
   'completions:Regenerate .completions/_bittersweet from BITTERSWEET_SUBCOMMANDS'
   'okf-index:Regenerate internals/index.md from OKF concept frontmatter'
   'test:Run test suite'
-  'deploy:Run the local deploy steps (completions, defaults, dotfiles, scripts, sudotouch, compinit, launchagents)'
+  'deploy:Run the local deploy steps (completions, defaults, spotlight, dotfiles, scripts, sudotouch, compinit, launchagents)'
   'hailmary:Run every function in order'
 )
 ### END Subcommand SOT ###
@@ -85,6 +86,23 @@ typeset -ra LAUNCHAGENT_PLISTS=(
   com.0xmachos.container-start
   com.0xmachos.scratch-sweep
   com.0xmachos.herdr-watch
+)
+
+# Folders kept out of Spotlight (Search Privacy), relative to $HOME: dev trees
+# and build churn, the Trash (the rm alias moves deleted trees there), and
+# Safari's cache and automation profiles. Private paths go one per line in the
+# gitignored .extra_spotlight_exclusions, never here.
+typeset -ra SPOTLIGHT_EXCLUSIONS=(
+  Dev
+  Research
+  Sandbox
+  Tempora
+  dotfiles
+  .Trash
+  Library/Caches
+  Library/Containers/com.apple.Safari/Data/tmp
+  Library/Containers/com.apple.Safari/Data/Library/Caches
+  Library/Containers/com.apple.SafariTechnologyPreview/Data/tmp
 )
 
 # shellcheck source=lib/zsh-sidebar disable=SC1091
@@ -1489,6 +1507,93 @@ function zsh_compinit_fix {
 }
 
 
+function _spotlight_helper {
+  # _spotlight_helper list | add DIR
+  # Calls the private Metadata functions behind System Settings > Spotlight >
+  # Search Privacy (SpotlightPreferenceExtension imports both). No root needed.
+  # _MDSetExclusion returned false on a call that worked, so it is treated as
+  # void and callers read the list back. The snippet is indented so no line
+  # is a bare } (tests extract functions up to the first one).
+  /usr/bin/swift - "$@" <<'SWIFT'
+  import Foundation
+  let cs = dlopen("/System/Library/Frameworks/CoreServices.framework/CoreServices", RTLD_NOW)
+  guard let listSym = dlsym(cs, "_MDCopyExclusionList"),
+        let setSym = dlsym(cs, "_MDSetExclusion") else { exit(2) }
+  typealias CopyList = @convention(c) () -> Unmanaged<CFArray>?
+  typealias SetExclusion = @convention(c) (CFString, Bool) -> Void
+  let args = Array(CommandLine.arguments.dropFirst())
+  switch (args.first, args.count) {
+  case ("list", 1):
+      let list = unsafeBitCast(listSym, to: CopyList.self)()?.takeRetainedValue() as? [String]
+      for item in list ?? [] { print(item) }
+  case ("add", 2):
+      unsafeBitCast(setSym, to: SetExclusion.self)(args[1] as CFString, true)
+  default:
+      exit(64)
+  }
+SWIFT
+}
+
+
+function exclude_spotlight_paths {
+  # exclude_spotlight_paths [EXTRA_FILE]
+  # Adds SPOTLIGHT_EXCLUSIONS, plus the HOME-relative lines of EXTRA_FILE
+  # (default .extra_spotlight_exclusions, # comments allowed), to the Spotlight
+  # Search Privacy list. Add-only: an entry added by hand stays. A folder
+  # missing on this Mac is skipped. Record: internals/spotlight-dev-folders.md.
+  local -r extra_file="${1:-${SCRIPT_DIR}/.extra_spotlight_exclusions}"
+  local rel dir listing line
+  local -a wanted added
+
+  echo "[🍺] Excluding folders from Spotlight"
+
+  wanted=("${SPOTLIGHT_EXCLUSIONS[@]}")
+  if [[ -f "${extra_file}" ]]; then
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+      [[ -z "${line}" || "${line}" == \#* ]] && continue
+      wanted+=("${line}")
+    done < "${extra_file}"
+  fi
+
+  if ! listing="$(_spotlight_helper list)"; then
+    echo "[❌] Failed to read the Spotlight exclusion list"
+    return 1
+  fi
+
+  for rel in "${wanted[@]}"; do
+    dir="${HOME}/${rel}"
+    if [[ ! -d "${dir}" ]]; then
+      echo "[ℹ️ ] Skipped ${dir}: no such folder"
+      continue
+    fi
+    [[ $'\n'"${listing}"$'\n' == *$'\n'"${dir}"$'\n'* ]] && continue
+    if ! _spotlight_helper add "${dir}"; then
+      echo "[❌] Failed to exclude ${dir} from Spotlight"
+      return 1
+    fi
+    added+=("${dir}")
+    # A path listed twice (tracked array and extra file) is added once.
+    listing+=$'\n'"${dir}"
+  done
+
+  if (( ${#added} )); then
+    if ! listing="$(_spotlight_helper list)"; then
+      echo "[❌] Failed to read the Spotlight exclusion list"
+      return 1
+    fi
+    for dir in "${added[@]}"; do
+      if [[ $'\n'"${listing}"$'\n' != *$'\n'"${dir}"$'\n'* ]]; then
+        echo "[❌] ${dir} is not in the Spotlight exclusion list after the add"
+        return 1
+      fi
+      echo "[✅] Excluded ${dir} from Spotlight"
+    done
+  fi
+
+  echo "[✅] Spotlight exclusions in place"
+}
+
+
 function open_system_preferences_mdm_profile {
   # Since macOS Big Sur (11) /usr/bin/profiles cannot install .mobileconfig
   # profiles; they go in via System Settings > General > Device Management,
@@ -1608,6 +1713,9 @@ function main {
     defaults)
       write_defaults
       ;;
+    spotlight)
+      exclude_spotlight_paths
+      ;;
     dotfiles)
       install_dotfiles
       ;;
@@ -1698,6 +1806,7 @@ function main {
       _generate_bittersweet_completion "${SCRIPT_DIR}/.completions/_bittersweet"
       echo "[✅] Regenerated ${SCRIPT_DIR}/.completions/_bittersweet"
       write_defaults
+      exclude_spotlight_paths
       install_dotfiles
       install_scripts
       enable_touchid_sudo
@@ -1713,6 +1822,7 @@ function main {
       sleep 3
 
       write_defaults
+      exclude_spotlight_paths
       install_dotfiles
       install_scripts
       enable_touchid_sudo
