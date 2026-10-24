@@ -1708,8 +1708,11 @@ function load_launchagents {
     fi
   done
 
-  # imageio-oop must have set IIOEnableOOP in launchd
-  if [[ "$(launchctl getenv IIOEnableOOP)" != "1" ]]; then
+  # imageio-oop must have set IIOEnableOOP in the gui domain. Not `launchctl
+  # getenv`: that reads the caller's domain (Background over SSH).
+  local gui_env
+  gui_env="$(launchctl print "gui/${uid}" 2>/dev/null)" || gui_env=""
+  if ! grep -Eq '^[[:space:]]+IIOEnableOOP => 1$' <<< "${gui_env}"; then
     echo "[❌] com.0xmachos.imageio-oop loaded but IIOEnableOOP not set in launchd"
   fi
 

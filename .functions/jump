@@ -131,9 +131,17 @@ function jump {
 
 
   ## ImageIO OOP ##
-  if [[ "$(launchctl getenv IIOEnableOOP)" != "1" ]]; then
+  # Read the gui domain, not `launchctl getenv`: getenv asks the caller's own
+  # domain, which is Background in an SSH-started shell (for example a pane
+  # of a terminal multiplexer started over SSH), so it reads empty while the
+  # GUI apps have the value.
+  local gui_env
+  gui_env="$(launchctl print "gui/${UID}" 2>/dev/null)" || gui_env=""
+  if [[ -z "${gui_env}" ]]; then
+    echo "[⚠️ ] No GUI login session: cannot check IIOEnableOOP"
+  elif ! grep -Eq '^[[:space:]]+IIOEnableOOP => 1$' <<< "${gui_env}"; then
     echo "[❌] IIOEnableOOP not set in launchd — GUI apps parsing images in-process"
-    echo "    Run: launchctl setenv IIOEnableOOP 1"
+    echo "    Run: launchctl kickstart gui/${UID}/com.0xmachos.imageio-oop"
     echo "    Or:  bittersweet launchagents"
   fi
 
