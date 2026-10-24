@@ -1,0 +1,54 @@
+#!/bin/zsh
+# dotfiles/tests/git-prompt
+#
+# Checks _git_prompt_branch (.zshrc RPROMPT) on fixture git layouts built from
+# plain files: a repo dir with .git/HEAD on a branch, a subdirectory of it, a
+# subdirectory of a linked worktree whose .git file names a relative gitdir
+# with a detached HEAD, and a dir outside any repo. No git process runs.
+#
+# Run: ./test git-prompt
+# ShellCheck: lint with `shellcheck --shell=bash tests/git-prompt`.
+# This file is sourced, not executed — chmod 644.
+#
+# shellcheck source=tests/lib
+# shellcheck disable=SC2154  # _git_prompt is set by the sourced _git_prompt_branch
+
+# _git_prompt_case — prints "<case>=<prompt>" per layout
+function _git_prompt_case {
+  (
+    local fixture d
+    fixture="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/git-prompt.XXXXXX")" || return 1
+    trap '/bin/rm -rf -- "${fixture}"' EXIT
+    # shellcheck disable=SC1090,SC1091
+    source <(/usr/bin/awk '
+      /^function _git_prompt_branch / { block = 1 }
+      block { print }
+      /^}$/ { block = 0 }
+    ' "${SCRIPT_DIR}/.zshrc")
+    /bin/mkdir -p "${fixture}/r/.git/worktrees/wt" "${fixture}/r/sub/deep" \
+      "${fixture}/wt/sub" "${fixture}/none"
+    print -r -- 'ref: refs/heads/trunk' > "${fixture}/r/.git/HEAD"
+    print -r -- 'gitdir: ../r/.git/worktrees/wt' > "${fixture}/wt/.git"
+    print -r -- 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678' > "${fixture}/r/.git/worktrees/wt/HEAD"
+    for d in r r/sub/deep wt/sub none; do
+      # wt/sub: the relative gitdir must resolve from the .git file's dir,
+      # not the cwd. "none" relies on $TMPDIR sitting outside any repo.
+      cd "${fixture}/${d}" || return 1
+      _git_prompt_branch
+      print -r -- "${d}=${_git_prompt}"
+    done
+  )
+}
+
+function run_git_prompt {
+  _section ".zshrc prompt: git branch without git"
+
+  local out expected
+  out="$(_git_prompt_case | /usr/bin/paste -sd ' ' -)"
+  expected="r=(trunk) r/sub/deep=(trunk) wt/sub=(a1b2c3d) none="
+  if [[ "${out}" == "${expected}" ]]; then
+    _pass "branch, subdirectory, relative-gitdir worktree with detached HEAD, no repo"
+  else
+    _fail "git prompt: expected '${expected}', got '${out}'"
+  fi
+}
