@@ -223,7 +223,7 @@ function _pf_minimums {
   # A guard with no early exit is covered by the deny cases below.
   _section "pretool-prefilter: token list covers each guard's own probe"
   local want tok found
-  for want in md5 gh issue release gist discussion git muse rm unlink shred find clean ssh scp sftp rsync mosh sudo container tmp folders .claude .codex pip3 virtualenv conda mamba pyenv /usr/bin/python3; do
+  for want in gh issue release gist discussion git muse rm unlink shred find clean ssh scp sftp rsync mosh sudo container tmp folders .claude .codex pip3 virtualenv conda mamba pyenv /usr/bin/python3; do
     found=0
     # shellcheck disable=SC2034  # read through the (L) expansion below
     for tok in "${PF_TOKENS[@]}"; do
@@ -254,8 +254,6 @@ function _pf_cases {
   ssh_env=("SSH_REDIRECT_CONFIG=${fx}/.ssh/config" "HOME=${fx}")
   sudo_env=("SUDO_ASKPASS_HOSTS=box-claude other-claude" "SSH_REDIRECT_CONFIG=${fx}/.ssh/config")
 
-  _pf_deny_case 'md5-guard: md5 file.txt' 'md5 file.txt'
-  _pf_deny_case 'md5-guard: openssl dgst -md5' 'openssl dgst -md5 file.txt'
   _pf_deny_case 'gh-publish: inline --body' "${gh_word} issue create -t t --body \"inline body\"" "${gh_env[@]}"
   _pf_deny_case 'gh-publish: editor flow' "${gh_word} pr create -t t" "${gh_env[@]}"
   _pf_deny_case 'git-bypass: git commit -n' 'git commit -n'
@@ -292,7 +290,6 @@ function _pf_cases {
   # Decoration cannot split a token (the guards delete it before probing).
   # shellcheck disable=SC2016  # literal command text
   _pf_deny_case 'git-bypass: $() inside git' 'gi$()t commit -n'
-  _pf_deny_case 'md5-guard: quotes inside md5' 'm"d"5 file.txt'
   _pf_deny_case 'rm-redirect: backslash inside rm' 'r\m foo'
   # gh-publish's publish-shape backstop, no literal gh anywhere.
   # shellcheck disable=SC2016  # literal command text

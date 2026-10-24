@@ -2,7 +2,7 @@
 # dotfiles/tests/pretool-dispatch
 #
 # Behavioural test for claude/hooks/pretool-dispatch, the single PreToolUse
-# process that sources the guards (md5-guard-hook gh-publish-hook
+# process that sources the guards (gh-publish-hook
 # git-bypass-hook muse-exec-hook rm-redirect-hook ssh-redirect-hook
 # sudo-askpass-hook container-tmp-hook tmp-guard-hook config-root-hook md5-write-hook uv-guard-hook) in forked
 # subshells. Three parts:
@@ -37,7 +37,7 @@ typeset -g PTD_DISPATCHER=''
 typeset -g PTD_DIRS='' PTD_ROUTES='' PTD_HOOKS=''
 typeset -gi PTD_RC=0
 
-typeset -ga PTD_BASH=(md5-guard-hook gh-publish-hook git-bypass-hook muse-exec-hook rm-redirect-hook ssh-redirect-hook sudo-askpass-hook container-tmp-hook tmp-guard-hook config-root-hook mcp-secret-hook uv-guard-hook)
+typeset -ga PTD_BASH=(gh-publish-hook git-bypass-hook muse-exec-hook rm-redirect-hook ssh-redirect-hook sudo-askpass-hook container-tmp-hook tmp-guard-hook config-root-hook mcp-secret-hook uv-guard-hook)
 typeset -ga PTD_ALL=("${PTD_BASH[@]}" md5-write-hook)
 
 function _ptd_bash {
@@ -463,10 +463,10 @@ function _ptd_fault_injection {
   _ptd_eq "the deny comes first, the error after it" "$(_ptd_reason)" 'AAA | guard container-tmp-hook failed (exit 4); command not run unguarded: no diagnostic'
 
   _ptd_new_box exit3
-  _ptd_stub md5-guard-hook 'exit 3'
+  _ptd_stub gh-publish-hook 'exit 3'
   _ptd_run "${hi}"
   _ptd_expect DENY 'a stub that exits 3 with no output'
-  _ptd_in "the exit status is reported" "$(_ptd_reason)" 'guard md5-guard-hook failed (exit 3)'
+  _ptd_in "the exit status is reported" "$(_ptd_reason)" 'guard gh-publish-hook failed (exit 3)'
   _ptd_eq "the stub after an exit 3 still runs (marker file)" "$(_ptd_marker)" "${PTD_BASH[*]}"
 
   _ptd_new_box prefix-deny
@@ -480,7 +480,7 @@ function _ptd_fault_injection {
   _ptd_stub muse-exec-hook 'kill -TERM $$; /bin/sleep 2'
   _ptd_run "${hi}"
   left=("${PTD_BOX}"/tmp/*(N))
-  if [[ ${PTD_RC} -eq 2 && -z "${PTD_OUT}" && -s "${PTD_BOX}/stderr" && ${#left} -eq 0 && "$(_ptd_marker)" == 'md5-guard-hook gh-publish-hook git-bypass-hook muse-exec-hook' ]]; then
+  if [[ ${PTD_RC} -eq 2 && -z "${PTD_OUT}" && -s "${PTD_BOX}/stderr" && ${#left} -eq 0 && "$(_ptd_marker)" == 'gh-publish-hook git-bypass-hook muse-exec-hook' ]]; then
     _pass "a SIGTERM mid-run exits 2 (not 143), stops, and removes the capture file"
   else
     _fail "SIGTERM mid-run — rc=${PTD_RC} out=${PTD_OUT} left=${left[*]} marker=$(_ptd_marker)"
@@ -505,7 +505,7 @@ function _ptd_fault_injection {
   fi
 
   _ptd_new_box readonly-twice
-  _ptd_stub md5-guard-hook 'readonly JQ=/usr/bin/jq'
+  _ptd_stub muse-exec-hook 'readonly JQ=/usr/bin/jq'
   _ptd_stub gh-publish-hook 'readonly JQ=/usr/bin/jq'
   _ptd_stub git-bypass-hook 'readonly JQ=/usr/bin/jq'
   _ptd_run "${hi}"
@@ -514,9 +514,9 @@ function _ptd_fault_injection {
 
   _ptd_new_box isolation
   # shellcheck disable=SC2016  # the stub's own text
-  _ptd_stub md5-guard-hook 'setopt extendedglob kshglob shwordsplit; cd /; umask 000; typeset -g LEAK=1; trap "print trap >> ${PTD_MARKER}" EXIT'
+  _ptd_stub gh-publish-hook 'setopt extendedglob kshglob shwordsplit; cd /; umask 000; typeset -g LEAK=1; trap "print trap >> ${PTD_MARKER}" EXIT'
   # shellcheck disable=SC2016  # the stub's own text
-  _ptd_stub gh-publish-hook 'print -r -- "opts=$([[ -o extendedglob ]] && print on || print off)$([[ -o kshglob ]] && print on || print off)$([[ -o shwordsplit ]] && print on || print off) pwd=${PWD:t} umask=$(umask) leak=${LEAK-unset}" >> "${PTD_MARKER}"'
+  _ptd_stub git-bypass-hook 'print -r -- "opts=$([[ -o extendedglob ]] && print on || print off)$([[ -o kshglob ]] && print on || print off)$([[ -o shwordsplit ]] && print on || print off) pwd=${PWD:t} umask=$(umask) leak=${LEAK-unset}" >> "${PTD_MARKER}"'
   _ptd_run "${hi}"
   _ptd_in "a stub's options, cwd, umask and variables do not reach the next guard" "$(<"${PTD_BOX}/marker")" "opts=offoffoff pwd=isolation umask=077 leak=unset"
 
@@ -553,12 +553,12 @@ function _ptd_fault_injection {
   # The last stderr line of the failing guard, not of an earlier one; a failing
   # guard that wrote nothing gets "no diagnostic", not the earlier guards' text.
   _ptd_new_box stderr-attribution
-  _ptd_stub md5-guard-hook 'print -u2 -r -- noise-from-first'
-  _ptd_stub gh-publish-hook 'print -u2 -r -- early; print -u2 -r -- boom-line; exit 1'
-  _ptd_stub git-bypass-hook 'exit 4'
+  _ptd_stub gh-publish-hook 'print -u2 -r -- noise-from-first'
+  _ptd_stub git-bypass-hook 'print -u2 -r -- early; print -u2 -r -- boom-line; exit 1'
+  _ptd_stub muse-exec-hook 'exit 4'
   _ptd_run "${hi}"
   _ptd_expect DENY 'a stub that fails after writing to stderr'
-  _ptd_eq "the reason carries the failing guard's last stderr line only" "$(_ptd_reason)" 'guard gh-publish-hook failed (exit 1); command not run unguarded: boom-line | guard git-bypass-hook failed (exit 4); command not run unguarded: no diagnostic'
+  _ptd_eq "the reason carries the failing guard's last stderr line only" "$(_ptd_reason)" 'guard git-bypass-hook failed (exit 1); command not run unguarded: boom-line | guard muse-exec-hook failed (exit 4); command not run unguarded: no diagnostic'
 
   # What a guard is handed.
   _ptd_new_box seam
@@ -576,14 +576,14 @@ function _ptd_fault_injection {
 
   _ptd_new_box seam-bash
   # shellcheck disable=SC2016  # the stub's own text
-  _ptd_stub md5-guard-hook 'print -rn -- "${HOOK_PRE_TOOL}|${HOOK_PRE_COMMAND}|${HOOK_PRE_PATH}|${HOOK_PRE_CWD}|" > "${PTD_BOX_OUT}"'
+  _ptd_stub gh-publish-hook 'print -rn -- "${HOOK_PRE_TOOL}|${HOOK_PRE_COMMAND}|${HOOK_PRE_PATH}|${HOOK_PRE_CWD}|" > "${PTD_BOX_OUT}"'
   _ptd_run "$(_ptd_bash $'echo a\nls "b c"\n\n')" "PTD_BOX_OUT=${PTD_BOX}/seam.out"
   _ptd_eq "the Bash command arrives intact with trailing newlines removed" "$(<"${PTD_BOX}/seam.out")" $'Bash|echo a\nls "b c"||/work|'
 
   # A Monitor command reaches its guards as a Bash command.
   _ptd_new_box seam-monitor
   # shellcheck disable=SC2016  # the stub's own text
-  _ptd_stub md5-guard-hook 'print -rn -- "${HOOK_PRE_TOOL}|${HOOK_PRE_COMMAND}|${HOOK_PRE_PATH}|${HOOK_PRE_CWD}|" > "${PTD_BOX_OUT}"; print -rn -- "$(cat)" > "${PTD_BOX_OUT}.stdin"'
+  _ptd_stub gh-publish-hook 'print -rn -- "${HOOK_PRE_TOOL}|${HOOK_PRE_COMMAND}|${HOOK_PRE_PATH}|${HOOK_PRE_CWD}|" > "${PTD_BOX_OUT}"; print -rn -- "$(cat)" > "${PTD_BOX_OUT}.stdin"'
   _ptd_run "$(_ptd_monitor $'echo a\nls "b c"\n\n')" "PTD_BOX_OUT=${PTD_BOX}/seam.out"
   _ptd_eq "a Monitor command arrives as the Bash tool with trailing newlines removed" "$(<"${PTD_BOX}/seam.out")" $'Bash|echo a\nls "b c"||/work|'
   _ptd_in "the payload a stub reads still names the Monitor tool" "$(<"${PTD_BOX}/seam.out.stdin")" '"tool_name":"Monitor"'
@@ -625,7 +625,6 @@ function _ptd_real_guards {
   ssh_env=("SSH_REDIRECT_CONFIG=${fx}/.ssh/config" "HOME=${fx}")
   sudo_env=("SUDO_ASKPASS_HOSTS=box-claude other-claude" "SSH_REDIRECT_CONFIG=${fx}/.ssh/config")
 
-  _ptd_real_deny md5-guard-hook "$(_ptd_bash 'md5 file.txt')" 'is an MD5 tool' 'md5-guard-hook: md5 file.txt'
   _ptd_real_deny gh-publish-hook "$(_ptd_bash "${gh_word} issue create -t t --body \"inline body\"")" 'inline body text' 'gh-publish-hook: inline --body' "${gh_env[@]}"
   _ptd_real_deny git-bypass-hook "$(_ptd_bash 'git commit -n')" 'git commit -n (--no-verify)' 'git-bypass-hook: git commit -n'
   # shellcheck disable=SC2016  # literal command text
@@ -657,7 +656,6 @@ function _ptd_real_guards {
   key_flag+='ken=abc'
   _ptd_real_deny git-bypass-hook "$(_ptd_monitor 'git commit --no-verify -m x')" 'git commit --no-verify: give the user the exact command' 'git-bypass-hook: Monitor git commit --no-verify'
   _ptd_monitor_as_bash 'git commit --no-verify -m x' 'git commit --no-verify (git-bypass-hook)'
-  _ptd_monitor_as_bash 'md5 file.txt' 'md5 file.txt (md5-guard-hook)'
   _ptd_monitor_as_bash 'python3 -m venv .venv' 'python3 -m venv (uv-guard-hook)'
   _ptd_monitor_as_bash 'echo hi > /tmp/x' 'redirect into /tmp (tmp-guard-hook)'
   _ptd_monitor_as_bash "claude mcp add exa ${key_flag} -- prog" 'claude mcp add with a key flag (mcp-secret-hook)'
@@ -675,7 +673,6 @@ function _ptd_real_guards {
   local -a seam_env=(HOOK_PRE_DISPATCH=1 HOOK_PRE_TOOL=Bash HOOK_PRE_COMMAND=ls HOOK_PRE_PATH=/x/ok HOOK_PRE_CONTENT=ok HOOK_PRE_CWD=/work) extra_env
   local seam_out
   for c in \
-    "md5-guard-hook|$(_ptd_bash 'md5 file.txt')" \
     "git-bypass-hook|$(_ptd_bash 'git commit -n')" \
     "rm-redirect-hook|$(_ptd_bash '\rm foo.txt')" \
     "muse-exec-hook|$(_ptd_bash 'timeout 90 muse exec --workspace /w < /dev/null')" \
@@ -709,7 +706,7 @@ function _ptd_real_guards {
   # shellcheck disable=SC2016
   /usr/bin/sed -i '' 's|2>>"${errfile}"|2>\&2|' "${box}/pretool-dispatch"
   _ptd_bash 'ls -la' > "${box}/pass.json"
-  _ptd_bash 'md5 file.txt' > "${box}/deny.json"
+  _ptd_bash 'git commit -n' > "${box}/deny.json"
   local errout
   errout="$(/bin/zsh "${box}/pretool-dispatch" < "${box}/pass.json" 2>&1 >/dev/null)" || true
   if [[ -z "${errout}" ]]; then
@@ -743,7 +740,7 @@ function _ptd_real_guards {
   done
   # The trace must reach into the guards, or the count proves nothing.
   xtrace="$(<"${box}/xtrace")"
-  if [[ "${xtrace}" == *'md5-guard-hook:'* || "${xtrace}" == *_md5_guard* ]]; then
+  if [[ "${xtrace}" == *'gh-publish-hook:'* || "${xtrace}" == *_gp_* ]]; then
     _pass "the xtrace covers the guard subshells"
   else
     _fail "the xtrace holds no guard lines: the exec count is blind inside the guards"
