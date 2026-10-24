@@ -56,6 +56,107 @@ function _hook_verdict {
   fi
 }
 
+# Run a PreToolUse guard the way pretool-dispatch runs it (2026-10-24): a
+# forked subshell, `emulate -L zsh`, the HOOK_PRE_* seam variables set as
+# plain shell variables, `set --`, then `source` inside this function (so the
+# guard's top-level `readonly` lines declare function-locals, as under the
+# dispatcher's `main`). The guard reads no stdin and runs no jq; it prints
+# nothing (PASS) or `DENY<US>reason` (DENY). Measured on tmp-guard-hook: 4 to
+# 5 ms and no process start per case, against 38 to 62 ms and 6 to 8 execs
+# for `/bin/zsh <guard> <<< <json>` plus _hook_verdict.
+#
+#   _hook_run_seam [NAME=value ...] [--] <guard> <tool> <command> [path] [content] [cwd]
+#
+# Leading NAME=value words are exported inside the subshell only (HOME, a
+# GH_PUBLISH_* seam). <tool> is what the guard sees (Bash for a Monitor call,
+# as the dispatcher maps it). Trailing newlines are removed from the four
+# text fields, as the dispatcher does. Results, in globals (never call this
+# inside `$(...)`): HOOK_SEAM_VERDICT is PASS, DENY or INVALID, classified as
+# the dispatcher classifies a guard (exit 0 and empty stdout: PASS; exit 0 and
+# `DENY<US>` plus a non-empty reason: DENY; anything else, including an
+# allow object, a `name=value` leak or a non-zero exit: INVALID, which the
+# dispatcher turns into a deny). HOOK_SEAM_REASON is the deny reason or
+# empty, HOOK_SEAM_OUT the raw stdout, HOOK_SEAM_ERR the stderr, HOOK_SEAM_RC
+# the exit status (the four are set by _hook_seam_classify, below). Keep a few standalone cases per suite for the stdin, jq
+# and JSON path, and for the exported HOOK_PRE_DISPATCH=1 environment case.
+# shellcheck disable=SC2034  # read by the suites after each call
+typeset -g HOOK_SEAM_VERDICT='' HOOK_SEAM_REASON='' HOOK_SEAM_OUT='' HOOK_SEAM_ERR=''
+# shellcheck disable=SC2034
+typeset -gi HOOK_SEAM_RC=0
+# builtin rm for the stderr capture file: no process start per case.
+zmodload -F zsh/files b:rm 2>/dev/null || :
+
+function _hook_run_seam {
+  local -a seam_env=()
+  while (( $# )) && [[ "$1" != -- && "$1" == [A-Za-z_]*=* ]]; do
+    seam_env+=("$1")
+    shift
+  done
+  [[ "${1-}" == -- ]] && shift
+  local guard="$1" tool="$2" cmd="${3-}" fpath="${4-}" content="${5-}" cwd="${6-}"
+  local errf="${TMPDIR:-/tmp}/hook-seam.$$.err" out
+  local -i rc=0
+  cmd="${cmd%"${cmd##*[!$'\n']}"}"
+  fpath="${fpath%"${fpath##*[!$'\n']}"}"
+  content="${content%"${content##*[!$'\n']}"}"
+  cwd="${cwd%"${cwd##*[!$'\n']}"}"
+
+  out="$(
+    (
+      trap - EXIT ZERR TERM INT HUP
+      emulate -L zsh
+      umask 077
+      local kv
+      # shellcheck disable=SC2163  # kv holds a NAME=value word to export
+      for kv in "${seam_env[@]}"; do export "${kv}"; done
+      # shellcheck disable=SC2034  # read by the sourced guard
+      HOOK_PRE_DISPATCH=1
+      # shellcheck disable=SC2034
+      HOOK_PRE_TOOL="${tool}"
+      # shellcheck disable=SC2034
+      HOOK_PRE_COMMAND="${cmd}"
+      # shellcheck disable=SC2034
+      HOOK_PRE_PATH="${fpath}"
+      # shellcheck disable=SC2034
+      HOOK_PRE_CONTENT="${content}"
+      # shellcheck disable=SC2034
+      HOOK_PRE_CWD="${cwd}"
+      set --
+      # shellcheck disable=SC1090  # the guard under test
+      source "${guard}"
+    ) <<< '' 2>"${errf}"
+  )" || rc=$?
+
+  # shellcheck disable=SC2034  # read by the suites
+  { HOOK_SEAM_ERR="$(<"${errf}")"; } 2>/dev/null || HOOK_SEAM_ERR=''
+  builtin rm -f -- "${errf}" 2>/dev/null || :
+  _hook_seam_classify "${rc}" "${out}"
+}
+
+# Set HOOK_SEAM_RC, HOOK_SEAM_OUT, HOOK_SEAM_VERDICT and HOOK_SEAM_REASON from
+# a guard's exit status $1 and stdout $2, as the dispatcher classifies them.
+# Separate from _hook_run_seam so a mutant test can feed a fabricated guard
+# output through the real classification.
+function _hook_seam_classify {
+  local -i rc="$1"
+  local out="$2"
+  # shellcheck disable=SC2034  # the result globals are read by the suites
+  HOOK_SEAM_RC=${rc}
+  # shellcheck disable=SC2034
+  HOOK_SEAM_OUT="${out}"
+  HOOK_SEAM_REASON=''
+  if (( rc == 0 )) && [[ -z "${out}" ]]; then
+    HOOK_SEAM_VERDICT=PASS
+  elif (( rc == 0 )) && [[ "${out}" == $'DENY\x1f'?* ]]; then
+    HOOK_SEAM_VERDICT=DENY
+    # shellcheck disable=SC2034
+    HOOK_SEAM_REASON="${out#$'DENY\x1f'}"
+  else
+    # shellcheck disable=SC2034
+    HOOK_SEAM_VERDICT=INVALID
+  fi
+}
+
 # JSON string literal of $1 into REPLY, quotes included. \, ", newline and tab
 # are escaped in pure zsh; any other control character takes the jq path.
 function _json_str {

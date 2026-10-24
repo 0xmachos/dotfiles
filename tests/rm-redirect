@@ -2,8 +2,21 @@
 # dotfiles/tests/rm-redirect
 #
 # Behavioural test for claude/hooks/rm-redirect-hook (PreToolUse): feeds commands
-# to the hook as stdin JSON and asserts the verdict. Rationale for each
-# class is in that hook's own header.
+# to the hook and asserts the verdict. Rationale for each class is in that
+# hook's own header.
+# Since 2026-10-24 the verdict cases run the guard through the pretool-dispatch
+# seam (_hook_run_seam in tests/lib, which sources the hook in a subshell with
+# HOOK_PRE_* set and reads DENY<US>reason). That is the path live sessions use.
+# It costs about 5 ms a case with no process start, against about 50 ms and 6
+# execs for a standalone run. The hook copies with one literal changed and the
+# oversized commands go through the seam too (the command is a variable, not
+# argv or stdin). These cases stay standalone (`/bin/zsh <hook>` with JSON on
+# stdin, through _hook_verdict) for the process path: a few PASS and DENY
+# verdicts with the JSON deny reason, the at-cap and past-cap sizes on stdin,
+# the empty and malformed stdin cases, the exit status of a DENY, and the case
+# with HOOK_PRE_DISPATCH exported (a standalone hook must not skip, because
+# ZSH_EVAL_CONTEXT lacks :file when exec'd). The near-deadline cases keep
+# their retry count under the seam.
 #
 # Contract (2026-09-25): plain rm/unlink/shred/gshred at ANY command position
 # PASSES (the shell alias already trashes it). DENY is only the forms that
@@ -23,17 +36,42 @@
 #
 # shellcheck source=tests/lib
 
+# Standalone run: the hook as its own process, JSON on stdin. Echoes stdout.
 function _rm_redirect_run {
   # Echo the hook's stdout for Bash command $1.
   jq -n --arg c "$1" '{tool_name:"Bash", tool_input:{command:$c}}' \
     | /bin/zsh "${SCRIPT_DIR}/claude/hooks/rm-redirect-hook"
 }
 
+# Seam run: the guard sourced the dispatcher's way (HOOK_SEAM_VERDICT and
+# HOOK_SEAM_REASON hold the result).
 function _rm_redirect_expect {
-  # Optional $4/$5: a fragment the hook output must contain and the label for
+  # Optional $4/$5: a fragment the deny reason must contain and the label for
   # that second check, made on the same hook run. Optional $6: how many runs to
   # allow before a wrong verdict counts (default 1; the hook's 0.3 s deadline
   # fails open under load, so a near-cap DENY gets retries).
+  local want="$1" cmd="$2" label="${3:-$2}" frag="${4:-}" fraglabel="${5:-}" tries="${6:-1}" got=''
+  local -i t
+  for (( t = 1; t <= tries; t++ )); do
+    _hook_run_seam "${SCRIPT_DIR}/claude/hooks/rm-redirect-hook" Bash "${cmd}"
+    got="${HOOK_SEAM_VERDICT}"
+    [[ "${got}" == "${want}" ]] && break
+  done
+  if [[ "${got}" == "${want}" ]]; then
+    _pass "${want}: ${label}"
+  else
+    _fail "${label} — expected ${want}, got ${got} (${HOOK_SEAM_OUT:0:120})"
+  fi
+  [[ -n "${frag}" ]] || return 0
+  if [[ "${HOOK_SEAM_REASON}" == *"${frag}"* ]]; then
+    _pass "${fraglabel}"
+  else
+    _fail "${fraglabel} — output lacks: ${frag}"
+  fi
+}
+
+# Standalone verdict check, kept for a few cases per verdict. Same arguments.
+function _rm_redirect_expect_standalone {
   local want="$1" cmd="$2" label="${3:-$2}" frag="${4:-}" fraglabel="${5:-}" tries="${6:-1}" out got
   local -i rc t
   for (( t = 1; t <= tries; t++ )); do
@@ -43,12 +81,12 @@ function _rm_redirect_expect {
     [[ "${got}" == "${want}" ]] && break
   done
   if [[ "${got}" == "${want}" ]]; then
-    _pass "${want}: ${label}"
+    _pass "${want} (standalone): ${label}"
   else
-    _fail "${label} — expected ${want}, got ${got}"
+    _fail "standalone ${label} — expected ${want}, got ${got}"
   fi
   # The hook exits 0 for every verdict; a nonzero status is recorded, not fatal.
-  (( rc == 0 )) || _fail "${label} — hook exited ${rc}"
+  (( rc == 0 )) || _fail "standalone ${label} — hook exited ${rc}"
   [[ -n "${frag}" ]] || return 0
   if [[ "${out}" == *"${frag}"* ]]; then
     _pass "${fraglabel}"
@@ -108,20 +146,14 @@ function _rm_redirect_make_copy {
   print -r -- "${changed}" > "${dir}/hook"
 }
 
-function _rm_redirect_run_copy {
-  # Echo the stdout of the hook copy $1/hook for Bash command $2.
-  jq -n --arg c "$2" '{tool_name:"Bash", tool_input:{command:$c}}' | /bin/zsh "$1/hook"
-}
-
 function _rm_redirect_copy_expect {
-  # Run hook copy $1/hook on command $3 and assert verdict $2, labelled $4.
-  local out got
-  out="$(_rm_redirect_run_copy "$1" "$3")" || out=''
-  got="$(_hook_verdict "${out}")" || got=INVALID
-  if [[ "${got}" == "$2" ]]; then
+  # Run hook copy $1/hook through the seam on command $3 and assert verdict $2,
+  # labelled $4.
+  _hook_run_seam "$1/hook" Bash "$3"
+  if [[ "${HOOK_SEAM_VERDICT}" == "$2" ]]; then
     _pass "$2: $4"
   else
-    _fail "$4 - expected $2, got ${got}"
+    _fail "$4 - expected $2, got ${HOOK_SEAM_VERDICT} (${HOOK_SEAM_OUT:0:120})"
   fi
 }
 
@@ -489,7 +521,7 @@ function run_rm_redirect {
 
   # 2026-09-25: with a re-declared `local segment match`, the FIRST line's
   # values reach stdout ahead of the deny JSON: INVALID, not DENY.
-  _rm_redirect_expect DENY $'rm -rf build\nfind . -name "*.o" -delete' 'two qualifying lines, second DENIEs'
+  _rm_redirect_expect DENY $'rm -rf build\nfind . -name "*.o" -delete' 'two qualifying lines, the second denies'
 
   # Backslash-newline joins into one logical line in a real shell
   # (2026-09-25), so a wrapped find/git-clean/xargs form must still DENY.
@@ -506,6 +538,35 @@ function run_rm_redirect {
   _rm_redirect_expect DENY $'# note \\\n\\rm x'             'comment ending in backslash: no join, next line stands alone'
   _rm_redirect_expect DENY $'echo hi # trailing \\\n\\rm x' 'trailing comment ending in backslash: no join'
   _rm_redirect_expect DENY $'find . -name x\\\\\\\n  -delete' 'odd run of three backslashes still joins'
+
+  # The process path (JSON on stdin, the hook's own jq, _hook_verdict): a few
+  # PASS and DENY verdicts, the JSON deny reason, a leak check on a two-line
+  # command, and the sizes at and past the caps carried on stdin.
+  _rm_redirect_expect_standalone PASS 'rm -rf foo'
+  _rm_redirect_expect_standalone PASS 'git clean -n'
+  _rm_redirect_expect_standalone PASS $'rm -rf a\nrm -rf b' 'two qualifying lines, both PASS'
+  _rm_redirect_expect_standalone DENY '\rm foo.txt' 'backslash-escaped rm' \
+    trash 'standalone deny reason names trash'
+  _rm_redirect_expect_standalone DENY 'sudo rm foo' 'sudo rm'
+  _rm_redirect_expect_standalone DENY "bash -c 'rm foo'" 'bash -c string with a bare rm'
+  _rm_redirect_expect_standalone DENY $'rm -rf build\nfind . -name "*.o" -delete' 'two qualifying lines, the second denies'
+  _rm_redirect_bytes_command 524288
+  _rm_redirect_expect_standalone DENY "${REPLY}" '524288 characters on stdin, at the byte cap, still scanned' '' '' 3
+  _rm_redirect_bytes_command 524289
+  _rm_redirect_expect_standalone PASS "${REPLY}" '524289 characters on stdin, past the byte cap, fails open'
+
+  # An exported HOOK_PRE_DISPATCH must not make a standalone hook skip its
+  # stdin: ZSH_EVAL_CONTEXT lacks :file when the hook is exec'd, so the
+  # command comes from the JSON, not from HOOK_PRE_COMMAND.
+  local rm_redirect_env_out rm_redirect_env_got
+  rm_redirect_env_out="$(jq -n --arg c '\rm foo' '{tool_name:"Bash", tool_input:{command:$c}}' \
+    | HOOK_PRE_DISPATCH=1 HOOK_PRE_COMMAND='ls' /bin/zsh "${SCRIPT_DIR}/claude/hooks/rm-redirect-hook")" || rm_redirect_env_out=''
+  rm_redirect_env_got="$(_hook_verdict "${rm_redirect_env_out}")" || rm_redirect_env_got=INVALID
+  if [[ "${rm_redirect_env_got}" == DENY ]]; then
+    _pass "DENY (standalone): exported HOOK_PRE_DISPATCH does not skip the stdin path"
+  else
+    _fail "exported HOOK_PRE_DISPATCH skipped a standalone run — got ${rm_redirect_env_got}"
+  fi
 
   # Malformed/empty stdin → PASS (fail-open), matching every other hook.
   if [[ -z "$(printf '' | /bin/zsh "${SCRIPT_DIR}/claude/hooks/rm-redirect-hook")" ]]; then
@@ -548,7 +609,8 @@ function run_rm_redirect {
                $'bash <<EOF\nrm x\nEOF' 'nocorrect \rm foo' 'env rm foo' \
                '/bin/rm foo' '/usr/bin/unlink foo' 'sudo rm foo' 'doas find . -delete' \
                'find . -exec /bin/rm {} +' 'fd -x /bin/rm' "bash -c 'rm foo'" 'watch rm foo'; do
-    reason="$(_rm_redirect_run "${shape}" | jq -r '.hookSpecificOutput.permissionDecisionReason // empty')" || reason=''
+    _hook_run_seam "${SCRIPT_DIR}/claude/hooks/rm-redirect-hook" Bash "${shape}"
+    reason="${HOOK_SEAM_REASON}"
     if [[ -n "${reason}" && "${reason}" != *$'\n'* && ${#reason} -le 120 \
           && "${reason}" == *': '* && "${reason}" == *. ]]; then
       _pass "deny text is one short line (${#reason} chars): ${shape//$'\n'/<NL>}"

@@ -36,6 +36,94 @@ function run_test_helpers {
     fi
   done
 
+  # _hook_run_seam: stub guards in a sandbox exercise each verdict class and
+  # the seam contract (variables, exported env, `set --`, trailing-newline
+  # strip, isolation of exit and readonly). US is 0x1f, as in the dispatcher.
+  local seam_dir us=$'\x1f'
+  seam_dir="$(mktemp -d "${TMPDIR:-/tmp}/seam-stubs.XXXXXX")"
+  print -r -- ':' > "${seam_dir}/pass"
+  # shellcheck disable=SC2016  # the stub's own expansions, run by the guard
+  print -r -- 'print -rn -- "DENY${us}cmd=[${HOOK_PRE_COMMAND}] tool=${HOOK_PRE_TOOL} path=${HOOK_PRE_PATH} content=${HOOK_PRE_CONTENT} cwd=${HOOK_PRE_CWD} env=${SEAM_PROBE-unset} argc=$# ctx=${ZSH_EVAL_CONTEXT}"' \
+    | sed "s/\${us}/${us}/" > "${seam_dir}/deny"
+  print -r -- 'print -r -- '\''{"hookSpecificOutput":{"permissionDecision":"allow"}}'\' > "${seam_dir}/allow"
+  print -r -- 'print -u2 -- boom; exit 3' > "${seam_dir}/exit3"
+  printf 'print -rn -- "DENY%s"\n' "${us}" > "${seam_dir}/empty-reason"
+  print -r -- 'print -r -- name=value' > "${seam_dir}/leak"
+  print -r -- 'readonly JQ=/usr/bin/jq; set -euo pipefail; umask 022' > "${seam_dir}/readonly"
+
+  _hook_run_seam "${seam_dir}/pass" Bash 'ls'
+  # shellcheck disable=SC2153  # HOOK_SEAM_RC is set by tests/lib
+  if [[ "${HOOK_SEAM_VERDICT}" == PASS && -z "${HOOK_SEAM_REASON}" && "${HOOK_SEAM_RC}" == 0 ]]; then
+    _pass "seam: silent exit 0 reads PASS"
+  else
+    _fail "seam: silent exit 0 read ${HOOK_SEAM_VERDICT} (rc ${HOOK_SEAM_RC})"
+  fi
+
+  _hook_run_seam SEAM_PROBE=set -- "${seam_dir}/deny" Bash $'touch /tmp/x\n\n' '/p' $'body\n' '/work'
+  expected='cmd=[touch /tmp/x] tool=Bash path=/p content=body cwd=/work env=set argc=0 ctx='
+  if [[ "${HOOK_SEAM_VERDICT}" == DENY && "${HOOK_SEAM_REASON}" == "${expected}"*:file* ]]; then
+    _pass "seam: DENY line reads DENY; the guard saw the seam variables, the exported env, no arguments and a :file context"
+  else
+    _fail "seam: DENY stub read ${HOOK_SEAM_VERDICT}, reason '${HOOK_SEAM_REASON}'"
+  fi
+  if [[ -z "${SEAM_PROBE-}" ]]; then
+    _pass "seam: the exported env stays inside the guard's subshell"
+  else
+    _fail "seam: SEAM_PROBE leaked into the test shell"
+  fi
+
+  _hook_run_seam "${seam_dir}/allow" Bash 'ls'
+  out="$(_hook_verdict '{"hookSpecificOutput":{"permissionDecision":"allow"}}')"
+  if [[ "${HOOK_SEAM_VERDICT}" == INVALID && "${out}" == INVALID ]]; then
+    _pass "seam: an allow object reads INVALID through the seam and through _hook_verdict"
+  else
+    _fail "seam: allow object read ${HOOK_SEAM_VERDICT} (seam) and ${out} (standalone)"
+  fi
+
+  _hook_run_seam "${seam_dir}/exit3" Bash 'ls'
+  if [[ "${HOOK_SEAM_VERDICT}" == INVALID && "${HOOK_SEAM_RC}" == 3 && "${HOOK_SEAM_ERR}" == boom ]]; then
+    _pass "seam: a guard's exit 3 reads INVALID, rc and stderr captured, the test shell survives"
+  else
+    _fail "seam: exit 3 stub read ${HOOK_SEAM_VERDICT} rc=${HOOK_SEAM_RC} err='${HOOK_SEAM_ERR}'"
+  fi
+
+  _hook_run_seam "${seam_dir}/empty-reason" Bash 'ls'
+  if [[ "${HOOK_SEAM_VERDICT}" == INVALID ]]; then
+    _pass "seam: DENY with an empty reason reads INVALID"
+  else
+    _fail "seam: empty-reason stub read ${HOOK_SEAM_VERDICT}"
+  fi
+
+  _hook_run_seam "${seam_dir}/leak" Bash 'ls'
+  if [[ "${HOOK_SEAM_VERDICT}" == INVALID && "${HOOK_SEAM_OUT}" == name=value ]]; then
+    _pass "seam: a name=value line on stdout reads INVALID"
+  else
+    _fail "seam: leak stub read ${HOOK_SEAM_VERDICT}, out '${HOOK_SEAM_OUT}'"
+  fi
+
+  _hook_run_seam "${seam_dir}/readonly" Bash 'ls'
+  _hook_run_seam "${seam_dir}/readonly" Bash 'ls'
+  if [[ "${HOOK_SEAM_VERDICT}" == PASS && -z "${HOOK_SEAM_ERR}" && -z "${JQ-}" ]]; then
+    _pass "seam: a guard's readonly, set -e and umask stay in its subshell (sourced twice)"
+  else
+    _fail "seam: readonly stub twice read ${HOOK_SEAM_VERDICT} err='${HOOK_SEAM_ERR}' JQ='${JQ-}'"
+  fi
+
+  _hook_run_seam "${seam_dir}/missing" Bash 'ls'
+  if [[ "${HOOK_SEAM_VERDICT}" == INVALID && "${HOOK_SEAM_RC}" != 0 ]]; then
+    _pass "seam: a missing guard file reads INVALID"
+  else
+    _fail "seam: missing guard read ${HOOK_SEAM_VERDICT} rc=${HOOK_SEAM_RC}"
+  fi
+
+  _hook_seam_classify 0 ''
+  if [[ "${HOOK_SEAM_VERDICT}" == PASS ]]; then
+    _pass "seam classify: exit 0 and empty stdout is PASS"
+  else
+    _fail "seam classify: empty read ${HOOK_SEAM_VERDICT}"
+  fi
+  /bin/rm -rf "${seam_dir}"
+
   # _json_str output must decode with jq back to the exact input: one string
   # takes the pure zsh escapes, the others carry a control character that only
   # the jq fallback escapes.
@@ -77,8 +165,12 @@ function run_test_helpers {
       # shellcheck source=/dev/null
       source "${SCRIPT_DIR}/tests/${suite}"
       # zsh's function table installs a mock without evaluating user input.
+      # Both runner shapes are mocked: a standalone runner prints the allow
+      # object; a seam runner feeds it through the real classification.
       # shellcheck disable=SC2034,SC2004  # functions is an associative zsh table
       functions[${runner}]='print -r -- '\''{"hookSpecificOutput":{"permissionDecision":"allow"}}'\'
+      # shellcheck disable=SC2034,SC2004,SC2154
+      functions[_hook_run_seam]='_hook_seam_classify 0 '\''{"hookSpecificOutput":{"permissionDecision":"allow"}}'\'
       # shellcheck disable=SC2154  # shared counter from tests/lib
       local before=${fail_count}
       "${assertion}" DENY fixture fixture >/dev/null

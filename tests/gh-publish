@@ -10,6 +10,18 @@
 # (same convention as tests/pii-hook).
 # Seams: GH_PUBLISH_PATTERNS / GH_PUBLISH_SSH_CONFIG inject the PII/ssh
 # sources; GH_PUBLISH_NO_GITLEAKS disables gitleaks outside its own cases.
+# Since 2026-10-24 the verdict cases run the guard through the pretool-dispatch
+# seam (_hook_run_seam in tests/lib: sourced in a subshell, HOOK_PRE_* set,
+# DENY<US>reason), the path live sessions use. The suite seams (HOME,
+# GH_CONFIG_DIR, GH_PUBLISH_*) go to the helper as leading NAME=value words and
+# the deny text is read from HOOK_SEAM_REASON, not from JSON. This guard still
+# starts a child per DENY (gh alias, sw_vers, shasum), so the gain is smaller
+# than for a pure-zsh guard. These cases stay standalone (the hook as its own
+# process, JSON on stdin) through _gp_test_run: a few DENY and PASS verdicts,
+# the exported HOOK_PRE_DISPATCH=1 case (a standalone hook must not skip, as
+# ZSH_EVAL_CONTEXT lacks :file), and the empty, malformed and non-Bash payloads
+# (stdin and jq path). tests/test-helpers mocks _gp_test_run and
+# _hook_run_seam, then calls _gp_test_expect: keep both names.
 #
 # Run: ./test gh-publish
 # ShellCheck: lint with `shellcheck --shell=bash tests/gh-publish`.
@@ -36,24 +48,36 @@ function _gp_test_run {
       /bin/zsh "${SCRIPT_DIR}/claude/hooks/gh-publish-hook"
 }
 
+function _gp_test_seam {
+  # Seam run of the guard for Bash command $1, with the same sandbox seams and
+  # argument defaults as _gp_test_run. The verdict lands in HOOK_SEAM_VERDICT
+  # and the deny text in HOOK_SEAM_REASON. Never call this inside $(...).
+  # ${_gp_dir-}: test-helpers calls the expect functions with no sandbox.
+  _hook_run_seam \
+    HOME="${_gp_dir-}/home" \
+    GH_PUBLISH_PATTERNS="${2:-${_gp_dir-}/patterns}" \
+    GH_PUBLISH_SSH_CONFIG="${_gp_dir-}/sshcfg" \
+    GH_PUBLISH_NO_GITLEAKS="${3-1}" \
+    GH_PUBLISH_NO_IDENTITY="${4-1}" \
+    GH_PUBLISH_OS="7.7:99Z999z" \
+    GH_CONFIG_DIR="${_gp_dir-}/gh" \
+    -- "${SCRIPT_DIR}/claude/hooks/gh-publish-hook" Bash "$1"
+}
+
 function _gp_test_inject_expect {
   # $1 = verdict, $2 = Bash command, $3 = zsh function definition run before
-  # the hook is sourced (it shadows a builtin), $4 = label. Fault injection
-  # for reads the suite cannot provoke from a real file.
-  local want="$1" cmd="$2" inject="$3" label="$4" out got
-  out="$(jq -n --arg c "${cmd}" '{tool_name:"Bash", tool_input:{command:$c}}' \
-    | HOME="${_gp_dir}/home" \
-      GH_PUBLISH_PATTERNS="${_gp_dir}/patterns" \
-      GH_PUBLISH_SSH_CONFIG="${_gp_dir}/sshcfg" \
-      GH_PUBLISH_NO_GITLEAKS=1 GH_PUBLISH_NO_IDENTITY=1 \
-      GH_PUBLISH_OS="7.7:99Z999z" \
-      GH_CONFIG_DIR="${_gp_dir}/gh" \
-      /bin/zsh -c "${inject}"$'\n''source "$1"' gp-inject "${SCRIPT_DIR}/claude/hooks/gh-publish-hook")"
-  got="$(_hook_verdict "${out}")"
-  if [[ "${got}" == "${want}" ]]; then
+  # the guard is sourced (it shadows a builtin), $4 = label. Fault injection
+  # for reads the suite cannot provoke from a real file. The definition is
+  # evaluated here, so the seam subshell inherits it, and removed afterwards.
+  local want="$1" cmd="$2" inject="$3" label="$4"
+  eval "${inject}"
+  _gp_test_seam "${cmd}"
+  unfunction sysread 2>/dev/null || :
+  unset gp_calls gp_chunk 2>/dev/null || :
+  if [[ "${HOOK_SEAM_VERDICT}" == "${want}" ]]; then
     _pass "${want}: ${label}"
   else
-    _fail "${label} — expected ${want}, got ${got}"
+    _fail "${label} — expected ${want}, got ${HOOK_SEAM_VERDICT}"
   fi
 }
 
@@ -65,26 +89,38 @@ function _gp_test_review {
 }
 
 function _gp_test_expect {
+  local want="$1" cmd="$2" label="$3"
+  _gp_test_seam "${cmd}" "${4:-}" "${5-1}" "${6-1}"
+  if [[ "${HOOK_SEAM_VERDICT}" == "${want}" ]]; then
+    _pass "${want}: ${label}"
+  else
+    _fail "${label} — expected ${want}, got ${HOOK_SEAM_VERDICT} (${HOOK_SEAM_OUT:0:120})"
+  fi
+}
+
+function _gp_test_expect_standalone {
+  # The same check through the hook as its own process (JSON on stdin, the
+  # hook's jq, the deny object), kept for a few cases per verdict.
   local want="$1" cmd="$2" label="$3" out got
   out="$(_gp_test_run "${cmd}" "${4:-}" "${5-1}" "${6-1}")"
   got="$(_hook_verdict "${out}")"
   if [[ "${got}" == "${want}" ]]; then
-    _pass "${want}: ${label}"
+    _pass "${want} (standalone): ${label}"
   else
-    _fail "${label} — expected ${want}, got ${got}"
+    _fail "standalone ${label} — expected ${want}, got ${got}"
   fi
 }
 
 function _gp_test_terse {
   # Deny text for command $1: one line per violation, at most 120 characters
   # each, no numbering, no header line and no closing paragraph.
-  local cmd="$1" label="$2" out reason line bad='' seen=$'\n'
-  out="$(_gp_test_run "${cmd}")"
-  if [[ "$(_hook_verdict "${out}")" != DENY ]]; then
-    _fail "terse deny text: ${label} — expected one valid DENY object"
+  local cmd="$1" label="$2" reason line bad='' seen=$'\n'
+  _gp_test_seam "${cmd}"
+  if [[ "${HOOK_SEAM_VERDICT}" != DENY ]]; then
+    _fail "terse deny text: ${label} — expected one valid DENY, got ${HOOK_SEAM_VERDICT}"
     return
   fi
-  reason="$(jq -r '.hookSpecificOutput.permissionDecisionReason' <<< "${out}")"
+  reason="${HOOK_SEAM_REASON}"
   while IFS= read -r line; do
     if [[ -z "${line}" ]]; then
       bad="an empty line"
@@ -106,7 +142,8 @@ function _gp_test_terse {
 
 function _gp_test_reason_has {
   local cmd="$1" needle="$2" label="$3"
-  if [[ "$(_gp_test_run "${cmd}")" == *"${needle}"* ]]; then
+  _gp_test_seam "${cmd}"
+  if [[ "${HOOK_SEAM_VERDICT}" == DENY && "${HOOK_SEAM_REASON}" == *"${needle}"* ]]; then
     _pass "reason names ${label}"
   else
     _fail "deny reason for '${label}' does not mention '${needle}'"
@@ -576,18 +613,17 @@ function run_gh_publish {
   mkdir -p "${_gp_dir}/stubbin"
   printf '#!/bin/zsh\nexit 3\n' > "${_gp_dir}/stubbin/gitleaks"
   chmod +x "${_gp_dir}/stubbin/gitleaks"
-  local out
-  out="$(jq -n --arg c "gh issue create -t t --body-file ${_gp_dir}/good.md" \
-      '{tool_name:"Bash", tool_input:{command:$c}}' \
-    | PATH="${_gp_dir}/stubbin:${PATH}" \
-      HOME="${_gp_dir}/home" \
-      GH_PUBLISH_GITLEAKS="${_gp_dir}/stubbin/gitleaks" \
-      GH_PUBLISH_PATTERNS="${_gp_dir}/patterns" \
-      GH_PUBLISH_SSH_CONFIG="${_gp_dir}/sshcfg" \
-      GH_PUBLISH_NO_GITLEAKS='' GH_PUBLISH_NO_IDENTITY=1 \
-      GH_PUBLISH_OS="7.7:99Z999z" \
-      /bin/zsh "${SCRIPT_DIR}/claude/hooks/gh-publish-hook")"
-  if [[ "${out}" == *'gitleaks error'* ]]; then
+  _hook_run_seam \
+    PATH="${_gp_dir}/stubbin:${PATH}" \
+    HOME="${_gp_dir}/home" \
+    GH_PUBLISH_GITLEAKS="${_gp_dir}/stubbin/gitleaks" \
+    GH_PUBLISH_PATTERNS="${_gp_dir}/patterns" \
+    GH_PUBLISH_SSH_CONFIG="${_gp_dir}/sshcfg" \
+    GH_PUBLISH_NO_GITLEAKS='' GH_PUBLISH_NO_IDENTITY=1 \
+    GH_PUBLISH_OS="7.7:99Z999z" \
+    -- "${SCRIPT_DIR}/claude/hooks/gh-publish-hook" Bash \
+    "gh issue create -t t --body-file ${_gp_dir}/good.md"
+  if [[ "${HOOK_SEAM_VERDICT}" == DENY && "${HOOK_SEAM_REASON}" == *'gitleaks error'* ]]; then
     _pass "DENY: gitleaks error exit fails closed"
   else
     _fail "gitleaks error exit did not fail closed"
@@ -1267,7 +1303,11 @@ function run_gh_publish {
   done
   _gp_test_terse $'gh pr create -t t --body x\ngh pr create -t t --body x' 'a repeated violation is reported once'
   local _gp_multi
-  _gp_multi="$(_gp_test_run 'gh pr create --fill -Z --body x' | jq -r '.hookSpecificOutput.permissionDecisionReason' | wc -l | tr -d ' ')"
+  local _gp_newlines
+  _gp_test_seam 'gh pr create --fill -Z --body x'
+  # Lines of the reason: the newlines between them, plus one.
+  _gp_newlines="${HOOK_SEAM_REASON//[!$'\n']/}"
+  _gp_multi=$(( ${#_gp_newlines} + 1 ))
   if (( _gp_multi >= 3 )); then
     _pass "a command with several violations reports one line for each"
   else
@@ -1359,6 +1399,58 @@ function run_gh_publish {
   _gp_test_expect PASS $'cat <<A\nx\nA\ncat <<B\ny\nB\ngh pr list' 'two heredocs before a read leave no output'
   _gp_test_expect PASS 'gh pr list; gh pr view 1; gh issue list; gh issue view 2' \
     'several read segments leave no output'
+
+  # --- Standalone process path ----------------------------------------------
+  # The hook as its own process: JSON on stdin, the hook's own jq, the deny
+  # object. Two DENY and two PASS verdicts, then the cases that need stdin or
+  # the process environment.
+  _gp_test_expect_standalone DENY 'gh issue create -t t --body inline' 'inline --body'
+  _gp_test_expect_standalone DENY "gh issue create -t t --body-file ${_gp_dir}/pii.md" \
+    'PII token in body'
+  _gp_test_expect_standalone PASS 'ls -la' 'non-gh command'
+  _gp_test_expect_standalone PASS "gh issue create -t t --body-file ${_gp_dir}/good.md" \
+    'issue create: reviewed body with env section'
+
+  # An exported HOOK_PRE_DISPATCH=1 must not make a standalone hook skip: it
+  # reads stdin, since ZSH_EVAL_CONTEXT lacks :file when exec'd. The seam
+  # variables here say Read with no command, so a hook that trusted them
+  # would let the inline body through.
+  local gp_env_out
+  gp_env_out="$( (export HOOK_PRE_DISPATCH=1 HOOK_PRE_TOOL=Read HOOK_PRE_COMMAND=''
+    _gp_test_run 'gh issue create -t t --body inline') )"
+  if [[ "$(_hook_verdict "${gp_env_out}")" == DENY ]]; then
+    _pass "DENY (standalone): an exported HOOK_PRE_DISPATCH=1 does not skip the hook"
+  else
+    _fail "an exported HOOK_PRE_DISPATCH=1 made the standalone hook skip"
+  fi
+
+  # Empty, malformed and non-Bash payloads fail open (stdin and jq path).
+  local gp_payload gp_label
+  local -a gp_payloads=('' 'not json' '{}' '{"tool_name":"Read","tool_input":{"command":"gh issue create --body x"}}')
+  local -a gp_labels=('empty payload' 'unparseable payload' 'payload with no tool' 'non-Bash tool')
+  local -i gp_i
+  for (( gp_i=1; gp_i<=${#gp_payloads}; gp_i++ )); do
+    gp_payload="${gp_payloads[gp_i]}"
+    gp_label="${gp_labels[gp_i]}"
+    gp_env_out="$(printf '%s' "${gp_payload}" \
+      | HOME="${_gp_dir}/home" GH_PUBLISH_PATTERNS="${_gp_dir}/patterns" \
+        GH_PUBLISH_SSH_CONFIG="${_gp_dir}/sshcfg" GH_PUBLISH_NO_GITLEAKS=1 \
+        GH_PUBLISH_NO_IDENTITY=1 GH_CONFIG_DIR="${_gp_dir}/gh" \
+        /bin/zsh "${SCRIPT_DIR}/claude/hooks/gh-publish-hook")"
+    if [[ -z "${gp_env_out}" ]]; then
+      _pass "fail-open (standalone): ${gp_label} allowed through"
+    else
+      _fail "fail-open: ${gp_label} produced a verdict"
+    fi
+  done
+
+  # Under the seam the deny text is plain lines after DENY<US>, no JSON.
+  _gp_test_seam 'gh issue create -t t --body inline'
+  if [[ "${HOOK_SEAM_VERDICT}" == DENY && "${HOOK_SEAM_OUT}" == $'DENY\x1f'* && "${HOOK_SEAM_OUT}" != *'{'* ]]; then
+    _pass "seam: a denied command prints DENY<US>reason and no JSON"
+  else
+    _fail "seam: expected DENY<US>reason, got: ${HOOK_SEAM_OUT:0:120}"
+  fi
 
   /bin/rm -rf "${_gp_dir}"
   trap - EXIT

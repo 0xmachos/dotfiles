@@ -10,10 +10,17 @@
 # (script, expect, unbuffer, socat, ssh -t to loopback) around git. The quoted
 # string of eval, sh -c and env -S is re-scanned one level deep.
 #
-# Feeds commands as stdin JSON and asserts the verdict. Every DENY must carry a
-# one-line reason of at most 120 characters; every PASS must print nothing (a
-# stray hook line would corrupt a later verdict). Guards both directions: a
-# tweak denying `git log -n 5` or missing `git commit -an` fails here.
+# Asserts the verdict for each command. Every DENY must carry a one-line reason
+# of at most 120 characters. Every PASS must print nothing (a stray hook line
+# would corrupt a later verdict). Guards both directions: a tweak denying
+# `git log -n 5` or missing `git commit -an` fails here.
+# Since 2026-10-24 the verdict cases run the guard through the pretool-dispatch
+# seam (_hook_run_seam in tests/lib: sourced in a subshell, HOOK_PRE_* set,
+# DENY<US>reason), the path live sessions use, at about 5 ms a case instead of
+# about 50 ms and 6 execs. These cases still run the hook standalone
+# (`/bin/zsh <hook> <<< <json>`): a few DENY, PASS and reason cases for the
+# stdin, jq and JSON-object path, the ZDOTDIR startup-environment cases, and
+# the two fail-open payload cases (empty and malformed JSON).
 #
 # Run: ./test git-bypass    (or ./test for the full suite)
 #
@@ -22,39 +29,70 @@
 #
 # shellcheck source=tests/lib
 
+# Standalone run: the hook as its own process, JSON on stdin. Echoes stdout.
 function _hbg_test_run {
   _json_str "$1"
   /bin/zsh "${SCRIPT_DIR}/claude/hooks/git-bypass-hook" \
     <<< "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":${REPLY}}}"
 }
 
+# Seam run: the guard sourced the dispatcher's way. The verdict lands in
+# HOOK_SEAM_VERDICT and the reason in HOOK_SEAM_REASON.
 function _hbg_test_expect {
+  local want="$1" cmd="$2" label="${3:-$2}"
+  _hook_run_seam "${SCRIPT_DIR}/claude/hooks/git-bypass-hook" Bash "${cmd}"
+  if [[ "${HOOK_SEAM_VERDICT}" == DENY ]]; then
+    if [[ "${HOOK_SEAM_REASON}" == *$'\n'* || ${#HOOK_SEAM_REASON} -gt 120 || -z "${HOOK_SEAM_REASON}" ]]; then
+      _fail "${label} — deny reason is not one line of at most 120 characters: ${HOOK_SEAM_REASON}"
+      return
+    fi
+  fi
+  if [[ "${HOOK_SEAM_VERDICT}" == "${want}" ]]; then
+    _pass "${want}: ${label}"
+  else
+    _fail "${label} — expected ${want}, got ${HOOK_SEAM_VERDICT}: ${HOOK_SEAM_OUT:0:200}"
+  fi
+}
+
+# Standalone verdict check, kept for a few cases per verdict.
+function _hbg_test_expect_standalone {
   local want="$1" cmd="$2" label="${3:-$2}" out got reason
   out="$(_hbg_test_run "${cmd}")"
   got="$(_hook_verdict "${out}")"
   if [[ "${got}" == DENY ]]; then
     reason="$(jq -r '.hookSpecificOutput.permissionDecisionReason // empty' <<< "${out}")"
     if [[ "${reason}" == *$'\n'* || ${#reason} -gt 120 || -z "${reason}" ]]; then
-      _fail "${label} — deny reason is not one line of at most 120 characters: ${reason}"
+      _fail "standalone ${label} — deny reason is not one line of at most 120 characters: ${reason}"
       return
     fi
   fi
   if [[ "${got}" == "${want}" ]]; then
-    _pass "${want}: ${label}"
+    _pass "${want} (standalone): ${label}"
   else
-    _fail "${label} — expected ${want}, got ${got}: ${out:0:200}"
+    _fail "standalone ${label} — expected ${want}, got ${got}: ${out:0:200}"
   fi
 }
 
-# Assert the exact deny reason for a command.
+# Assert the exact deny reason for a command (seam).
 function _hbg_test_reason {
+  local want="$1" cmd="$2" label="${3:-$2}"
+  _hook_run_seam "${SCRIPT_DIR}/claude/hooks/git-bypass-hook" Bash "${cmd}"
+  if [[ "${HOOK_SEAM_REASON}" == "${want}" ]]; then
+    _pass "reason: ${label}"
+  else
+    _fail "${label} — expected reason '${want}', got '${HOOK_SEAM_REASON}'"
+  fi
+}
+
+# Standalone reason check, kept for one case: the JSON deny object path.
+function _hbg_test_reason_standalone {
   local want="$1" cmd="$2" label="${3:-$2}" out reason
   out="$(_hbg_test_run "${cmd}")"
   reason="$(jq -r '.hookSpecificOutput.permissionDecisionReason // empty' <<< "${out}" 2>/dev/null)"
   if [[ "${reason}" == "${want}" ]]; then
-    _pass "reason: ${label}"
+    _pass "reason (standalone): ${label}"
   else
-    _fail "${label} — expected reason '${want}', got '${reason}'"
+    _fail "standalone ${label} — expected reason '${want}', got '${reason}'"
   fi
 }
 
@@ -74,8 +112,8 @@ function run_git_bypass {
   fi
 
   # --- --no-verify / -n on commit ------------------------------------------
-  _hbg_test_expect DENY 'git commit -m "x" --no-verify' 'commit --no-verify'
-  _hbg_test_expect DENY 'git commit -n' 'bare commit -n'
+  _hbg_test_expect_standalone DENY 'git commit -m "x" --no-verify' 'commit --no-verify'
+  _hbg_test_expect_standalone DENY 'git commit -n' 'bare commit -n'
   _hbg_test_expect DENY 'git commit -n -m x' 'commit -n before -m'
   _hbg_test_expect DENY 'git commit -an' 'commit -an cluster (n second)'
   _hbg_test_expect DENY 'git commit -na' 'commit -na cluster (n first)'
@@ -85,10 +123,10 @@ function run_git_bypass {
   # -m/-F/-C/-c consume a value, attached or in the next token; never misread
   # it as a flag.
   # shellcheck disable=SC2016
-  _hbg_test_expect PASS 'git commit -m "no --no-verify"' 'quoted value mentioning --no-verify stays one token'
+  _hbg_test_expect_standalone PASS 'git commit -m "no --no-verify"' 'quoted value mentioning --no-verify stays one token'
   _hbg_test_expect PASS 'git commit -mnope' 'attached -m value containing n'
   _hbg_test_expect PASS 'git commit -amn' 'cluster -amn — m consumes the trailing n as its value'
-  _hbg_test_expect PASS 'git commit -ac HEAD~1' 'cluster -ac — next token is -c value, never scanned'
+  _hbg_test_expect_standalone PASS 'git commit -ac HEAD~1' 'cluster -ac — next token is -c value, never scanned'
   _hbg_test_expect PASS 'git commit -a' 'commit -a alone, no n or m'
   _hbg_test_expect PASS 'git commit -c HEAD' 'bare -c with a value token, no crash at end of argv'
   _hbg_test_expect PASS 'git commit --amend' 'commit --amend alone'
@@ -107,7 +145,7 @@ function run_git_bypass {
   _hbg_test_expect PASS 'git rebase -n' 'rebase -n, not commit -n'
   _hbg_test_expect PASS 'git cherry-pick -n' 'cherry-pick -n is --no-commit, not commit -n'
   _hbg_test_expect PASS 'git log -n 5' 'log -n 5 — log is never checked for --no-verify at all'
-  _hbg_test_expect PASS 'git push origin main' 'ordinary push'
+  _hbg_test_expect_standalone PASS 'git push origin main' 'ordinary push'
   _hbg_test_expect PASS 'git status' 'unrelated subcommand'
 
   # --- hooks.* / core.hooksPath config writes -------------------------------
@@ -666,7 +704,7 @@ function run_git_bypass {
   fi
 
   # --- deny reason text -------------------------------------------------------
-  _hbg_test_reason 'git commit --no-verify: give the user the exact command to run.' \
+  _hbg_test_reason_standalone 'git commit --no-verify: give the user the exact command to run.' \
     'git commit --no-verify' 'commit --no-verify'
   _hbg_test_reason 'git commit -n (--no-verify): give the user the exact command to run.' \
     'git commit -an' 'commit -n cluster'

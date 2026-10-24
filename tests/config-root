@@ -16,6 +16,17 @@
 # function level (a repeated untyped `local NAME` in one zsh scope prints
 # NAME=value to stdout and corrupts the deny JSON).
 #
+# Since 2026-10-24 the verdict cases run the guard through the pretool-dispatch
+# seam (_hook_run_seam in tests/lib: sourced in a subshell with HOOK_PRE_* set,
+# DENY<US>reason on stdout), the path live sessions use, at about 5 ms a case
+# instead of about 50 ms and 6 execs. The seam merges file_path and
+# notebook_path into HOOK_PRE_PATH, so one standalone case per tool and per
+# input key keeps the JSON path honest. These stay standalone (the hook as its
+# own process, JSON on stdin): the JSON shape of the deny (event name, reason,
+# exit status 0), malformed and empty payloads, a non-string or missing cwd,
+# HOME values read from the environment, the oversized stdin payload, the
+# jq-missing copy, the ZDOTDIR startup-file cases, and the source checks.
+#
 # Run: ./test config-root    (or ./test for the full suite)
 #
 # ShellCheck: lint with `shellcheck --shell=bash tests/config-root`.
@@ -49,6 +60,7 @@ function _cr_run_path {
 }
 
 function _cr_check {
+  # Standalone verdict check on the hook's stdout $2.
   local want="$1" out="$2" label="$3" got
   got="$(_hook_verdict "${out}")"
   if [[ "${got}" == "${want}" ]]; then
@@ -58,22 +70,58 @@ function _cr_check {
   fi
 }
 
+function _cr_check_seam {
+  # Check HOOK_SEAM_VERDICT against $1. $2 = label.
+  local want="$1" label="$2"
+  if [[ "${HOOK_SEAM_VERDICT}" == "${want}" ]]; then
+    _pass "${want}: ${label}"
+  else
+    _fail "${label} - expected ${want}, got ${HOOK_SEAM_VERDICT} (${HOOK_SEAM_OUT:0:120})"
+  fi
+}
+
+function _cr_seam {
+  # Seam run of the hook $5 (default the real one) for tool $1, command $2,
+  # path $3, working directory $4 (default /work; empty stays empty). HOME is
+  # the fake CR_HOME.
+  _hook_run_seam HOME="${CR_HOME}" -- "${5:-${SCRIPT_DIR}/${CR_HOOK_REL}}" "$1" "$2" "$3" '' "${4-/work}"
+}
+
 function _cr_expect {
   # $1 = DENY or PASS, $2 = command, $3 = label (default the command).
-  _cr_run "$2"
-  _cr_check "$1" "${CR_OUT}" "${3:-$2}"
+  _cr_seam Bash "$2" ''
+  _cr_check_seam "$1" "${3:-$2}"
 }
 
 function _cr_expect_in {
   # $1 = DENY or PASS, $2 = working directory, $3 = command.
-  _cr_run "$3" "$2"
-  _cr_check "$1" "${CR_OUT}" "$3 (cwd ${2:-<empty>})"
+  _cr_seam Bash "$3" '' "$2"
+  _cr_check_seam "$1" "$3 (cwd ${2:-<empty>})"
 }
 
 function _cr_expect_path {
+  # $1 = DENY or PASS, $2 = tool, $3 = input key (the seam merges the keys),
+  # $4 = path, $5 = directory.
+  _cr_seam "$2" '' "$4" "${5-/work}"
+  _cr_check_seam "$1" "$2 $4${5:+ (cwd $5)}"
+}
+
+function _cr_expect_standalone {
+  # $1 = DENY or PASS, $2 = command, $3 = label (default the command).
+  _cr_run "$2"
+  _cr_check "$1" "${CR_OUT}" "(standalone) ${3:-$2}"
+}
+
+function _cr_expect_in_standalone {
+  # $1 = DENY or PASS, $2 = working directory, $3 = command.
+  _cr_run "$3" "$2"
+  _cr_check "$1" "${CR_OUT}" "(standalone) $3 (cwd ${2:-<empty>})"
+}
+
+function _cr_expect_path_standalone {
   # $1 = DENY or PASS, $2 = tool, $3 = input key, $4 = path, $5 = directory.
   _cr_run_path "$2" "$3" "$4" "${5-/work}"
-  _cr_check "$1" "${CR_OUT}" "$2 $4${5:+ (cwd $5)}"
+  _cr_check "$1" "${CR_OUT}" "(standalone) $2 $3 $4${5:+ (cwd $5)}"
 }
 
 function _cr_copy_hook {
@@ -206,6 +254,20 @@ function run_config_root {
     _cr_expect_path PASS Write file_path "${p}"
   done
 
+  # The process path keeps one case per tool, input key and verdict: the
+  # seam merges file_path and notebook_path, only the JSON path tells them apart.
+  _cr_expect_path_standalone DENY Write file_path /Users/tester/.claude/settings.json
+  _cr_expect_path_standalone DENY Write file_path '~/.codex/rules/default.rules'
+  _cr_expect_path_standalone DENY Edit file_path /Users/tester/.config/muse/settings.json
+  _cr_expect_path_standalone DENY NotebookEdit notebook_path /Users/tester/.claude/n.ipynb
+  _cr_expect_path_standalone DENY NotebookEdit notebook_path '$HOME/.codex/n.ipynb'
+  _cr_expect_path_standalone DENY Write file_path .claude/x /Users/tester
+  _cr_expect_path_standalone PASS Write file_path /Users/tester/.claude/projects/p/s.jsonl
+  _cr_expect_path_standalone PASS Edit file_path /Users/tester/.codex/config.toml
+  _cr_expect_path_standalone PASS NotebookEdit notebook_path /Users/tester/.claude/dev-mods/s/n.ipynb
+  _cr_expect_path_standalone PASS Write file_path /Users/tester/dotfiles/claude/settings.json
+  _cr_expect_path_standalone PASS Write file_path settings.json ''
+
   # --- Bash: write redirects ----------------------------------------------
   for h in '~' '$HOME' '${HOME}' /Users/tester '"$HOME"' '"${HOME}"' '"~"'; do
     _cr_expect DENY "echo hi > ${h}/.claude/x"
@@ -245,6 +307,11 @@ EOF'
   _cr_expect PASS 'echo hi > ~/.claude.json'
   _cr_expect PASS 'echo hi > ~/.claude/projects/../projects/p/x'
   _cr_expect DENY 'echo hi > ~/.claude/projects/../x'
+  _cr_expect_standalone DENY 'echo hi > ~/.claude/x'
+  _cr_expect_standalone DENY 'cat > ~/.claude/CLAUDE.md <<EOF
+body
+EOF' 'heredoc redirect'
+  _cr_expect_standalone PASS 'echo hi > ~/.claude/projects/p/m.md'
 
   # --- Bash: command write positions --------------------------------------
   _cr_expect DENY 'echo hi | tee ~/.claude/x'
@@ -348,6 +415,9 @@ EOF'
   _cr_expect PASS 'find /work -name x -delete'
   _cr_expect PASS 'find ~/.claude/projects/p -name x -delete'
   _cr_expect DENY 'mktemp ~/.claude/x.XXXX'
+  _cr_expect_standalone DENY 'cp a ~/.claude/x'
+  _cr_expect_standalone DENY 'rm -rf ~/.claude/projects' 'the allowed directory itself is a mass delete'
+  _cr_expect_standalone PASS 'cp ~/.claude/settings.json /work/' 'cp reads the source'
 
   # --- Reads pass ------------------------------------------------------------
   _cr_expect PASS 'cat ~/.claude/settings.json'
@@ -373,6 +443,8 @@ EOF' 'heredoc to a file outside'
   _cr_expect PASS './bittersweet dotfiles'
   _cr_expect PASS 'ls /Users/other/.claude'
   _cr_expect PASS 'rm /Users/other/.claude/x'
+  _cr_expect_standalone PASS 'cat ~/.claude/settings.json'
+  _cr_expect_standalone PASS $'git commit -m "$(cat <<\'EOF\'\nCopy to ~/.claude/x\nrm ~/.claude/y\nEOF\n)"' 'heredoc body is data'
 
   # --- Working directory tracking ------------------------------------------
   _cr_expect DENY 'cd ~/.claude && rm settings.json'
@@ -426,6 +498,11 @@ EOF' 'heredoc to a file outside'
   _cr_expect_in PASS /work 'rm x'
   _cr_expect_in PASS '' 'rm x'
   _cr_expect_in PASS /Users/tester/.claude 'ls'
+  _cr_expect_in_standalone DENY /Users/tester/.claude 'rm x'
+  _cr_expect_in_standalone PASS /Users/tester/.claude 'cd .. && rm x'
+  _cr_expect_in_standalone PASS '' 'rm x'
+  _cr_expect_standalone DENY 'cd ~/.claude && rm settings.json'
+  _cr_expect_standalone PASS 'cd ~/.claude; cd /work; touch x' 'an absolute cd leaves the root'
 
   # --- Nested commands ------------------------------------------------------
   _cr_expect DENY 'sh -c "echo hi > ~/.claude/x"'
@@ -460,22 +537,39 @@ EOF' 'heredoc to a file outside'
   _cr_expect DENY 'cp /tmp/a ~/.claude/b'
   _cr_expect DENY 'GREP=1 /bin/rm -f ~/.claude/x' 'absolute command path'
   _cr_expect DENY 'RM -f ~/.claude/x' 'upper-case command word'
+  _cr_expect_standalone DENY 'sh -c "echo hi > ~/.claude/x"'
+  _cr_expect_standalone DENY $'echo a\nrm ~/.claude/b' 'second line'
 
   # --- Verdict shape --------------------------------------------------------
+  # The reason cases read HOOK_SEAM_REASON (the dispatcher's DENY line). The
+  # JSON shape (event name, jq-decoded reason) and the exit status need the
+  # hook's own stdout, so those stay standalone.
   local reason rc want_reason
   want_reason='live agent config blocked: edit the dotfiles copy (claude/, .codex/, .config/muse/), then ./bittersweet dotfiles.'
-  _cr_run 'echo hi > ~/.claude/x'
-  reason="$(jq -r '.hookSpecificOutput.permissionDecisionReason' <<< "${CR_OUT}")"
-  if [[ "${reason}" == "${want_reason}" ]]; then
+  _cr_seam Bash 'echo hi > ~/.claude/x' ''
+  reason="${HOOK_SEAM_REASON}"
+  if [[ "${HOOK_SEAM_VERDICT}" == DENY && "${reason}" == "${want_reason}" ]]; then
     _pass "deny reason is the one-line message"
   else
     _fail "deny reason unexpected: ${reason}"
   fi
-  _cr_run_path Write file_path "${CR_HOME}/.claude/x"
-  if [[ "$(jq -r '.hookSpecificOutput.permissionDecisionReason' <<< "${CR_OUT}")" == "${want_reason}" ]]; then
+  _cr_seam Write '' "${CR_HOME}/.claude/x"
+  if [[ "${HOOK_SEAM_VERDICT}" == DENY && "${HOOK_SEAM_REASON}" == "${want_reason}" ]]; then
     _pass "a path-tool deny carries the same message"
   else
-    _fail "a path-tool deny carries another message: ${CR_OUT}"
+    _fail "a path-tool deny carries another message: ${HOOK_SEAM_OUT}"
+  fi
+  _cr_run 'echo hi > ~/.claude/x'
+  if [[ "$(jq -r '.hookSpecificOutput.permissionDecisionReason' <<< "${CR_OUT}")" == "${want_reason}" ]]; then
+    _pass "standalone deny JSON carries the same reason"
+  else
+    _fail "standalone deny JSON carries another reason: ${CR_OUT}"
+  fi
+  _cr_run_path Write file_path "${CR_HOME}/.claude/x"
+  if [[ "$(jq -r '.hookSpecificOutput.permissionDecisionReason' <<< "${CR_OUT}")" == "${want_reason}" ]]; then
+    _pass "standalone path-tool deny JSON carries the same reason"
+  else
+    _fail "standalone path-tool deny JSON carries another reason: ${CR_OUT}"
   fi
   if [[ "$(jq -r '.hookSpecificOutput.hookEventName' <<< "${CR_OUT}")" == PreToolUse ]]; then
     _pass "deny names the PreToolUse event"
@@ -545,8 +639,12 @@ EOF' 'heredoc to a file outside'
   # --- HOME that is not an absolute path fails open ------------------------
   local bad_home
   for bad_home in '' 'relative/home' '/'; do
+    _hook_run_seam HOME="${bad_home}" -- "${SCRIPT_DIR}/${CR_HOOK_REL}" Bash 'rm ~/.claude/x' '' '' /work
+    _cr_check_seam PASS "HOME='${bad_home}' fails open (seam)"
     _cr_check PASS "$(printf '%s' '{"tool_name":"Bash","tool_input":{"command":"rm ~/.claude/x"},"cwd":"/work"}' | HOME="${bad_home}" /bin/zsh "$(_cr_hook)" 2>/dev/null)" "HOME='${bad_home}' fails open"
   done
+  _hook_run_seam HOME=/Users/tester/// -- "${SCRIPT_DIR}/${CR_HOOK_REL}" Bash 'rm ~/.claude/x' '' '' /work
+  _cr_check_seam DENY 'a HOME with trailing slashes still resolves (seam)'
   _cr_check DENY "$(printf '%s' '{"tool_name":"Bash","tool_input":{"command":"rm ~/.claude/x"},"cwd":"/work"}' | HOME=/Users/tester/// /bin/zsh "$(_cr_hook)" 2>/dev/null)" 'a HOME with trailing slashes still resolves'
 
   # --- Size and budget limits fail open --------------------------------------
@@ -559,9 +657,17 @@ EOF' 'heredoc to a file outside'
   printf '%s\n' "echo ${pad} > ~/.claude/b" > "${fixture_dir}/okline"
   _cr_check DENY "$(jq -Rs '{tool_name:"Bash", tool_input:{command:.}, cwd:"/work"}' < "${fixture_dir}/okline" | HOME="${CR_HOME}" /bin/zsh "$(_cr_hook)")" '15KB line is still scanned'
   /bin/rm -rf "${fixture_dir}"
+  # The same two bodies through the seam variable, with no file and no jq.
+  pad="$(printf 'x%.0s' {1..120000})"
+  _cr_seam Bash "echo ${pad}"$'\n'"cp a ~/.claude/b" ''
+  _cr_check_seam PASS 'command over the size cap (fail-open, seam)'
+  pad="$(printf 'x%.0s' {1..15000})"
+  _cr_seam Bash "echo ${pad} > ~/.claude/b" ''
+  _cr_check_seam DENY '15KB line is still scanned (seam)'
 
   # --- Mutations: a hook copy with one literal changed must go the other way --
-  # Each copy proves the case it guards is not green by accident.
+  # Each copy proves the case it guards is not green by accident. The jq copy
+  # stays standalone (it needs the hook's own jq path), the other two use the seam.
   local copy_dir copy_out
   local -i copy_rc
   copy_dir="$(mktemp -d "${TMPDIR:-/tmp}/config-root-copy.XXXXXX")"
@@ -576,12 +682,12 @@ EOF' 'heredoc to a file outside'
     fi
   fi
   if _cr_copy_hook "${copy_dir}" '"${h}/.codex/sessions"' '"${h}/.codex/sessions-x"'; then
-    copy_out="$(printf '%s' '{"tool_name":"Write","tool_input":{"file_path":"/Users/tester/.codex/sessions/x"},"cwd":"/work"}' | HOME="${CR_HOME}" /bin/zsh "${copy_dir}/hook" 2>/dev/null)" || true
-    _cr_check DENY "${copy_out}" 'mutation: dropping an allowed prefix turns its pass into a deny'
+    _cr_seam Write '' /Users/tester/.codex/sessions/x /work "${copy_dir}/hook"
+    _cr_check_seam DENY 'mutation: dropping an allowed prefix turns its pass into a deny'
   fi
   if _cr_copy_hook "${copy_dir}" '"${h}/.codex" "${h}/.config/muse"' '"${h}/.codex-x" "${h}/.config/muse"'; then
-    copy_out="$(printf '%s' '{"tool_name":"Write","tool_input":{"file_path":"/Users/tester/.codex/rules/x"},"cwd":"/work"}' | HOME="${CR_HOME}" /bin/zsh "${copy_dir}/hook" 2>/dev/null)" || true
-    _cr_check PASS "${copy_out}" 'mutation: dropping a root turns its deny into a pass'
+    _cr_seam Write '' /Users/tester/.codex/rules/x /work "${copy_dir}/hook"
+    _cr_check_seam PASS 'mutation: dropping a root turns its deny into a pass'
   fi
   /bin/rm -rf "${copy_dir}"
 

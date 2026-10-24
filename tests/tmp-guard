@@ -4,7 +4,7 @@
 # Behavioural test for claude/hooks/tmp-guard-hook, the PreToolUse hook that denies
 # writes into /tmp, /private/tmp, /var/tmp, /private/var/tmp, /var/folders and
 # /private/var/folders and points at ~/Library/Caches/tint/<repo>-<job>/.
-# Feeds tool calls as stdin JSON and asserts the verdict:
+# Asserts the verdict for tool calls:
 #   DENY: Write/Edit/NotebookEdit targets and Bash write positions under a root
 #   PASS: reads, devices, lookalike and variable-based paths, text mentions,
 #         heredoc data, multi-line commit/PR message bodies
@@ -12,6 +12,20 @@
 # Every loop in the hook is driven more than once, and the hook source is
 # checked for a `local` below function level (a repeated untyped `local NAME`
 # in one zsh scope prints NAME=value to stdout and corrupts the deny JSON).
+#
+# Since 2026-10-24 the verdict cases run the guard through the pretool-dispatch
+# seam (_hook_run_seam in tests/lib: sourced in a subshell, HOOK_PRE_* set,
+# DENY<US>reason), the path live sessions use, at about 5 ms a case instead of
+# about 50 ms and 6 execs. These cases stay standalone (the hook as its own
+# process, JSON on stdin), because the point is the process path:
+#   - a few DENY and PASS cases per tool (Bash, Write, Edit, NotebookEdit),
+#     including one file_path and one notebook_path case (the dispatcher merges
+#     both keys into HOOK_PRE_PATH, so the key exists only on this path)
+#   - the JSON deny shape, the exit status and the fail-open payloads
+#   - the oversize command fed by stdin, the jq-missing hook copy and the
+#     ZDOTDIR startup-file cases
+#   - the zsh-built payload decode check, which covers only the payloads built
+#     for these standalone cases
 #
 # Run: ./test tmp-guard    (or ./test for the full suite)
 #
@@ -101,21 +115,55 @@ function _tmp_guard_check {
   fi
 }
 
+# Seam check: the verdict of the last _hook_run_seam call against $1.
+function _tmp_guard_seam_check {
+  local want="$1" label="$2"
+  if [[ "${HOOK_SEAM_VERDICT}" == "${want}" ]]; then
+    _pass "${want}: ${label}"
+  else
+    _fail "${label} - expected ${want}, got ${HOOK_SEAM_VERDICT} (${HOOK_SEAM_OUT:0:120})"
+  fi
+}
+
+# Seam run of Bash command $2. The verdict lands in HOOK_SEAM_VERDICT.
 function _tmp_guard_expect {
   local want="$1" cmd="$2" label="${3:-$2}"
-  _tmp_guard_run "${cmd}"
-  _tmp_guard_check "${want}" "${TG_OUT}" "${label}"
+  _hook_run_seam "${SCRIPT_DIR}/claude/hooks/tmp-guard-hook" Bash "${cmd}"
+  _tmp_guard_seam_check "${want}" "${label}"
 }
 
+# Seam run of a path tool. The input key ($3) is not used: the dispatcher
+# merges file_path and notebook_path into HOOK_PRE_PATH.
 function _tmp_guard_expect_path {
+  local want="$1" tool="$2" target="$4"
+  _hook_run_seam "${SCRIPT_DIR}/claude/hooks/tmp-guard-hook" "${tool}" '' "${target}"
+  _tmp_guard_seam_check "${want}" "${tool} ${target}"
+}
+
+# Seam run of the command held in file $2, passed through the variable.
+function _tmp_guard_expect_file {
+  local want="$1" file="$2" label="$3" cmd
+  cmd="$(<"${file}")"
+  _hook_run_seam "${SCRIPT_DIR}/claude/hooks/tmp-guard-hook" Bash "${cmd}"
+  _tmp_guard_seam_check "${want}" "${label}"
+}
+
+# Standalone checks, kept for the process path: JSON on stdin, jq verdict.
+function _tmp_guard_expect_standalone {
+  local want="$1" cmd="$2" label="${3:-$2}"
+  _tmp_guard_run "${cmd}"
+  _tmp_guard_check "${want}" "${TG_OUT}" "standalone ${label}"
+}
+
+function _tmp_guard_expect_path_standalone {
   local want="$1" tool="$2" key="$3" target="$4"
   _tmp_guard_run_path "${tool}" "${key}" "${target}"
-  _tmp_guard_check "${want}" "${TG_OUT}" "${tool} ${target}"
+  _tmp_guard_check "${want}" "${TG_OUT}" "standalone ${tool} ${key} ${target}"
 }
 
-function _tmp_guard_expect_file {
+function _tmp_guard_expect_file_standalone {
   local want="$1" file="$2" label="$3"
-  _tmp_guard_check "${want}" "$(_tmp_guard_run_file "${file}")" "${label}"
+  _tmp_guard_check "${want}" "$(_tmp_guard_run_file "${file}")" "standalone ${label}"
 }
 
 function run_tmp_guard {
@@ -137,6 +185,24 @@ function run_tmp_guard {
 
   local hd fixture_dir pad
   local -i n
+
+  # --- Standalone process path: JSON on stdin, the hook's own jq ------------
+  # The same verdicts as the seam cases below, through the path a bare
+  # `/bin/zsh <hook> <<< <json>` takes. One file_path and one notebook_path
+  # case per verdict, since the seam has only HOOK_PRE_PATH.
+  _tmp_guard_expect_path_standalone DENY Write file_path /tmp/x
+  _tmp_guard_expect_path_standalone DENY Edit file_path /var/folders/ab/cd_ef/T/x
+  _tmp_guard_expect_path_standalone DENY NotebookEdit notebook_path /tmp/n.ipynb
+  _tmp_guard_expect_path_standalone PASS Write file_path /Users/x/tmp/y
+  _tmp_guard_expect_path_standalone PASS NotebookEdit notebook_path /Users/x/n.ipynb
+  _tmp_guard_expect_standalone DENY 'echo hi > /tmp/x'
+  _tmp_guard_expect_standalone DENY 'cp a /tmp/b'
+  _tmp_guard_expect_standalone DENY $'cd /tmp\necho hi > out' 'cd and write on different lines'
+  _tmp_guard_expect_standalone DENY "bash -c 'cp a /tmp/b'" 'bash -c string is scanned'
+  _tmp_guard_expect_standalone PASS 'cat /tmp/x'
+  _tmp_guard_expect_standalone PASS 'ls'
+  hd=$'git commit -m "$(cat <<\'EOF\'\nsubject\n\ncp a /tmp/b\nEOF\n)"'
+  _tmp_guard_expect_standalone PASS "${hd}" 'commit message body that names a write'
 
   # --- Write / Edit / NotebookEdit: lexical path check ---------------------
   _tmp_guard_expect_path DENY Write file_path /tmp/x
@@ -798,7 +864,8 @@ function run_tmp_guard {
   fi
 
   # --- Verdict shape --------------------------------------------------------
-  local reason rc root length
+  local reason rc root length out
+  # The JSON deny object, as the hook prints it standalone.
   _tmp_guard_run 'echo hi > /tmp/x'
   reason="$(jq -r '.hookSpecificOutput.permissionDecisionReason' <<< "${TG_OUT}")"
   if [[ "${reason}" == 'write to /tmp blocked: use ~/Library/Caches/tint/<repo>-<job>/ instead.' ]]; then
@@ -811,14 +878,22 @@ function run_tmp_guard {
   else
     _fail "deny does not name the PreToolUse event"
   fi
+  # The same reason through the seam (the DENY<US>reason line).
+  _hook_run_seam "${SCRIPT_DIR}/claude/hooks/tmp-guard-hook" Bash 'echo hi > /tmp/x'
+  reason="${HOOK_SEAM_REASON}"
+  if [[ "${HOOK_SEAM_VERDICT}" == DENY && "${reason}" == 'write to /tmp blocked: use ~/Library/Caches/tint/<repo>-<job>/ instead.' ]]; then
+    _pass "seam deny reason is the one-line message"
+  else
+    _fail "seam deny reason unexpected: ${HOOK_SEAM_VERDICT} ${reason}"
+  fi
   for root in /tmp /private/tmp /var/tmp /private/var/tmp /var/folders /private/var/folders; do
-    _tmp_guard_run_path Write file_path "${root}/x"
-    reason="$(jq -r '.hookSpecificOutput.permissionDecisionReason' <<< "${TG_OUT}")"
+    _hook_run_seam "${SCRIPT_DIR}/claude/hooks/tmp-guard-hook" Write '' "${root}/x"
+    reason="${HOOK_SEAM_REASON}"
     length=${#reason}
-    if [[ "${reason}" == "write to ${root} blocked: "* ]] && (( length <= 120 )); then
+    if [[ "${HOOK_SEAM_VERDICT}" == DENY && "${reason}" == "write to ${root} blocked: "* ]] && (( length <= 120 )); then
       _pass "reason names ${root} (${length} chars)"
     else
-      _fail "reason for ${root} wrong or over 120 chars: ${reason}"
+      _fail "reason for ${root} wrong or over 120 chars: ${HOOK_SEAM_VERDICT} ${reason}"
     fi
   done
   if [[ "${reason}" == *$'\n'* ]]; then
@@ -848,6 +923,12 @@ function run_tmp_guard {
     _fail "exit status ${rc} on pass"
   fi
 
+  # An exported HOOK_PRE_DISPATCH must not make a standalone hook skip its
+  # payload: ZSH_EVAL_CONTEXT lacks :file when the hook is exec'd.
+  out="$(printf '%s' '{"tool_name":"Bash","tool_input":{"command":"echo hi > /tmp/x"}}' \
+    | HOOK_PRE_DISPATCH=1 /bin/zsh "${SCRIPT_DIR}/claude/hooks/tmp-guard-hook" 2>/dev/null || true)"
+  _tmp_guard_check DENY "${out}" 'exported HOOK_PRE_DISPATCH does not skip a standalone hook'
+
   # --- Malformed payloads fail open, never block ---------------------------
   local payload
   for payload in '{}' 'not json' '' '[]' 'null' '{"tool_input":null}' \
@@ -869,6 +950,8 @@ function run_tmp_guard {
   pad="$(printf 'x%.0s' {1..15000})"
   printf '%s\n' "echo ${pad} > /tmp/b" > "${fixture_dir}/okline"
   _tmp_guard_expect_file DENY "${fixture_dir}/okline" '15KB line is still scanned'
+  _tmp_guard_expect_file_standalone PASS "${fixture_dir}/huge" 'command over the size cap (fail-open)'
+  _tmp_guard_expect_file_standalone DENY "${fixture_dir}/okline" '15KB line is still scanned'
   /bin/rm -rf "${fixture_dir}"
 
   # --- jq absent fails open ------------------------------------------------

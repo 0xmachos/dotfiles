@@ -9,7 +9,12 @@
 # strings and shell heredocs), PASS for bare python3, uv pip, uv venv,
 # anything under `uv run`, lookalikes (pipefail, .venv, `echo pip install`)
 # and the one sanctioned CLT use, bin/agent-reset. The hook has no override.
-# Also drives the hook through the pretool-dispatch seam (DENY<US>reason).
+# Since 2026-10-24 the verdict cases run the guard through the pretool-dispatch
+# seam (_hook_run_seam in tests/lib: sourced in a subshell, HOOK_PRE_* set,
+# DENY<US>reason), the path live sessions use, at about 5 ms a case instead
+# of about 50 ms and 6 execs. A few cases still run the hook standalone
+# (`/bin/zsh <hook> <<< <json>`) for the stdin, jq and fail-open path and
+# for the exported-variable case.
 #
 # Run: ./test uv-guard    (or ./test for the full suite)
 #
@@ -18,19 +23,33 @@
 #
 # shellcheck source=tests/lib
 
+# Standalone run: the hook as its own process, JSON on stdin. Echoes stdout.
 function _uv_guard_run {
   jq -n --arg c "$1" '{tool_name:"Bash", tool_input:{command:$c}}' \
     | /bin/zsh "${SCRIPT_DIR}/claude/hooks/uv-guard-hook"
 }
 
+# Seam run: the guard sourced the dispatcher's way; the verdict lands in
+# HOOK_SEAM_VERDICT and the reason in HOOK_SEAM_REASON.
 function _uv_guard_expect {
+  local want="$1" cmd="$2" label="${3:-$2}"
+  _hook_run_seam "${SCRIPT_DIR}/claude/hooks/uv-guard-hook" Bash "${cmd}"
+  if [[ "${HOOK_SEAM_VERDICT}" == "${want}" ]]; then
+    _pass "${want}: ${label}"
+  else
+    _fail "${label} - expected ${want}, got ${HOOK_SEAM_VERDICT} (${HOOK_SEAM_OUT:0:120})"
+  fi
+}
+
+# Standalone verdict check, kept for a few cases per verdict.
+function _uv_guard_expect_standalone {
   local want="$1" cmd="$2" label="${3:-$2}" out got
   out="$(_uv_guard_run "${cmd}")"
   got="$(_hook_verdict "${out}")"
   if [[ "${got}" == "${want}" ]]; then
-    _pass "${want}: ${label}"
+    _pass "${want} (standalone): ${label}"
   else
-    _fail "${label} - expected ${want}, got ${got}"
+    _fail "standalone ${label} - expected ${want}, got ${got}"
   fi
 }
 
@@ -197,20 +216,20 @@ function run_uv_guard {
     _fail "deny reason mentions a bypass"
   fi
 
-  # Under the pretool-dispatch seam the guard prints DENY<US>reason, no JSON.
-  local seam us=$'\x1f'
-  seam="$(/bin/zsh -c 'HOOK_PRE_DISPATCH=1; HOOK_PRE_COMMAND="python3 -m venv x"; source "$1"' _ "${SCRIPT_DIR}/claude/hooks/uv-guard-hook" </dev/null)"
-  if [[ "${seam}" == "DENY${us}pip, venv, conda"* ]]; then
-    _pass "seam: a denied command prints DENY<US>reason"
+  # Under the seam the deny reason is the text after DENY<US>, no JSON.
+  _hook_run_seam "${SCRIPT_DIR}/claude/hooks/uv-guard-hook" Bash 'python3 -m venv x'
+  if [[ "${HOOK_SEAM_VERDICT}" == DENY && "${HOOK_SEAM_REASON}" == 'pip, venv, conda'* && "${HOOK_SEAM_OUT}" != *'{'* ]]; then
+    _pass "seam: a denied command prints DENY<US>reason and no JSON"
   else
-    _fail "seam: expected DENY<US>reason, got: ${seam}"
+    _fail "seam: expected DENY<US>reason, got: ${HOOK_SEAM_OUT}"
   fi
-  seam="$(/bin/zsh -c 'HOOK_PRE_DISPATCH=1; HOOK_PRE_COMMAND="uv run pytest"; source "$1"' _ "${SCRIPT_DIR}/claude/hooks/uv-guard-hook" </dev/null)"
-  if [[ -z "${seam}" ]]; then
-    _pass "seam: an allowed command prints nothing"
-  else
-    _fail "seam: allowed command printed: ${seam}"
-  fi
+
+  # The standalone process path: one DENY, one PASS, the same verdicts as the
+  # seam, through stdin JSON, the hook's own jq and the deny object.
+  _uv_guard_expect_standalone DENY 'pip install requests'
+  _uv_guard_expect_standalone DENY 'python3 -m venv .venv'
+  _uv_guard_expect_standalone PASS 'uv run pip install x' 'pip inside uv run'
+  _uv_guard_expect_standalone PASS 'python3 script.py'
 
   # Malformed and empty payloads fail open, never block.
   if [[ -z "$(printf '%s' '{}' | /bin/zsh "${SCRIPT_DIR}/claude/hooks/uv-guard-hook")" ]]; then

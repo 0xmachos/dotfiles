@@ -11,6 +11,21 @@
 #   - PASS: compliant canonical shapes; commands mentioning muse/exec only as
 #     data (grep/cat args, --help, other subcommands)
 #
+# Since 2026-10-24 the verdict cases run the guard through the pretool-dispatch
+# seam (_hook_run_seam in tests/lib: sourced in a subshell, HOOK_PRE_* set,
+# DENY<US>reason), the path live sessions use, at about 5 ms a case instead
+# of about 50 ms and 6 execs. The deny reasons are read from HOOK_SEAM_REASON.
+# These cases stay standalone (`/bin/zsh <hook> <<< <json>`, via
+# _muse_exec_expect_standalone) because they test the process path:
+#   - a few PASS and DENY cases per verdict, which prove the stdin, jq and JSON
+#     decode path, including a backslash-continued and a heredoc payload
+#   - the deny stays valid JSON when a heredoc holds several substitutions
+#   - the exported MUSE_EXEC_GUARD_SKIP=1 environment case: a standalone hook
+#     must not skip (ZSH_EVAL_CONTEXT lacks :file when exec'd)
+#   - the fail-open payload cases (no command, unparseable JSON)
+# The two _muse_exec_seam cases at the end keep their own driver: they prove
+# that the sourced hook reads HOOK_PRE_COMMAND and ignores stdin.
+#
 # Run: ./test muse-exec
 # ShellCheck: lint with `shellcheck --shell=bash tests/muse-exec`.
 # This file is sourced, not executed — chmod 644.
@@ -30,13 +45,26 @@ function _muse_exec_run {
 }
 
 function _muse_exec_expect {
+  # Seam run: the guard sourced the dispatcher's way. The verdict lands in
+  # HOOK_SEAM_VERDICT and the deny reason in HOOK_SEAM_REASON.
+  local want="$1" cmd="$2" label="${3:-$2}"
+  _hook_run_seam "${SCRIPT_DIR}/claude/hooks/muse-exec-hook" Bash "${cmd}"
+  if [[ "${HOOK_SEAM_VERDICT}" == "${want}" ]]; then
+    _pass "${want}: ${label}"
+  else
+    _fail "${label} — expected ${want}, got ${HOOK_SEAM_VERDICT} (${HOOK_SEAM_OUT:0:120})"
+  fi
+}
+
+function _muse_exec_expect_standalone {
+  # Standalone verdict check, kept for a few cases per verdict.
   local want="$1" cmd="$2" label="${3:-$2}" out got
   out="$(_muse_exec_run "${cmd}")"
   got="$(_hook_verdict "${out}")"
   if [[ "${got}" == "${want}" ]]; then
-    _pass "${want}: ${label}"
+    _pass "${want} (standalone): ${label}"
   else
-    _fail "${label} — expected ${want}, got ${got}"
+    _fail "standalone ${label} — expected ${want}, got ${got}"
   fi
 }
 
@@ -76,6 +104,7 @@ function run_muse_exec {
   _muse_exec_expect PASS "sed -n '/muse exec/p' notes.txt" 'muse exec mentioned inside a sed pattern'
   _muse_exec_expect PASS 'echo "run muse exec later"' 'muse exec mentioned inside an echo argument'
   _muse_exec_expect PASS 'muse skills list' 'a different muse subcommand'
+  _muse_exec_expect_standalone PASS 'muse skills list' 'a different muse subcommand'
   _muse_exec_expect PASS 'muse' 'bare interactive launch, no subcommand at all'
   _muse_exec_expect PASS 'muse "fix the tests"' 'interactive launch with an opening prompt'
 
@@ -96,6 +125,7 @@ function run_muse_exec {
   # --- Rule 2: timeout wrapper must be >= 120s, or absent entirely --------
 
   _muse_exec_expect DENY 'timeout 90 muse exec --workspace "$PWD" < /dev/null' 'timeout under 120s'
+  _muse_exec_expect_standalone DENY 'timeout 90 muse exec --workspace "$PWD" < /dev/null' 'timeout under 120s'
   _muse_exec_expect DENY 'timeout 90s muse exec --workspace "$PWD" < /dev/null' 'timeout 90s explicit suffix'
   _muse_exec_expect PASS 'timeout 2m muse exec --workspace "$PWD" < /dev/null' 'timeout 2m == 120s, allowed'
   _muse_exec_expect PASS 'timeout 120 muse exec --workspace "$PWD" < /dev/null' 'timeout exactly 120s'
@@ -107,6 +137,7 @@ function run_muse_exec {
   # --- Rule 3: stdin must be closed ----------------------------------------
 
   _muse_exec_expect DENY 'timeout 1800 muse exec --workspace "$PWD"' 'stdin left open'
+  _muse_exec_expect_standalone DENY 'timeout 1800 muse exec --workspace "$PWD"' 'stdin left open'
   _muse_exec_expect PASS 'timeout 1800 muse exec --workspace "$PWD" </dev/null' 'no space before /dev/null'
 
   # --- Rule 4: forbidden flags ---------------------------------------------
@@ -129,6 +160,8 @@ function run_muse_exec {
   # different segment than its command word and is wrongly denied. The first
   # case is the canonical form the deny reason recommends.
   _muse_exec_expect PASS $'timeout 1800 muse exec \\\n  --prompt-file prompt.md \\\n  --workspace "$PWD" \\\n  < /dev/null > out.txt 2> err.txt &' \
+    'canonical form written across backslash-continued lines'
+  _muse_exec_expect_standalone PASS $'timeout 1800 muse exec \\\n  --prompt-file prompt.md \\\n  --workspace "$PWD" \\\n  < /dev/null > out.txt 2> err.txt &' \
     'canonical form written across backslash-continued lines'
   _muse_exec_expect PASS 'timeout 1800 muse exec --prompt-file prompt.md --workspace "$PWD" --reasoning-effort high < /dev/null > out.txt 2> err.txt &' \
     'the exact one-line form the deny reason recommends, backgrounded'
@@ -181,6 +214,9 @@ function run_muse_exec {
   _muse_exec_expect PASS \
     $'cat <<EOF\ntimeout 90 muse exec --workspace "$PWD"\nEOF' \
     'heredoc body (cat consumer, unquoted delimiter) is data'
+  _muse_exec_expect_standalone PASS \
+    $'cat <<EOF\ntimeout 90 muse exec --workspace "$PWD"\nEOF' \
+    'heredoc body (cat consumer, unquoted delimiter) is data'
 
   _muse_exec_expect PASS \
     $'cat <<-EOF\n\ttimeout 90 muse exec --workspace "$PWD"\n\tEOF' \
@@ -188,6 +224,9 @@ function run_muse_exec {
 
   # A heredoc fed to an actual shell executes its body: scanned, denied.
   _muse_exec_expect DENY \
+    $'sh <<EOF\ntimeout 90 muse exec --workspace "$PWD"\nEOF' \
+    'heredoc body (sh consumer, unquoted delimiter) still scanned as commands'
+  _muse_exec_expect_standalone DENY \
     $'sh <<EOF\ntimeout 90 muse exec --workspace "$PWD"\nEOF' \
     'heredoc body (sh consumer, unquoted delimiter) still scanned as commands'
 
@@ -440,11 +479,21 @@ function run_muse_exec {
   _muse_exec_expect DENY \
     $'cat <<EOF\n$(date)\n$(timeout 60 muse exec hi)\nEOF' \
     'cat <<EOF with two substitution lines — the deny stays valid JSON'
+  _muse_exec_expect_standalone DENY \
+    $'cat <<EOF\n$(date)\n$(timeout 60 muse exec hi)\nEOF' \
+    'cat <<EOF with two substitution lines — the deny stays valid JSON'
 
   # --- Combined: every rule at once, one deny naming all of them ----------
 
   local reason
-  reason="$(_muse_exec_run 'timeout 90 muse-bin-2 exec --sandbox --workspace "$PWD"')"
+  _hook_run_seam "${SCRIPT_DIR}/claude/hooks/muse-exec-hook" Bash \
+    'timeout 90 muse-bin-2 exec --sandbox --workspace "$PWD"'
+  reason="${HOOK_SEAM_REASON}"
+  if [[ "${HOOK_SEAM_VERDICT}" == DENY ]]; then
+    _pass "combined deny: the seam verdict is DENY"
+  else
+    _fail "combined deny: expected DENY, got ${HOOK_SEAM_VERDICT}"
+  fi
   if [[ "${reason}" == *"120 seconds"* ]]; then
     _pass "combined deny names the timeout violation"
   else
@@ -475,8 +524,16 @@ function run_muse_exec {
 
   _muse_exec_expect DENY 'MUSE_EXEC_GUARD_SKIP=1 timeout 90 muse exec --sandbox --workspace "$PWD"' \
     'MUSE_EXEC_GUARD_SKIP=1 in the command text no longer overrides'
-  MUSE_EXEC_GUARD_SKIP=1 _muse_exec_expect DENY 'timeout 90 muse exec --sandbox --workspace "$PWD"' \
+  # Exported variable: standalone (the process env case) and on the seam.
+  MUSE_EXEC_GUARD_SKIP=1 _muse_exec_expect_standalone DENY 'timeout 90 muse exec --sandbox --workspace "$PWD"' \
     'an exported MUSE_EXEC_GUARD_SKIP=1 no longer overrides'
+  _hook_run_seam MUSE_EXEC_GUARD_SKIP=1 -- "${SCRIPT_DIR}/claude/hooks/muse-exec-hook" Bash \
+    'timeout 90 muse exec --sandbox --workspace "$PWD"'
+  if [[ "${HOOK_SEAM_VERDICT}" == DENY ]]; then
+    _pass "DENY: an exported MUSE_EXEC_GUARD_SKIP=1 no longer overrides (seam)"
+  else
+    _fail "an exported MUSE_EXEC_GUARD_SKIP=1 overrides on the seam, got ${HOOK_SEAM_VERDICT}"
+  fi
   _muse_exec_expect DENY 'echo MUSE_EXEC_GUARD_SKIP=1; muse exec --workspace "$PWD"' \
     'the token anywhere in the text no longer overrides'
 

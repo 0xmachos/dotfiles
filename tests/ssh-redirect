@@ -15,6 +15,17 @@
 # hosta-herdr an app alias beside hosta-claude (DENY); hostb-herdr with no
 # hostb-claude (PASS).
 #
+# Since 2026-10-24 the verdict cases run the guard through the pretool-dispatch
+# seam (_hook_run_seam in tests/lib: sourced in a subshell, HOOK_PRE_* set,
+# DENY<US>reason), the path live sessions use, at about 5 ms a case instead of
+# about 50 ms and 6 execs. SSH_REDIRECT_CONFIG and HOME go in as leading
+# NAME=value words. A stray stderr line or a `name=value` stdout leak reads
+# INVALID, as the merged output did on the standalone path. These cases stay
+# standalone (the hook as a process, JSON on stdin): a few DENY and PASS
+# verdicts, the one-line JSON deny shape, the exported SSH_REDIRECT_SKIP and
+# HOOK_PRE_DISPATCH cases (a standalone hook must not skip), the malformed and
+# empty payload cases, and the 60 s deadline Include cases.
+#
 # Run: ./test ssh-redirect
 # ShellCheck: lint with `shellcheck --shell=bash tests/ssh-redirect`.
 # This file is sourced, not executed — chmod 644.
@@ -26,6 +37,9 @@ typeset -g SSHR_T_CONFIG=''
 
 # Hook output of the last _ssh_redirect_hook/_ssh_redirect_run call.
 typeset -g SSHR_T_OUT=''
+
+# Verdict of the last _ssh_redirect_seam call.
+typeset -g SSHR_T_VERDICT=''
 
 function _ssh_redirect_hook {
   # Set SSHR_T_OUT to the hook's stdout+stderr for command $3 under
@@ -54,16 +68,43 @@ function _ssh_redirect_verdict {
   fi
 }
 
+function _ssh_redirect_seam {
+  # Seam run of command $3 under SSH_REDIRECT_CONFIG=$1 and HOME=$2. Sets
+  # HOOK_SEAM_* and SSHR_T_VERDICT: the seam verdict, forced to INVALID when
+  # the guard wrote to stderr (the standalone path merged stderr into stdout).
+  _hook_run_seam SSH_REDIRECT_CONFIG="$1" HOME="$2" -- \
+    "${SCRIPT_DIR}/claude/hooks/ssh-redirect-hook" Bash "$3"
+  SSHR_T_VERDICT="${HOOK_SEAM_VERDICT}"
+  if [[ -n "${HOOK_SEAM_ERR}" ]]; then SSHR_T_VERDICT=INVALID; fi
+}
+
+function _ssh_redirect_seam_verdict {
+  # Assert SSHR_T_VERDICT is $1; $2 is the case label.
+  local want="$1" label="$2"
+  if [[ "${SSHR_T_VERDICT}" == "${want}" ]]; then
+    _pass "${want}: ${label}"
+  else
+    _fail "${label} — expected ${want}, got ${SSHR_T_VERDICT} (${HOOK_SEAM_OUT:0:120}${HOOK_SEAM_ERR:0:120})"
+  fi
+}
+
 function _ssh_redirect_expect {
+  # Seam verdict of command $2 against the fixture config; $1 is the want.
+  _ssh_redirect_seam "${SSHR_T_CONFIG}" "${SSHR_T_HOME}" "$2"
+  _ssh_redirect_seam_verdict "$1" "${3:-$2}"
+}
+
+function _ssh_redirect_expect_standalone {
+  # As _ssh_redirect_expect with the hook as its own process, JSON on stdin.
   _ssh_redirect_run "$2"
-  _ssh_redirect_verdict "$1" "${3:-$2}"
+  _ssh_redirect_verdict "$1" "(standalone) ${3:-$2}"
 }
 
 function _ssh_redirect_expect_env {
   # As _ssh_redirect_expect with an explicit SSH_REDIRECT_CONFIG/HOME pair
   # ($1, $2), for the config-derivation edge cases (missing/empty config).
-  _ssh_redirect_hook "$1" "$2" "$4"
-  _ssh_redirect_verdict "$3" "${5:-$4}"
+  _ssh_redirect_seam "$1" "$2" "$4"
+  _ssh_redirect_seam_verdict "$3" "${5:-$4}"
 }
 
 function _ssh_redirect_expect_bounded {
@@ -126,6 +167,13 @@ function run_ssh_redirect {
   _ssh_redirect_expect DENY 'ssh -o ProxyJump=hosta hostb-claude' '-o ProxyJump= form'
   _ssh_redirect_expect DENY 'ssh -oProxyJump=hosta hostb-claude' 'attached -o form'
   _ssh_redirect_expect PASS 'ssh -J hosta-claude hostb-claude' 'both hops already -claude'
+
+  # Process path: a few verdicts with the hook run as its own process.
+  _ssh_redirect_expect_standalone DENY 'ssh hosta'
+  _ssh_redirect_expect_standalone DENY 'scp file.txt hosta:/tmp/'
+  _ssh_redirect_expect_standalone PASS 'ssh hostb'
+  _ssh_redirect_expect_standalone PASS 'ssh hosta-claude'
+  _ssh_redirect_expect_standalone PASS 'echo hello' 'no ssh word at all'
 
   # Include-derived hosts (hostc glob, hosth tilde), not in the primary config.
   _ssh_redirect_expect DENY 'ssh hostc'
@@ -354,18 +402,61 @@ function run_ssh_redirect {
   else
     _fail "SSH_REDIRECT_SKIP=1 changed the verdict to ${skip_got} — a bypass exists"
   fi
+  # A standalone hook must not take the dispatcher path: with HOOK_PRE_DISPATCH
+  # exported, ZSH_EVAL_CONTEXT lacks :file, so it still reads stdin and denies
+  # in JSON.
+  HOOK_PRE_DISPATCH=1 _ssh_redirect_hook "${SSHR_T_CONFIG}" "${SSHR_T_HOME}" 'ssh hosta'
+  skip_got="$(_hook_verdict "${SSHR_T_OUT}")"
+  if [[ "${skip_got}" == DENY ]]; then
+    _pass "no bypass: an exported HOOK_PRE_DISPATCH=1 does not make a standalone hook skip"
+  else
+    _fail "exported HOOK_PRE_DISPATCH=1 changed the standalone verdict to ${skip_got}"
+  fi
+
+  # Payload shape: malformed JSON, an empty payload and a missing command fail
+  # open with no output.
+  local shape_out
+  shape_out="$(print -r -- '{not json' | SSH_REDIRECT_CONFIG="${SSHR_T_CONFIG}" HOME="${SSHR_T_HOME}" \
+    /bin/zsh "${SCRIPT_DIR}/claude/hooks/ssh-redirect-hook" 2>&1)" || shape_out="rc=$?"
+  if [[ -z "${shape_out}" ]]; then
+    _pass "PASS: malformed JSON payload fails open (standalone)"
+  else
+    _fail "malformed JSON payload gave output: ${shape_out}"
+  fi
+  shape_out="$(print -rn -- '' | SSH_REDIRECT_CONFIG="${SSHR_T_CONFIG}" HOME="${SSHR_T_HOME}" \
+    /bin/zsh "${SCRIPT_DIR}/claude/hooks/ssh-redirect-hook" 2>&1)" || shape_out="rc=$?"
+  if [[ -z "${shape_out}" ]]; then
+    _pass "PASS: empty payload fails open (standalone)"
+  else
+    _fail "empty payload gave output: ${shape_out}"
+  fi
+  shape_out="$(print -r -- '{"tool_name":"Bash","tool_input":{}}' | SSH_REDIRECT_CONFIG="${SSHR_T_CONFIG}" HOME="${SSHR_T_HOME}" \
+    /bin/zsh "${SCRIPT_DIR}/claude/hooks/ssh-redirect-hook" 2>&1)" || shape_out="rc=$?"
+  if [[ -z "${shape_out}" ]]; then
+    _pass "PASS: payload with no command fails open (standalone)"
+  else
+    _fail "payload with no command gave output: ${shape_out}"
+  fi
 
   # Privacy: the deny reason names only the Host pattern, nothing else in
   # its stanza.
-  _ssh_redirect_run 'ssh hosta'
-  if [[ "${SSHR_T_OUT}" == *'192.0.2.10'* || "${SSHR_T_OUT}" == *'rootfixture'* \
-        || "${SSHR_T_OUT}" == *'id_fixture_hosta'* ]]; then
+  _ssh_redirect_seam "${SSHR_T_CONFIG}" "${SSHR_T_HOME}" 'ssh hosta'
+  if [[ "${HOOK_SEAM_OUT}${HOOK_SEAM_ERR}" == *'192.0.2.10'* || "${HOOK_SEAM_OUT}${HOOK_SEAM_ERR}" == *'rootfixture'* \
+        || "${HOOK_SEAM_OUT}${HOOK_SEAM_ERR}" == *'id_fixture_hosta'* ]]; then
     _fail "deny reason for hosta leaks HostName/User/IdentityFile detail"
   else
     _pass "deny reason for hosta names no HostName/User/IdentityFile detail"
   fi
 
   # Deny text: exactly one line, "<X> is the user's SSH alias: use <X>-claude instead."
+  # The seam reason is the bare text. The standalone run keeps the JSON shape.
+  if [[ "${HOOK_SEAM_VERDICT}" == DENY && "${HOOK_SEAM_REASON}" == "hosta is the user's SSH alias: use hosta-claude instead." \
+        && "${HOOK_SEAM_REASON}" != *$'\n'* ]]; then
+    _pass "seam deny reason is the one-line alias pointer"
+  else
+    _fail "seam deny reason unexpected: ${HOOK_SEAM_VERDICT} ${HOOK_SEAM_REASON}"
+  fi
+  _ssh_redirect_run 'ssh hosta'
   local one_want
   one_want="$(jq -cn --arg r "hosta is the user's SSH alias: use hosta-claude instead." \
     '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}')"
@@ -374,17 +465,17 @@ function run_ssh_redirect {
   else
     _fail "deny text unexpected: ${SSHR_T_OUT}"
   fi
-  _ssh_redirect_run 'ssh tail-hosta'
-  if [[ "$(jq -r .hookSpecificOutput.permissionDecisionReason <<< "${SSHR_T_OUT}")" == "tail-hosta is the user's SSH alias: use hosta-claude instead." ]]; then
+  _ssh_redirect_seam "${SSHR_T_CONFIG}" "${SSHR_T_HOME}" 'ssh tail-hosta'
+  if [[ "${HOOK_SEAM_REASON}" == "tail-hosta is the user's SSH alias: use hosta-claude instead." ]]; then
     _pass "deny text for a tail- alias names the matched name and its twin"
   else
-    _fail "tail- alias deny text unexpected: ${SSHR_T_OUT}"
+    _fail "tail- alias deny text unexpected: ${HOOK_SEAM_OUT}${HOOK_SEAM_ERR}"
   fi
-  _ssh_redirect_run 'ssh hosta-herdr'
-  if [[ "$(jq -r .hookSpecificOutput.permissionDecisionReason <<< "${SSHR_T_OUT}")" == "hosta-herdr is Herdr.app's SSH alias: use hosta-claude instead." ]]; then
+  _ssh_redirect_seam "${SSHR_T_CONFIG}" "${SSHR_T_HOME}" 'ssh hosta-herdr'
+  if [[ "${HOOK_SEAM_REASON}" == "hosta-herdr is Herdr.app's SSH alias: use hosta-claude instead." ]]; then
     _pass "deny text for a -herdr alias names Herdr.app and the -claude twin"
   else
-    _fail "-herdr alias deny text unexpected: ${SSHR_T_OUT}"
+    _fail "-herdr alias deny text unexpected: ${HOOK_SEAM_OUT}${HOOK_SEAM_ERR}"
   fi
 
   # Loop-twice regressions: many segments, substitutions and option letters
@@ -402,8 +493,8 @@ function run_ssh_redirect {
               'tail-hostc:hostc-claude' 'hostd:hostd-claude' 'hoste:hoste-claude' \
               'hostf:hostf-claude' 'hosth:hosth-claude' 'hosta-herdr:hosta-claude'; do
     twin="${pair#*:}"
-    _ssh_redirect_run "ssh ${pair%%:*}"
-    if [[ "${SSHR_T_OUT}" == *"use ${twin} instead."* ]]; then
+    _ssh_redirect_seam "${SSHR_T_CONFIG}" "${SSHR_T_HOME}" "ssh ${pair%%:*}"
+    if [[ "${HOOK_SEAM_REASON}" == *"use ${twin} instead."* ]]; then
       _pass "deny reason names ${twin} for ${pair%%:*}"
     else
       _fail "deny reason for ${pair%%:*} does not name ${twin}"

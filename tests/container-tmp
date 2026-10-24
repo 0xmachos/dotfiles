@@ -4,9 +4,17 @@
 # Behavioural test for claude/hooks/container-tmp-hook — the PreToolUse hook that
 # denies Apple `container` builds/mounts rooted in tmp paths (home-scoped file
 # sharing silently shares them as empty).
-# Feeds commands plus a cwd as stdin JSON; asserts DENY for tmp-rooted build
-# contexts/cwds and -v/--mount sources, PASS for $HOME paths, guest paths,
-# docker commands and lookalikes.
+# Feeds commands plus a cwd; asserts DENY for tmp-rooted build contexts/cwds
+# and -v/--mount sources, PASS for $HOME paths, guest paths, docker commands
+# and lookalikes.
+# Since 2026-10-24 the verdict cases run the guard through the pretool-dispatch
+# seam (_hook_run_seam in tests/lib: sourced in a subshell, HOOK_PRE_* set,
+# DENY<US>reason), the path live sessions use, at about 5 ms a case instead
+# of about 50 ms and 6 execs. These cases stay standalone (`/bin/zsh <hook>`
+# with JSON on stdin): a few DENY and PASS verdicts for the process path, the
+# deny-reason text as the JSON carries it, the malformed-JSON and empty-payload
+# fail-open path, the exported HOOK_PRE_DISPATCH=1 case (a standalone hook must
+# not skip) and the case where stdin differs from HOOK_PRE_COMMAND.
 #
 # Run: ./test container-tmp
 # ShellCheck: lint with `shellcheck --shell=bash tests/container-tmp`.
@@ -14,6 +22,7 @@
 #
 # shellcheck source=tests/lib
 
+# Standalone run: the hook as its own process, JSON on stdin. Echoes stdout.
 function _container_tmp_run {
   # $1 = command, $2 = cwd (default $HOME).
   jq -n --arg c "$1" --arg d "${2:-${HOME}}" \
@@ -21,14 +30,27 @@ function _container_tmp_run {
     | /bin/zsh "${SCRIPT_DIR}/claude/hooks/container-tmp-hook"
 }
 
+# Seam run: the guard sourced the dispatcher's way; the verdict lands in
+# HOOK_SEAM_VERDICT and the reason in HOOK_SEAM_REASON.
 function _container_tmp_expect {
+  local want="$1" cmd="$2" cwd="${3:-}" label="${4:-$2}"
+  _hook_run_seam "${SCRIPT_DIR}/claude/hooks/container-tmp-hook" Bash "${cmd}" '' '' "${cwd}"
+  if [[ "${HOOK_SEAM_VERDICT}" == "${want}" ]]; then
+    _pass "${want}: ${label}"
+  else
+    _fail "${label} — expected ${want}, got ${HOOK_SEAM_VERDICT} (${HOOK_SEAM_OUT:0:120})"
+  fi
+}
+
+# Standalone verdict check, kept for a few cases per verdict.
+function _container_tmp_expect_standalone {
   local want="$1" cmd="$2" cwd="${3:-}" label="${4:-$2}" out got
   out="$(_container_tmp_run "${cmd}" "${cwd}")"
   got="$(_hook_verdict "${out}")"
   if [[ "${got}" == "${want}" ]]; then
-    _pass "${want}: ${label}"
+    _pass "${want} (standalone): ${label}"
   else
-    _fail "${label} — expected ${want}, got ${got}"
+    _fail "standalone ${label} — expected ${want}, got ${got}"
   fi
 }
 
@@ -155,30 +177,80 @@ function run_container_tmp {
     'sh -c nested to depth 4 (declared gap)'
 
   # The deny reason names the fix (move under $HOME).
-  if [[ "$(_container_tmp_run 'container build /tmp/ctx')" == *HOME* ]]; then
+  _hook_run_seam "${SCRIPT_DIR}/claude/hooks/container-tmp-hook" Bash 'container build /tmp/ctx'
+  if [[ "${HOOK_SEAM_VERDICT}" == DENY && "${HOOK_SEAM_REASON}" == *HOME* ]]; then
     _pass "deny reason names \$HOME fix"
   else
-    _fail "deny reason does not mention \$HOME"
+    _fail "deny reason does not mention \$HOME (${HOOK_SEAM_VERDICT}: ${HOOK_SEAM_OUT:0:120})"
   fi
 
   # Dispatcher seam: the command and cwd come from HOOK_PRE_COMMAND and
-  # HOOK_PRE_CWD (stdin carries a different payload and is not read), and a
-  # deny is the bare line DENY<US>reason, not JSON.
+  # HOOK_PRE_CWD, and a deny is the bare line DENY<US>reason, not JSON.
   local us=$'\x1f' benign deny_payload seam
-  benign="$(jq -n '{tool_name:"Bash", tool_input:{command:"container ls"}, cwd:"/work"}')"
-  deny_payload="$(jq -n '{tool_name:"Bash", tool_input:{command:"container build /tmp/ctx"}, cwd:"/work"}')"
-  seam="$(_container_tmp_seam 'container build -t x /tmp/ctx' /work "${benign}")"
-  if [[ "${seam}" == "DENY${us}"*'is under a tmp dir'* && "${seam}" != *hookSpecificOutput* ]]; then
+  _hook_run_seam "${SCRIPT_DIR}/claude/hooks/container-tmp-hook" Bash \
+    'container build -t x /tmp/ctx' '' '' /work
+  if [[ "${HOOK_SEAM_VERDICT}" == DENY && "${HOOK_SEAM_OUT}" == "DENY${us}"*'is under a tmp dir'* \
+        && "${HOOK_SEAM_OUT}" != *hookSpecificOutput* ]]; then
     _pass "dispatcher seam: tmp build context prints a DENY line from HOOK_PRE_COMMAND"
   else
-    _fail "dispatcher seam: expected a DENY line, got: ${seam:0:200}"
+    _fail "dispatcher seam: expected a DENY line, got: ${HOOK_SEAM_OUT:0:200}"
   fi
-  seam="$(_container_tmp_seam 'container build -t x .' /private/tmp/s "${benign}")"
-  if [[ "${seam}" == "DENY${us}"*'is under a tmp dir'* ]]; then
+  _hook_run_seam "${SCRIPT_DIR}/claude/hooks/container-tmp-hook" Bash \
+    'container build -t x .' '' '' /private/tmp/s
+  if [[ "${HOOK_SEAM_VERDICT}" == DENY && "${HOOK_SEAM_OUT}" == "DENY${us}"*'is under a tmp dir'* ]]; then
     _pass "dispatcher seam: implicit context resolves against HOOK_PRE_CWD"
   else
-    _fail "dispatcher seam: tmp cwd was not denied, got: ${seam:0:200}"
+    _fail "dispatcher seam: tmp cwd was not denied, got: ${HOOK_SEAM_OUT:0:200}"
   fi
+
+  # Process path, kept standalone: the verdict through stdin JSON and jq.
+  _container_tmp_expect_standalone DENY 'container build -t x /tmp/ctx'
+  _container_tmp_expect_standalone DENY 'container build -t x .' /private/tmp/claude-501/s \
+    'container build . (cwd in scratchpad)'
+  _container_tmp_expect_standalone DENY 'container run -v /tmp/data:/data img'
+  _container_tmp_expect_standalone DENY 'sudo bash -c "container run -v /tmp/d:/d img"'
+  _container_tmp_expect_standalone PASS 'container build -t x .' "${HOME}/Dev/x" \
+    "container build . (cwd under \$HOME)"
+  _container_tmp_expect_standalone PASS 'container ls -a'
+  _container_tmp_expect_standalone PASS 'docker run -v /tmp/x:/x img'
+  _container_tmp_expect_standalone PASS 'echo container build /tmp/x'
+
+  # The deny reason as the JSON carries it.
+  if [[ "$(_container_tmp_run 'container build /tmp/ctx')" == *HOME* ]]; then
+    _pass "deny reason names \$HOME fix (standalone JSON)"
+  else
+    _fail "deny reason does not mention \$HOME (standalone JSON)"
+  fi
+
+  # Malformed JSON and an empty payload fail open without a deny.
+  seam="$(/bin/zsh "${SCRIPT_DIR}/claude/hooks/container-tmp-hook" <<< '{not json' 2>/dev/null)" || :
+  if [[ "$(_hook_verdict "${seam}")" != DENY ]]; then
+    _pass "standalone: malformed JSON fails open"
+  else
+    _fail "standalone: malformed JSON was denied: ${seam:0:200}"
+  fi
+  seam="$(/bin/zsh "${SCRIPT_DIR}/claude/hooks/container-tmp-hook" <<< '' 2>/dev/null)" || :
+  if [[ -z "${seam}" ]]; then
+    _pass "standalone: empty payload passes silently"
+  else
+    _fail "standalone: empty payload printed: ${seam:0:200}"
+  fi
+
+  # An exported HOOK_PRE_DISPATCH=1 must not skip the standalone hook: it has
+  # no ":file" in ZSH_EVAL_CONTEXT, so the stdin payload still decides.
+  benign="$(jq -n '{tool_name:"Bash", tool_input:{command:"container build /tmp/ctx"}, cwd:"/work"}')"
+  seam="$(HOOK_PRE_DISPATCH=1 HOOK_PRE_COMMAND='container ls' /bin/zsh \
+    "${SCRIPT_DIR}/claude/hooks/container-tmp-hook" <<< "${benign}")" || :
+  if [[ "$(_hook_verdict "${seam}")" == DENY ]]; then
+    _pass "standalone: exported HOOK_PRE_DISPATCH=1 is no override"
+  else
+    _fail "standalone: exported HOOK_PRE_DISPATCH=1 skipped the hook: ${seam:0:200}"
+  fi
+
+  # Stdin is not read under the seam: a deny payload on stdin, a clean
+  # HOOK_PRE_COMMAND, and the guard stays silent.
+  deny_payload="${benign}"
+  benign="$(jq -n '{tool_name:"Bash", tool_input:{command:"container ls"}, cwd:"/work"}')"
   seam="$(_container_tmp_seam 'container ls' /work "${deny_payload}")"
   if [[ -z "${seam}" ]]; then
     _pass "dispatcher seam: a clean HOOK_PRE_COMMAND passes and stdin is ignored"
