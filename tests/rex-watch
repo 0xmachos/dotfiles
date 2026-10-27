@@ -1,0 +1,651 @@
+#!/bin/zsh
+# dotfiles/tests/rex-watch
+#
+# Behavioural test for bin/rex-watch, the watchdog for the local Rex server.
+# Every run uses a fake HOME under the suite sandbox and stub binaries (rex, ps,
+# open, osascript, logger, launchctl) that record their calls, so nothing touches
+# the real Rex server, Rex Beta.app, notifications or $HOME. The fake rex sits at
+# the real relative path under the fake HOME (the path holds spaces).
+#
+# Scenarios are set through the RW_* globals read by the stubs; REX_WATCH_NOW
+# moves the script's clock for cooldown cases. REX_WATCH_UNDER_TEST points the
+# suite at another copy of the script (used to prove the suite goes red when a
+# behaviour is broken).
+#
+# Run: ./test rex-watch    (or ./test for the full suite)
+#
+# ShellCheck: lint with `shellcheck --shell=bash tests/rex-watch`.
+# This file is sourced, not executed - chmod 644.
+#
+# shellcheck source=tests/lib
+
+typeset -g RW_T_BOX='' RW_T_STUBS='' RW_T_SCRIPT='' RW_T_HOME='' RW_T_CALLS='' RW_T_OUT='' RW_T_APP=''
+typeset -gi RW_T_RC=0 RW_T_SEQ=0 RW_T_BASE=0 RW_T_ELAPSED_MS=0
+
+# Scenario knobs, read by the stubs (see _rw_t_reset for the defaults).
+typeset -g RW_REX_MODE='' RW_REX_VERSION='' RW_CLI_VERSION='' RW_SERVER_JOB=''
+typeset -g RW_PS_APP='' RW_PS_APP_ARGS='' RW_PS_SERVERPROC='' RW_PS_FAIL=''
+typeset -g RW_OSA_FAIL='' RW_T_DEADLINE=''
+
+readonly RW_T_REX_REL='Library/Application Support/com.superlogical.rex/RexServer/Versions/Current/Rex Server.app/Contents/MacOS/rex'
+
+function _rw_t_make_stubs {
+  local d="${RW_T_STUBS}"
+  /bin/mkdir -p "${d}"
+
+  # The fake rex: `server status --json` answers by mode, `version` prints the
+  # CLI version. A `server start` would be recorded like any other call.
+  cat > "${d}/rex" <<'MOCK'
+#!/bin/zsh
+print -r -- "rex $*" >> "${RW_CALLS}"
+if [[ "$1" == version ]]; then
+  print -r -- "rex ${RW_CLI_VERSION}"
+  print -r -- "commit: 0000000000000000000000000000000000000000"
+  exit 0
+fi
+case "${RW_REX_MODE}" in
+  ok)
+    print -r -- '{'
+    print -r -- '  "endpoint": "unix:///tmp/server.sock",'
+    print -r -- '  "pid": 4483,'
+    print -r -- "  \"rex_version\": \"${RW_REX_VERSION}\","
+    print -r -- '  "session_count": 3,'
+    print -r -- '  "you": {"kind": "peer", "pid": 99999}'
+    print -r -- '}' ;;
+  dead) print -r -- 'no server is running' >&2; exit 1 ;;
+  garbage) print -r -- 'not json at all' ;;
+  empty) print -r -- '{"session_count": 2}' ;;
+  hang) exec /bin/sleep 30 ;;
+esac
+MOCK
+
+  cat > "${d}/ps" <<'MOCK'
+#!/bin/zsh
+print -r -- "ps $*" >> "${RW_CALLS}"
+[[ -n "${RW_PS_FAIL}" ]] && exit 1
+print -r -- '  101 /usr/sbin/cfprefsd agent'
+print -r -- ' 4242 ssh -T -o BatchMode=yes host rex server status'
+[[ -n "${RW_PS_SERVERPROC}" ]] && print -r -- " 4483 ${RW_REX_BIN} server run --listen unix:///tmp/server.sock"
+[[ -n "${RW_PS_APP}" ]] && print -r -- "4399 ${RW_APP_BIN}"
+[[ -n "${RW_PS_APP_ARGS}" ]] && print -r -- "4400 ${RW_APP_BIN} --inspect"
+exit 0
+MOCK
+
+  cat > "${d}/open" <<'MOCK'
+#!/bin/zsh
+print -r -- "open $*" >> "${RW_CALLS}"
+MOCK
+
+  # Records the title and body (the last two arguments) and the script text
+  # (everything before `--`), to prove the text never enters the AppleScript.
+  cat > "${d}/osascript" <<'MOCK'
+#!/bin/zsh
+src=''
+for a in "$@"; do
+  [[ "${a}" == -- ]] && break
+  src+="${a} "
+done
+print -r -- "osasrc|${src}" >> "${RW_CALLS}"
+print -r -- "osa|${argv[-2]}|${argv[-1]}" >> "${RW_CALLS}"
+[[ -n "${RW_OSA_FAIL}" ]] && exit 1
+exit 0
+MOCK
+
+  cat > "${d}/logger" <<'MOCK'
+#!/bin/zsh
+print -r -- "logger $*" >> "${RW_CALLS}"
+MOCK
+
+  # `launchctl print gui/<uid>/<job>` exits 0 when the job exists (a server-only
+  # host) and 113 when it does not.
+  cat > "${d}/launchctl" <<'MOCK'
+#!/bin/zsh
+print -r -- "launchctl $*" >> "${RW_CALLS}"
+[[ -n "${RW_SERVER_JOB}" ]] && exit 0
+exit 113
+MOCK
+
+  /bin/chmod 755 "${d}/rex" "${d}/ps" "${d}/open" "${d}/osascript" "${d}/logger" "${d}/launchctl"
+}
+
+# Fresh fake HOME with the fake rex in place, the fake app bundle present and a
+# fresh call log; default scenario: healthy server, app not running.
+function _rw_t_reset {
+  RW_T_SEQ+=1
+  RW_T_HOME="${RW_T_BOX}/case${RW_T_SEQ}/home"
+  RW_T_CALLS="${RW_T_BOX}/case${RW_T_SEQ}/calls"
+  RW_T_APP="${RW_T_BOX}/case${RW_T_SEQ}/Rex Beta.app"
+  /bin/mkdir -p "${RW_T_HOME}/Library" "${RW_T_HOME}/${RW_T_REX_REL:h}" "${RW_T_APP}/Contents/MacOS"
+  /bin/cp "${RW_T_STUBS}/rex" "${RW_T_HOME}/${RW_T_REX_REL}"
+  : > "${RW_T_CALLS}"
+  RW_REX_MODE=ok
+  RW_REX_VERSION=0.0.1793047680-g2db882
+  RW_CLI_VERSION=0.0.1793047680-g2db882
+  RW_SERVER_JOB=''
+  RW_PS_APP=''
+  RW_PS_APP_ARGS=''
+  RW_PS_SERVERPROC=''
+  RW_PS_FAIL=''
+  RW_OSA_FAIL=''
+  RW_T_DEADLINE=5
+}
+
+# _rw_t_run [OFFSET_SECONDS]: run the script once with the scenario knobs; the
+# script's clock is the suite base time plus the offset. Sets RW_T_RC, RW_T_OUT
+# and RW_T_ELAPSED_MS.
+function _rw_t_run {
+  local -F start end
+  start="${EPOCHREALTIME}"
+  RW_T_OUT="$(/usr/bin/env -i \
+    PATH=/usr/bin:/bin \
+    HOME="${RW_T_HOME}" \
+    REX_WATCH_HOME="${RW_T_HOME}" \
+    REX_WATCH_PS="${RW_T_STUBS}/ps" \
+    REX_WATCH_OPEN="${RW_T_STUBS}/open" \
+    REX_WATCH_OSASCRIPT="${RW_T_STUBS}/osascript" \
+    REX_WATCH_LOGGER="${RW_T_STUBS}/logger" \
+    REX_WATCH_LAUNCHCTL="${RW_T_STUBS}/launchctl" \
+    REX_WATCH_APP="${RW_T_APP}" \
+    REX_WATCH_DEADLINE="${RW_T_DEADLINE}" \
+    REX_WATCH_NOW="$(( RW_T_BASE + ${1:-0} ))" \
+    RW_CALLS="${RW_T_CALLS}" \
+    RW_REX_BIN="${RW_T_HOME}/${RW_T_REX_REL}" \
+    RW_APP_BIN="${RW_T_APP}/Contents/MacOS/Rex" \
+    RW_REX_MODE="${RW_REX_MODE}" \
+    RW_REX_VERSION="${RW_REX_VERSION}" \
+    RW_CLI_VERSION="${RW_CLI_VERSION}" \
+    RW_SERVER_JOB="${RW_SERVER_JOB}" \
+    RW_PS_APP="${RW_PS_APP}" \
+    RW_PS_APP_ARGS="${RW_PS_APP_ARGS}" \
+    RW_PS_SERVERPROC="${RW_PS_SERVERPROC}" \
+    RW_PS_FAIL="${RW_PS_FAIL}" \
+    RW_OSA_FAIL="${RW_OSA_FAIL}" \
+    /bin/zsh "${RW_T_SCRIPT}" 2>&1)" && RW_T_RC=0 || RW_T_RC=$?
+  end="${EPOCHREALTIME}"
+  RW_T_ELAPSED_MS=$(( (end - start) * 1000 ))
+}
+
+# Number of recorded calls whose line starts with $1 (result in REPLY).
+function _rw_t_count {
+  local line
+  local -i n=0
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ "${line}" == "$1"* ]] && n+=1
+  done < "${RW_T_CALLS}"
+  REPLY="${n}"
+}
+
+function _rw_t_expect_count {
+  # $1 = call prefix, $2 = expected count, $3 = case name
+  _rw_t_count "$1"
+  if [[ "${REPLY}" == "$2" ]]; then
+    _pass "$3"
+  else
+    _fail "$3 - '$1' called ${REPLY} times, wanted $2"
+  fi
+}
+
+# True if some recorded call line starts with $1 and contains $2.
+function _rw_t_call_has {
+  local line
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ "${line}" == "$1"* && "${line}" == *"$2"* ]] && return 0
+  done < "${RW_T_CALLS}"
+  return 1
+}
+
+function _rw_t_expect_call {
+  if _rw_t_call_has "$1" "$2"; then _pass "$3"; else _fail "$3 - no '$1' call containing '$2'"; fi
+}
+
+function _rw_t_expect_no_call {
+  if _rw_t_call_has "$1" "$2"; then _fail "$3 - found '$1' call containing '$2'"; else _pass "$3"; fi
+}
+
+function _rw_t_log_has {
+  local line
+  [[ -r "${RW_T_HOME}/Library/Logs/rex-watch.log" ]] || return 1
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ "${line}" == *"$1"* ]] && return 0
+  done < "${RW_T_HOME}/Library/Logs/rex-watch.log"
+  return 1
+}
+
+function _rw_t_expect_log {
+  if _rw_t_log_has "$1"; then _pass "$2"; else _fail "$2 - log lacks '$1'"; fi
+}
+
+function _rw_t_state_has {
+  local line
+  [[ -r "${RW_T_HOME}/Library/Caches/rex-watch/state" ]] || return 1
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ "${line}" == "$1" ]] && return 0
+  done < "${RW_T_HOME}/Library/Caches/rex-watch/state"
+  return 1
+}
+
+function _rw_t_expect_state {
+  if _rw_t_state_has "$1"; then _pass "$2"; else _fail "$2 - state lacks '$1'"; fi
+}
+
+function _rw_t_expect_eq {
+  # $1 = actual, $2 = expected, $3 = case name
+  if [[ "$1" == "$2" ]]; then _pass "$3"; else _fail "$3 - got '$1', wanted '$2'"; fi
+}
+
+function _rw_t_expect_rc0 {
+  if (( RW_T_RC == 0 )); then _pass "$1"; else _fail "$1 - rc=${RW_T_RC} out=${RW_T_OUT}"; fi
+}
+
+# --- Cases ---------------------------------------------------------------
+
+function _rw_t_static {
+  _section "rex-watch: static checks"
+
+  local first line
+  local -i bad=0 has_flag=0
+  if [[ -x "${RW_T_SCRIPT}" ]]; then _pass "script is executable"; else _fail "script missing or not executable"; return 0; fi
+  IFS= read -r first < "${RW_T_SCRIPT}"
+  if [[ "${first}" == '#!/bin/zsh' ]]; then _pass "shebang is /bin/zsh"; else _fail "shebang is '${first}'"; fi
+
+  # No code line may start a server, use pgrep or kill; the probe must carry
+  # --autostart=false.
+  local re_comment='^[[:space:]]*#'
+  local re_bad='(^|[[:space:];&|(])(kill|pkill|killall|pgrep)([[:space:]]|$)|/bin/kill'
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ "${line}" =~ $re_comment ]] && continue
+    [[ "${line}" == *'--autostart=false'* ]] && has_flag=1
+    if [[ "${line}" == *'server start'* || "${line}" == *'server run'* || "${line}" =~ $re_bad ]]; then
+      _fail "code line must not start a server, use pgrep or kill: ${line}"
+      (( bad += 1 ))
+    fi
+  done < "${RW_T_SCRIPT}"
+  (( bad == 0 )) && _pass "no server start, pgrep or kill in code"
+  if (( has_flag )); then _pass "code carries --autostart=false"; else _fail "code lacks --autostart=false"; fi
+
+  local plist="${SCRIPT_DIR}/LaunchAgents/com.0xmachos.rex-watch.plist" v
+  if /usr/bin/plutil -lint "${plist}" >/dev/null 2>&1; then _pass "plist lints"; else _fail "plist does not lint"; fi
+  v="$(/usr/libexec/PlistBuddy -c 'Print :Label' "${plist}" 2>/dev/null)"
+  _rw_t_expect_eq "${v}" com.0xmachos.rex-watch "plist Label matches the file name"
+  v="$(/usr/libexec/PlistBuddy -c 'Print :StartInterval' "${plist}" 2>/dev/null)"
+  _rw_t_expect_eq "${v}" 120 "plist StartInterval is 120"
+  v="$(/usr/libexec/PlistBuddy -c 'Print :RunAtLoad' "${plist}" 2>/dev/null)"
+  _rw_t_expect_eq "${v}" true "plist RunAtLoad is true"
+  v="$(/usr/libexec/PlistBuddy -c 'Print :ProcessType' "${plist}" 2>/dev/null)"
+  _rw_t_expect_eq "${v}" Background "plist ProcessType is Background"
+  v="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "${plist}" 2>/dev/null)"
+  _rw_t_expect_eq "${v}" /usr/local/bin/rex-watch "plist runs the absolute /usr/local/bin copy"
+  v="$(/usr/libexec/PlistBuddy -c 'Print :StandardOutPath' "${plist}" 2>/dev/null)"
+  _rw_t_expect_eq "${v:0:21}" "__HOME__/Library/Logs" "plist stdout goes under ~/Library/Logs"
+}
+
+function _rw_t_ok {
+  _section "rex-watch: ok"
+
+  _rw_t_reset
+  _rw_t_run
+  _rw_t_expect_rc0 "ok: exit 0"
+  _rw_t_expect_log "decision: ok version=0.0.1793047680-g2db882 pid=4483 sessions=3" "ok: decision logged with version, server pid and sessions"
+  _rw_t_expect_call "rex " "--autostart=false" "probe argv contains --autostart=false"
+  _rw_t_expect_call "rex --autostart=false --timeout 3s server status --json" "" "probe argv is the full status probe, flag first"
+  _rw_t_expect_no_call "rex " "server start" "ok: never starts a server"
+  _rw_t_expect_count "open" 0 "ok: no open"
+  _rw_t_expect_count "osa|" 0 "ok: no banner"
+  _rw_t_expect_count "ps" 0 "ok: no process list read"
+  _rw_t_expect_call "rex version" "" "ok: asks the CLI for its version"
+  _rw_t_expect_state "streak=0" "ok: streak is 0"
+  _rw_t_expect_call "logger " "com.0xmachos.rex-watch" "ok: syslog uses the com.0xmachos.rex-watch tag"
+
+  # A second run appends a line: one log line per run.
+  _rw_t_run 120
+  local -a lines
+  # shellcheck disable=SC2296  # zsh (@f) line split
+  lines=("${(@f)$(<"${RW_T_HOME}/Library/Logs/rex-watch.log")}")
+  if (( ${#lines[@]} == 2 )); then _pass "ok: one log line per run"; else _fail "ok: ${#lines[@]} log lines after 2 runs"; fi
+
+  # No temp file is left in the state directory.
+  local -a leftovers
+  setopt local_options null_glob
+  # shellcheck disable=SC2296  # zsh (N) null-glob qualifier
+  leftovers=("${RW_T_HOME}"/Library/Caches/rex-watch/run.*(N) "${RW_T_HOME}"/Library/Caches/rex-watch/state.*(N))
+  if (( ${#leftovers[@]} == 0 )); then _pass "ok: no temp file left behind"; else _fail "ok: leftover ${leftovers[*]}"; fi
+}
+
+function _rw_t_down {
+  _section "rex-watch: down"
+
+  # One down run: no heal.
+  _rw_t_reset
+  RW_REX_MODE=dead
+  _rw_t_run
+  _rw_t_expect_rc0 "one down: exit 0"
+  _rw_t_expect_count "open" 0 "one down: no open"
+  _rw_t_expect_count "osa|" 0 "one down: no banner"
+  _rw_t_expect_state "kind=down" "one down: state records down"
+  _rw_t_expect_state "streak=1" "one down: streak is 1"
+  _rw_t_expect_log "decision: down streak=1" "one down: decision logged"
+
+  # Two downs, app not running: open once, one banner.
+  _rw_t_run 120
+  _rw_t_expect_count "open" 1 "two downs, app not running: open called once"
+  _rw_t_expect_call "open " "-b com.superlogical.rex" "two downs, app not running: opens the app by bundle id"
+  _rw_t_expect_count "osa|" 1 "two downs, app not running: one banner"
+  _rw_t_expect_call "osa|" "Rex was not running" "two downs, app not running: banner says the app was not running"
+  _rw_t_expect_state "alerted=1" "two downs, app not running: incident recorded"
+  _rw_t_expect_no_call "rex " "server start" "two downs, app not running: never starts a server"
+  # A third run 2 min later must not open again or repeat the banner.
+  _rw_t_run 240
+  _rw_t_expect_count "open" 1 "third down run: no second open"
+  _rw_t_expect_count "osa|" 1 "third down run: banner on cooldown"
+
+  # Two downs, app running: no open, banner asks to restart the app.
+  _rw_t_reset
+  RW_REX_MODE=dead RW_PS_APP=1
+  _rw_t_run
+  _rw_t_run 120
+  _rw_t_expect_count "open" 0 "two downs, app running: no open"
+  _rw_t_expect_count "osa|" 1 "two downs, app running: one banner"
+  _rw_t_expect_call "osa|" "Quit and reopen Rex Beta" "two downs, app running: banner asks for a restart"
+  _rw_t_expect_log "Rex Beta.app is running; no action" "two downs, app running: decision logged"
+  _rw_t_expect_no_call "rex " "server start" "two downs, app running: never starts a server"
+
+  # A process that only starts with the app path plus arguments is not the app.
+  _rw_t_reset
+  RW_REX_MODE=dead RW_PS_APP_ARGS=1
+  _rw_t_run
+  _rw_t_run 120
+  _rw_t_expect_count "open" 1 "app binary with arguments does not count as running"
+
+  # The Rex server process (it lives under Application Support) is not the app.
+  _rw_t_reset
+  RW_REX_MODE=dead RW_PS_SERVERPROC=1
+  _rw_t_run
+  _rw_t_run 120
+  _rw_t_expect_count "open" 1 "a server process does not count as the app running"
+
+  # Exit 0 with no rex_version, and text that is not JSON, are down too.
+  _rw_t_reset
+  RW_REX_MODE=empty
+  _rw_t_run
+  _rw_t_expect_state "kind=down" "exit 0 without rex_version: down"
+  _rw_t_reset
+  RW_REX_MODE=garbage
+  _rw_t_run
+  _rw_t_expect_state "kind=down" "exit 0 with non-JSON output: down"
+
+  # A probe that never returns: the deadline ends it and the run counts as down.
+  _rw_t_reset
+  RW_REX_MODE=hang RW_T_DEADLINE=1
+  _rw_t_run
+  if (( RW_T_ELAPSED_MS < 4000 )); then
+    _pass "rex hang: the deadline ended it (${RW_T_ELAPSED_MS} ms)"
+  else
+    _fail "rex hang: run took ${RW_T_ELAPSED_MS} ms with a 1 s deadline"
+  fi
+  _rw_t_expect_rc0 "rex hang: exit 0"
+  _rw_t_expect_state "kind=down" "rex hang: down"
+}
+
+function _rw_t_skips {
+  _section "rex-watch: skip conditions"
+
+  # The kill switch leaves a pre-seeded streak alone, calls nothing and does not heal.
+  _rw_t_reset
+  RW_REX_MODE=dead
+  /bin/mkdir -p "${RW_T_HOME}/Library/Caches/rex-watch" "${RW_T_HOME}/Library/Application Support/rex-watch"
+  print -r -- $'kind=down\nstreak=1\nalerted=0\nlast_open=0' > "${RW_T_HOME}/Library/Caches/rex-watch/state"
+  : > "${RW_T_HOME}/Library/Application Support/rex-watch/disabled"
+  _rw_t_run
+  _rw_t_expect_rc0 "kill switch: exit 0"
+  _rw_t_expect_count "rex " 0 "kill switch: no probe"
+  _rw_t_expect_count "open" 0 "kill switch: no open"
+  _rw_t_expect_count "osa|" 0 "kill switch: no banner"
+  _rw_t_expect_log "decision: skip (disabled file present)" "kill switch: logged"
+  _rw_t_expect_state "streak=1" "kill switch: state untouched"
+  # Removing the switch resumes the watch: the pre-seeded streak of 1 plus this down run heals.
+  /bin/rm -f -- "${RW_T_HOME:?}/Library/Application Support/rex-watch/disabled"
+  _rw_t_run 120
+  _rw_t_expect_count "open" 1 "kill switch removed: the watch heals again"
+
+  # Server-only host (a launchd job owns the Rex server): exit 0 and do
+  # nothing, not even a state or log directory.
+  _rw_t_reset
+  RW_REX_MODE=dead RW_SERVER_JOB=1
+  _rw_t_run
+  _rw_t_run 120
+  _rw_t_expect_rc0 "server-only host: exit 0"
+  _rw_t_expect_call "launchctl print gui/" "/com.local.rex-server" "server-only host: reads the server job with launchctl print"
+  _rw_t_expect_count "launchctl" 2 "server-only host: only the read-only print, once per run"
+  _rw_t_expect_count "rex " 0 "server-only host: no probe"
+  _rw_t_expect_count "open" 0 "server-only host: no open"
+  _rw_t_expect_count "osa|" 0 "server-only host: no banner"
+  _rw_t_expect_count "ps" 0 "server-only host: no process list read"
+  if [[ ! -e "${RW_T_HOME}/Library/Caches/rex-watch" && ! -e "${RW_T_HOME}/Library/Logs" ]]; then
+    _pass "server-only host: no state directory, no log"
+  else
+    _fail "server-only host: wrote files under the fake HOME"
+  fi
+  # No server job: the watch runs, and heals after two down runs.
+  _rw_t_reset
+  RW_REX_MODE=dead
+  _rw_t_run
+  _rw_t_run 120
+  _rw_t_expect_call "rex --autostart=false" "" "no server job: the watch runs"
+  _rw_t_expect_count "open" 1 "no server job: the app is opened after two downs"
+
+  # App absent: exit 0 and do nothing.
+  _rw_t_reset
+  RW_REX_MODE=dead
+  /bin/rm -rf -- "${RW_T_APP:?}"
+  _rw_t_run
+  _rw_t_run 120
+  _rw_t_expect_rc0 "app absent: exit 0"
+  _rw_t_expect_count "rex " 0 "app absent: no probe"
+  _rw_t_expect_count "open" 0 "app absent: no open"
+  _rw_t_expect_count "osa|" 0 "app absent: no banner"
+  if [[ ! -e "${RW_T_HOME}/Library/Caches/rex-watch" && ! -e "${RW_T_HOME}/Library/Logs" ]]; then
+    _pass "app absent: no state directory, no log"
+  else
+    _fail "app absent: wrote files under the fake HOME"
+  fi
+}
+
+function _rw_t_recovery {
+  _section "rex-watch: recovery"
+
+  _rw_t_reset
+  RW_REX_MODE=dead RW_PS_APP=1
+  _rw_t_run
+  _rw_t_run 120
+  _rw_t_expect_count "osa|" 1 "recovery: one banner while down"
+  RW_REX_MODE=ok
+  _rw_t_run 240
+  _rw_t_expect_count "osa|" 2 "recovery: one recovery banner"
+  _rw_t_expect_call "osa|Rex is back|" "answers again" "recovery: banner says the server is back"
+  _rw_t_expect_state "alerted=0" "recovery: incident cleared"
+  _rw_t_expect_state "streak=0" "recovery: streak cleared"
+  _rw_t_run 360
+  _rw_t_expect_count "osa|" 2 "recovery: no second recovery banner"
+
+  # A single blip with no banner needs no recovery banner.
+  _rw_t_reset
+  RW_REX_MODE=dead
+  _rw_t_run
+  RW_REX_MODE=ok
+  _rw_t_run 120
+  _rw_t_expect_count "osa|" 0 "single blip: no banner, no recovery banner"
+  _rw_t_expect_state "streak=0" "single blip: streak cleared"
+
+  # A blip between two downs restarts the count: no heal on the third run.
+  _rw_t_reset
+  RW_REX_MODE=dead
+  _rw_t_run
+  RW_REX_MODE=ok
+  _rw_t_run 120
+  RW_REX_MODE=dead
+  _rw_t_run 240
+  _rw_t_expect_count "open" 0 "down, ok, down: streak restarted, no open"
+}
+
+function _rw_t_stale {
+  _section "rex-watch: stale binary"
+
+  _rw_t_reset
+  RW_REX_VERSION=0.0.1793000000-gaaaaaa RW_CLI_VERSION=0.0.1793047680-g2db882
+  _rw_t_run
+  _rw_t_expect_count "osa|" 1 "stale: one banner"
+  _rw_t_expect_call "osa|Rex update waiting|" "0.0.1793000000-gaaaaaa" "stale: body names the server version"
+  _rw_t_expect_call "osa|Rex update waiting|" "0.0.1793047680-g2db882" "stale: body names the installed version"
+  _rw_t_run 3600
+  _rw_t_expect_count "osa|" 1 "stale: no second banner within 24 h"
+  _rw_t_run 82800
+  _rw_t_expect_count "osa|" 1 "stale: none at 23 h"
+  _rw_t_run 87000
+  _rw_t_expect_count "osa|" 2 "stale: second banner after 24 h"
+
+  _rw_t_reset
+  _rw_t_run
+  _rw_t_expect_count "osa|" 0 "same versions: no banner"
+
+  # rex version with no version in its first line: logged, no banner.
+  _rw_t_reset
+  RW_REX_VERSION=0.0.1793000000-gaaaaaa RW_CLI_VERSION=''
+  _rw_t_run
+  _rw_t_expect_count "osa|" 0 "unparsable CLI version: no banner"
+  _rw_t_expect_log "stale check: rex version gave no version" "unparsable CLI version: logged"
+}
+
+function _rw_t_cooldown {
+  _section "rex-watch: banner cooldown and delivery"
+
+  _rw_t_reset
+  RW_REX_MODE=dead RW_PS_APP=1
+  _rw_t_run
+  _rw_t_run 120
+  _rw_t_expect_count "osa|" 1 "cooldown: first banner"
+  _rw_t_run 3600
+  _rw_t_expect_count "osa|" 1 "cooldown: none at 1 h"
+  _rw_t_expect_log "banner running: suppressed by cooldown" "cooldown: suppression logged"
+  _rw_t_run 21000
+  _rw_t_expect_count "osa|" 1 "cooldown: none at 5 h 50 min"
+  _rw_t_run 22000
+  _rw_t_expect_count "osa|" 2 "cooldown: banner again after 6 h"
+
+  # A failed osascript starts no cooldown and sets no incident flag.
+  _rw_t_reset
+  RW_REX_MODE=dead RW_PS_APP=1 RW_OSA_FAIL=1
+  _rw_t_run
+  _rw_t_run 120
+  _rw_t_expect_count "osa|" 1 "osascript failure: attempted"
+  _rw_t_expect_log "osascript failed" "osascript failure: logged"
+  RW_OSA_FAIL=''
+  _rw_t_run 240
+  _rw_t_expect_count "osa|" 2 "osascript failure: next run retries"
+  _rw_t_expect_state "alerted=1" "osascript failure: incident recorded once it sent"
+
+  # The banner text travels as argv, never inside the AppleScript source.
+  _rw_t_expect_call "osasrc|" "on run argv" "banner: AppleScript reads its text from argv"
+  _rw_t_expect_no_call "osasrc|" "Rex server is down" "banner: title is not in the AppleScript source"
+  _rw_t_expect_no_call "osasrc|" "Quit and reopen" "banner: body is not in the AppleScript source"
+
+  # Two launches stay 10 min apart: a second open inside the gap is skipped.
+  _rw_t_reset
+  RW_REX_MODE=dead
+  _rw_t_run
+  _rw_t_run 120
+  _rw_t_run 240
+  _rw_t_expect_count "open" 1 "open gap: no second launch inside 10 min"
+  _rw_t_run 900
+  _rw_t_expect_count "open" 2 "open gap: launches again after 10 min"
+
+  # Titles stay within 30 characters and carry no exclamation mark.
+  local line title body bad=0
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ "${line}" == osa\|* ]] || continue
+    title="${line#osa|}"
+    title="${title%%|*}"
+    body="${line#osa|*|}"
+    if (( ${#title} > 30 )) || [[ "${title}${body}" == *'!'* ]]; then
+      (( bad += 1 ))
+      _fail "banner copy rule broken: ${line}"
+    fi
+  done < "${RW_T_CALLS}"
+  (( bad == 0 )) && _pass "banner copy: titles at most 30 characters, no exclamation marks"
+}
+
+function _rw_t_edges {
+  _section "rex-watch: edge cases"
+
+  # ps failure: state unchanged, no heal.
+  _rw_t_reset
+  RW_REX_MODE=dead RW_PS_FAIL=1
+  _rw_t_run
+  _rw_t_expect_rc0 "ps failure: exit 0"
+  _rw_t_expect_log "process list unavailable" "ps failure: logged"
+  _rw_t_expect_count "open" 0 "ps failure: no open"
+  if [[ ! -e "${RW_T_HOME}/Library/Caches/rex-watch/state" ]]; then _pass "ps failure: no state written"; else _fail "ps failure: state written"; fi
+
+  # The rex CLI is missing: probe unavailable, not a dead server, no heal.
+  _rw_t_reset
+  /bin/rm -f -- "${RW_T_HOME:?}/${RW_T_REX_REL:?}"
+  _rw_t_run
+  _rw_t_run 120
+  _rw_t_expect_rc0 "missing rex CLI: exit 0"
+  _rw_t_expect_log "probe unavailable" "missing rex CLI: logged as unavailable"
+  _rw_t_expect_count "open" 0 "missing rex CLI: no open"
+  _rw_t_expect_count "osa|" 0 "missing rex CLI: no banner"
+
+  # A corrupt state file is read as data: nothing in it runs.
+  _rw_t_reset
+  /bin/mkdir -p "${RW_T_HOME}/Library/Caches/rex-watch"
+  print -r -- $'streak=$(/usr/bin/touch '"${RW_T_BOX}"$'/pwned)\nkind=`/usr/bin/touch '"${RW_T_BOX}"$'/pwned2`\nbanner_running=x\n;;\nstreak=7' \
+    > "${RW_T_HOME}/Library/Caches/rex-watch/state"
+  RW_REX_MODE=dead
+  _rw_t_run
+  if [[ ! -e "${RW_T_BOX}/pwned" && ! -e "${RW_T_BOX}/pwned2" ]]; then _pass "corrupt state: nothing executed"; else _fail "corrupt state: command substitution ran"; fi
+  _rw_t_expect_rc0 "corrupt state: exit 0"
+  _rw_t_expect_state "kind=down" "corrupt state: valid lines used, junk dropped"
+
+  # A server version with odd characters is never trusted: down, nothing runs.
+  _rw_t_reset
+  RW_REX_VERSION="0.0.1 \$(/usr/bin/touch ${RW_T_BOX}/pwned3)"
+  _rw_t_run
+  _rw_t_expect_count "osa|" 0 "odd server version: no banner"
+  _rw_t_expect_state "kind=down" "odd server version: not read as ok"
+  if [[ ! -e "${RW_T_BOX}/pwned3" ]]; then _pass "odd server version: nothing executed"; else _fail "odd server version: command substitution ran"; fi
+
+  # An unusable HOME is refused before any work.
+  _rw_t_reset
+  local saved="${RW_T_HOME}"
+  RW_T_HOME='relative/home'
+  _rw_t_run
+  RW_T_HOME="${saved}"
+  if (( RW_T_RC == 1 )) && [[ "${RW_T_OUT}" == *refusing* ]]; then _pass "relative HOME: refused with exit 1"; else _fail "relative HOME: rc=${RW_T_RC} out=${RW_T_OUT}"; fi
+}
+
+function run_rex_watch {
+  zmodload zsh/datetime
+
+  RW_T_SCRIPT="${REX_WATCH_UNDER_TEST:-${SCRIPT_DIR}/bin/rex-watch}"
+  if [[ ! -f "${RW_T_SCRIPT}" ]]; then
+    _fail "rex-watch: ${RW_T_SCRIPT} is missing"
+    return 0
+  fi
+
+  RW_T_BOX="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/rex-watch-test.XXXXXX")" || return 1
+  RW_T_BOX="${RW_T_BOX:A}"
+  RW_T_STUBS="${RW_T_BOX}/stubs"
+  RW_T_BASE="${EPOCHSECONDS}"
+  _rw_t_make_stubs
+
+  _rw_t_static
+  _rw_t_ok
+  _rw_t_down
+  _rw_t_skips
+  _rw_t_recovery
+  _rw_t_stale
+  _rw_t_cooldown
+  _rw_t_edges
+
+  /bin/rm -rf -- "${RW_T_BOX:?}"
+}

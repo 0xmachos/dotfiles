@@ -1,0 +1,485 @@
+#!/bin/zsh
+# dotfiles/tests/rex-remote-bridge
+#
+# Behavioural test for bin/rex-remote-bridge, the inetd-mode bridge from
+# localhost:7297 to the Rex server on the remote Rex host. Every run uses a
+# fake HOME under the suite sandbox and stub binaries (lsof, codesign, ssh, launchctl, id) that
+# record their calls, so nothing touches the real network, ssh, Rex or $HOME.
+# The script runs with fd 1 and fd 2 on files that stand in for the socket.
+#
+# Scenarios are set through the BR_* globals read by the stubs.
+# REX_REMOTE_BRIDGE_UNDER_TEST points the suite at another copy of the script
+# (used to prove the suite goes red when a check is broken).
+#
+# Run: ./test rex-remote-bridge    (or ./test for the full suite)
+#
+# ShellCheck: lint with `shellcheck --shell=bash tests/rex-remote-bridge`.
+# This file is sourced, not executed - chmod 644.
+#
+# shellcheck source=tests/lib
+
+typeset -g BR_T_BOX='' BR_T_STUBS='' BR_T_SCRIPT='' BR_T_HOME='' BR_T_CALLS='' BR_T_OUT='' BR_T_ERR=''
+typeset -gi BR_T_RC=0 BR_T_SEQ=0 BR_T_ELAPSED_MS=0
+
+# Scenario knobs, read by the stubs (see _br_t_reset for the defaults).
+typeset -g BR_SERVER_JOB='' BR_ID='' BR_OWN='' BR_PEER='' BR_PEER_UID='' BR_EXE='' BR_EXEMODE=''
+typeset -g BR_CS_MODE='' BR_CS_TEAM='' BR_LSOF_HANG='' BR_T_DEADLINE=''
+
+function _br_t_make_stubs {
+  local d="${BR_T_STUBS}"
+  /bin/mkdir -p "${d}"
+
+  # The own-socket query (`-d 0`), the peer query (`-iTCP:<port>`) and the
+  # executable query (`-d txt`) each answer by mode. IPv6 names carry brackets
+  # the way lsof prints them.
+  cat > "${d}/lsof" <<'MOCK'
+#!/bin/zsh
+args="$*"
+print -r -- "lsof ${args}" >> "${BR_CALLS}"
+[[ -n "${BR_LSOF_HANG}" ]] && exec /bin/sleep 30
+local own='[::1]:7297->[::1]:50001' peerside='[::1]:50001->[::1]:7297'
+if [[ "${BR_OWN}" == v4 ]]; then
+  own='127.0.0.1:7297->127.0.0.1:50001'
+  peerside='127.0.0.1:50001->127.0.0.1:7297'
+fi
+if [[ "${args}" == *"-d 0"* ]]; then
+  case "${BR_OWN}" in
+    fail) exit 1 ;;
+    none) exit 0 ;;
+    two) print -r -- "p1"; print -r -- "f0"; print -r -- "n${own}"; print -r -- "f1"; print -r -- "n[::1]:7297->[::1]:50009" ;;
+    *) print -r -- "p1"; print -r -- "f0"; print -r -- "n${own}"; print -r -- "f1"; print -r -- "n${own}" ;;
+  esac
+elif [[ "${args}" == *"-iTCP:"* ]]; then
+  [[ "${BR_PEER}" == fail ]] && exit 1
+  # The bridge's own end, listed like the real lsof does.
+  print -r -- "p77777"; print -r -- "u501"; print -r -- "f0"; print -r -- "n${own}"
+  case "${BR_PEER}" in
+    none) ;;
+    mismatch) print -r -- "p4242"; print -r -- "u${BR_PEER_UID}"; print -r -- "f9"; print -r -- "n[::1]:50001->[::1]:7298" ;;
+    two)
+      print -r -- "p4242"; print -r -- "u${BR_PEER_UID}"; print -r -- "f9"; print -r -- "n${peerside}"
+      print -r -- "p4343"; print -r -- "u${BR_PEER_UID}"; print -r -- "f9"; print -r -- "n${peerside}" ;;
+    dup)
+      # One process holding the same socket on two fds is still one peer.
+      print -r -- "p4242"; print -r -- "u${BR_PEER_UID}"; print -r -- "f9"; print -r -- "n${peerside}"; print -r -- "f10"; print -r -- "n${peerside}" ;;
+    *) print -r -- "p4242"; print -r -- "u${BR_PEER_UID}"; print -r -- "f9"; print -r -- "n${peerside}" ;;
+  esac
+elif [[ "${args}" == *"-d txt"* ]]; then
+  case "${BR_EXEMODE}" in
+    fail) exit 1 ;;
+    none) exit 0 ;;
+  esac
+  print -r -- "p4242"; print -r -- "ftxt"; print -r -- "n${BR_EXE}"; print -r -- "ftxt"; print -r -- "n/usr/lib/dyld"
+fi
+exit 0
+MOCK
+
+  # Passes only when the requirement names the team in BR_CS_TEAM. A pid
+  # argument (all digits) can be made to fail on its own.
+  cat > "${d}/codesign" <<'MOCK'
+#!/bin/zsh
+print -r -- "codesign $*" >> "${BR_CALLS}"
+[[ "${BR_CS_MODE}" == unsigned ]] && exit 1
+[[ "${BR_CS_MODE}" == pidfail && "${argv[-1]}" == <-> ]] && exit 3
+[[ "$*" == *"\"${BR_CS_TEAM}\""* ]] || exit 3
+exit 0
+MOCK
+
+  # Records its argv, then writes one line to fd 2 and one to fd 1.
+  cat > "${d}/ssh" <<'MOCK'
+#!/bin/zsh
+print -r -- "ssh $*" >> "${BR_CALLS}"
+print -r -- "ssh-warning" >&2
+print -r -- "ssh-data"
+exit 0
+MOCK
+
+  # `launchctl print gui/<uid>/<job>` exits 0 when the job exists (a server-only
+  # host) and 113 when it does not.
+  cat > "${d}/launchctl" <<'MOCK'
+#!/bin/zsh
+print -r -- "launchctl $*" >> "${BR_CALLS}"
+[[ -n "${BR_SERVER_JOB}" ]] && exit 0
+exit 113
+MOCK
+
+  cat > "${d}/id" <<'MOCK'
+#!/bin/zsh
+print -r -- "id $*" >> "${BR_CALLS}"
+print -r -- "${BR_ID}"
+MOCK
+
+  /bin/chmod 755 "${d}/lsof" "${d}/codesign" "${d}/ssh" "${d}/launchctl" "${d}/id"
+}
+
+# Fresh fake HOME and call log; default scenario: a good peer on IPv6.
+function _br_t_reset {
+  BR_T_SEQ+=1
+  BR_T_HOME="${BR_T_BOX}/case${BR_T_SEQ}/home"
+  BR_T_CALLS="${BR_T_BOX}/case${BR_T_SEQ}/calls"
+  BR_T_OUT="${BR_T_BOX}/case${BR_T_SEQ}/out"
+  BR_T_ERR="${BR_T_BOX}/case${BR_T_SEQ}/err"
+  /bin/mkdir -p "${BR_T_HOME}/Library/Logs" "${BR_T_HOME}/Library/Application Support/rex-remote-bridge"
+  print -r -- test-host > "${BR_T_HOME}/Library/Application Support/rex-remote-bridge/ssh-host"
+  : > "${BR_T_CALLS}"
+  : > "${BR_T_OUT}"
+  : > "${BR_T_ERR}"
+  BR_SERVER_JOB=''
+  BR_ID=501
+  BR_OWN=ok
+  BR_PEER=ok
+  BR_PEER_UID=501
+  BR_EXE='/Applications/Rex Beta.app/Contents/MacOS/Rex'
+  BR_EXEMODE=ok
+  BR_CS_MODE=ok
+  BR_CS_TEAM=AG92C3PT77
+  BR_LSOF_HANG=''
+  BR_T_DEADLINE=5
+}
+
+# _br_t_run: run the script once with fd 1 and fd 2 on files (the socket
+# stand-ins). Sets BR_T_RC and BR_T_ELAPSED_MS.
+function _br_t_run {
+  local -F start end
+  start="${EPOCHREALTIME}"
+  /usr/bin/env -i \
+    PATH=/usr/bin:/bin \
+    HOME="${BR_T_HOME}" \
+    RDB_LSOF="${BR_T_STUBS}/lsof" \
+    RDB_CODESIGN="${BR_T_STUBS}/codesign" \
+    RDB_SSH="${BR_T_STUBS}/ssh" \
+    RDB_LAUNCHCTL="${BR_T_STUBS}/launchctl" \
+    RDB_ID="${BR_T_STUBS}/id" \
+    RDB_DEADLINE="${BR_T_DEADLINE}" \
+    BR_CALLS="${BR_T_CALLS}" \
+    BR_SERVER_JOB="${BR_SERVER_JOB}" \
+    BR_ID="${BR_ID}" \
+    BR_OWN="${BR_OWN}" \
+    BR_PEER="${BR_PEER}" \
+    BR_PEER_UID="${BR_PEER_UID}" \
+    BR_EXE="${BR_EXE}" \
+    BR_EXEMODE="${BR_EXEMODE}" \
+    BR_CS_MODE="${BR_CS_MODE}" \
+    BR_CS_TEAM="${BR_CS_TEAM}" \
+    BR_LSOF_HANG="${BR_LSOF_HANG}" \
+    /bin/zsh "${BR_T_SCRIPT}" < /dev/null > "${BR_T_OUT}" 2> "${BR_T_ERR}" && BR_T_RC=0 || BR_T_RC=$?
+  end="${EPOCHREALTIME}"
+  BR_T_ELAPSED_MS=$(( (end - start) * 1000 ))
+}
+
+# Number of recorded calls whose line starts with $1 (result in REPLY).
+function _br_t_count {
+  local line
+  local -i n=0
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ "${line}" == "$1"* ]] && n+=1
+  done < "${BR_T_CALLS}"
+  REPLY="${n}"
+}
+
+function _br_t_expect_count {
+  # $1 = call prefix, $2 = expected count, $3 = case name
+  _br_t_count "$1"
+  if [[ "${REPLY}" == "$2" ]]; then
+    _pass "$3"
+  else
+    _fail "$3 - '$1' called ${REPLY} times, wanted $2"
+  fi
+}
+
+function _br_t_call_has {
+  local line
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ "${line}" == "$1"* && "${line}" == *"$2"* ]] && return 0
+  done < "${BR_T_CALLS}"
+  return 1
+}
+
+# True if some recorded call line equals $1 exactly.
+function _br_t_line_is {
+  local line
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ "${line}" == "$1" ]] && return 0
+  done < "${BR_T_CALLS}"
+  return 1
+}
+
+function _br_t_expect_call {
+  if _br_t_call_has "$1" "$2"; then _pass "$3"; else _fail "$3 - no '$1' call containing '$2'"; fi
+}
+
+function _br_t_log_has {
+  local line
+  [[ -r "${BR_T_HOME}/Library/Logs/rex-remote-bridge.log" ]] || return 1
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ "${line}" == *"$1"* ]] && return 0
+  done < "${BR_T_HOME}/Library/Logs/rex-remote-bridge.log"
+  return 1
+}
+
+function _br_t_expect_log {
+  if _br_t_log_has "$1"; then _pass "$2"; else _fail "$2 - log lacks '$1'"; fi
+}
+
+function _br_t_expect_eq {
+  if [[ "$1" == "$2" ]]; then _pass "$3"; else _fail "$3 - got '$1', wanted '$2'"; fi
+}
+
+# A refused connection: exit 1, no ssh, nothing on the socket stand-ins, one
+# log line with the reason.
+function _br_t_expect_refused {
+  # $1 = log text, $2 = case name
+  _br_t_expect_eq "${BR_T_RC}" 1 "$2: exit 1"
+  _br_t_expect_count "ssh" 0 "$2: ssh never started"
+  _br_t_expect_eq "$(<"${BR_T_OUT}")" "" "$2: nothing written to the socket (fd 1)"
+  _br_t_expect_eq "$(<"${BR_T_ERR}")" "" "$2: nothing written to fd 2 of the socket"
+  _br_t_expect_log "$1" "$2: logged"
+}
+
+# --- Cases ---------------------------------------------------------------
+
+function _br_t_static {
+  _section "rex-remote-bridge: static checks"
+
+  local first line code_first=''
+  local -i bad=0 has_exec=0
+  if [[ -x "${BR_T_SCRIPT}" ]]; then _pass "script is executable"; else _fail "script missing or not executable"; return 0; fi
+  IFS= read -r first < "${BR_T_SCRIPT}"
+  if [[ "${first}" == '#!/bin/zsh' ]]; then _pass "shebang is /bin/zsh"; else _fail "shebang is '${first}'"; fi
+
+  # The first command that does work moves fd 2 off the socket. A bare umask
+  # may come before it.
+  local re_comment='^[[:space:]]*(#|$)'
+  local re_noN='(^|[[:space:]])-[A-Za-z]*N'
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ "${line}" =~ $re_comment ]] && continue
+    if [[ -z "${code_first}" && "${line}" != 'umask 077' ]]; then code_first="${line}"; fi
+    if [[ "${line}" =~ $re_noN ]]; then
+      _fail "ssh -N must never appear in code: ${line}"
+      (( bad += 1 ))
+    fi
+    # shellcheck disable=SC2016  # literal source text, not an expansion
+    [[ "${line}" == *'exec "${B_SSH}" -T "${SSH_TARGET}"'* ]] && has_exec=1
+  done < "${BR_T_SCRIPT}"
+  (( bad == 0 )) && _pass "no -N option in code"
+  if [[ "${code_first}" == 'exec 2>>'* ]]; then _pass "first command moves fd 2 to the log"; else _fail "first command is '${code_first}'"; fi
+  if (( has_exec )); then _pass "code ends in exec ssh -T <alias from the ssh-host file>"; else _fail "code lacks the exec ssh -T SSH_TARGET line"; fi
+
+  local plist="${SCRIPT_DIR}/LaunchAgents/com.0xmachos.rex-remote-bridge.plist" v
+  if /usr/bin/plutil -lint "${plist}" >/dev/null 2>&1; then _pass "plist lints"; else _fail "plist does not lint"; fi
+  v="$(/usr/libexec/PlistBuddy -c 'Print :Label' "${plist}" 2>/dev/null)"
+  _br_t_expect_eq "${v}" com.0xmachos.rex-remote-bridge "plist Label matches the file name"
+  v="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "${plist}" 2>/dev/null)"
+  _br_t_expect_eq "${v}" /usr/local/bin/rex-remote-bridge "plist runs the absolute /usr/local/bin copy"
+  v="$(/usr/libexec/PlistBuddy -c 'Print :inetdCompatibility:Wait' "${plist}" 2>/dev/null)"
+  _br_t_expect_eq "${v}" false "plist inetd mode is no-wait"
+  v="$(/usr/libexec/PlistBuddy -c 'Print :Sockets:Listeners:0:SockNodeName' "${plist}" 2>/dev/null)"
+  _br_t_expect_eq "${v}" '::1' "plist listens on ::1"
+  v="$(/usr/libexec/PlistBuddy -c 'Print :Sockets:Listeners:1:SockNodeName' "${plist}" 2>/dev/null)"
+  _br_t_expect_eq "${v}" 127.0.0.1 "plist listens on 127.0.0.1"
+  v="$(/usr/libexec/PlistBuddy -c 'Print :Sockets:Listeners:0:SockServiceName' "${plist}" 2>/dev/null)"
+  _br_t_expect_eq "${v}" 7297 "plist port 7297 on ::1"
+  v="$(/usr/libexec/PlistBuddy -c 'Print :Sockets:Listeners:1:SockServiceName' "${plist}" 2>/dev/null)"
+  _br_t_expect_eq "${v}" 7297 "plist port 7297 on 127.0.0.1"
+  v="$(/usr/libexec/PlistBuddy -c 'Print :StandardOutPath' "${plist}" 2>&1)" || :
+  if [[ "${v}" == *"Does Not Exist"* ]]; then _pass "plist sets no StandardOutPath (fd 1 stays the socket)"; else _fail "plist sets StandardOutPath: ${v}"; fi
+}
+
+function _br_t_good {
+  _section "rex-remote-bridge: good peer"
+
+  _br_t_reset
+  _br_t_run
+  _br_t_expect_eq "${BR_T_RC}" 0 "good peer: exit 0"
+  _br_t_expect_count "ssh" 1 "good peer: ssh started once"
+  if _br_t_line_is "ssh -T test-host"; then _pass "good peer: ssh argv is exactly -T <alias>"; else _fail "good peer: no ssh call with argv exactly -T test-host"; fi
+  _br_t_expect_log "pid=4242 exe=Rex connect" "good peer: one log line with pid, exe basename and decision"
+  # shellcheck disable=SC2016  # literal requirement text, not an expansion
+  _br_t_expect_call "codesign " '-R=anchor apple generic and certificate leaf[subject.OU] = "AG92C3PT77"' "good peer: requirement names Apple anchor and team AG92C3PT77"
+  _br_t_expect_call "codesign " "Applications/Rex Beta.app/Contents/MacOS/Rex" "good peer: verifies the executable path"
+  _br_t_expect_call "codesign " " 4242" "good peer: verifies the running pid"
+  _br_t_expect_call "lsof -nP -a -p" "-d 0 -iTCP -sTCP:ESTABLISHED -Fn" "good peer: asks lsof for its own socket on fd 0"
+  _br_t_expect_call "lsof " "-iTCP:50001" "good peer: asks lsof for the peer port"
+
+  # fd 1 carries only what ssh wrote to it; fd 2 of ssh went to the log.
+  _br_t_expect_eq "$(<"${BR_T_OUT}")" "ssh-data" "fd 1 reaches ssh unchanged"
+  _br_t_expect_eq "$(<"${BR_T_ERR}")" "" "fd 2 is not the socket: nothing reached it"
+  _br_t_expect_log "ssh-warning" "fd 2 points at the log: ssh warning landed there"
+
+  # IPv4 works the same way.
+  _br_t_reset
+  BR_OWN=v4
+  _br_t_run
+  _br_t_expect_count "ssh" 1 "IPv4 peer: ssh started"
+
+  # One process on two fds is one peer.
+  _br_t_reset
+  BR_PEER=dup
+  _br_t_run
+  _br_t_expect_count "ssh" 1 "same socket on two fds: one peer, ssh started"
+}
+
+function _br_t_gates {
+  _section "rex-remote-bridge: gates"
+
+  # Server-only host (a launchd job owns the Rex server): exit 0, silent.
+  _br_t_reset
+  BR_SERVER_JOB=1
+  _br_t_run
+  _br_t_expect_eq "${BR_T_RC}" 0 "server-only host: exit 0"
+  _br_t_expect_call "launchctl print gui/" "/com.local.rex-server" "server-only host: reads the server job with launchctl print"
+  _br_t_expect_count "lsof" 0 "server-only host: no peer lookup"
+  _br_t_expect_count "ssh" 0 "server-only host: no ssh"
+  _br_t_expect_eq "$(<"${BR_T_OUT}")" "" "server-only host: nothing on fd 1"
+  _br_t_expect_eq "$(<"${BR_T_ERR}")" "" "server-only host: nothing on fd 2 of the socket"
+  _br_t_expect_eq "$(<"${BR_T_HOME}/Library/Logs/rex-remote-bridge.log")" "" "server-only host: no log line"
+
+  # No server job: the bridge runs.
+  _br_t_reset
+  _br_t_run
+  _br_t_expect_count "ssh" 1 "no server job: the bridge runs"
+
+  # Kill switch: log and exit 1, before any lookup.
+  _br_t_reset
+  /bin/mkdir -p "${BR_T_HOME}/Library/Application Support/rex-remote-bridge"
+  : > "${BR_T_HOME}/Library/Application Support/rex-remote-bridge/disabled"
+  _br_t_run
+  _br_t_expect_refused "kill switch" "kill switch"
+  _br_t_expect_count "lsof" 0 "kill switch: no peer lookup"
+
+  # Only the first line of the ssh-host file is the alias.
+  _br_t_reset
+  print -r -- $'other-host\nsecond-line' > "${BR_T_HOME}/Library/Application Support/rex-remote-bridge/ssh-host"
+  _br_t_run
+  if _br_t_line_is "ssh -T other-host"; then _pass "ssh-host file: the first line is the alias"; else _fail "ssh-host file: first line not used"; fi
+
+  # A missing, empty or malformed ssh-host file: log and exit 1, before any lookup.
+  local -a cases=(missing '' empty $'\n' option '-oProxyCommand=sh' space 'a b' slash 'a/b')
+  local bad label
+  local -i i
+  for (( i = 1; i < ${#cases}; i += 2 )); do
+    label="${cases[i]}"
+    bad="${cases[i+1]}"
+    _br_t_reset
+    if [[ "${label}" == missing ]]; then
+      /bin/rm -f "${BR_T_HOME}/Library/Application Support/rex-remote-bridge/ssh-host"
+    else
+      print -rn -- "${bad}" > "${BR_T_HOME}/Library/Application Support/rex-remote-bridge/ssh-host"
+    fi
+    _br_t_run
+    _br_t_expect_refused "no valid ssh-host file" "ssh-host ${label}"
+    _br_t_expect_count "lsof" 0 "ssh-host ${label}: no peer lookup"
+  done
+}
+
+function _br_t_refusals {
+  _section "rex-remote-bridge: refused peers"
+
+  # A peer owned by another uid.
+  _br_t_reset
+  BR_PEER_UID=502
+  _br_t_run
+  _br_t_expect_refused "peer uid 502 is not 501" "foreign uid"
+  _br_t_expect_log "pid=4242 exe=Rex refused" "foreign uid: log names the peer pid and exe"
+
+  # An unsigned executable.
+  _br_t_reset
+  BR_CS_MODE=unsigned
+  _br_t_run
+  _br_t_expect_refused "fails the signature requirement" "unsigned exe"
+
+  # Signed by another team: the stub accepts only the team in the requirement it is given.
+  _br_t_reset
+  BR_CS_TEAM=ZZZZZZZZZZ
+  _br_t_run
+  _br_t_expect_refused "fails the signature requirement" "wrong team"
+
+  # The path is signed but the running pid is not.
+  _br_t_reset
+  BR_CS_MODE=pidfail
+  _br_t_run
+  _br_t_expect_refused "running process fails the signature requirement" "pid check fails"
+
+  # lsof failures, one per lookup step.
+  _br_t_reset
+  BR_OWN=fail
+  _br_t_run
+  _br_t_expect_refused "lsof of own socket failed" "lsof fails on the own socket"
+  _br_t_reset
+  BR_OWN=none
+  _br_t_run
+  _br_t_expect_refused "own socket matches 0 names" "lsof empty for the own socket"
+  _br_t_reset
+  BR_OWN=two
+  _br_t_run
+  _br_t_expect_refused "own socket matches 2 names" "two own socket names"
+  _br_t_reset
+  BR_PEER=fail
+  _br_t_run
+  _br_t_expect_refused "lsof of peer socket failed" "lsof fails on the peer socket"
+  _br_t_reset
+  BR_PEER=none
+  _br_t_run
+  _br_t_expect_refused "peer socket matches 0 processes" "no peer found"
+  _br_t_reset
+  BR_PEER=mismatch
+  _br_t_run
+  _br_t_expect_refused "peer socket matches 0 processes" "peer socket aimed at another port"
+  _br_t_reset
+  BR_EXEMODE=fail
+  _br_t_run
+  _br_t_expect_refused "lsof of peer executable failed" "lsof fails on the executable"
+  _br_t_reset
+  BR_EXEMODE=none
+  _br_t_run
+  _br_t_expect_refused "peer executable not found" "no executable found"
+  _br_t_reset
+  BR_EXE='relative/Rex'
+  _br_t_run
+  _br_t_expect_refused "peer executable not found" "relative executable path"
+
+  # Two candidate peers.
+  _br_t_reset
+  BR_PEER=two
+  _br_t_run
+  _br_t_expect_refused "peer socket matches 2 processes" "two candidate peers"
+
+  # id -u unusable.
+  _br_t_reset
+  BR_ID=''
+  _br_t_run
+  _br_t_expect_refused "id -u failed" "id -u gives nothing"
+
+  # A hung lsof is ended by the deadline and the connection is refused.
+  _br_t_reset
+  BR_LSOF_HANG=1 BR_T_DEADLINE=1
+  _br_t_run
+  if (( BR_T_ELAPSED_MS < 4000 )); then
+    _pass "lsof hang: the deadline ended it (${BR_T_ELAPSED_MS} ms)"
+  else
+    _fail "lsof hang: run took ${BR_T_ELAPSED_MS} ms with a 1 s deadline"
+  fi
+  _br_t_expect_refused "lsof of own socket failed rc=142" "lsof hang"
+}
+
+function run_rex_remote_bridge {
+  zmodload zsh/datetime
+
+  BR_T_SCRIPT="${REX_REMOTE_BRIDGE_UNDER_TEST:-${SCRIPT_DIR}/bin/rex-remote-bridge}"
+  if [[ ! -f "${BR_T_SCRIPT}" ]]; then
+    _fail "rex-remote-bridge: ${BR_T_SCRIPT} is missing"
+    return 0
+  fi
+
+  BR_T_BOX="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/rex-remote-bridge-test.XXXXXX")" || return 1
+  BR_T_BOX="${BR_T_BOX:A}"
+  BR_T_STUBS="${BR_T_BOX}/stubs"
+  _br_t_make_stubs
+
+  _br_t_static
+  _br_t_good
+  _br_t_gates
+  _br_t_refusals
+
+  /bin/rm -rf -- "${BR_T_BOX:?}"
+}

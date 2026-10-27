@@ -1,0 +1,435 @@
+#!/bin/zsh
+# dotfiles/bin/rex-watch
+#
+# Watchdog for the local Rex server on this Mac. Run every 120 s by the
+# com.0xmachos.rex-watch LaunchAgent; safe to run by hand. Modelled on
+# bin/herdr-watch: internals/herdr.md "Monitoring, self-heal and update path".
+#
+#   rex-watch
+#
+# Probe: `rex --autostart=false --timeout 3s server status --json`, under a
+# hard deadline. The rex CLI is the copy the app keeps current:
+# ~/Library/Application Support/com.superlogical.rex/RexServer/Versions/Current/
+# Rex Server.app/Contents/MacOS/rex. `--autostart=false` is load-bearing:
+# without it the CLI STARTS a server when none answers. A zero exit with a
+# valid "rex_version" is `ok`. Anything else is `down`. A CLI that cannot run
+# (exit 126 or 127, for example while the app swaps its copy) is `error`: log
+# only, state untouched. The process list is one `ps -axo pid=,command=` read,
+# not pgrep (pgrep gave a false negative on this Mac).
+#
+# Skipped runs: on a server-only host (`launchctl print gui/<uid>/<job>` exits
+# 0 for the LaunchAgent that owns this Mac's Rex server, so the GUI app must
+# never be opened) and with no /Applications/Rex Beta.app, the run exits 0 and
+# does nothing, not even a log line or a state directory. Logged skip, state untouched: the kill switch file
+# ~/Library/Application Support/rex-watch/disabled.
+#
+# Heal, after 2 consecutive `down` runs only:
+#   - Rex Beta.app not running: `open -b com.superlogical.rex` (at most once
+#     per 10 min) and a banner. The app starts the server.
+#   - Rex Beta.app running: no action, banner only.
+#   - Never `rex server start`. Never kill anything.
+# Back to `ok` after a banner: one recovery banner.
+# Stale binary: after an ok probe, the second word of the first line of
+# `rex version` differs from the server's rex_version: one banner per 24 h.
+#
+# Banners: osascript `display notification`, text passed as argv through
+# `on run argv`, never interpolated into AppleScript source. Cooldown 6 h per
+# kind (24 h for the stale binary); the recovery banner has none. A cooldown
+# starts only when osascript succeeded.
+#
+# State: ~/Library/Caches/rex-watch/state, KEY=VALUE lines, parsed by hand
+# (never sourced), replaced atomically. Log: ~/Library/Logs/rex-watch.log
+# (one line per run, rotated at 1 MiB to .log.1) and syslog tag
+# com.0xmachos.rex-watch.
+#
+# Every external call runs under a perl `alarm` deadline with its output in a temp file, so a hung child
+# cannot hold a pipe open. launchd has no PATH, so binaries are called by
+# absolute path; the exit status is 0 unless the script itself cannot run
+# (unusable HOME or state directory).
+#
+# Test seams (environment): REX_WATCH_HOME (replaces HOME for every path),
+# REX_WATCH_PS, _OPEN, _OSASCRIPT, _LOGGER, _PERL, _LAUNCHCTL (program paths),
+# REX_WATCH_APP (the .app bundle), REX_WATCH_DEADLINE (seconds, default 5),
+# REX_WATCH_NOW (epoch seconds). Defaults are the real paths.
+# Deployed as a root-owned copy in /usr/local/bin by `./bittersweet scripts`.
+#
+# ShellCheck: lint with `shellcheck --shell=bash bin/rex-watch`.
+# Test: ./test rex-watch
+
+# shellcheck disable=SC2154  # zsh fills the `match` array on a successful =~
+emulate -L zsh
+set -uo pipefail
+umask 077
+
+zmodload zsh/datetime
+zmodload -F zsh/stat b:zstat
+
+readonly WATCH_TAG='com.0xmachos.rex-watch'
+readonly WATCH_BUNDLE_ID='com.superlogical.rex'
+# The server-only host's LaunchAgent (defined in the private infra repo).
+readonly WATCH_SERVER_JOB='com.local.rex-server'
+readonly WATCH_COOLDOWN=21600       # 6 h
+readonly WATCH_STALE_COOLDOWN=86400 # 24 h
+readonly WATCH_OPEN_GAP=600         # 10 min between two app launches
+readonly WATCH_HEAL_AFTER=2         # consecutive bad runs
+readonly WATCH_LOG_MAX=1048576      # 1 MiB
+
+# Regular expressions in variables: an unquoted variable on the right of =~ is a
+# regex in zsh, and shellcheck reads it the same way. The first "pid" in the
+# status JSON is the server's own (the later "you" block has another).
+readonly RE_VERSION='"rex_version"[[:space:]]*:[[:space:]]*"([0-9A-Za-z.+-]+)"'
+readonly RE_PID='"pid"[[:space:]]*:[[:space:]]*([0-9]{1,10})'
+readonly RE_SESSIONS='"session_count"[[:space:]]*:[[:space:]]*([0-9]{1,10})'
+readonly RE_PSLINE='^[[:space:]]*[0-9]+[[:space:]]+(.*)$'
+readonly RE_CLIVERSION='^rex[[:space:]]+([0-9A-Za-z.+-]+)'
+
+typeset -g W_HOME='' W_PS='' W_OPEN='' W_OSA='' W_LOGGER='' W_PERL='' W_LAUNCHCTL=''
+typeset -g W_APP='' W_APP_BIN='' W_REX='' W_STATE_DIR='' W_STATE='' W_LOG=''
+typeset -gi W_DEADLINE=5 W_NOW=0
+
+# State, as loaded from and saved to the state file.
+typeset -g S_KIND='' S_ALERTED=0
+typeset -gi S_STREAK=0 S_LAST_OPEN=0
+typeset -gA S_BANNER=()
+
+# Results of the external-call helper.
+typeset -g RUN_OUT=''
+typeset -gi RUN_RC=0
+
+# Paths and seams only: no file is created, so a skipped host stays untouched.
+function _w_init {
+  W_HOME="${REX_WATCH_HOME:-${HOME:-}}"
+  if [[ -z "${W_HOME}" || "${W_HOME}" != /* || "${W_HOME}" == *..* ]]; then
+    print -u2 'rex-watch: HOME is unset, empty or relative; refusing'
+    return 1
+  fi
+  W_PS="${REX_WATCH_PS:-/bin/ps}"
+  W_OPEN="${REX_WATCH_OPEN:-/usr/bin/open}"
+  W_OSA="${REX_WATCH_OSASCRIPT:-/usr/bin/osascript}"
+  W_LOGGER="${REX_WATCH_LOGGER:-/usr/bin/logger}"
+  W_PERL="${REX_WATCH_PERL:-/usr/bin/perl}"
+  W_LAUNCHCTL="${REX_WATCH_LAUNCHCTL:-/bin/launchctl}"
+  W_APP="${REX_WATCH_APP:-/Applications/Rex Beta.app}"
+  W_APP_BIN="${W_APP}/Contents/MacOS/Rex"
+  W_REX="${W_HOME}/Library/Application Support/com.superlogical.rex/RexServer/Versions/Current/Rex Server.app/Contents/MacOS/rex"
+  W_STATE_DIR="${W_HOME}/Library/Caches/rex-watch"
+  W_STATE="${W_STATE_DIR}/state"
+  W_LOG="${W_HOME}/Library/Logs/rex-watch.log"
+  W_NOW="${REX_WATCH_NOW:-${EPOCHSECONDS}}"
+  if [[ "${REX_WATCH_DEADLINE:-}" =~ ^[0-9]{1,2}$ ]] && (( REX_WATCH_DEADLINE >= 1 )); then
+    W_DEADLINE="${REX_WATCH_DEADLINE}"
+  fi
+}
+
+function _w_mkdirs {
+  /bin/mkdir -p "${W_STATE_DIR}" "${W_HOME}/Library/Logs" || {
+    print -u2 'rex-watch: cannot create the state or log directory'
+    return 1
+  }
+}
+
+# True on a server-only host: a launchd job owns this Mac's Rex server. A
+# read-only `launchctl print`, under the deadline, output dropped. Any failure
+# or timeout reads as "no job", and the app-absent gate still applies.
+function _w_server_job_present {
+  # shellcheck disable=SC2016  # perl code, not shell expansion
+  "${W_PERL}" -e 'alarm shift; exec { $ARGV[0] } @ARGV or exit 127' \
+    "${W_DEADLINE}" "${W_LAUNCHCTL}" print "gui/${UID}/${WATCH_SERVER_JOB}" \
+    </dev/null >/dev/null 2>&1
+}
+
+# Log one decision line to the log file and syslog. A failed file write is
+# reported to syslog, the sink that cannot fail.
+function _w_log {
+  local msg="$*" stamp size
+  local -a st
+  stamp="$(strftime '%Y-%m-%dT%H:%M:%S%z' "${W_NOW}")"
+  if [[ -f "${W_LOG}" ]] && zstat -A st +size -- "${W_LOG}" 2>/dev/null; then
+    size="${st[1]}"
+    if (( size > WATCH_LOG_MAX )); then
+      /bin/mv -f -- "${W_LOG}" "${W_LOG}.1" 2>/dev/null || :
+    fi
+  fi
+  if ! print -r -- "${stamp} ${msg}" >> "${W_LOG}" 2>/dev/null; then
+    "${W_LOGGER}" -t "${WATCH_TAG}" "cannot write ${W_LOG}" 2>/dev/null || :
+  fi
+  "${W_LOGGER}" -t "${WATCH_TAG}" -- "${msg}" 2>/dev/null || :
+}
+
+# _w_run SECONDS STDIN_TEXT COMMAND [ARG...]
+# Runs the command under a hard deadline: perl sets alarm(SECONDS) and execs it,
+# and the pending alarm survives exec, so SIGALRM ends a hung command. Output
+# (stdout and stderr) goes to a temp file, not a pipe, so a grandchild that
+# outlives the command cannot block this script. Sets RUN_OUT and RUN_RC. A
+# command ended by the deadline has RUN_RC 142 (128 + SIGALRM).
+function _w_run {
+  local secs="$1" input="$2" tmp
+  shift 2
+  tmp="$(/usr/bin/mktemp "${W_STATE_DIR}/run.XXXXXX")" || {
+    RUN_OUT=''
+    RUN_RC=125
+    return 0
+  }
+  # shellcheck disable=SC2016  # perl code, not shell expansion
+  "${W_PERL}" -e 'alarm shift; exec { $ARGV[0] } @ARGV or exit 127' \
+    "${secs}" "$@" <<< "${input}" > "${tmp}" 2>&1
+  RUN_RC=$?
+  RUN_OUT="$(<"${tmp}")"
+  /bin/rm -f -- "${tmp}"
+  return 0
+}
+
+# --- State ---------------------------------------------------------------
+
+function _w_state_load {
+  local line key val
+  S_KIND=''
+  S_ALERTED=0
+  S_STREAK=0
+  S_LAST_OPEN=0
+  S_BANNER=()
+  [[ -r "${W_STATE}" ]] || return 0
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    key="${line%%=*}"
+    val="${line#*=}"
+    case "${key}" in
+      kind)      [[ "${val}" == down ]] && S_KIND="${val}" ;;
+      streak)    [[ "${val}" =~ ^[0-9]{1,5}$ ]] && S_STREAK="${val}" ;;
+      alerted)   [[ "${val}" == 0 || "${val}" == 1 ]] && S_ALERTED="${val}" ;;
+      last_open) [[ "${val}" =~ ^[0-9]{1,10}$ ]] && S_LAST_OPEN="${val}" ;;
+      banner_*)
+        [[ "${key#banner_}" =~ ^(reopened|running|stale)$ && "${val}" =~ ^[0-9]{1,10}$ ]] \
+          && S_BANNER[${key#banner_}]="${val}" ;;
+    esac
+  done < "${W_STATE}"
+  return 0
+}
+
+# Atomic replace: temp file in the same directory, then rename.
+function _w_state_save {
+  local tmp kind
+  tmp="$(/usr/bin/mktemp "${W_STATE_DIR}/state.XXXXXX")" || {
+    _w_log 'state: cannot create a temp file; state not saved'
+    return 1
+  }
+  local rc=0
+  {
+    print -r -- "kind=${S_KIND}"
+    print -r -- "streak=${S_STREAK}"
+    print -r -- "alerted=${S_ALERTED}"
+    print -r -- "last_open=${S_LAST_OPEN}"
+    for kind in reopened running stale; do
+      if [[ -n "${S_BANNER[${kind}]:-}" ]]; then
+        print -r -- "banner_${kind}=${S_BANNER[${kind}]}"
+      fi
+    done
+  } > "${tmp}" || rc=1
+  if (( rc == 0 )); then
+    /bin/mv -f -- "${tmp}" "${W_STATE}" || rc=1
+  fi
+  if (( rc != 0 )); then
+    /bin/rm -f -- "${tmp}"
+    _w_log 'state: write failed; state not saved'
+    return 1
+  fi
+}
+
+# --- Banners -------------------------------------------------------------
+
+# _w_banner_send TITLE BODY: osascript with the text as argv items, never in source.
+function _w_banner_send {
+  _w_run 10 '' "${W_OSA}" \
+    -e 'on run argv' \
+    -e 'display notification (item 2 of argv) with title (item 1 of argv)' \
+    -e 'end run' \
+    -- "$1" "$2"
+  (( RUN_RC == 0 ))
+}
+
+# _w_banner KIND TITLE BODY [COOLDOWN]: honour the per-kind cooldown, send, and
+# start the cooldown only after a successful send. Returns 0 if it sent.
+function _w_banner {
+  local kind="$1" title="$2" body="$3" cooldown="${4:-${WATCH_COOLDOWN}}" last
+  last="${S_BANNER[${kind}]:-0}"
+  if (( W_NOW - last < cooldown )); then
+    _w_log "banner ${kind}: suppressed by cooldown"
+    return 1
+  fi
+  if _w_banner_send "${title}" "${body}"; then
+    S_BANNER[${kind}]="${W_NOW}"
+    _w_log "banner ${kind}: sent"
+    return 0
+  fi
+  _w_log "banner ${kind}: osascript failed rc=${RUN_RC}"
+  return 1
+}
+
+# --- Probes --------------------------------------------------------------
+
+typeset -g P_STATUS='' P_VERSION='' P_PID='' P_SESSIONS='' PS_TEXT=''
+typeset -gi PS_RC=0
+typeset -ga PS_CMDS=()
+
+# Sets P_STATUS to ok, down or error, and P_VERSION, P_PID, P_SESSIONS from an
+# ok. A CLI that cannot run (rc 126, 127) is `error`, not a dead server.
+function _w_probe {
+  P_STATUS='down'
+  P_VERSION=''
+  P_PID=''
+  P_SESSIONS=''
+  _w_run "${W_DEADLINE}" '' "${W_REX}" --autostart=false --timeout 3s server status --json
+  if (( RUN_RC == 126 || RUN_RC == 127 )); then
+    P_STATUS='error'
+    return 0
+  fi
+  if (( RUN_RC == 0 )) && [[ "${RUN_OUT}" =~ $RE_VERSION ]]; then
+    P_STATUS='ok'
+    P_VERSION="${match[1]}"
+    if [[ "${RUN_OUT}" =~ $RE_PID ]]; then
+      P_PID="${match[1]}"
+    fi
+    if [[ "${RUN_OUT}" =~ $RE_SESSIONS ]]; then
+      P_SESSIONS="${match[1]}"
+    fi
+  fi
+  return 0
+}
+
+# One process-list read: PS_RC is its status, PS_CMDS holds the command column
+# of each line (the pid is dropped).
+function _w_ps_read {
+  local line
+  local -a lines
+  PS_CMDS=()
+  _w_run "${W_DEADLINE}" '' "${W_PS}" -axo 'pid=,command='
+  PS_RC="${RUN_RC}"
+  PS_TEXT="${RUN_OUT}"
+  # shellcheck disable=SC2296  # zsh (@f) line split
+  lines=("${(@f)PS_TEXT}")
+  for line in "${lines[@]}"; do
+    if [[ "${line}" =~ $RE_PSLINE ]]; then
+      PS_CMDS+=("${match[1]}")
+    fi
+  done
+}
+
+# True if PS_CMDS holds the Rex Beta.app binary alone (no arguments). The
+# server runs from Application Support, so it never matches.
+function _w_has_app {
+  local cmd
+  for cmd in "${PS_CMDS[@]}"; do
+    [[ "${cmd}" == "${W_APP_BIN}" ]] && return 0
+  done
+  return 1
+}
+
+# --- Handlers ------------------------------------------------------------
+
+function _w_clear_streak {
+  S_KIND=''
+  S_STREAK=0
+}
+
+function _w_handle_ok {
+  local installed='' first
+  _w_clear_streak
+  _w_log "decision: ok version=${P_VERSION} pid=${P_PID:-unknown} sessions=${P_SESSIONS:-unknown}"
+  if (( S_ALERTED )); then
+    if _w_banner_send 'Rex is back' 'The Rex server answers again.'; then
+      _w_log 'banner recovery: sent'
+      S_ALERTED=0
+    else
+      _w_log "banner recovery: osascript failed rc=${RUN_RC}; will retry"
+    fi
+  fi
+  # Stale binary: the server runs older code than the installed CLI.
+  _w_run "${W_DEADLINE}" '' "${W_REX}" version
+  first="${RUN_OUT%%$'\n'*}"
+  if (( RUN_RC == 0 )) && [[ "${first}" =~ $RE_CLIVERSION ]]; then
+    installed="${match[1]}"
+  else
+    _w_log "stale check: rex version gave no version rc=${RUN_RC}"
+    return 0
+  fi
+  if [[ "${installed}" != "${P_VERSION}" ]]; then
+    _w_log "stale binary: server ${P_VERSION}, installed ${installed}"
+    _w_banner stale 'Rex update waiting' \
+      "Server runs ${P_VERSION}, installed is ${installed}. Restart the Rex server." \
+      "${WATCH_STALE_COOLDOWN}" || :
+  fi
+  return 0
+}
+
+function _w_handle_down {
+  if [[ "${S_KIND}" == down ]]; then
+    S_STREAK+=1
+  else
+    S_KIND=down
+    S_STREAK=1
+  fi
+  if (( S_STREAK < WATCH_HEAL_AFTER )); then
+    _w_log "decision: down streak=${S_STREAK}; waiting for run ${WATCH_HEAL_AFTER}"
+    return 0
+  fi
+  if _w_has_app; then
+    _w_log "decision: down streak=${S_STREAK}; Rex Beta.app is running; no action"
+    _w_banner running 'Rex server is down' \
+      'Rex Beta is open but no server answers. Quit and reopen Rex Beta.' \
+      && S_ALERTED=1
+    return 0
+  fi
+  if (( W_NOW - S_LAST_OPEN < WATCH_OPEN_GAP )); then
+    _w_log "decision: down streak=${S_STREAK}; Rex Beta.app not running; open skipped (last launch under 10 min ago)"
+  else
+    _w_run 10 '' "${W_OPEN}" -b "${WATCH_BUNDLE_ID}"
+    S_LAST_OPEN="${W_NOW}"
+    _w_log "decision: down streak=${S_STREAK}; Rex Beta.app not running; open -b rc=${RUN_RC}"
+  fi
+  _w_banner reopened 'Rex was not running' \
+    'Rex watch opened the app. Check that your sessions came back.' \
+    && S_ALERTED=1
+  return 0
+}
+
+function main {
+  _w_init || return 1
+
+  # Silent skips: no log line, no state directory.
+  if _w_server_job_present; then
+    return 0
+  fi
+  if [[ ! -d "${W_APP}" ]]; then
+    return 0
+  fi
+
+  _w_mkdirs || return 1
+
+  if [[ -e "${W_HOME}/Library/Application Support/rex-watch/disabled" ]]; then
+    _w_log 'decision: skip (disabled file present)'
+    return 0
+  fi
+
+  _w_state_load
+  _w_probe
+  case "${P_STATUS}" in
+    ok)
+      _w_handle_ok
+      ;;
+    error)
+      _w_log "decision: probe unavailable (rex rc=${RUN_RC}); state unchanged"
+      return 0
+      ;;
+    *)
+      _w_ps_read
+      if (( PS_RC != 0 )) || [[ -z "${PS_TEXT}" ]]; then
+        _w_log "decision: process list unavailable (rc=${PS_RC}); state unchanged"
+        return 0
+      fi
+      _w_handle_down
+      ;;
+  esac
+  _w_state_save
+  return 0
+}
+
+main "$@"

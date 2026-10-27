@@ -367,6 +367,8 @@ function run_linkage {
     [jump-system]=install_scripts
     [scratch-sweep]=install_scripts
     [herdr-watch]=install_scripts
+    [rex-watch]=install_scripts
+    [rex-remote-bridge]=install_scripts
     [mdview]=install_scripts
     [npm-audit-check]=install_scripts
     [claude-session-audit]=install_scripts
