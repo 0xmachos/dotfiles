@@ -13,7 +13,7 @@
 # tilde Include; hostd/hoste/hostf extra pairs; hostg-claude with no bare
 # hostg; hostw* a wildcard Host line paired with a real hostw-claude.
 # hosta-herdr an app alias beside hosta-claude (DENY); hostb-herdr with no
-# hostb-claude (PASS).
+# hostb-claude (PASS). hosta-rex and hostb-rex: the same for the Rex app alias.
 #
 # Since 2026-10-24 the verdict cases run the guard through the pretool-dispatch
 # seam (_hook_run_seam in tests/lib: sourced in a subshell, HOOK_PRE_* set,
@@ -193,6 +193,12 @@ function run_ssh_redirect {
   _ssh_redirect_expect PASS 'ssh hostb-herdr' '-herdr alias with no -claude twin'
   _ssh_redirect_expect PASS 'ssh hostd-herdr' '-herdr name never declared, -claude twin exists'
   _ssh_redirect_expect PASS 'ssh tail-hosta-herdr' 'no tail- form for an app alias'
+  # App alias: X-rex (the Rex app) denies the same way.
+  _ssh_redirect_expect DENY 'ssh hosta-rex' '-rex alias beside a -claude twin'
+  _ssh_redirect_expect DENY 'ssh -T hosta-rex' '-rex alias with -T, as the Rex bridge runs it'
+  _ssh_redirect_expect PASS 'ssh hostb-rex' '-rex alias with no -claude twin'
+  _ssh_redirect_expect PASS 'ssh hostd-rex' '-rex name never declared, -claude twin exists'
+  _ssh_redirect_expect PASS 'ssh tail-hosta-rex' 'no tail- form for the -rex alias'
 
   # No twin → PASS.
   _ssh_redirect_expect PASS 'ssh hostb'
@@ -477,6 +483,12 @@ function run_ssh_redirect {
   else
     _fail "-herdr alias deny text unexpected: ${HOOK_SEAM_OUT}${HOOK_SEAM_ERR}"
   fi
+  _ssh_redirect_seam "${SSHR_T_CONFIG}" "${SSHR_T_HOME}" 'ssh hosta-rex'
+  if [[ "${HOOK_SEAM_REASON}" == "hosta-rex is Rex's SSH alias: use hosta-claude instead." ]]; then
+    _pass "deny text for a -rex alias names Rex and the -claude twin"
+  else
+    _fail "-rex alias deny text unexpected: ${HOOK_SEAM_OUT}${HOOK_SEAM_ERR}"
+  fi
 
   # Loop-twice regressions: many segments, substitutions and option letters
   # must still print one JSON object (deny) or nothing (pass), never a stray
@@ -491,7 +503,8 @@ function run_ssh_redirect {
   local pair twin
   for pair in 'hosta:hosta-claude' 'tail-hosta:hosta-claude' 'hostc:hostc-claude' \
               'tail-hostc:hostc-claude' 'hostd:hostd-claude' 'hoste:hoste-claude' \
-              'hostf:hostf-claude' 'hosth:hosth-claude' 'hosta-herdr:hosta-claude'; do
+              'hostf:hostf-claude' 'hosth:hosth-claude' 'hosta-herdr:hosta-claude' \
+              'hosta-rex:hosta-claude'; do
     twin="${pair#*:}"
     _ssh_redirect_seam "${SSHR_T_CONFIG}" "${SSHR_T_HOME}" "ssh ${pair%%:*}"
     if [[ "${HOOK_SEAM_REASON}" == *"use ${twin} instead."* ]]; then
