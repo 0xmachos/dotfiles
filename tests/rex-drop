@@ -21,7 +21,7 @@ typeset -g RD_T_BOX='' RD_T_STUBS='' RD_T_SCRIPT='' RD_T_HOME='' RD_T_REMOTE='' 
 typeset -gi RD_T_RC=0
 
 # Scenario knobs, read by the stubs (see _rd_t_reset for the defaults).
-typeset -g RD_DOWN_HOSTS='' RD_SSH_FAIL='' RD_TAMPER='' RD_CLIP_MODE=''
+typeset -g RD_DOWN_HOSTS='' RD_SSH_FAIL='' RD_TAMPER='' RD_CLIP_MODE='' RD_CLIP_FILES=''
 
 function _rd_t_make_stubs {
   local d="${RD_T_STUBS}"
@@ -51,6 +51,7 @@ if [[ "$1" == -l ]]; then
   print -r -- "osa clip" >> "${RD_CALLS}"
   case "${RD_CLIP_MODE}" in
     image) print -rn -- 'PNGDATA' > "${@[-1]}"; print -r -- ok ;;
+    files) print -r -- files; print -r -- "${RD_CLIP_FILES}" ;;
     none) print -r -- none ;;
     *) exit 1 ;;
   esac
@@ -79,13 +80,13 @@ function _rd_t_reset {
   print -rl -- '# first that connects wins' 'hosta' '' 'hostb' > "${RD_T_HOME}/Library/Application Support/rex-drop/ssh-hosts"
   : > "${RD_T_CALLS}"
   /bin/rm -f -- "${RD_T_CLIP}"
-  RD_DOWN_HOSTS='' RD_SSH_FAIL='' RD_TAMPER='' RD_CLIP_MODE='image'
+  RD_DOWN_HOSTS='' RD_SSH_FAIL='' RD_TAMPER='' RD_CLIP_MODE='image' RD_CLIP_FILES=''
 }
 
 function _rd_t_run {
   RD_T_RC=0
   RD_T_OUT="$(HOME="${RD_T_HOME}" RD_CALLS="${RD_T_CALLS}" RD_REMOTE="${RD_T_REMOTE}" RD_CLIPFILE="${RD_T_CLIP}" \
-    RD_DOWN_HOSTS="${RD_DOWN_HOSTS}" RD_SSH_FAIL="${RD_SSH_FAIL}" RD_TAMPER="${RD_TAMPER}" RD_CLIP_MODE="${RD_CLIP_MODE}" \
+    RD_DOWN_HOSTS="${RD_DOWN_HOSTS}" RD_SSH_FAIL="${RD_SSH_FAIL}" RD_TAMPER="${RD_TAMPER}" RD_CLIP_MODE="${RD_CLIP_MODE}" RD_CLIP_FILES="${RD_CLIP_FILES}" \
     RXD_SSH="${RD_T_STUBS}/ssh" RXD_OSASCRIPT="${RD_T_STUBS}/osascript" RXD_PBCOPY="${RD_T_STUBS}/pbcopy" \
     RXD_NOW='20261029 213501' /bin/zsh "${RD_T_SCRIPT}" "$@" 2>&1)" || RD_T_RC=$?
 }
@@ -189,10 +190,26 @@ function _rd_t_clipboard {
   if [[ "${RD_T_OUT}" == *"/${RD_T_DIR_REL}/213501-1-clipboard-"*".png" ]]; then _pass "clipboard image: remote path printed"; else _rd_t_bad "clipboard image: remote path printed"; fi
   if [[ -z "$(/bin/ls -A "${staged}" 2>/dev/null)" ]]; then _pass "clipboard image: the local staged copy is removed"; else _rd_t_bad "clipboard image: the local staged copy is removed"; fi
 
+  # Files copied in Finder go as the files, with their own names.
+  _rd_t_reset
+  print -rn -- 'shot one' > "${RD_T_BOX}/Shot 1.png"
+  print -rn -- 'shot two' > "${RD_T_BOX}/b.jpg"
+  RD_CLIP_MODE=files RD_CLIP_FILES="${RD_T_BOX}/Shot 1.png"$'\n'"${RD_T_BOX}/b.jpg"
+  _rd_t_run
+  if (( RD_T_RC == 0 )) && [[ "$(<"${RD_T_REMOTE}/${RD_T_DIR_REL}/213501-1-Shot-1.png")" == "shot one" && "$(<"${RD_T_REMOTE}/${RD_T_DIR_REL}/213501-2-b.jpg")" == "shot two" ]]; then _pass "clipboard files: each copied file goes, with its name"; else _rd_t_bad "clipboard files: each copied file goes, with its name"; fi
+  if ! /bin/ls -- "${RD_T_REMOTE}/${RD_T_DIR_REL}" | command grep -aq clipboard-; then _pass "clipboard files: no clipboard image goes"; else _rd_t_bad "clipboard files: no clipboard image goes"; fi
+  if [[ "$(<"${RD_T_CLIP}")" == *"213501-1-Shot-1.png "*"213501-2-b.jpg" ]]; then _pass "clipboard files: the clipboard holds both paths"; else _rd_t_bad "clipboard files: the clipboard holds both paths"; fi
+
+  # A copied folder is not a file: stop before any ssh.
+  _rd_t_reset
+  RD_CLIP_MODE=files RD_CLIP_FILES="${RD_T_BOX}"
+  _rd_t_run
+  if (( RD_T_RC == 1 )) && [[ "${RD_T_OUT}" == *"not a readable file"* && "$(_rd_t_count "ssh")" == 0 ]]; then _pass "clipboard folder: exit 1, no ssh"; else _rd_t_bad "clipboard folder: exit 1, no ssh"; fi
+
   _rd_t_reset
   RD_CLIP_MODE=none
   _rd_t_run
-  if (( RD_T_RC == 1 )) && [[ "${RD_T_OUT}" == *"no image on the clipboard"* && "$(_rd_t_count "ssh")" == 0 ]]; then _pass "no clipboard image: exit 1, no ssh"; else _rd_t_bad "no clipboard image: exit 1, no ssh"; fi
+  if (( RD_T_RC == 1 )) && [[ "${RD_T_OUT}" == *"no image or file on the clipboard"* && "$(_rd_t_count "ssh")" == 0 ]]; then _pass "no clipboard image: exit 1, no ssh"; else _rd_t_bad "no clipboard image: exit 1, no ssh"; fi
 
   _rd_t_reset
   RD_CLIP_MODE=fail

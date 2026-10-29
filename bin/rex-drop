@@ -8,8 +8,10 @@
 #
 #   rex-drop [-n] [FILE...]
 #
-# With no FILE, the clipboard image goes (PNG, or TIFF converted to PNG). -n
-# also shows a macOS notification, for a run with no terminal (a Shortcut).
+# With no FILE, the clipboard goes. Files copied in Finder go as files, because
+# Finder also puts their icon on the clipboard as an image. Otherwise the
+# clipboard image goes (PNG, or TIFF converted to PNG). -n also shows a macOS
+# notification, for a run with no terminal (a Shortcut).
 # stdout gets one remote path per line, and the clipboard gets them joined
 # by spaces.
 #
@@ -43,11 +45,24 @@ readonly SHASUM="${RXD_SHASUM:-/usr/bin/shasum}"
 readonly HOSTS_FILE="${HOME}/Library/Application Support/rex-drop/ssh-hosts"
 readonly STAGE_DIR="${HOME}/Library/Caches/rex-drop"
 
-# Writes the clipboard image to argv[0] as PNG. Prints ok, none or fail.
+# Prints "files" and one path per line when the clipboard holds file URLs.
+# Otherwise writes the clipboard image to argv[0] as PNG and prints ok, none
+# or fail. A path with a newline prints fail.
 # shellcheck disable=SC2016 # JXA text: $ is ObjC.import's bridge, not a shell expansion
 readonly CLIP_JXA='ObjC.import("AppKit")
 function run(argv) {
   const pb = $.NSPasteboard.generalPasteboard
+  const opts = $.NSDictionary.dictionaryWithObjectForKey(true, $.NSPasteboardURLReadingFileURLsOnlyKey)
+  const urls = pb.readObjectsForClassesOptions($([$.NSURL]), opts)
+  if (!urls.isNil() && urls.count > 0) {
+    const out = ["files"]
+    for (let i = 0; i < urls.count; i++) {
+      const p = urls.objectAtIndex(i).path.js
+      if (p.includes("\n")) return "fail"
+      out.push(p)
+    }
+    return out.join("\n")
+  }
   let data = pb.dataForType($.NSPasteboardTypePNG)
   if (data.isNil()) {
     const tiff = pb.dataForType($.NSPasteboardTypeTIFF)
@@ -61,7 +76,7 @@ function run(argv) {
 }'
 
 typeset -g NOTIFY=0 DAY='' CLOCK='' STAGED=''
-typeset -ga HOSTS=() PATHS=()
+typeset -ga HOSTS=() PATHS=() CLIP_FILES=()
 
 function die {
   print -r -- "rex-drop: $1" >&2
@@ -92,15 +107,23 @@ function read_hosts {
   (( ${#HOSTS} )) || die "no hosts: ${HOSTS_FILE} has no alias"
 }
 
-# Sets STAGED. Runs in the main shell, never in $(...), so cleanup sees STAGED.
-function clipboard_image {
+# Sets CLIP_FILES to the copied files, or to the staged image. Runs in the main
+# shell, never in $(...), so cleanup sees STAGED.
+function clipboard_items {
   /bin/mkdir -p "${STAGE_DIR}"
   STAGED="${STAGE_DIR}/clipboard-$$.png"
   local result
   result="$("${OSASCRIPT}" -l JavaScript -e "${CLIP_JXA}" "${STAGED}" 2> /dev/null)" || result=fail
+  # shellcheck disable=SC2296 # zsh (@f) splits on newlines
+  local -a lines=("${(@f)result}")
+  if [[ "${lines[1]}" == files ]] && (( ${#lines} > 1 )); then
+    CLIP_FILES=("${lines[@]:1}")
+    return 0
+  fi
+  CLIP_FILES=("${STAGED}")
   case "${result}" in
     ok) [[ -s "${STAGED}" ]] || die "the clipboard image came out empty" ;;
-    none) die "no image on the clipboard: copy one, or pass file paths" ;;
+    none) die "no image or file on the clipboard: copy one, or pass file paths" ;;
     *) die "could not read the clipboard image" ;;
   esac
 }
@@ -158,8 +181,8 @@ function main {
   if (( $# )); then
     files=("$@")
   else
-    clipboard_image
-    files=("${STAGED}")
+    clipboard_items
+    files=("${CLIP_FILES[@]}")
   fi
 
   local f
