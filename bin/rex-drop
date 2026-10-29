@@ -1,0 +1,184 @@
+#!/bin/zsh
+# dotfiles/bin/rex-drop
+#
+# Copies files, or the image on the clipboard, to a remote Mac over SSH and
+# puts the remote paths on the clipboard. Paste them into an agent that runs
+# on that Mac (Claude Code reads an image from a pasted path). Rex has no
+# remote drag and drop or image paste yet; remove this when it ships one.
+#
+#   rex-drop [-n] [FILE...]
+#
+# With no FILE, the clipboard image goes (PNG, or TIFF converted to PNG). -n
+# also shows a macOS notification, for a run with no terminal (a Shortcut).
+# stdout gets one remote path per line, and the clipboard gets them joined
+# by spaces.
+#
+# Hosts: ~/Library/Application Support/rex-drop/ssh-hosts, one SSH Host alias
+# per line ([A-Za-z0-9_.-], not starting with `-`; blank and # lines skipped).
+# The aliases live only there and in the gitignored ssh config, because the
+# PII hook refuses SSH aliases in tracked files. The first alias that connects
+# is used: ssh exit 255 (no connection) moves on to the next alias, any other
+# failure stops.
+#
+# Remote side: each file goes to ~/Library/Caches/tint/rex-drop-<YYYYMMDD>/ as
+# <HHMMSS>-<n>-<name>, where <n> counts the files of the run and <name> keeps only [A-Za-z0-9._-] of the basename. The
+# remote scratch-sweep removes the folder after 14 idle days. One ssh call
+# per file writes it from stdin under umask 077, then prints the folder and
+# `shasum -a 256` of the file. The local and remote SHA-256 must match, else
+# exit 1 and the clipboard stays as it was. Only sanitized names reach the
+# remote command line.
+#
+# Exit: 0 all copied, 1 a failure, 2 usage.
+#
+# Test seams (environment): RXD_SSH, RXD_OSASCRIPT, RXD_PBCOPY, RXD_SHASUM
+# (program paths), RXD_NOW (`date` format output: YYYYMMDD HHMMSS).
+
+set -euo pipefail
+umask 077
+
+readonly SSH="${RXD_SSH:-/usr/bin/ssh}"
+readonly OSASCRIPT="${RXD_OSASCRIPT:-/usr/bin/osascript}"
+readonly PBCOPY="${RXD_PBCOPY:-/usr/bin/pbcopy}"
+readonly SHASUM="${RXD_SHASUM:-/usr/bin/shasum}"
+readonly HOSTS_FILE="${HOME}/Library/Application Support/rex-drop/ssh-hosts"
+readonly STAGE_DIR="${HOME}/Library/Caches/rex-drop"
+
+# Writes the clipboard image to argv[0] as PNG. Prints ok, none or fail.
+# shellcheck disable=SC2016 # JXA text: $ is ObjC.import's bridge, not a shell expansion
+readonly CLIP_JXA='ObjC.import("AppKit")
+function run(argv) {
+  const pb = $.NSPasteboard.generalPasteboard
+  let data = pb.dataForType($.NSPasteboardTypePNG)
+  if (data.isNil()) {
+    const tiff = pb.dataForType($.NSPasteboardTypeTIFF)
+    if (tiff.isNil()) return "none"
+    const rep = $.NSBitmapImageRep.imageRepWithData(tiff)
+    if (rep.isNil()) return "fail"
+    data = rep.representationUsingTypeProperties($.NSBitmapImageFileTypePNG, $())
+    if (data.isNil()) return "fail"
+  }
+  return data.writeToFileAtomically(argv[0], true) ? "ok" : "fail"
+}'
+
+typeset -g NOTIFY=0 DAY='' CLOCK='' STAGED=''
+typeset -ga HOSTS=() PATHS=()
+
+function die {
+  print -r -- "rex-drop: $1" >&2
+  (( NOTIFY )) && notify "rex-drop failed" "$1"
+  exit 1
+}
+
+function notify {
+  # Title and body go in as arguments, never into the script text.
+  "${OSASCRIPT}" -e 'on run argv' -e 'display notification (item 2 of argv) with title (item 1 of argv)' -e 'end run' -- "$1" "$2" > /dev/null 2>&1 || true
+}
+
+function cleanup {
+  [[ -n "${STAGED}" && -f "${STAGED}" ]] && /bin/rm -f -- "${STAGED}"
+  return 0
+}
+
+function read_hosts {
+  [[ -r "${HOSTS_FILE}" ]] || die "no hosts: write one SSH alias per line to ${HOSTS_FILE}"
+  local line
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    line="${line//[[:space:]]/}"
+    [[ -z "${line}" || "${line}" == \#* ]] && continue
+    # shellcheck disable=SC2076 # zsh: a quoted right side is still a regex
+    [[ "${line}" =~ '^[A-Za-z0-9_.][A-Za-z0-9_.-]*$' ]] || die "bad alias in ${HOSTS_FILE}: ${line}"
+    HOSTS+=("${line}")
+  done < "${HOSTS_FILE}"
+  (( ${#HOSTS} )) || die "no hosts: ${HOSTS_FILE} has no alias"
+}
+
+# Sets STAGED. Runs in the main shell, never in $(...), so cleanup sees STAGED.
+function clipboard_image {
+  /bin/mkdir -p "${STAGE_DIR}"
+  STAGED="${STAGE_DIR}/clipboard-$$.png"
+  local result
+  result="$("${OSASCRIPT}" -l JavaScript -e "${CLIP_JXA}" "${STAGED}" 2> /dev/null)" || result=fail
+  case "${result}" in
+    ok) [[ -s "${STAGED}" ]] || die "the clipboard image came out empty" ;;
+    none) die "no image on the clipboard: copy one, or pass file paths" ;;
+    *) die "could not read the clipboard image" ;;
+  esac
+}
+
+# Prints <HHMMSS>-<index>-<name>. The index keeps two files with one basename apart.
+function safe_name {
+  local name="${1:t}"
+  name="${name//[^A-Za-z0-9._-]/-}"
+  while [[ "${name}" == [.-]* ]]; do name="${name:1}"; done
+  [[ -n "${name}" ]] || name="file"
+  print -r -- "${CLOCK}-$2-${name}"
+}
+
+# Copies one file. Tries each alias until one connects. Sets REPLY to the path.
+function upload {
+  local file="$1" name="$2"
+  local dir="Library/Caches/tint/rex-drop-${DAY}"
+  local want
+  want="$("${SHASUM}" -a 256 < "${file}")" || die "cannot hash ${file}"
+  want="${want%% *}"
+  local cmd="umask 077 && /bin/mkdir -p '${dir}' && /bin/cat > '${dir}/${name}' && cd '${dir}' && /bin/pwd && /usr/bin/shasum -a 256 '${name}'"
+  local host out rc
+  for host in "${HOSTS[@]}"; do
+    rc=0
+    # shellcheck disable=SC2034 # read below through (@f)
+    out="$("${SSH}" -T -o BatchMode=yes -o ConnectTimeout=5 "${host}" "${cmd}" < "${file}")" || rc=$?
+    (( rc == 255 )) && continue
+    (( rc == 0 )) || die "copy to ${host} failed (ssh exit ${rc})"
+    # shellcheck disable=SC2296 # zsh (@f) splits on newlines
+    local -a lines=("${(@f)out}")
+    (( ${#lines} == 2 )) || die "unexpected reply from ${host}"
+    [[ "${lines[2]%% *}" == "${want}" ]] || die "SHA-256 mismatch after copy to ${host}: ${name}"
+    REPLY="${lines[1]}/${name}"
+    return 0
+  done
+  die "no host connected: ${HOSTS[*]}"
+}
+
+function main {
+  if [[ "${1:-}" == -n ]]; then NOTIFY=1; shift; fi
+  if [[ "${1:-}" == -h || "${1:-}" == --help ]]; then
+    print -r -- "usage: rex-drop [-n] [FILE...]"
+    exit 0
+  fi
+  [[ "${1:-}" == -* ]] && { print -r -- "usage: rex-drop [-n] [FILE...]" >&2; exit 2; }
+
+  local now="${RXD_NOW:-$(/bin/date '+%Y%m%d %H%M%S')}"
+  DAY="${now%% *}" CLOCK="${now##* }"
+  # shellcheck disable=SC2076 # zsh: a quoted right side is still a regex
+  [[ "${DAY}" =~ '^[0-9]{8}$' && "${CLOCK}" =~ '^[0-9]{6}$' ]] || die "bad clock: ${now}"
+
+  read_hosts
+
+  local -a files
+  if (( $# )); then
+    files=("$@")
+  else
+    clipboard_image
+    files=("${STAGED}")
+  fi
+
+  local f
+  local -i i=0
+  for f in "${files[@]}"; do
+    [[ -f "${f}" && -r "${f}" ]] || die "not a readable file: ${f}"
+  done
+  for f in "${files[@]}"; do
+    (( ++i ))
+    upload "${f}" "$(safe_name "${f}" "${i}")"
+    PATHS+=("${REPLY}")
+  done
+
+  print -rl -- "${PATHS[@]}"
+  print -rn -- "${PATHS[*]}" | "${PBCOPY}" || die "could not set the clipboard"
+  (( NOTIFY )) && notify "rex-drop" "Copied ${#PATHS} path(s) to the clipboard"
+  return 0
+}
+
+# Top level, not in main: a zsh EXIT trap set in a function fires when the function returns.
+trap cleanup EXIT
+main "$@"

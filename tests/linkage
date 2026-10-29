@@ -370,6 +370,7 @@ function run_linkage {
     [herdr-watch]=install_scripts
     [rex-watch]=install_scripts
     [rex-remote-bridge]=install_scripts
+    [rex-drop]=install_scripts
     [mdview]=install_scripts
     [npm-audit-check]=install_scripts
     [claude-session-audit]=install_scripts

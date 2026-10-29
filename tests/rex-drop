@@ -1,0 +1,236 @@
+#!/bin/zsh
+# dotfiles/tests/rex-drop
+#
+# Behavioural test for bin/rex-drop. Every run uses a fake HOME and a fake
+# remote home under the suite sandbox. The ssh stub runs the real remote
+# command with /bin/sh in the fake remote home, so the copy, the folder and
+# the SHA-256 reply are real. osascript and pbcopy are stubs that record what
+# they get, so nothing touches the network, the clipboard or the real $HOME.
+#
+# REX_DROP_UNDER_TEST points the suite at another copy of the script (used to
+# prove the suite goes red when a behaviour is broken).
+#
+# Run: ./test rex-drop    (or ./test for the full suite)
+#
+# ShellCheck: lint with `shellcheck --shell=bash tests/rex-drop`.
+# This file is sourced, not executed - chmod 644.
+#
+# shellcheck source=tests/lib
+
+typeset -g RD_T_BOX='' RD_T_STUBS='' RD_T_SCRIPT='' RD_T_HOME='' RD_T_REMOTE='' RD_T_CALLS='' RD_T_OUT='' RD_T_CLIP=''
+typeset -gi RD_T_RC=0
+
+# Scenario knobs, read by the stubs (see _rd_t_reset for the defaults).
+typeset -g RD_DOWN_HOSTS='' RD_SSH_FAIL='' RD_TAMPER='' RD_CLIP_MODE=''
+
+function _rd_t_make_stubs {
+  local d="${RD_T_STUBS}"
+  /bin/mkdir -p "${d}"
+
+  # ssh [-T] [-o X]... HOST CMD. A host in RD_DOWN_HOSTS exits 255.
+  cat > "${d}/ssh" <<'MOCK'
+#!/bin/zsh
+host="${@[-2]}" cmd="${@[-1]}"
+print -r -- "ssh ${host}" >> "${RD_CALLS}"
+[[ " ${RD_DOWN_HOSTS} " == *" ${host} "* ]] && exit 255
+[[ -n "${RD_SSH_FAIL}" ]] && exit 1
+out="$(cd "${RD_REMOTE}" && /bin/sh -c "${cmd}")" || exit $?
+if [[ -n "${RD_TAMPER}" ]]; then
+  print -r -- "${out%%$'\n'*}"
+  print -r -- "0000000000000000000000000000000000000000000000000000000000000000  x"
+else
+  print -r -- "${out}"
+fi
+MOCK
+
+  # osascript -l JavaScript -e JXA PATH: the clipboard read. Anything else:
+  # a notification, recorded with its last two arguments.
+  cat > "${d}/osascript" <<'MOCK'
+#!/bin/zsh
+if [[ "$1" == -l ]]; then
+  print -r -- "osa clip" >> "${RD_CALLS}"
+  case "${RD_CLIP_MODE}" in
+    image) print -rn -- 'PNGDATA' > "${@[-1]}"; print -r -- ok ;;
+    none) print -r -- none ;;
+    *) exit 1 ;;
+  esac
+  exit 0
+fi
+print -r -- "osa notify ${@[-2]} | ${@[-1]}" >> "${RD_CALLS}"
+MOCK
+
+  cat > "${d}/pbcopy" <<'MOCK'
+#!/bin/zsh
+print -r -- "pbcopy" >> "${RD_CALLS}"
+/bin/cat > "${RD_CLIPFILE}"
+MOCK
+
+  /bin/chmod 755 "${d}/ssh" "${d}/osascript" "${d}/pbcopy"
+}
+
+# Fresh fake HOME, remote home and call log; hosts file with two aliases.
+function _rd_t_reset {
+  RD_T_HOME="${RD_T_BOX}/home"
+  RD_T_REMOTE="${RD_T_BOX}/remote"
+  RD_T_CALLS="${RD_T_BOX}/calls"
+  RD_T_CLIP="${RD_T_BOX}/clipboard"
+  /bin/rm -rf -- "${RD_T_HOME:?}" "${RD_T_REMOTE:?}"
+  /bin/mkdir -p "${RD_T_HOME}/Library/Application Support/rex-drop" "${RD_T_REMOTE}"
+  print -rl -- '# first that connects wins' 'hosta' '' 'hostb' > "${RD_T_HOME}/Library/Application Support/rex-drop/ssh-hosts"
+  : > "${RD_T_CALLS}"
+  /bin/rm -f -- "${RD_T_CLIP}"
+  RD_DOWN_HOSTS='' RD_SSH_FAIL='' RD_TAMPER='' RD_CLIP_MODE='image'
+}
+
+function _rd_t_run {
+  RD_T_RC=0
+  RD_T_OUT="$(HOME="${RD_T_HOME}" RD_CALLS="${RD_T_CALLS}" RD_REMOTE="${RD_T_REMOTE}" RD_CLIPFILE="${RD_T_CLIP}" \
+    RD_DOWN_HOSTS="${RD_DOWN_HOSTS}" RD_SSH_FAIL="${RD_SSH_FAIL}" RD_TAMPER="${RD_TAMPER}" RD_CLIP_MODE="${RD_CLIP_MODE}" \
+    RXD_SSH="${RD_T_STUBS}/ssh" RXD_OSASCRIPT="${RD_T_STUBS}/osascript" RXD_PBCOPY="${RD_T_STUBS}/pbcopy" \
+    RXD_NOW='20261029 213501' /bin/zsh "${RD_T_SCRIPT}" "$@" 2>&1)" || RD_T_RC=$?
+}
+
+function _rd_t_calls_has {
+  local line
+  while IFS= read -r line; do [[ "${line}" == "$1" ]] && return 0; done < "${RD_T_CALLS}"
+  return 1
+}
+
+function _rd_t_count {
+  local n=0 line
+  while IFS= read -r line; do [[ "${line}" == "$1"* ]] && (( ++n )); done < "${RD_T_CALLS}"
+  print -r -- "${n}"
+}
+
+function _rd_t_bad {
+  _fail "$1 (rc=${RD_T_RC} out=${RD_T_OUT})"
+}
+
+readonly RD_T_DIR_REL='Library/Caches/tint/rex-drop-20261029'
+
+function _rd_t_files {
+  _rd_t_reset
+  local src="${RD_T_BOX}/my shot (1).png"
+  print -rn -- 'hello image' > "${src}"
+  _rd_t_run "${src}"
+  local want="${RD_T_REMOTE}/${RD_T_DIR_REL}/213501-1-my-shot--1-.png"
+  if (( RD_T_RC == 0 )); then _pass "file: exit 0"; else _rd_t_bad "file: exit 0"; fi
+  if [[ -f "${want}" && "$(<"${want}")" == "hello image" ]]; then _pass "file: copied to the dated tint folder with a sanitized name"; else _rd_t_bad "file: copied to the dated tint folder with a sanitized name"; fi
+  if [[ "${RD_T_OUT}" == *"/${RD_T_DIR_REL}/213501-1-my-shot--1-.png" ]]; then _pass "file: stdout ends with the remote path"; else _rd_t_bad "file: stdout ends with the remote path"; fi
+  if [[ -f "${RD_T_CLIP}" && "$(<"${RD_T_CLIP}")" == "${RD_T_OUT}" ]]; then _pass "file: the clipboard holds the same path"; else _rd_t_bad "file: the clipboard holds the same path"; fi
+  if [[ "$(_rd_t_count "ssh hostb")" == 0 ]]; then _pass "file: the first alias connected, the second was not tried"; else _rd_t_bad "file: the first alias connected, the second was not tried"; fi
+  if [[ "$(/usr/bin/stat -f %Lp "${want}")" == 600 ]]; then _pass "file: the remote file is mode 600"; else _rd_t_bad "file: the remote file is mode 600"; fi
+
+  # Two files with one basename stay apart.
+  _rd_t_reset
+  /bin/mkdir -p "${RD_T_BOX}/a" "${RD_T_BOX}/b"
+  print -rn -- 'one' > "${RD_T_BOX}/a/x.png"
+  print -rn -- 'two' > "${RD_T_BOX}/b/x.png"
+  _rd_t_run "${RD_T_BOX}/a/x.png" "${RD_T_BOX}/b/x.png"
+  if [[ "$(<"${RD_T_REMOTE}/${RD_T_DIR_REL}/213501-1-x.png")" == one && "$(<"${RD_T_REMOTE}/${RD_T_DIR_REL}/213501-2-x.png")" == two ]]; then _pass "two files: one basename, two remote files"; else _rd_t_bad "two files: one basename, two remote files"; fi
+  if [[ "$(<"${RD_T_CLIP}")" == *"213501-1-x.png "*"213501-2-x.png" ]]; then _pass "two files: the clipboard holds both paths, space-joined"; else _rd_t_bad "two files: the clipboard holds both paths, space-joined"; fi
+
+  # A quote or a substitution in a name never reaches the remote shell.
+  _rd_t_reset
+  # shellcheck disable=SC2016 # the $( must stay literal: it is the attack
+  local evil="${RD_T_BOX}/a'"'$(touch pwned)'"'.png"
+  print -rn -- 'x' > "${evil}"
+  _rd_t_run "${evil}"
+  if (( RD_T_RC == 0 )) && [[ ! -e "${RD_T_REMOTE}/pwned" && ! -e "${RD_T_REMOTE}/${RD_T_DIR_REL}/pwned" ]]; then _pass "evil name: copied, nothing executed"; else _rd_t_bad "evil name: copied, nothing executed"; fi
+  if [[ -f "${RD_T_REMOTE}/${RD_T_DIR_REL}/213501-1-a---touch-pwned--.png" ]]; then _pass "evil name: sanitized"; else _rd_t_bad "evil name: sanitized"; fi
+
+  # A name of only dots and dashes gets a fallback.
+  _rd_t_reset
+  print -rn -- 'x' > "${RD_T_BOX}/..."
+  _rd_t_run "${RD_T_BOX}/..."
+  if [[ -f "${RD_T_REMOTE}/${RD_T_DIR_REL}/213501-1-file" ]]; then _pass "dots-only name: becomes file"; else _rd_t_bad "dots-only name: becomes file"; fi
+}
+
+function _rd_t_hosts {
+  local src="${RD_T_BOX}/h.png"
+
+  _rd_t_reset
+  print -rn -- 'x' > "${src}"
+  RD_DOWN_HOSTS='hosta'
+  _rd_t_run "${src}"
+  if (( RD_T_RC == 0 )) && _rd_t_calls_has "ssh hosta" && _rd_t_calls_has "ssh hostb"; then _pass "first alias down (255): the second alias copies"; else _rd_t_bad "first alias down (255): the second alias copies"; fi
+
+  _rd_t_reset
+  RD_DOWN_HOSTS='hosta hostb'
+  _rd_t_run "${src}"
+  if (( RD_T_RC == 1 )) && [[ "${RD_T_OUT}" == *"no host connected"* && ! -e "${RD_T_CLIP}" ]]; then _pass "all aliases down: exit 1, clipboard untouched"; else _rd_t_bad "all aliases down: exit 1, clipboard untouched"; fi
+
+  _rd_t_reset
+  RD_SSH_FAIL=1
+  _rd_t_run "${src}"
+  if (( RD_T_RC == 1 )) && [[ "$(_rd_t_count "ssh hostb")" == 0 && ! -e "${RD_T_CLIP}" ]]; then _pass "ssh exit 1: stops, no fallback, clipboard untouched"; else _rd_t_bad "ssh exit 1: stops, no fallback, clipboard untouched"; fi
+
+  _rd_t_reset
+  RD_TAMPER=1
+  _rd_t_run "${src}"
+  if (( RD_T_RC == 1 )) && [[ "${RD_T_OUT}" == *"SHA-256 mismatch"* && ! -e "${RD_T_CLIP}" ]]; then _pass "hash mismatch: exit 1, clipboard untouched"; else _rd_t_bad "hash mismatch: exit 1, clipboard untouched"; fi
+
+  _rd_t_reset
+  /bin/rm -f -- "${RD_T_HOME}/Library/Application Support/rex-drop/ssh-hosts"
+  _rd_t_run "${src}"
+  if (( RD_T_RC == 1 )) && [[ "${RD_T_OUT}" == *"no hosts"* && "$(_rd_t_count "ssh")" == 0 ]]; then _pass "no hosts file: exit 1, no ssh"; else _rd_t_bad "no hosts file: exit 1, no ssh"; fi
+
+  _rd_t_reset
+  print -rl -- 'hosta' '-oProxyCommand=evil' > "${RD_T_HOME}/Library/Application Support/rex-drop/ssh-hosts"
+  _rd_t_run "${src}"
+  if (( RD_T_RC == 1 )) && [[ "${RD_T_OUT}" == *"bad alias"* && "$(_rd_t_count "ssh")" == 0 ]]; then _pass "alias starting with -: refused before any ssh"; else _rd_t_bad "alias starting with -: refused before any ssh"; fi
+}
+
+function _rd_t_clipboard {
+  _rd_t_reset
+  _rd_t_run
+  local staged="${RD_T_HOME}/Library/Caches/rex-drop"
+  if (( RD_T_RC == 0 )) && _rd_t_calls_has "osa clip"; then _pass "clipboard image: read through osascript"; else _rd_t_bad "clipboard image: read through osascript"; fi
+  if [[ "${RD_T_OUT}" == *"/${RD_T_DIR_REL}/213501-1-clipboard-"*".png" ]]; then _pass "clipboard image: remote path printed"; else _rd_t_bad "clipboard image: remote path printed"; fi
+  if [[ -z "$(/bin/ls -A "${staged}" 2>/dev/null)" ]]; then _pass "clipboard image: the local staged copy is removed"; else _rd_t_bad "clipboard image: the local staged copy is removed"; fi
+
+  _rd_t_reset
+  RD_CLIP_MODE=none
+  _rd_t_run
+  if (( RD_T_RC == 1 )) && [[ "${RD_T_OUT}" == *"no image on the clipboard"* && "$(_rd_t_count "ssh")" == 0 ]]; then _pass "no clipboard image: exit 1, no ssh"; else _rd_t_bad "no clipboard image: exit 1, no ssh"; fi
+
+  _rd_t_reset
+  RD_CLIP_MODE=fail
+  _rd_t_run -n
+  if (( RD_T_RC == 1 )) && [[ "$(_rd_t_count "osa notify rex-drop failed")" == 1 ]]; then _pass "-n and a failure: one failure notification"; else _rd_t_bad "-n and a failure: one failure notification"; fi
+
+  _rd_t_reset
+  print -rn -- 'x' > "${RD_T_BOX}/n.png"
+  _rd_t_run -n "${RD_T_BOX}/n.png"
+  if (( RD_T_RC == 0 )) && [[ "$(_rd_t_count "osa notify rex-drop | Copied 1 path(s)")" == 1 ]]; then _pass "-n and success: one notification"; else _rd_t_bad "-n and success: one notification"; fi
+}
+
+function _rd_t_args {
+  _rd_t_reset
+  _rd_t_run "${RD_T_BOX}/missing.png"
+  if (( RD_T_RC == 1 )) && [[ "${RD_T_OUT}" == *"not a readable file"* && "$(_rd_t_count "ssh")" == 0 ]]; then _pass "missing file: exit 1 before any ssh"; else _rd_t_bad "missing file: exit 1 before any ssh"; fi
+
+  _rd_t_reset
+  _rd_t_run -x
+  if (( RD_T_RC == 2 )); then _pass "unknown option: exit 2"; else _rd_t_bad "unknown option: exit 2"; fi
+}
+
+function run_rex_drop {
+  RD_T_SCRIPT="${REX_DROP_UNDER_TEST:-${SCRIPT_DIR}/bin/rex-drop}"
+  if [[ ! -f "${RD_T_SCRIPT}" ]]; then
+    _fail "rex-drop: ${RD_T_SCRIPT} is missing"
+    return 0
+  fi
+
+  RD_T_BOX="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/rex-drop-test.XXXXXX")" || return 1
+  RD_T_BOX="${RD_T_BOX:A}"
+  RD_T_STUBS="${RD_T_BOX}/stubs"
+  _rd_t_make_stubs
+
+  _rd_t_files
+  _rd_t_hosts
+  _rd_t_clipboard
+  _rd_t_args
+
+  /bin/rm -rf -- "${RD_T_BOX:?}"
+}
