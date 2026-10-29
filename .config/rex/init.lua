@@ -65,3 +65,71 @@ rex.action{
 }
 
 rex.bind("cmd+w", "confirm_close")
+
+-- Jump to the next pane whose agent needs you, in every session on this
+-- server. A pane counts when any of its status records (the program's own or
+-- a sub-agent's) is blocked, or when its own record is error or done. Blocked
+-- panes come first, oldest first; then error and done panes, newest first.
+-- The server keeps a done record after you read it (the app tracks "seen"
+-- itself), so pressing the key again moves on to the next pane in the list.
+local terminal = "com.superlogical.terminal"
+local rank = { blocked = 1, error = 2, done = 3 }
+
+local function pane_need(session_id, block_id)
+  local st = rex.block.call(terminal, "program_status", { session_id = session_id, block_id = block_id })
+  if not st or not st.records then return nil end
+  local best, at
+  for _, r in ipairs(st.records) do
+    local counts = r.state == "blocked" or (r.id == nil and rank[r.state] ~= nil)
+    if counts and (best == nil or rank[r.state] < rank[best]) then
+      best, at = r.state, r.updated_at
+    end
+  end
+  return best, at
+end
+
+local function waiting_panes()
+  local list = {}
+  local sessions = rex.call("session.list", {})
+  for _, s in ipairs(sessions and sessions.sessions or {}) do
+    local blocks = rex.call("session.list_blocks", { session_id = s.session_id })
+    for _, b in ipairs(blocks and blocks.blocks or {}) do
+      if b.creator_name == terminal and b.placement == "placed" then
+        local state, at = pane_need(s.session_id, b.block_id)
+        if state then
+          list[#list + 1] = { session_id = s.session_id, block_id = b.block_id, state = state, at = at or "" }
+        end
+      end
+    end
+  end
+  table.sort(list, function(a, b)
+    if rank[a.state] ~= rank[b.state] then return rank[a.state] < rank[b.state] end
+    if a.state == "blocked" then return a.at < b.at end
+    return a.at > b.at
+  end)
+  return list
+end
+
+rex.action{
+  name = "next_agent",
+  title = "Go to Next Agent That Needs You",
+  keywords = "blocked done waiting activity",
+  run = function(ctx)
+    local list = waiting_panes()
+    if #list == 0 then return { found = 0 } end
+    local pick = list[1]
+    for i, p in ipairs(list) do
+      if p.block_id == ctx.block_id then
+        pick = list[i % #list + 1]
+        break
+      end
+    end
+    rex.call("session.focus_block", { session_id = pick.session_id, block_id = pick.block_id })
+    if pick.session_id ~= ctx.session_id then
+      rex.client.queue("session.select", { session_id = pick.session_id })
+    end
+    return { found = #list, state = pick.state, block_id = pick.block_id }
+  end,
+}
+
+rex.bind("cmd+shift+j", "next_agent")
