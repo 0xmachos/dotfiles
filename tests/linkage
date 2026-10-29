@@ -357,6 +357,7 @@ function run_linkage {
     [npm]=install_dotfiles
     [1Password]=install_dotfiles
     [herdr]=install_dotfiles
+    [rex]=install_dotfiles
   )
 
   # bin/ scripts → owning subcommand
