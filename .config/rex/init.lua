@@ -181,6 +181,8 @@ rex.bind("cmd+shift+j", "next_agent")
 -- shared home list, because other machines cannot reach it. The label comes
 -- from the first line of the optional `label` file beside ssh-host (the host
 -- name stays out of this tracked file, as the SSH alias does), else "remote".
+-- Declared only where the bridge is set up (ssh-host exists): this file also
+-- deploys to the remote Rex host itself, which has no bridge.
 local bridge_dir = os.getenv("HOME") .. "/Library/Application Support/rex-remote-bridge"
 local function first_line(path)
   local f = io.open(path, "r")
@@ -189,10 +191,12 @@ local function first_line(path)
   f:close()
   return line and line:match("^%s*(.-)%s*$") or nil
 end
-local remote_label = first_line(bridge_dir .. "/label")
-if remote_label == nil or remote_label == "" then remote_label = "remote" end
-rex.host{
-  label = remote_label,
-  endpoint = bridge_dir .. "/rex.sock",
-  icon = "globe",
-}
+if first_line(bridge_dir .. "/ssh-host") then
+  local remote_label = first_line(bridge_dir .. "/label")
+  if remote_label == nil or remote_label == "" then remote_label = "remote" end
+  rex.host{
+    label = remote_label,
+    endpoint = bridge_dir .. "/rex.sock",
+    icon = "globe",
+  }
+end
