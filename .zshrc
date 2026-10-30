@@ -73,6 +73,16 @@ if [[ -d "/Applications/Secretive.app" ]]; then
   export SSH_AUTH_SOCK=$HOME/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh
 fi
 
+# 1Password CLI desktop-app integration. op discovers the app's "Integrate
+# with 1Password CLI" toggle by reading settings.json in the 1Password Group
+# Container. macOS 27 denies that read to a terminal without a per-app grant
+# (Files & Folders > "Data shared by 1Password"), and op then reports "No
+# accounts configured". This variable turns the integration on without the
+# read. The op <-> app channel is XPC, which TCC does not gate.
+# OP_SERVICE_ACCOUNT_TOKEN (op-homelab) still takes precedence when set.
+# https://developer.1password.com/docs/cli/app-integration/
+export OP_BIOMETRIC_UNLOCK_ENABLED=true
+
 # Telemetry opt-out. DO_NOT_TRACK is the cross-tool convention
 # (consoledonottrack.com). Claude Code treats its presence (any value) as a
 # signal that silently disables Remote Control; claude/settings.json counters
