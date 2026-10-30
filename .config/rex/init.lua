@@ -67,16 +67,19 @@ rex.action{
 rex.bind("cmd+w", "confirm_close")
 
 -- Jump to the next pane whose agent needs you, in every session on this
--- server. A pane counts when any of its status records (the program's own or
--- a sub-agent's) is blocked, or when its own record is error or done. Blocked
+-- server and on every other server the app connects to (rex.servers()). A
+-- pane counts when any of its status records (the program's own or a
+-- sub-agent's) is blocked, or when its own record is error or done. Blocked
 -- panes come first, oldest first; then error and done panes, newest first.
 -- The server keeps a done record after you read it (the app tracks "seen"
 -- itself), so pressing the key again moves on to the next pane in the list.
+-- A call to another server fails with 409 until the action attaches to the
+-- session, so the scan attaches first. A server that fails is skipped.
 local terminal = "com.superlogical.terminal"
 local rank = { blocked = 1, error = 2, done = 3 }
 
-local function pane_need(session_id, block_id)
-  local st = rex.block.call(terminal, "program_status", { session_id = session_id, block_id = block_id })
+local function pane_need(srv, session_id, block_id)
+  local st = srv.block.call(terminal, "program_status", { session_id = session_id, block_id = block_id })
   if not st or not st.records then return nil end
   local best, at
   for _, r in ipairs(st.records) do
@@ -88,19 +91,31 @@ local function pane_need(session_id, block_id)
   return best, at
 end
 
-local function waiting_panes()
-  local list = {}
-  local sessions = rex.call("session.list", {})
+local function scan(list, srv, remote)
+  local sessions = srv.call("session.list", {})
   for _, s in ipairs(sessions and sessions.sessions or {}) do
-    local blocks = rex.call("session.list_blocks", { session_id = s.session_id })
+    if remote then srv.call("session.attach", { session_id = s.session_id }) end
+    local blocks = srv.call("session.list_blocks", { session_id = s.session_id })
     for _, b in ipairs(blocks and blocks.blocks or {}) do
       if b.creator_name == terminal and b.placement == "placed" then
-        local state, at = pane_need(s.session_id, b.block_id)
+        local state, at = pane_need(srv, s.session_id, b.block_id)
         if state then
-          list[#list + 1] = { session_id = s.session_id, block_id = b.block_id, state = state, at = at or "" }
+          list[#list + 1] = {
+            srv = srv, session_id = s.session_id, window_id = b.window_id,
+            block_id = b.block_id, state = state, at = at or "",
+          }
         end
       end
     end
+  end
+end
+
+local function waiting_panes()
+  local list = {}
+  scan(list, rex, false)
+  for _, label in ipairs(rex.servers()) do
+    local ok, srv = pcall(rex.server, label)
+    if ok then pcall(scan, list, srv, true) end
   end
   table.sort(list, function(a, b)
     if rank[a.state] ~= rank[b.state] then return rank[a.state] < rank[b.state] end
@@ -108,6 +123,25 @@ local function waiting_panes()
     return a.at > b.at
   end)
   return list
+end
+
+-- The client ID that this app has on another server: the app client there
+-- with the same label as this client here, else the only app client there.
+local function remote_app(srv, client_id)
+  local mine
+  local here = rex.call("client.list", {})
+  for _, c in ipairs(here and here.clients or {}) do
+    if c.client_id == client_id then mine = c.info and c.info.label end
+  end
+  local there = srv.call("client.list", {})
+  local apps = {}
+  for _, c in ipairs(there and there.clients or {}) do
+    if c.info and c.info.kind == "app" then
+      if mine and c.info.label == mine then return c.client_id end
+      apps[#apps + 1] = c.client_id
+    end
+  end
+  return #apps == 1 and apps[1] or nil
 end
 
 rex.action{
@@ -124,9 +158,16 @@ rex.action{
         break
       end
     end
-    rex.call("session.focus_block", { session_id = pick.session_id, block_id = pick.block_id })
-    if pick.session_id ~= ctx.session_id then
-      rex.client.queue("session.select", { session_id = pick.session_id })
+    pick.srv.call("session.focus_block", { session_id = pick.session_id, block_id = pick.block_id })
+    local select = { session_id = pick.session_id, window_id = pick.window_id }
+    if pick.srv ~= rex then
+      -- The app resolves a queued session.select on this server only. Ask the
+      -- app's own client on the other server instead.
+      local app = remote_app(pick.srv, ctx.client_id)
+      if not app then return { found = #list, error = "the app is not a client of that server" } end
+      pick.srv.call("client.perform", { client_id = app, action = "session.select", args = select, timeout_ms = 5000 })
+    elseif pick.session_id ~= ctx.session_id then
+      rex.client.queue("session.select", select)
     end
     return { found = #list, state = pick.state, block_id = pick.block_id }
   end,
