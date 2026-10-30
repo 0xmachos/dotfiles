@@ -1,11 +1,14 @@
 #!/bin/zsh
 # dotfiles/bin/rex-remote-bridge
 #
-# Joins one local TCP connection to the Rex server on the remote Rex host. Run by the
-# com.0xmachos.rex-remote-bridge LaunchAgent in inetd mode: launchd listens on
-# localhost:7297 (::1 and 127.0.0.1) and starts one copy of this script per
-# accepted connection, with the socket as fd 0, 1 AND 2. The Rex app on this Mac
-# has the remote host http://localhost:7297. The script ends in
+# Joins one local Unix-socket connection to the Rex server on the remote Rex
+# host. Run by the com.0xmachos.rex-remote-bridge LaunchAgent in inetd mode:
+# launchd listens on ~/Library/Application Support/rex-remote-bridge/rex.sock
+# (mode 0600, in a 0700 folder that bittersweet creates) and starts one copy of
+# this script per accepted connection, with the socket as fd 0, 1 AND 2. The
+# Rex app on this Mac has that socket path as the remote host (Rex for Mac
+# 0.1.0-preview.23 and later accept a Unix socket path in Add Host). The script
+# ends in
 #
 #   exec /usr/bin/ssh -T <alias>
 #
@@ -30,41 +33,40 @@
 #      log and exit 1.
 #   3. Alias file: a missing, unreadable or malformed ssh-host file logs and
 #      exits 1.
-#   4. Peer check, the security control. It fails closed: any lookup failure,
-#      no match, more than one match or a bad signature refuses the connection
-#      (log, exit 1) and no ssh starts. Anything on this Mac that can reach
-#      localhost:7297 would otherwise get a session on the remote Rex host.
+#   4. Peer signature check. It fails closed: a failed pid lookup or a bad
+#      signature refuses the connection (log, exit 1) and no ssh starts.
+#
+# Access control (2026-10-30, moved from localhost:7297 TCP):
+#   - The socket mode (0600) and its folder (0700) admit only this user and
+#     root. That replaces the old uid check.
+#   - Gate 4 admits only a caller signed by Superlogical. It is defence in
+#     depth: a process of this user can still drive the signed `rex` CLI at the
+#     socket, so it stops casual clients (curl, scripts), not a same-user
+#     attacker.
 #
 # Peer check:
-#   a. `lsof -nP -a -p $$ -d 0 -iTCP -sTCP:ESTABLISHED -Fn` names this
-#      connection: `<local>:7297-><peeraddr>:<peerport>`. Exactly one name.
-#   b. `lsof -nP -a -iTCP:<peerport> -sTCP:ESTABLISHED -Fpun` lists the sockets
-#      with that port. The peer is the one other process whose socket reads
-#      `<peeraddr>:<peerport>-><local>:7297`. Exactly one such pid and uid.
-#      A process owned by another user is invisible to lsof, so no match.
-#   c. The peer uid equals `id -u`.
-#   d. The peer executable is the first `txt` entry of
-#      `lsof -nP -a -p <pid> -d txt -Fn`. `ps -o comm=` is NOT used: it prints
-#      argv[0], which a process sets freely (measured 2026-10-27).
-#   e. `codesign --verify -R` with the requirement below passes on that path
-#      AND on the running pid (the pid check covers the code actually mapped).
-#      The requirement: Apple-anchored, leaf OU AG92C3PT77 (Superlogical, Inc.).
+#   a. The peer pid is getsockopt(fd 0, SOL_LOCAL=0, LOCAL_PEERPID=2), read by
+#      the system perl with the socket as its stdin. Measured on macOS 27 under
+#      launchd inetd mode, 2026-10-30: it returns the connecting process.
+#   b. `codesign --verify -R` with the requirement below passes on that running
+#      pid (the check covers the code actually mapped). The requirement:
+#      Apple-anchored, leaf OU AG92C3PT77 (Superlogical, Inc.).
 #
-# The log gets one line per connect or refusal: time, peer pid, executable
-# basename, decision. ssh itself writes its own warnings to the same file.
-# Every external call runs under a perl `alarm` deadline with stdin from
-# /dev/null (a child must never read the socket). The check cannot stop a peer
-# that swaps its code after the check passed.
+# The log gets one line per connect or refusal: time, peer pid, decision. ssh
+# itself writes its own warnings to the same file. Every external call runs
+# under a perl `alarm` deadline. Only the pid lookup reads fd 0, and it never
+# reads data from it. The check cannot stop a peer that swaps its code after the
+# check passed.
 #
-# Test seams (environment): RDB_LSOF, _CODESIGN, _SSH, _LAUNCHCTL, _ID, _PERL
-# (program paths), RDB_DEADLINE (seconds, default 5), RDB_NOW (epoch seconds).
-# HOME is the one path root. Defaults are the real paths.
+# Test seams (environment): RDB_CODESIGN, _SSH, _LAUNCHCTL, _PERL, _PEERPID
+# (program paths; _PEERPID replaces the perl pid lookup and prints the pid),
+# RDB_DEADLINE (seconds, default 5), RDB_NOW (epoch seconds). HOME is the one
+# path root. Defaults are the real paths.
 # Deployed as a root-owned copy in /usr/local/bin by `./bittersweet scripts`.
 #
 # ShellCheck: lint with `shellcheck --shell=bash bin/rex-remote-bridge`.
 # Test: ./test rex-remote-bridge
 
-# shellcheck disable=SC2154  # zsh fills the `match` array on a successful =~
 umask 077
 exec 2>>"${HOME:?}/Library/Logs/rex-remote-bridge.log" || exit 1
 
@@ -74,37 +76,37 @@ set -uo pipefail
 zmodload zsh/datetime
 zmodload -F zsh/stat b:zstat
 
-readonly BRIDGE_PORT=7297
 # The server-only host's LaunchAgent (defined in the private infra repo).
 readonly SERVER_JOB='com.local.rex-server'
 readonly LOG_MAX=1048576 # 1 MiB
 readonly REQUIREMENT='anchor apple generic and certificate leaf[subject.OU] = "AG92C3PT77"'
 
-# <local addr>:<port>-><peer addr>:<port>, with optional [] around IPv6.
 # One SSH Host alias word: no leading `-`, so it can never be read as an option.
 readonly RE_TARGET='^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$'
-readonly RE_SOCKNAME='^\[?([0-9A-Fa-f:.]+)\]?:([0-9]+)->\[?([0-9A-Fa-f:.]+)\]?:([0-9]+)$'
 
-typeset -g B_LSOF='' B_CODESIGN='' B_SSH='' B_LAUNCHCTL='' B_ID='' B_PERL='' B_LOG=''
+# SOL_LOCAL is 0 and LOCAL_PEERPID is 2 in <sys/un.h> on macOS.
+# shellcheck disable=SC2016  # perl code, not shell expansion
+readonly PEERPID_PERL='alarm shift; my $v = getsockopt(STDIN, 0, 2); defined $v or exit 1; print unpack("i", $v)'
+
+typeset -g B_CODESIGN='' B_SSH='' B_LAUNCHCTL='' B_PERL='' B_PEERPID='' B_LOG=''
 typeset -gi B_DEADLINE=5 B_NOW=0
 
 # Results of the external-call helper.
 typeset -g RUN_OUT=''
 typeset -gi RUN_RC=0
 
-# Results of the peer lookup.
-typeset -g PEER_PID='' PEER_UID='' PEER_EXE='' PEER_WHY=''
+# Result of the peer check.
+typeset -g PEER_PID='' PEER_WHY=''
 
 # The SSH Host alias read from the ssh-host file.
 typeset -g SSH_TARGET=''
 
 function _b_init {
-  B_LSOF="${RDB_LSOF:-/usr/sbin/lsof}"
   B_CODESIGN="${RDB_CODESIGN:-/usr/bin/codesign}"
   B_SSH="${RDB_SSH:-/usr/bin/ssh}"
   B_LAUNCHCTL="${RDB_LAUNCHCTL:-/bin/launchctl}"
-  B_ID="${RDB_ID:-/usr/bin/id}"
   B_PERL="${RDB_PERL:-/usr/bin/perl}"
+  B_PEERPID="${RDB_PEERPID:-}"
   B_LOG="${HOME}/Library/Logs/rex-remote-bridge.log"
   B_NOW="${RDB_NOW:-${EPOCHSECONDS}}"
   if [[ "${RDB_DEADLINE:-}" =~ ^[0-9]{1,2}$ ]] && (( RDB_DEADLINE >= 1 )); then
@@ -112,7 +114,7 @@ function _b_init {
   fi
 }
 
-# _b_log PID EXE DECISION: one line, to the log file only. The file is the one
+# _b_log PID DECISION: one line, to the log file only. The file is the one
 # fd 2 already points at, opened again by path for the rotation check.
 function _b_log {
   local stamp size
@@ -124,7 +126,7 @@ function _b_log {
       /bin/mv -f -- "${B_LOG}" "${B_LOG}.1" 2>/dev/null || :
     fi
   fi
-  print -r -- "${stamp} pid=${1:--} exe=${2:--} ${3}" >> "${B_LOG}" 2>/dev/null || :
+  print -r -- "${stamp} pid=${1:--} ${2}" >> "${B_LOG}" 2>/dev/null || :
 }
 
 # _b_read_target: SSH_TARGET from the first line of the ssh-host file. Returns 1
@@ -152,119 +154,31 @@ function _b_run {
   return 0
 }
 
-function _b_refuse {
-  PEER_WHY="refused: $1"
-  _b_log "${PEER_PID}" "${PEER_EXE:t}" "${PEER_WHY}"
-  return 1
-}
-
-# Sets PEER_PID, PEER_UID, PEER_EXE. Returns 1 with PEER_WHY set on any failure.
-function _b_peer_lookup {
-  local line cur_pid='' cur_uid='' key
-  local -a lines
-  local -A mine=() cands=()
+# _b_peer_pid: PEER_PID from the socket on fd 0. Stdin stays the socket here,
+# and nothing reads data from it. Returns 1 with PEER_WHY set on failure.
+function _b_peer_pid {
   PEER_PID=''
-  PEER_UID=''
-  PEER_EXE=''
-
-  # a. This connection's own socket name.
-  _b_run "${B_DEADLINE}" "${B_LSOF}" -nP -a -p "$$" -d 0 -iTCP -sTCP:ESTABLISHED -Fn
+  if [[ -n "${B_PEERPID}" ]]; then
+    # shellcheck disable=SC2016  # perl code, not shell expansion
+    RUN_OUT="$("${B_PERL}" -e 'alarm shift; exec { $ARGV[0] } @ARGV or exit 127' \
+      "${B_DEADLINE}" "${B_PEERPID}" 2>/dev/null)"
+  else
+    RUN_OUT="$("${B_PERL}" -e "${PEERPID_PERL}" "${B_DEADLINE}" 2>/dev/null)"
+  fi
+  RUN_RC=$?
   if (( RUN_RC != 0 )); then
-    PEER_WHY="lsof of own socket failed rc=${RUN_RC}"
+    PEER_WHY="peer pid lookup failed rc=${RUN_RC}"
     return 1
   fi
-  # shellcheck disable=SC2296  # zsh (@f) line split
-  lines=("${(@f)RUN_OUT}")
-  for line in "${lines[@]}"; do
-    [[ "${line}" == n* ]] || continue
-    [[ "${line#n}" =~ $RE_SOCKNAME ]] || continue
-    (( match[2] == BRIDGE_PORT )) || continue
-    mine[${match[1]}/${match[3]}/${match[4]}]=1
-  done
-  if (( ${#mine} != 1 )); then
-    PEER_WHY="own socket matches ${#mine} names"
+  if [[ ! "${RUN_OUT}" =~ ^[0-9]{1,10}$ ]] || (( RUN_OUT == 0 )); then
+    PEER_WHY="peer pid lookup gave no pid"
     return 1
   fi
-  local own_addr peer_addr peer_port
-  # shellcheck disable=SC2296  # zsh (k) flag: the only key of a one-entry map
-  key="${(k)mine}"
-  own_addr="${key%%/*}"
-  key="${key#*/}"
-  peer_addr="${key%%/*}"
-  peer_port="${key#*/}"
-
-  # b. The one other process holding the matching end.
-  _b_run "${B_DEADLINE}" "${B_LSOF}" -nP -a "-iTCP:${peer_port}" -sTCP:ESTABLISHED -Fpun
-  if (( RUN_RC != 0 )); then
-    PEER_WHY="lsof of peer socket failed rc=${RUN_RC}"
-    return 1
-  fi
-  # shellcheck disable=SC2296  # zsh (@f) line split
-  lines=("${(@f)RUN_OUT}")
-  for line in "${lines[@]}"; do
-    case "${line}" in
-      p*) cur_pid="${line#p}"; cur_uid='' ;;
-      u*) cur_uid="${line#u}" ;;
-      n*)
-        [[ "${line#n}" =~ $RE_SOCKNAME ]] || continue
-        [[ "${match[1]}" == "${peer_addr}" && "${match[2]}" == "${peer_port}" ]] || continue
-        [[ "${match[3]}" == "${own_addr}" && "${match[4]}" == "${BRIDGE_PORT}" ]] || continue
-        [[ "${cur_pid}" =~ ^[0-9]{1,10}$ && "${cur_uid}" =~ ^[0-9]{1,10}$ ]] || continue
-        [[ "${cur_pid}" == "$$" ]] && continue
-        cands[${cur_pid}/${cur_uid}]=1
-        ;;
-    esac
-  done
-  if (( ${#cands} != 1 )); then
-    PEER_WHY="peer socket matches ${#cands} processes"
-    return 1
-  fi
-  # shellcheck disable=SC2296  # zsh (k) flag: the only key of a one-entry map
-  key="${(k)cands}"
-  PEER_PID="${key%%/*}"
-  PEER_UID="${key#*/}"
-
-  # d. The executable the pid really runs.
-  _b_run "${B_DEADLINE}" "${B_LSOF}" -nP -a -p "${PEER_PID}" -d txt -Fn
-  if (( RUN_RC != 0 )); then
-    PEER_WHY="lsof of peer executable failed rc=${RUN_RC}"
-    return 1
-  fi
-  # shellcheck disable=SC2296  # zsh (@f) line split
-  lines=("${(@f)RUN_OUT}")
-  for line in "${lines[@]}"; do
-    # The first name is the executable: later txt entries are libraries.
-    if [[ "${line}" == n* ]]; then
-      PEER_EXE="${line#n}"
-      break
-    fi
-  done
-  if [[ "${PEER_EXE}" != /* ]]; then
-    PEER_EXE=''
-    PEER_WHY="peer executable not found"
-    return 1
-  fi
+  PEER_PID="${RUN_OUT}"
   return 0
 }
 
-# True if the peer passes the uid and signature checks. Needs a lookup result.
 function _b_peer_ok {
-  local me
-  _b_run "${B_DEADLINE}" "${B_ID}" -u
-  me="${RUN_OUT}"
-  if (( RUN_RC != 0 )) || [[ ! "${me}" =~ ^[0-9]{1,10}$ ]]; then
-    PEER_WHY="id -u failed rc=${RUN_RC}"
-    return 1
-  fi
-  if [[ "${PEER_UID}" != "${me}" ]]; then
-    PEER_WHY="peer uid ${PEER_UID} is not ${me}"
-    return 1
-  fi
-  _b_run "${B_DEADLINE}" "${B_CODESIGN}" --verify "-R=${REQUIREMENT}" "${PEER_EXE}"
-  if (( RUN_RC != 0 )); then
-    PEER_WHY="executable fails the signature requirement rc=${RUN_RC}"
-    return 1
-  fi
   _b_run "${B_DEADLINE}" "${B_CODESIGN}" --verify "-R=${REQUIREMENT}" "${PEER_PID}"
   if (( RUN_RC != 0 )); then
     PEER_WHY="running process fails the signature requirement rc=${RUN_RC}"
@@ -285,26 +199,22 @@ function main {
 
   # Gate 2: kill switch.
   if [[ -e "${HOME}/Library/Application Support/rex-remote-bridge/disabled" ]]; then
-    _b_log - - 'refused: kill switch file present'
+    _b_log - 'refused: kill switch file present'
     return 1
   fi
 
   # Gate 3: the alias file.
   if ! _b_read_target; then
-    _b_log - - 'refused: no valid ssh-host file'
+    _b_log - 'refused: no valid ssh-host file'
     return 1
   fi
 
   # Gate 4: the peer.
-  if ! _b_peer_lookup; then
-    _b_refuse "${PEER_WHY}"
+  if ! _b_peer_pid || ! _b_peer_ok; then
+    _b_log "${PEER_PID}" "refused: ${PEER_WHY}"
     return 1
   fi
-  if ! _b_peer_ok; then
-    _b_refuse "${PEER_WHY}"
-    return 1
-  fi
-  _b_log "${PEER_PID}" "${PEER_EXE:t}" 'connect'
+  _b_log "${PEER_PID}" 'connect'
 
   exec "${B_SSH}" -T "${SSH_TARGET}"
 }

@@ -1682,6 +1682,10 @@ function install_launchagents {
   # preserves xattrs, so a plist quarantined upstream (zip download, AirDrop)
   # would carry the flag; strip it after every copy (a no-op when absent).
 
+  # rex-remote-bridge listens on a Unix socket in this folder. Create it before
+  # launchd binds the socket. Mode 0700 limits the socket to this user.
+  _ensure_dir "${HOME}/Library/Application Support/rex-remote-bridge" 700
+
   if mkdir -p "${HOME}/Library/LaunchAgents"; then
     for plist in "${LAUNCHAGENT_PLISTS[@]}"; do
       # __HOME__ expands to the invoking user's home at copy time: launchd does

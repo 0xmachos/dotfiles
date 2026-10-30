@@ -16,28 +16,14 @@
 	<key>Sockets</key>
 	<dict>
 		<key>Listeners</key>
-		<array>
-			<dict>
-				<key>SockFamily</key>
-				<string>IPv6</string>
-				<key>SockNodeName</key>
-				<string>::1</string>
-				<key>SockServiceName</key>
-				<string>7297</string>
-				<key>SockType</key>
-				<string>stream</string>
-			</dict>
-			<dict>
-				<key>SockFamily</key>
-				<string>IPv4</string>
-				<key>SockNodeName</key>
-				<string>127.0.0.1</string>
-				<key>SockServiceName</key>
-				<string>7297</string>
-				<key>SockType</key>
-				<string>stream</string>
-			</dict>
-		</array>
+		<dict>
+			<key>SockPathName</key>
+			<string>__HOME__/Library/Application Support/rex-remote-bridge/rex.sock</string>
+			<key>SockPathMode</key>
+			<integer>384</integer>
+			<key>SockType</key>
+			<string>stream</string>
+		</dict>
 	</dict>
 </dict>
 </plist>
