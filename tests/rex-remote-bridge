@@ -10,9 +10,14 @@
 # pid lookup.
 #
 # Scenarios are set through the BR_* globals read by the stubs.
-# REX_REMOTE_BRIDGE_UNDER_TEST and REX_REMOTE_BRIDGE_PLIST_UNDER_TEST point the
-# suite at other copies of the script and plist (used to prove the suite goes
-# red when a check is broken).
+# One case runs bittersweet's install_launchagents against the fake HOME in its
+# own zsh process under the script's strict mode, with only sudo and get_sudo
+# stubbed, so a deploy step that aborts before the plist copy goes red here.
+#
+# REX_REMOTE_BRIDGE_UNDER_TEST, REX_REMOTE_BRIDGE_PLIST_UNDER_TEST and
+# BITTERSWEET_UNDER_TEST point the suite at other copies of the script, the
+# plist and bittersweet (used to prove the suite goes red when a check is
+# broken).
 #
 # Run: ./test rex-remote-bridge    (or ./test for the full suite)
 #
@@ -21,7 +26,7 @@
 #
 # shellcheck source=tests/lib
 
-typeset -g BR_T_BOX='' BR_T_STUBS='' BR_T_SCRIPT='' BR_T_PLIST='' BR_T_HOME='' BR_T_CALLS='' BR_T_OUT='' BR_T_ERR=''
+typeset -g BR_T_BOX='' BR_T_STUBS='' BR_T_SCRIPT='' BR_T_PLIST='' BR_T_BITTERSWEET='' BR_T_HOME='' BR_T_CALLS='' BR_T_OUT='' BR_T_ERR=''
 typeset -gi BR_T_RC=0 BR_T_SEQ=0 BR_T_ELAPSED_MS=0
 
 # Scenario knobs, read by the stubs (see _br_t_reset for the defaults).
@@ -71,6 +76,26 @@ print -r -- "launchctl $*" >> "${BR_CALLS}"
 [[ -n "${BR_LAUNCHCTL_HANG}" ]] && exec /bin/sleep 30
 [[ -n "${BR_SERVER_JOB}" ]] && exit 0
 exit 113
+MOCK
+
+  # Runs bittersweet's install_launchagents against $HOME under the script's
+  # own strict mode. $1 = bittersweet, $2 = SCRIPT_DIR. Only sudo and get_sudo
+  # are stubbed; the real _ensure_dir, mkdir, chmod, sed, plutil, mv and xattr
+  # run. A separate process, never a forked `( )` subshell: on the left of `||`
+  # or inside `if`, zsh does not abort a forked subshell on a fatal error such
+  # as an unset parameter under set -u, so the case could never go red there.
+  cat > "${d}/install-driver" <<'MOCK'
+#!/bin/zsh
+set -euo pipefail
+SCRIPT_DIR="$2"
+source <(/usr/bin/awk '
+  /^function / || /^typeset -ra LAUNCHAGENT_PLISTS=\(/ { block = 1 }
+  block { print }
+  /^}$/ || /^\)$/ { block = 0 }
+' "$1")
+get_sudo() { :; }
+sudo() { return 0; }
+install_launchagents
 MOCK
 
   /bin/chmod 755 "${d}/peerpid" "${d}/codesign" "${d}/ssh" "${d}/launchctl"
@@ -257,10 +282,38 @@ function _br_t_static {
   if [[ "${v}" == *"Does Not Exist"* ]]; then _pass "plist sets no StandardOutPath (fd 1 stays the socket)"; else _fail "plist sets StandardOutPath: ${v}"; fi
 
   # shellcheck disable=SC2016  # literal source text, not an expansion
-  if /usr/bin/grep -q -F '_ensure_dir "${HOME}/Library/Application Support/rex-remote-bridge" 700' "${SCRIPT_DIR}/bittersweet"; then
+  if /usr/bin/grep -q -F '_ensure_dir "${HOME}/Library/Application Support/rex-remote-bridge" 700' "${BR_T_BITTERSWEET}"; then
     _pass "bittersweet creates the socket folder with mode 700"
   else
     _fail "bittersweet does not create the socket folder with mode 700"
+  fi
+}
+
+# _br_t_installer: run bittersweet's install_launchagents against the fake
+# HOME through the install-driver stub (its own zsh process, strict mode on).
+# The folder starts at 755, so only the installer's chmod can bring it to 700.
+function _br_t_installer {
+  _section "rex-remote-bridge: install_launchagents creates the socket folder"
+
+  _br_t_reset
+  local folder="${BR_T_HOME}/Library/Application Support/rex-remote-bridge"
+  /bin/chmod 755 "${folder}"
+  local -i rc=0
+  /usr/bin/env -i PATH=/usr/bin:/bin HOME="${BR_T_HOME}" \
+    /bin/zsh "${BR_T_STUBS}/install-driver" "${BR_T_BITTERSWEET}" "${SCRIPT_DIR}" \
+    >/dev/null 2> "${BR_T_ERR}" && rc=0 || rc=$?
+  if (( rc == 0 )); then
+    _pass "install_launchagents exits 0 under set -u"
+  else
+    _fail "install_launchagents exited ${rc} under set -u: $(<"${BR_T_ERR}")"
+  fi
+  local mode
+  mode="$(/usr/bin/stat -f %Lp "${folder}" 2>/dev/null)" || mode=''
+  _br_t_expect_eq "${mode}" 700 "install_launchagents sets the socket folder to 700"
+  if [[ -f "${BR_T_HOME}/Library/LaunchAgents/com.0xmachos.rex-remote-bridge.plist" ]]; then
+    _pass "install_launchagents copied the rex-remote-bridge plist"
+  else
+    _fail "install_launchagents did not copy the rex-remote-bridge plist"
   fi
 }
 
@@ -434,6 +487,7 @@ function run_rex_remote_bridge {
 
   BR_T_SCRIPT="${REX_REMOTE_BRIDGE_UNDER_TEST:-${SCRIPT_DIR}/bin/rex-remote-bridge}"
   BR_T_PLIST="${REX_REMOTE_BRIDGE_PLIST_UNDER_TEST:-${SCRIPT_DIR}/LaunchAgents/com.0xmachos.rex-remote-bridge.plist}"
+  BR_T_BITTERSWEET="${BITTERSWEET_UNDER_TEST:-${SCRIPT_DIR}/bittersweet}"
   if [[ ! -f "${BR_T_SCRIPT}" ]]; then
     _fail "rex-remote-bridge: ${BR_T_SCRIPT} is missing"
     return 0
@@ -445,6 +499,7 @@ function run_rex_remote_bridge {
   _br_t_make_stubs
 
   _br_t_static
+  _br_t_installer
   _br_t_good
   _br_t_real_socket
   _br_t_gates

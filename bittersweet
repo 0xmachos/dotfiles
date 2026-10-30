@@ -399,8 +399,10 @@ function write_defaults {
 
 
 ### Dotfile Helpers ###
-# Helpers for install_dotfiles; print only on failure. The counters
-# (_dir_count, _link_count, ...) are declared there (zsh dynamic scope).
+# Helpers for the installers; print only on failure. Each caller declares the
+# counters it uses (_dir_count, _link_count, _error_count) as locals before
+# its first call (zsh dynamic scope). Under set -u an undeclared counter
+# aborts the run.
 
 function _ensure_dir {
   local dir=${1:?dir not passed to _ensure_dir}
@@ -1684,6 +1686,8 @@ function install_launchagents {
 
   # rex-remote-bridge listens on a Unix socket in this folder. Create it before
   # launchd binds the socket. Mode 0700 limits the socket to this user.
+  local _dir_count=0
+  local _error_count=0
   _ensure_dir "${HOME}/Library/Application Support/rex-remote-bridge" 700
 
   if mkdir -p "${HOME}/Library/LaunchAgents"; then
