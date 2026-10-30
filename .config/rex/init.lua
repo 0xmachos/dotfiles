@@ -183,6 +183,8 @@ rex.bind("cmd+shift+j", "next_agent")
 -- name stays out of this tracked file, as the SSH alias does), else "remote".
 -- Declared only where the bridge is set up (ssh-host exists): this file also
 -- deploys to the remote Rex host itself, which has no bridge.
+-- The endpoint is a percent-encoded unix:// URL: the Mac app cannot connect
+-- to a bare socket path that contains a space (Preview 1696).
 local bridge_dir = os.getenv("HOME") .. "/Library/Application Support/rex-remote-bridge"
 local function first_line(path)
   local f = io.open(path, "r")
@@ -196,7 +198,7 @@ if first_line(bridge_dir .. "/ssh-host") then
   if remote_label == nil or remote_label == "" then remote_label = "remote" end
   rex.host{
     label = remote_label,
-    endpoint = bridge_dir .. "/rex.sock",
+    endpoint = "unix://" .. (bridge_dir:gsub(" ", "%%20")) .. "/rex.sock",
     icon = "globe",
   }
 end
