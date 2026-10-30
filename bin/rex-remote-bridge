@@ -6,9 +6,12 @@
 # launchd listens on ~/Library/Application Support/rex-remote-bridge/rex.sock
 # (mode 0600, in a 0700 folder that bittersweet creates) and starts one copy of
 # this script per accepted connection, with the socket as fd 0, 1 AND 2. The
-# Rex app on this Mac has that socket path as the remote host (Rex for Mac
-# 0.1.0-preview.23 and later accept a Unix socket path in Add Host). The script
-# ends in
+# Rex app on this Mac reaches that socket through a config host declared in
+# .config/rex/init.lua (`rex.host{}`, label from the optional `label` file
+# beside ssh-host, default `remote`): the shared home list (`rex hosts add`,
+# `rex hosts edit`, Add Host) refuses a local socket path, and a server older
+# than Rex for Mac 0.1.0-preview.23 (Preview 1642) ignores the config host too.
+# The script ends in
 #
 #   exec /usr/bin/ssh -T <alias>
 #

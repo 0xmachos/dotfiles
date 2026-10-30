@@ -174,3 +174,25 @@ rex.action{
 }
 
 rex.bind("cmd+shift+j", "next_agent")
+
+-- The remote Rex host, through the socket of the rex-remote-bridge LaunchAgent
+-- (bin/rex-remote-bridge, 2026-10-30). A config host stays on this machine:
+-- `rex hosts add` and `rex hosts edit` refuse a local socket path for the
+-- shared home list, because other machines cannot reach it. The label comes
+-- from the first line of the optional `label` file beside ssh-host (the host
+-- name stays out of this tracked file, as the SSH alias does), else "remote".
+local bridge_dir = os.getenv("HOME") .. "/Library/Application Support/rex-remote-bridge"
+local function first_line(path)
+  local f = io.open(path, "r")
+  if not f then return nil end
+  local line = f:read("*l")
+  f:close()
+  return line and line:match("^%s*(.-)%s*$") or nil
+end
+local remote_label = first_line(bridge_dir .. "/label")
+if remote_label == nil or remote_label == "" then remote_label = "remote" end
+rex.host{
+  label = remote_label,
+  endpoint = bridge_dir .. "/rex.sock",
+  icon = "globe",
+}
