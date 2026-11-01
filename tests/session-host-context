@@ -19,6 +19,11 @@
 # build fixture directories under the sandbox: a ".git" file pointing into
 # ".git/worktrees/" (linked worktree), one pointing at ".git/modules/"
 # (submodule), a ".git" directory (main checkout) and a plain directory.
+# _REX_PLIST defaults to a missing path the same way, so a Rex install on the
+# host never changes the exact-line assertions; the Rex cases point _REX_PLIST
+# and _REX_CHECKED at fixture files under the sandbox. They pin the never-checked,
+# equal (also with trailing newline and spaces), different, junk and missing-file
+# forms, and the segment order after Papercuts.
 #
 # Run: ./test session-host-context
 # ShellCheck: lint with `shellcheck --shell=bash tests/session-host-context`.
@@ -36,6 +41,7 @@ function _shc_run {
   out="$(
     typeset -x SESSION_HOST_CONTEXT_PAPERCUT=/nonexistent/papercut
     typeset -x SESSION_HOST_CONTEXT_DATE=/nonexistent/date
+    typeset -x SESSION_HOST_CONTEXT_REX_PLIST=/nonexistent/Info.plist
     while (( $# > 0 )); do
       case "$1" in
         -u) unset "$2"; shift 2 ;;
@@ -590,6 +596,79 @@ function run_session_host_context {
     _pass "worktree: resume prints nothing"
   else
     _fail "worktree: resume printed, got: ${out}"
+  fi
+
+  # --- Rex segment: fixture plist and checked-build files ----------------
+  local rex_dir="${stub_dir}/rex" rex_seg
+  mkdir -p "${rex_dir}"
+  print -r -- '<?xml version="1.0" encoding="UTF-8"?>' '<plist version="1.0"><dict>' \
+    '<key>CFBundleShortVersionString</key>' '<string>1.2.3</string>' \
+    '<key>CFBundleVersion</key>' '	<string>4242</string>' '</dict></plist>' > "${rex_dir}/Info.plist"
+  print -r -- '<plist version="1.0"><dict><key>CFBundleShortVersionString</key><string>1.2.3</string></dict></plist>' > "${rex_dir}/Info-nover.plist"
+  print -r -- '<plist><dict><key>CFBundleVersion</key><string>12345678901</string></dict></plist>' > "${rex_dir}/Info-long.plist"
+  print -r -- '4242' > "${rex_dir}/checked-equal"
+  printf '  4242  \n\n' > "${rex_dir}/checked-equal-space"
+  print -r -- '4100' > "${rex_dir}/checked-old"
+  printf '4100\n4242\n' > "${rex_dir}/checked-two-lines"
+  print -r -- 'not a build' > "${rex_dir}/checked-junk"
+  : > "${rex_dir}/checked-empty"
+  mkdir -p "${rex_dir}/checked-dir"
+  local rex_p="${rex_dir}/Info.plist" rex_tail=', run the rex-ledger-check skill'
+  local -a rex_cases=(
+    'no checked file|'"${rex_p}"'|'"${rex_dir}"'/nonexistent|build 4242 not ledger-checked (never checked)'
+    'checked file is a directory|'"${rex_p}"'|'"${rex_dir}"'/checked-dir|build 4242 not ledger-checked (never checked)'
+    'junk checked file|'"${rex_p}"'|'"${rex_dir}"'/checked-junk|build 4242 not ledger-checked (never checked)'
+    'empty checked file|'"${rex_p}"'|'"${rex_dir}"'/checked-empty|build 4242 not ledger-checked (never checked)'
+    'different build shows last|'"${rex_p}"'|'"${rex_dir}"'/checked-old|build 4242 not ledger-checked (last 4100)'
+    'only the first checked line counts|'"${rex_p}"'|'"${rex_dir}"'/checked-two-lines|build 4242 not ledger-checked (last 4100)'
+    'equal build omits the segment|'"${rex_p}"'|'"${rex_dir}"'/checked-equal|'
+    'equal build with newline and spaces omits the segment|'"${rex_p}"'|'"${rex_dir}"'/checked-equal-space|'
+    'plist without CFBundleVersion omits the segment|'"${rex_dir}"'/Info-nover.plist|'"${rex_dir}"'/checked-old|'
+    'build over 9 digits omits the segment|'"${rex_dir}"'/Info-long.plist|'"${rex_dir}"'/checked-old|'
+    'missing plist omits the segment|'"${rex_dir}"'/nonexistent.plist|'"${rex_dir}"'/checked-old|'
+    'plist is a directory omits the segment|'"${rex_dir}"'/checked-dir|'"${rex_dir}"'/checked-old|'
+  )
+  local rex_case rex_label rex_rest rex_plist_p rex_chk_p rex_want
+  for rex_case in "${rex_cases[@]}"; do
+    rex_label="${rex_case%%|*}"
+    rex_rest="${rex_case#*|}"
+    rex_plist_p="${rex_rest%%|*}"
+    rex_rest="${rex_rest#*|}"
+    rex_chk_p="${rex_rest%%|*}"
+    rex_want="${rex_rest#*|}"
+    _shc_run '{"source":"startup"}' "${term_clear[@]}" \
+      "SESSION_HOST_CONTEXT_REX_PLIST=${rex_plist_p}" "SESSION_HOST_CONTEXT_REX_CHECKED=${rex_chk_p}"
+    if [[ -n "${rex_want}" ]]; then
+      if [[ "${out}" == 'Host: '*" · Rex: ${rex_want}${rex_tail}" && "${out}" != *$'\n'* ]]; then
+        _pass "rex: ${rex_label}"
+      else
+        _fail "rex: ${rex_label}: expected 'Rex: ${rex_want}${rex_tail}', got: ${out}"
+      fi
+    elif [[ "${out}" == 'Host: '* && "${out}" != *'Rex'* && "${out}" != *$'\n'* ]]; then
+      _pass "rex: ${rex_label}"
+    else
+      _fail "rex: ${rex_label}: expected no Rex segment, got: ${out}"
+    fi
+    _shc_exit0 "rex ${rex_label}"
+  done
+
+  # Rex sits after Papercuts, still one line.
+  _shc_run '{"source":"startup"}' "${term_clear[@]}" \
+    "SESSION_HOST_CONTEXT_PAPERCUT=${stub_dir}/pc-full" \
+    "SESSION_HOST_CONTEXT_REX_PLIST=${rex_p}" "SESSION_HOST_CONTEXT_REX_CHECKED=${rex_dir}/checked-old"
+  rex_seg='Papercuts: 3 open (1 for this repo, oldest 2026-09-20) · Rex: build 4242 not ledger-checked (last 4100), run the rex-ledger-check skill'
+  if [[ "${out}" == *" · ${rex_seg}" && "${out}" != *$'\n'* ]]; then
+    _pass "rex: order is Papercuts, Rex on one line"
+  else
+    _fail "rex: segment order wrong, got: ${out}"
+  fi
+
+  # resume stays silent with a stale build.
+  _shc_run '{"source":"resume"}' "SESSION_HOST_CONTEXT_REX_PLIST=${rex_p}" "SESSION_HOST_CONTEXT_REX_CHECKED=${rex_dir}/checked-old"
+  if [[ -z "${out}" ]]; then
+    _pass "rex: resume prints nothing"
+  else
+    _fail "rex: resume printed, got: ${out}"
   fi
 
   /bin/rm -rf "${stub_dir}"
