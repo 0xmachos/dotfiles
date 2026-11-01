@@ -21,8 +21,10 @@
 #                   pre-push message gate).
 #
 # Known gaps: binary files produce no diff hunks, so their CONTENT passes
-# layers 1-3 unscanned (pathname only); reference-transaction and
-# post-index-change are deliberately not forwarded (they fire on every
+# layers 1-3 unscanned (pathname only). A file git diffs as text but that
+# holds invalid UTF-8 (no NUL, some PDFs) is scanned byte-wise; before
+# 2026-11-01 it aborted the commit with an awk error. reference-transaction
+# and post-index-change are deliberately not forwarded (they fire on every
 # ref/index write).
 #
 # Bypass (2026-09-25): PII_HOOK_BYPASS=1 skips layers 2+3 loudly, ONLY with a
@@ -89,10 +91,13 @@ trap '/bin/rm -f "${pii_scan}"' EXIT
 # match SIGPIPEs `git diff` (141) and a real match would read as no-match, a
 # fail-OPEN leak. The diff must be config-invariant (repo-local
 # color.ui=always, diff.external or textconv would break the awk anchors and
-# empty the target), hence the -c override and --no-* flags.
+# empty the target), hence the -c override and --no-* flags. awk runs under
+# LC_ALL=C: a file with invalid UTF-8 and no NUL (some PDFs) diffs as text,
+# and macOS awk exits 2 on it under a UTF-8 locale ("towc: multibyte
+# conversion failure"). The anchors and the stripped `+` are ASCII.
 {
   git -c color.ui=false diff --cached --no-color --no-ext-diff --no-textconv \
-      --diff-filter=d -U0 | awk '
+      --diff-filter=d -U0 | LC_ALL=C awk '
     /^diff --git/   { inhunk = 0; next }
     /^@@/           { inhunk = 1; next }
     inhunk && /^\+/ { print substr($0, 2) }

@@ -540,6 +540,24 @@ function run_pii_hook {
   git -C "${pii_sandbox}" config --unset color.ui
   _pii_reset
 
+  # 8g2. Invalid UTF-8 with no NUL (a PDF git diffs as text) must not crash
+  # the awk filter under a UTF-8 locale ("towc: multibyte conversion
+  # failure", 2026-11-01). The locale is forced so the case fails without the
+  # fix whatever the caller's locale is.
+  printf '%%PDF-1.4\n\xe2\x28\xa1 \xff\xfe stream\n' > "${pii_sandbox}/doc.pdf"
+  _pii_hook_run LC_ALL=en_US.UTF-8
+  _pii_expect_pass "invalid UTF-8 content passes under a UTF-8 locale"
+  printf '\xff\xfe device at %s\n' "${mac}" > "${pii_sandbox}/doc.pdf"
+  _pii_hook_run LC_ALL=en_US.UTF-8
+  _pii_expect_block "a MAC beside invalid UTF-8 still blocks" "MAC/UUID"
+  printf '\xff\xfe deployed at zorblefrobnicate\n' > "${pii_sandbox}/doc.pdf"
+  _pii_hook_run LC_ALL=en_US.UTF-8
+  _pii_expect_block "a denylist hit beside invalid UTF-8 still blocks" "PII pattern"
+  print -r -- '.*' > "${pii_sandbox}/.pii-allowlist"
+  _pii_hook_run LC_ALL=en_US.UTF-8
+  _pii_expect_pass "a .* allowlist exempts a hit beside invalid UTF-8"
+  _pii_reset
+
   # 8h. An unterminated final pattern line stays active (a bare `read` drops it)
   local nl_patterns
   nl_patterns="$(mktemp "${TMPDIR:-/tmp}/pii-hook-nonl.XXXXXX")"

@@ -49,6 +49,13 @@
 
 set -euo pipefail
 
+# Byte-wise matching for every grep below (2026-11-01). Under a UTF-8 locale
+# /usr/bin/grep silently skips a line that holds invalid UTF-8 (text-diffed
+# PDFs), so a token on that line passed unseen: fail-OPEN. Cost: -i folds
+# ASCII case only, and `.` matches one byte. No active pattern was non-ASCII
+# when this changed.
+export LC_ALL=C
+
 # --check-terminal: exit 0 with a controlling terminal, 1 without. /dev/tty
 # names the process's own controlling terminal, so unlike `[[ -t 0 ]]` it is
 # not fooled by redirected I/O; opening it fails only for an agent tool call or
