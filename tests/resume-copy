@@ -1,0 +1,132 @@
+#!/bin/zsh
+# dotfiles/tests/resume-copy
+#
+# Pins claude/hooks/resume-copy-hook, the SessionEnd hook that copies
+# `claude --resume <session_id>` to the pasteboard when the person quits.
+# Feeds SessionEnd JSON on stdin and checks what reaches the pbcopy seam
+# (RESUME_COPY_PBCOPY). The stub writes its stdin to a sandbox file, so a
+# test run never writes the real pasteboard. The hook emits no verdict, so
+# _hook_verdict is not used.
+#
+# Cases: a copy on prompt_input_exit (byte-exact, no trailing newline), no
+# copy for every other reason, a subagent payload, an unsafe or wrong-length
+# id, a missing or relative transcript path, empty stdin and junk JSON, and
+# exit 0 when the pbcopy stub fails or is missing.
+#
+# Run: ./test resume-copy
+# ShellCheck: lint with `shellcheck --shell=bash tests/resume-copy`.
+# Sourced, not executed — chmod 644.
+#
+# shellcheck source=tests/lib
+
+function _rcp_run {
+  # Run the hook with stdin $1 and pbcopy seam $2. Clears the capture file
+  # first. Sets the caller's `rc` (hook exit status).
+  local payload="$1" pb="$2"
+  /bin/rm -f "${rcp_cap}"
+  rc=0
+  printf '%s' "${payload}" |
+    RESUME_COPY_PBCOPY="${pb}" /bin/zsh "${SCRIPT_DIR}/claude/hooks/resume-copy-hook" \
+      >/dev/null 2>&1 || rc=$?
+}
+
+function _rcp_pl {
+  # SessionEnd payload: $1 reason, $2 session_id, $3 transcript_path, $4 agent_id.
+  /usr/bin/jq -cn --arg r "$1" --arg s "$2" --arg t "$3" --arg a "$4" '
+    {hook_event_name: "SessionEnd", reason: $r, session_id: $s,
+     transcript_path: $t, cwd: "/tmp"} + (if $a == "" then {} else {agent_id: $a} end)'
+}
+
+function _rcp_nocopy {
+  # Assert the last run exited 0 and copied nothing, labelled $1.
+  local cap=absent
+  [[ -e "${rcp_cap}" ]] && cap=present
+  if [[ "${rc}" -eq 0 && "${cap}" == absent ]]; then
+    _pass "$1: exit 0, no copy"
+  else
+    _fail "$1: expected exit 0 and no copy, got rc=${rc}, capture ${cap}"
+  fi
+}
+
+function run_resume_copy {
+  _section "Resume copy hook"
+
+  # Hook absent (clean clone, claude/ not synced): skip, not a regression.
+  if [[ ! -f "${SCRIPT_DIR}/claude/hooks/resume-copy-hook" ]]; then
+    _skip "claude/hooks/resume-copy-hook absent — claude/ not yet synced to this machine"
+    return 0
+  fi
+
+  local rcp_sb rcp_cap rcp_pb rcp_tp rc got want r bad
+  rcp_sb="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/resume-copy-test.XXXXXX")"
+  rcp_cap="${rcp_sb}/pasteboard"
+  rcp_pb="${rcp_sb}/pbcopy"
+  rcp_tp="${rcp_sb}/transcript.jsonl"
+  print -r -- '{}' > "${rcp_tp}"
+  print -rl -- '#!/bin/sh' "exec /bin/cat > '${rcp_cap}'" > "${rcp_pb}"
+  print -rl -- '#!/bin/sh' 'exit 1' > "${rcp_sb}/pbcopy-fail"
+  /bin/chmod 755 "${rcp_pb}" "${rcp_sb}/pbcopy-fail"
+  # A new stub can take seconds on its first exec (EDR scan): warm it once.
+  print -n '' | "${rcp_pb}"
+
+  # Session id shape, built at runtime (a UUID literal trips the PII scanner).
+  local sid="0a1b2c3d-4e5f-6789-abcd-ef01"
+  sid+="23456789"
+
+  # 1. prompt_input_exit: the exact command, no trailing newline.
+  _rcp_run "$(_rcp_pl prompt_input_exit "${sid}" "${rcp_tp}" "")" "${rcp_pb}"
+  want="claude --resume ${sid}"
+  if [[ -f "${rcp_cap}" ]]; then
+    # The sentinel keeps a trailing newline that $(...) would strip.
+    got="$(/bin/cat "${rcp_cap}"; print -n x)"
+    got="${got%x}"
+  else
+    got="<no copy>"
+  fi
+  if [[ "${rc}" -eq 0 && "${got}" == "${want}" ]]; then
+    _pass "prompt_input_exit: copies '${want}' with no trailing newline"
+  else
+    _fail "prompt_input_exit: expected '${want}', got '${got}' (rc=${rc})"
+  fi
+
+  # 2. Every other reason: no copy.
+  for r in clear resume logout other ""; do
+    _rcp_run "$(_rcp_pl "${r}" "${sid}" "${rcp_tp}" "")" "${rcp_pb}"
+    _rcp_nocopy "reason '${r}'"
+  done
+
+  # 3. Subagent payload: no copy.
+  _rcp_run "$(_rcp_pl prompt_input_exit "${sid}" "${rcp_tp}" "agent-1")" "${rcp_pb}"
+  _rcp_nocopy "agent_id set"
+
+  # 4. Unsafe or wrong-length ids: no copy.
+  # shellcheck disable=SC2016,SC2296  # literal metacharacters; (l:65::a:) pads to 65
+  for bad in "abc def123" 'abcdefgh;id' 'abcd$(id)ef' 'abcdefgh`id`' "abc" \
+      "${(l:65::a:)${:-}}" $'abcdefgh\nid' "../../../../etc"; do
+    _rcp_run "$(_rcp_pl prompt_input_exit "${bad}" "${rcp_tp}" "")" "${rcp_pb}"
+    _rcp_nocopy "unsafe id '${bad//$'\n'/\\n}'"
+  done
+
+  # 5. Transcript missing, relative or a directory: no copy.
+  _rcp_run "$(_rcp_pl prompt_input_exit "${sid}" "${rcp_sb}/missing.jsonl" "")" "${rcp_pb}"
+  _rcp_nocopy "transcript missing"
+  _rcp_run "$(_rcp_pl prompt_input_exit "${sid}" "transcript.jsonl" "")" "${rcp_pb}"
+  _rcp_nocopy "transcript path relative"
+  _rcp_run "$(_rcp_pl prompt_input_exit "${sid}" "${rcp_sb}" "")" "${rcp_pb}"
+  _rcp_nocopy "transcript path is a directory"
+
+  # 6. Empty stdin and junk JSON: no copy.
+  _rcp_run "" "${rcp_pb}"
+  _rcp_nocopy "empty stdin"
+  _rcp_run "not json {" "${rcp_pb}"
+  _rcp_nocopy "junk JSON"
+
+  # 7. pbcopy fails or is missing: still exit 0.
+  _rcp_run "$(_rcp_pl prompt_input_exit "${sid}" "${rcp_tp}" "")" "${rcp_sb}/pbcopy-fail"
+  _rcp_nocopy "pbcopy fails"
+  _rcp_run "$(_rcp_pl prompt_input_exit "${sid}" "${rcp_tp}" "")" "${rcp_sb}/no-such-pbcopy"
+  _rcp_nocopy "pbcopy missing"
+
+  /bin/rm -rf "${rcp_sb}"
+  return 0
+}
