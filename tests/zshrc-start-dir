@@ -1,0 +1,79 @@
+#!/bin/zsh
+# dotfiles/tests/zshrc-start-dir
+#
+# Checks the "Change into Initial Directory" section at the end of .zshrc. In
+# Rex, a new tab or split starts in the source pane's folder and the shell
+# keeps it. A Rex shell that starts in / or under ~/Library (the Rex server
+# folder) moves to INITIAL_DIR, and so does a shell outside Rex. The section
+# runs in a subshell with a fixture HOME, never the real one.
+#
+# Run: ./test zshrc-start-dir
+# ShellCheck: lint with `shellcheck --shell=bash tests/zshrc-start-dir`.
+# This file is sourced, not executed — chmod 644.
+#
+# shellcheck source=tests/lib
+
+# _zshrc_start_dir_case <term_program> <start dir> — prints the folder the
+# shell is in after the section runs.
+# shellcheck disable=SC2034  # INITIAL_DIR, TERM_PROGRAM: read by the eval
+function _zshrc_start_dir_case {
+  (
+    local section
+    section="$(/usr/bin/awk '
+      /^### Change into Initial Directory ###$/ { block = 1 }
+      block { print }
+    ' "${SCRIPT_DIR}/.zshrc")"
+    [[ -n "${section}" ]] || { print -r -- 'section-missing'; return 0; }
+    HOME="${_zsd_fixture}/home"
+    INITIAL_DIR="${HOME}"
+    TERM_PROGRAM="$1"
+    cd "$2" || return 1
+    eval "${section}"
+    print -r -- "${PWD}"
+  )
+}
+
+function run_zshrc_start_dir {
+  _section ".zshrc start folder: Rex keeps the source pane's folder"
+
+  local _zsd_fixture home proj lib out
+  _zsd_fixture="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/zshrc-start-dir.XXXXXX")" || {
+    _fail "zshrc-start-dir: mktemp failed"
+    return 0
+  }
+  _zsd_fixture="${_zsd_fixture:A}"
+  home="${_zsd_fixture}/home"
+  proj="${_zsd_fixture}/proj"
+  lib="${home}/Library/Application Support/rex-server"
+  /bin/mkdir -p "${home}" "${proj}" "${lib}"
+
+  out="$(_zshrc_start_dir_case rex "${proj}")"
+  if [[ "${out}" == "${proj}" ]]; then
+    _pass "Rex shell started in a project folder stays there"
+  else
+    _fail "Rex shell in a project folder: expected '${proj}', got '${out}'"
+  fi
+
+  out="$(_zshrc_start_dir_case rex /)"
+  if [[ "${out}" == "${home}" ]]; then
+    _pass "Rex shell started in / moves to INITIAL_DIR"
+  else
+    _fail "Rex shell in /: expected '${home}', got '${out}'"
+  fi
+
+  out="$(_zshrc_start_dir_case rex "${lib}")"
+  if [[ "${out}" == "${home}" ]]; then
+    _pass "Rex shell started under ~/Library moves to INITIAL_DIR"
+  else
+    _fail "Rex shell under ~/Library: expected '${home}', got '${out}'"
+  fi
+
+  out="$(_zshrc_start_dir_case Apple_Terminal "${proj}")"
+  if [[ "${out}" == "${home}" ]]; then
+    _pass "shell outside Rex moves to INITIAL_DIR"
+  else
+    _fail "shell outside Rex: expected '${home}', got '${out}'"
+  fi
+
+  /bin/rm -rf -- "${_zsd_fixture}"
+}
