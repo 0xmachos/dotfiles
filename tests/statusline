@@ -57,7 +57,7 @@ function _sl_run {
   # The environment is set inside the command substitution's own subshell, so
   # no `env` process is started and nothing leaks into the suite's shell.
   _SL_OUT="$(
-    unset CLAUDE_CODE_AUTO_COMPACT_WINDOW GIT_DIR GIT_WORK_TREE
+    unset CLAUDE_CODE_AUTO_COMPACT_WINDOW GIT_DIR GIT_WORK_TREE HC_TERMINAL_ID HC_TERMINAL_SOCKET
     export GIT_CEILING_DIRECTORIES="${_SL_SB}" HOME="${_SL_SB}" COLUMNS="${cols}" \
       STATUSLINE_NOW="${_SL_NOW}" STATUSLINE_OSASCRIPT="${_SL_SB}/osascript-stub"
     # shellcheck disable=SC2163  # each extra argument is a NAME=value pair
@@ -1047,6 +1047,11 @@ function _sl_ledger_prune {
   # 24 h sweeps: 25 h old goes, 23 h old stays
   printf 'x\n' > "${c}/guards-stale"
   printf 'x\n' > "${c}/guards-fresh"
+  # The hc marker sweep is 48 h: 49 h old goes, 47 h old stays
+  printf 'x none\n' > "${c}/hc-cache-stale"
+  printf 'x none\n' > "${c}/hc-cache-fresh"
+  _sl_touch_old "${c}/hc-cache-stale" 176400
+  _sl_touch_old "${c}/hc-cache-fresh" 169200
   _sl_touch_old "${c}/guards-stale" 90000
   _sl_touch_old "${c}/guards-fresh" 82800
   _sl_touch_old "${c}/cache-state-fresh" 82800
@@ -1061,7 +1066,9 @@ function _sl_ledger_prune {
     "$(for f in last-stale last-fresh; do [[ -e "${u}/${f}" ]] && printf k || printf g; done)" "gk"
   _sl_expect_eq "sweep: 25 h old cache-state, guards and git cache removed, 23 h old kept" \
     "$(for f in cache-state-stale cache-state-fresh guards-stale guards-fresh git-stale; do [[ -e "${c}/${f}" ]] && printf k || printf g; done)" "gkgkg"
-  /bin/rm -f "${c}/cache-state-fresh" "${c}/guards-fresh"
+  _sl_expect_eq "sweep: 49 h old hc marker removed, 47 h old kept" \
+    "$(for f in hc-cache-stale hc-cache-fresh; do [[ -e "${c}/${f}" ]] && printf k || printf g; done)" "gk"
+  /bin/rm -f "${c}/hc-cache-fresh" "${c}/cache-state-fresh" "${c}/guards-fresh"
   # An append during the prune survives. Deterministic, unlike the concurrent
   # case below (40 parallel runs never lost a line against a rewrite-in-place
   # prune, 2026-09-25).
@@ -1459,6 +1466,213 @@ function _sl_no_modules {
   _sl_usage_reset
 }
 
+# ── (9c) herdr-core terminal label ─────────────────────────────────────────
+# The status line sets the terminal label `dotfiles.cache` (cold, or minutes
+# left in the last 20, or removed with `dotfiles.cache=`) through a stub hc
+# that logs its argv. The stub sits at $HOME/.local/bin/hc, the sandbox HOME.
+function _sl_hc_stub {
+  # <exit code> — write the stub; first exec in the foreground (EDR scan)
+  mkdir -p "${_SL_SB}/.local/bin"
+  # shellcheck disable=SC2016  # $@ belongs to the stub, not this shell
+  printf '#!/bin/zsh\nprint -r -- "$@" >> %q\nexit %d\n' "${_SL_SB}/hc.log" "$1" \
+    > "${_SL_SB}/.local/bin/hc"
+  chmod 755 "${_SL_SB}/.local/bin/hc"
+  "${_SL_SB}/.local/bin/hc" warm-up >/dev/null 2>&1 || :
+  : > "${_SL_SB}/hc.log"
+}
+
+# _sl_hc_run <session> <warm> <seconds left> [extra jq filter] — one run in
+# terminal t4; waits for the backgrounded call, or about 700 ms for none.
+function _sl_hc_run {
+  local i
+  : > "${_SL_SB}/hc.log"
+  _sl_run 140 "$(_sl_json ".session_id = \"$1\" | .prompt_cache = {warm: $2, caching_observed: true,
+    expires_at: (\$now + $3), hit_ratio: 0.95, recache_tokens_if_cold: 142000}${4:+ | $4}")" \
+    HC_TERMINAL_ID=t4 HC_TERMINAL_SOCKET="${_SL_SB}/hc.sock"
+  for (( i = 0; i < 50; i++ )); do
+    [[ -s "${_SL_SB}/hc.log" ]] && break
+    zselect -t 3 || :
+  done
+  zselect -t 10 || :
+}
+
+function _sl_hc_log { print -r -- "$(<"${_SL_SB}/hc.log")"; }
+
+function _sl_hc_label {
+  local want="label t4" c="${_SL_SB}/Library/Caches/statusline" t="${_SL_SB}/transcript2.jsonl" i s base dead marked
+  _sl_hc_stub 0
+  _sl_hc_run h1 true 1140
+  _sl_expect_eq "hc: 19 min left sets 19m" "$(_sl_hc_log)" "${want} dotfiles.cache=19m"
+  _sl_hc_run h1 true 1140
+  _sl_expect_eq "hc: an unchanged value makes no second call" "$(_sl_hc_log)" ""
+  _sl_hc_run h1 true 1080
+  _sl_expect_eq "hc: a new minute count sets the label again" "$(_sl_hc_log)" "${want} dotfiles.cache=18m"
+  _sl_hc_run h1 true 1500
+  _sl_expect_eq "hc: over 20 min left removes the label" "$(_sl_hc_log)" "${want} dotfiles.cache="
+  _sl_hc_run h1 true 1500
+  _sl_expect_eq "hc: a removed label is not removed again" "$(_sl_hc_log)" ""
+  _sl_hc_run h2 true 1200
+  _sl_expect_eq "hc: exactly 20 min left shows 20m" "$(_sl_hc_log)" "${want} dotfiles.cache=20m"
+  _sl_hc_run h3 true 1201
+  _sl_expect_eq "hc: 20 min and 1 s left removes the label" "$(_sl_hc_log)" "${want} dotfiles.cache="
+  _sl_hc_run h4 true 61
+  _sl_expect_eq "hc: 61 s left rounds up to 2m" "$(_sl_hc_log)" "${want} dotfiles.cache=2m"
+  _sl_hc_run h4b true 1
+  _sl_expect_eq "hc: 1 s left rounds up to 1m" "$(_sl_hc_log)" "${want} dotfiles.cache=1m"
+  _sl_hc_run h5 false 0
+  _sl_expect_eq "hc: an expired cache sets cold" "$(_sl_hc_log)" "${want} dotfiles.cache=cold"
+  _sl_hc_run h5 false 0
+  _sl_expect_eq "hc: cold is not set again inside the refresh window" "$(_sl_hc_log)" ""
+  _sl_expect_eq "hc: the terminal marker names the session and the value" \
+    "$(cat "${c}/hc-cache-t4")" "h5 cold"
+  _sl_touch_old "${c}/hc-cache-t4" 599
+  _sl_hc_run h5 false 0
+  _sl_expect_eq "hc: cold is not set again at 599 s" "$(_sl_hc_log)" ""
+  _sl_touch_old "${c}/hc-cache-t4" 601
+  _sl_hc_run h5 false 0
+  _sl_expect_eq "hc: cold is set again after the refresh window (601 s)" "$(_sl_hc_log)" \
+    "${want} dotfiles.cache=cold"
+  # A removed label is also sent again after the refresh window
+  _sl_hc_run h5b true 1500
+  : > "${_SL_SB}/hc.log"
+  _sl_touch_old "${c}/hc-cache-t4" 601
+  _sl_hc_run h5b true 1500
+  _sl_expect_eq "hc: a removal is sent again after the refresh window" "$(_sl_hc_log)" "${want} dotfiles.cache="
+  # The same session in another terminal has its own marker and sets its label at once
+  : > "${_SL_SB}/hc.log"
+  _sl_run 140 "$(_sl_json '.session_id = "h5" | .prompt_cache = {warm: false, caching_observed: true,
+    recache_tokens_if_cold: 142000}')" HC_TERMINAL_ID=t5
+  zselect -t 30 || :
+  _sl_expect_eq "hc: the same session in another terminal sets its label" "$(_sl_hc_log)" \
+    "label t5 dotfiles.cache=cold"
+  # An id with a slash (machine/t7) keys a safe marker name
+  : > "${_SL_SB}/hc.log"
+  _sl_run 140 "$(_sl_json '.session_id = "h5" | .prompt_cache = {warm: false, caching_observed: true,
+    recache_tokens_if_cold: 142000}')" HC_TERMINAL_ID=box/t7
+  zselect -t 30 || :
+  _sl_expect_eq "hc: a machine/terminal id sets its label" "$(_sl_hc_log)" "label box/t7 dotfiles.cache=cold"
+  _sl_expect_eq "hc: the slash becomes an underscore in the marker name" \
+    "$(cat "${c}/hc-cache-box_t7")" "h5 cold"
+  # A resumed session with no prompt_cache and a 2 h old transcript is cold
+  printf '{}\n' > "${t}"
+  touch -t "$(date -r $(( _SL_NOW - 7200 )) +%Y%m%d%H%M.%S)" "${t}"
+  : > "${_SL_SB}/hc.log"
+  _sl_run 140 "$(_sl_json ".session_id = \"h6\" | .transcript_path = \"${t}\"
+    | .context_window.current_usage.cache_read_input_tokens = 90000")" HC_TERMINAL_ID=t4
+  zselect -t 30 || :
+  _sl_expect_eq "hc: a cold resumed transcript sets cold" "$(_sl_hc_log)" "${want} dotfiles.cache=cold"
+  # After a compaction recache_tokens_if_cold is null: still cold for the
+  # label, although no takeover shows (the size is unknown)
+  : > "${_SL_SB}/hc.log"
+  # shellcheck disable=SC2016  # $now is a jq variable, expanded by _sl_json
+  _sl_run 140 "$(_sl_json '.session_id = "h6b" | .prompt_cache = {warm: false, caching_observed: true,
+    ttl: "1h", expires_at: ($now - 10), recache_tokens_if_cold: null}
+    | .context_window.current_usage = {input_tokens: 0, output_tokens: 0,
+      cache_creation_input_tokens: 0, cache_read_input_tokens: 0}')" HC_TERMINAL_ID=t4
+  zselect -t 30 || :
+  _sl_expect_eq "hc: a compacted session with an unknown re-cache size sets cold" "$(_sl_hc_log)" \
+    "${want} dotfiles.cache=cold"
+  # The same null size with a warm cache sets nothing: the label is removed
+  : > "${_SL_SB}/hc.log"
+  # shellcheck disable=SC2016  # $now is a jq variable, expanded by _sl_json
+  _sl_run 140 "$(_sl_json '.session_id = "h6c" | .prompt_cache = {warm: true, caching_observed: true,
+    ttl: "1h", expires_at: ($now + 1800), recache_tokens_if_cold: null}')" HC_TERMINAL_ID=t4
+  zselect -t 30 || :
+  _sl_expect_eq "hc: a warm cache with an unknown re-cache size removes the label" "$(_sl_hc_log)" \
+    "${want} dotfiles.cache="
+  # A warm 5m TTL gets no countdown: the whole TTL is inside the lead
+  _sl_hc_run h9 true 240 '.prompt_cache.ttl = "5m"'
+  _sl_expect_eq "hc: a warm 5m TTL removes the label instead of a countdown" "$(_sl_hc_log)" \
+    "${want} dotfiles.cache="
+  # A 5m TTL that is cold is still cold
+  _sl_hc_run h9b false 0 '.prompt_cache.ttl = "5m"'
+  _sl_expect_eq "hc: a cold 5m TTL sets cold" "$(_sl_hc_log)" "${want} dotfiles.cache=cold"
+
+  # The label belongs to the terminal. Session A cold, then session B (after
+  # /clear) warm in the same terminal removes it, then A again (/resume): A must
+  # set it again, although its own last value was the same.
+  _sl_hc_run hA false 0
+  # shellcheck disable=SC2016  # $now is a jq variable, expanded by _sl_json
+  _sl_hc_run hB true 3000
+  _sl_expect_eq "hc: session B in the terminal removes A's label" "$(_sl_hc_log)" "${want} dotfiles.cache="
+  _sl_hc_run hA false 0
+  _sl_expect_eq "hc: a session back in a terminal another session used sets its label again" \
+    "$(_sl_hc_log)" "${want} dotfiles.cache=cold"
+
+  # No HC_TERMINAL_ID: no call
+  : > "${_SL_SB}/hc.log"
+  _sl_run 140 "$(_sl_json '.session_id = "h7" | .prompt_cache = {warm: false, caching_observed: true,
+    recache_tokens_if_cold: 142000}')"
+  zselect -t 10 || :
+  _sl_expect_eq "hc: outside a herdr-core terminal nothing runs" "$(_sl_hc_log)" ""
+  # No session id: no call
+  _sl_run 140 "$(_sl_json 'del(.session_id) | .prompt_cache = {warm: false, caching_observed: true,
+    recache_tokens_if_cold: 142000}')" HC_TERMINAL_ID=t4
+  zselect -t 10 || :
+  _sl_expect_eq "hc: an unknown session id makes no call" "$(_sl_hc_log)" ""
+  # hc missing or not executable: no call, no error, the same output as with
+  # no terminal at all
+  base="${_SL_OUT}"
+  _sl_run 140 "$(_sl_json '.session_id = "h7m" | .prompt_cache = {warm: false, caching_observed: true,
+    recache_tokens_if_cold: 142000}')"
+  base="${_SL_OUT}"
+  /bin/mv "${_SL_SB}/.local/bin/hc" "${_SL_SB}/.local/bin/hc.off"
+  _sl_run 140 "$(_sl_json '.session_id = "h7m" | .prompt_cache = {warm: false, caching_observed: true,
+    recache_tokens_if_cold: 142000}')" HC_TERMINAL_ID=t4
+  zselect -t 10 || :
+  _sl_expect_eq "hc: a missing hc makes no call" "$(_sl_hc_log)" ""
+  _sl_expect_eq "hc: a missing hc leaves no marker" "$(cat "${c}/hc-cache-t4")" "hA cold"
+  _sl_expect_eq "hc: a missing hc leaves the usual output" "${_SL_OUT}" "${base}"
+  /bin/mv "${_SL_SB}/.local/bin/hc.off" "${_SL_SB}/.local/bin/hc"
+  chmod 644 "${_SL_SB}/.local/bin/hc"
+  _sl_run 140 "$(_sl_json '.session_id = "h7m" | .prompt_cache = {warm: false, caching_observed: true,
+    recache_tokens_if_cold: 142000}')" HC_TERMINAL_ID=t4
+  zselect -t 10 || :
+  _sl_expect_eq "hc: a non-executable hc makes no call" "$(_sl_hc_log)" ""
+  chmod 755 "${_SL_SB}/.local/bin/hc"
+
+  # A failed hc call leaves no marker, so the next run retries; the run exits
+  # 0 (_sl_run fails on any other code). The stub logs its call, so "ran and
+  # wrote nothing" is told from "never ran".
+  _sl_hc_stub 1
+  _sl_hc_run h8 false 0
+  _sl_expect_eq "hc: the failing call ran" "$(wc -l < "${_SL_SB}/hc.log" | tr -d ' ')" "1"
+  _sl_expect_eq "hc: a failed call writes no marker" "$(cat "${c}/hc-cache-t4")" "hA cold"
+  _sl_expect_eq "hc: a failed call leaves the usual output" "${_SL_OUT}" "${base}"
+  _sl_run 140 "$(_sl_json '.session_id = "h8" | .prompt_cache = {warm: false, caching_observed: true,
+    recache_tokens_if_cold: 142000}')" HC_TERMINAL_ID=t4
+  for (( i = 0; i < 50; i++ )); do
+    (( $(wc -l < "${_SL_SB}/hc.log") >= 2 )) && break
+    zselect -t 3 || :
+  done
+  _sl_expect_eq "hc: the next run retries a failed call" "$(wc -l < "${_SL_SB}/hc.log" | tr -d ' ')" "2"
+
+  # A hung hc dies at the alarm: the stub records its pid, then becomes a
+  # 30 s sleep. The deadline is 1 s here (STATUSLINE_HC_DEADLINE).
+  # shellcheck disable=SC2016  # $$ belongs to the stub, not this shell
+  printf '#!/bin/zsh\nprint -r -- $$ > %q\nexec /bin/sleep 30\n' "${_SL_SB}/hc.pid" \
+    > "${_SL_SB}/.local/bin/hc"
+  "${_SL_SB}/.local/bin/hc" >/dev/null 2>&1 &
+  zselect -t 50 || :
+  kill "$!" 2>/dev/null || :
+  /bin/rm -f "${_SL_SB}/hc.pid" "${c}/hc-cache-t4"
+  s=$SECONDS
+  _sl_run 140 "$(_sl_json '.session_id = "h10" | .prompt_cache = {warm: false, caching_observed: true,
+    recache_tokens_if_cold: 142000}')" HC_TERMINAL_ID=t4 STATUSLINE_HC_DEADLINE=1
+  _sl_expect_eq "hc: a hung hc does not hold the status line" "$(( SECONDS - s < 3 ))" "1"
+  for (( i = 0; i < 50; i++ )); do
+    [[ -s "${_SL_SB}/hc.pid" ]] && ! kill -0 "$(<"${_SL_SB}/hc.pid")" 2>/dev/null && break
+    zselect -t 20 || :
+  done
+  dead=alive marked=no
+  if [[ -s "${_SL_SB}/hc.pid" ]] && ! kill -0 "$(<"${_SL_SB}/hc.pid")" 2>/dev/null; then dead=dead; fi
+  if [[ -e "${c}/hc-cache-t4" ]]; then marked=yes; fi
+  _sl_expect_eq "hc: a hung hc is killed at the deadline" \
+    "${dead}" "dead"
+  _sl_expect_eq "hc: a hung call writes no marker" "${marked}" "no"
+  /bin/rm -f "${_SL_SB}/.local/bin/hc"
+}
+
 # ── guard liveness marker ───────────────────────────────────────────────────
 # The pretool-prefilter mod writes Caches/statusline/guards-<session_id>;
 # a missing marker after the 15 s grace is GUARDS OFF in red on every width.
@@ -1547,6 +1761,7 @@ function run_statusline {
   _sl_resumed_cold
   _sl_cache_alert
   _sl_compacted
+  _sl_hc_label
   _sl_guards
   _sl_subagent
   _sl_spawns
