@@ -301,11 +301,13 @@ setopt HIST_IGNORE_SPACE
 
 ### Change into Initial Directory ###
 
-# Rex starts a new tab or split in the source pane's folder: keep it. A Rex
-# shell with no source pane starts in / or in the Rex server folder under
-# ~/Library, so it still moves to INITIAL_DIR.
+# Rex starts a new tab or split in the source pane's folder, and herdr-core
+# (HC_TERMINAL_ID, the Herdr app's tabs and splits, `hc run --cwd`) starts a
+# terminal in the folder it was asked for: keep it. A shell with no source
+# folder starts in / or in a server folder under ~/Library, so it still
+# moves to INITIAL_DIR.
 _initial_dir_cd=1
-if [[ "${TERM_PROGRAM:-}" == rex && "${PWD}" != / && "${PWD}" != "${HOME}/Library/"* ]]; then
+if [[ ( "${TERM_PROGRAM:-}" == rex || -n "${HC_TERMINAL_ID:-}" ) && "${PWD}" != / && "${PWD}" != "${HOME}/Library/"* ]]; then
   _initial_dir_cd=0
 fi
 if [[ -d "${INITIAL_DIR}" && ${_initial_dir_cd} -eq 1 ]]; then
