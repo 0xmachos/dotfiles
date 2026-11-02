@@ -2,8 +2,7 @@
 # dotfiles/bin/rex-watch
 #
 # Watchdog for the local Rex server on this Mac. Run every 120 s by the
-# com.0xmachos.rex-watch LaunchAgent; safe to run by hand. Modelled on
-# bin/herdr-watch: internals/herdr.md "Monitoring, self-heal and update path".
+# com.0xmachos.rex-watch LaunchAgent; safe to run by hand.
 #
 #   rex-watch
 #

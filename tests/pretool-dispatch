@@ -800,7 +800,7 @@ function _ptd_dirs_cases {
   # shellcheck disable=SC2088  # literal ~
   local extra='~/.claude/mods/session-title'
   local v
-  for v in "${pre}:${sign}" "${pre}:${sign}:${extra}" "${pre}:${sign}:${extra}:~/.claude/mods/herdr-tab-title"; do
+  for v in "${pre}:${sign}" "${pre}:${sign}:${extra}" "${pre}:${sign}:${extra}:~/.claude/mods/subagent-model"; do
     if _ptd_dirs_ok "${v}"; then
       _pass "shape rule accepts: ${v}"
     else

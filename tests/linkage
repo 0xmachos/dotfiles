@@ -72,9 +72,6 @@ function _linkage_deployments {
     mkdir() { :; }
     # shellcheck disable=SC2329
     git() { _linkage_record "${SCRIPT_DIR}/.githooks"; }
-    # Records each plugin dir install_dotfiles links; never the live registry.
-    # shellcheck disable=SC2329
-    herdr() { [[ "$1 $2" == "plugin link" ]] && _linkage_record "$3"; return 0; }
     # shellcheck disable=SC2329
     _install_git_exclude() { _linkage_record "${SCRIPT_DIR}/.extra_gitexclude"; }
     # shellcheck disable=SC2329
@@ -356,7 +353,6 @@ function run_linkage {
     [uv]=install_dotfiles
     [npm]=install_dotfiles
     [1Password]=install_dotfiles
-    [herdr]=install_dotfiles
     [rex]=install_dotfiles
   )
 
@@ -367,7 +363,6 @@ function run_linkage {
     [jump-user]=install_scripts
     [jump-system]=install_scripts
     [scratch-sweep]=install_scripts
-    [herdr-watch]=install_scripts
     [rex-watch]=install_scripts
     [rex-remote-bridge]=install_scripts
     [rex-drop]=install_scripts
@@ -380,8 +375,6 @@ function run_linkage {
     [papercut]=install_scripts                  # status-line and log CLI
     [spawnprof]=install_scripts                 # spawn-cost profiler for zsh scripts
     [agent-reset]=repo                          # backup/verify/wipe ritual; run from the repo, installed nowhere
-    [herdr-detection-override]=repo               # builds the local Herdr detection override; run from the repo, installed nowhere
-    [herdr-handoff]=repo                        # live handoff after brew upgrade herdr; run as ~/dotfiles/bin/herdr-handoff on each Mac
 
     # install_dotfiles → ~/.local/bin/ (op wrappers)
     [vt]=install_dotfiles

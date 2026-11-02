@@ -57,7 +57,7 @@ function _sl_run {
   # The environment is set inside the command substitution's own subshell, so
   # no `env` process is started and nothing leaks into the suite's shell.
   _SL_OUT="$(
-    unset CLAUDE_CODE_AUTO_COMPACT_WINDOW GIT_DIR GIT_WORK_TREE HERDR_PANE_ID HERDR_BIN_PATH
+    unset CLAUDE_CODE_AUTO_COMPACT_WINDOW GIT_DIR GIT_WORK_TREE
     export GIT_CEILING_DIRECTORIES="${_SL_SB}" HOME="${_SL_SB}" COLUMNS="${cols}" \
       STATUSLINE_NOW="${_SL_NOW}" STATUSLINE_OSASCRIPT="${_SL_SB}/osascript-stub"
     # shellcheck disable=SC2163  # each extra argument is a NAME=value pair
@@ -1030,11 +1030,6 @@ function _sl_ledger_prune {
   printf '1 2 x\n' > "${c}/cache-state-stale"
   printf '1 2 x\n' > "${c}/cache-state-fresh"
   _sl_touch_old "${c}/cache-state-stale" 90000
-  # The herdr marker sweep is 48 h: 49 h old goes, 47 h old stays
-  printf 'x none\n' > "${c}/herdr-cache-stale"
-  printf 'x none\n' > "${c}/herdr-cache-fresh"
-  _sl_touch_old "${c}/herdr-cache-stale" 176400
-  _sl_touch_old "${c}/herdr-cache-fresh" 169200
   : > "${c}/git-stale"
   _sl_touch_old "${c}/git-stale" 90000
   # Lines 7h, 21601 s, 21599 s and 5h old; a 5h sample over a minute old, so
@@ -1066,9 +1061,7 @@ function _sl_ledger_prune {
     "$(for f in last-stale last-fresh; do [[ -e "${u}/${f}" ]] && printf k || printf g; done)" "gk"
   _sl_expect_eq "sweep: 25 h old cache-state, guards and git cache removed, 23 h old kept" \
     "$(for f in cache-state-stale cache-state-fresh guards-stale guards-fresh git-stale; do [[ -e "${c}/${f}" ]] && printf k || printf g; done)" "gkgkg"
-  _sl_expect_eq "sweep: 49 h old herdr marker removed, 47 h old kept" \
-    "$(for f in herdr-cache-stale herdr-cache-fresh; do [[ -e "${c}/${f}" ]] && printf k || printf g; done)" "gk"
-  /bin/rm -f "${c}/herdr-cache-fresh" "${c}/cache-state-fresh" "${c}/guards-fresh"
+  /bin/rm -f "${c}/cache-state-fresh" "${c}/guards-fresh"
   # An append during the prune survives. Deterministic, unlike the concurrent
   # case below (40 parallel runs never lost a line against a rewrite-in-place
   # prune, 2026-09-25).
@@ -1138,7 +1131,7 @@ function _sl_ledger_concurrent {
     printf '1' > "${u}/last-c${i}"
     ( _sl_json ".session_id = \"c${i}\" | .cost.total_cost_usd = 2
         | .rate_limits.five_hour.used_percentage = 20" \
-      | _run_no_tty env -u HERDR_PANE_ID -u HERDR_BIN_PATH \
+      | _run_no_tty env \
         HOME="${_SL_SB}" COLUMNS=140 STATUSLINE_NOW="${_SL_NOW}" \
         GIT_CEILING_DIRECTORIES="${_SL_SB}" STATUSLINE_OSASCRIPT="${_SL_SB}/osascript-stub" \
         /bin/zsh "${SCRIPT_DIR}/claude/statusline-command" >/dev/null 2>&1
@@ -1152,182 +1145,18 @@ function _sl_ledger_concurrent {
   _sl_expect_eq "concurrent: no temp files left" "$(/bin/ls "${u}" | /usr/bin/grep -c prune)" "0"
 }
 
-# ── (9b) herdr sidebar token ───────────────────────────────────────────────
-# The status line sets the herdr pane token `cache` (cold, or minutes left in
-# the last 20) through a stub herdr that logs its argv.
-function _sl_herdr_stub {
-  # shellcheck disable=SC2016  # $@ belongs to the stub, not this shell
-  printf '#!/bin/zsh\nprint -r -- "$@" >> %q\n' "${_SL_SB}/herdr.log" > "${_SL_SB}/herdr-stub"
-  chmod 755 "${_SL_SB}/herdr-stub"
-  # First exec of a new file can take seconds (the EDR scans it), longer than
-  # the bounded wait after a backgrounded call: run it once in the foreground
-  "${_SL_SB}/herdr-stub" warm-up >/dev/null 2>&1 || :
-  : > "${_SL_SB}/herdr.log"
-}
-
-# _sl_herdr_run <session> <warm> <seconds left> [extra jq filter] — one run
-# with the herdr env set; waits for the backgrounded call, or about 700 ms for none.
-function _sl_herdr_run {
-  local i
-  : > "${_SL_SB}/herdr.log"
-  _sl_run 140 "$(_sl_json ".session_id = \"$1\" | .prompt_cache = {warm: $2, caching_observed: true,
-    expires_at: (\$now + $3), hit_ratio: 0.95, recache_tokens_if_cold: 142000}${4:+ | $4}")" \
-    HERDR_PANE_ID=w1:p1 HERDR_BIN_PATH="${_SL_SB}/herdr-stub"
-  # Up to 15 s for the backgrounded call: at load average 14 the stub landed
-  # after the old 6 s bound, so the next run's log held it (2026-10-22)
-  for (( i = 0; i < 50; i++ )); do
-    [[ -s "${_SL_SB}/herdr.log" ]] && break
-    zselect -t 3 || :
-  done
-  zselect -t 10 || :
-}
-
-function _sl_herdr_log { print -r -- "$(<"${_SL_SB}/herdr.log")"; }
-
-function _sl_herdr_token {
-  local want="pane report-metadata w1:p1 --source user:cache" t="${_SL_SB}/transcript2.jsonl" i
-  _sl_herdr_stub
-  _sl_herdr_run h1 true 1140
-  _sl_expect_eq "herdr: 19 min left sets a 150 s countdown token" "$(_sl_herdr_log)" \
-    "${want} --token cache=cache 19m --clear-token cache_low --ttl-ms 150000"
-  _sl_herdr_run h1 true 1140
-  _sl_expect_eq "herdr: an unchanged value makes no second call" "$(_sl_herdr_log)" ""
-  _sl_herdr_run h1 true 1080
-  _sl_expect_eq "herdr: a new minute count sets the token again" "$(_sl_herdr_log)" \
-    "${want} --token cache=cache 18m --clear-token cache_low --ttl-ms 150000"
-  _sl_herdr_run h1 true 1500
-  _sl_expect_eq "herdr: over 20 min left clears the token" "$(_sl_herdr_log)" \
-    "${want} --clear-token cache --clear-token cache_low"
-  _sl_herdr_run h1 true 1500
-  _sl_expect_eq "herdr: a cleared token is not cleared again" "$(_sl_herdr_log)" ""
-  _sl_herdr_run h2 true 1200
-  _sl_expect_eq "herdr: exactly 20 min left shows 20m" "$(_sl_herdr_log)" \
-    "${want} --token cache=cache 20m --clear-token cache_low --ttl-ms 150000"
-  _sl_herdr_run h3 true 1201
-  _sl_expect_eq "herdr: 20 min and 1 s left shows nothing" "$(_sl_herdr_log)" \
-    "${want} --clear-token cache --clear-token cache_low"
-  _sl_herdr_run h4 true 61
-  _sl_expect_eq "herdr: 61 s left rounds up to 2m" "$(_sl_herdr_log)" \
-    "${want} --token cache_low=cache 2m --clear-token cache --ttl-ms 150000"
-  _sl_herdr_run h4b true 300
-  _sl_expect_eq "herdr: exactly 5 min left is the red token" "$(_sl_herdr_log)" \
-    "${want} --token cache_low=cache 5m --clear-token cache --ttl-ms 150000"
-  _sl_herdr_run h4c true 301
-  _sl_expect_eq "herdr: 5 min and 1 s left is the yellow token" "$(_sl_herdr_log)" \
-    "${want} --token cache=cache 6m --clear-token cache_low --ttl-ms 150000"
-  _sl_herdr_run h5 false 0
-  _sl_expect_eq "herdr: an expired cache sets cold for 24 h" "$(_sl_herdr_log)" \
-    "${want} --token cache_low=cache cold --clear-token cache --ttl-ms 86400000"
-  _sl_herdr_run h5 false 0
-  _sl_expect_eq "herdr: cold is not set again inside the refresh window" "$(_sl_herdr_log)" ""
-  _sl_touch_old "${_SL_SB}/Library/Caches/statusline/herdr-cache-w1_p1" 599
-  _sl_herdr_run h5 false 0
-  _sl_expect_eq "herdr: cold is not set again at 599 s" "$(_sl_herdr_log)" ""
-  _sl_touch_old "${_SL_SB}/Library/Caches/statusline/herdr-cache-w1_p1" 601
-  _sl_herdr_run h5 false 0
-  _sl_expect_eq "herdr: cold is set again after the refresh window (601 s)" "$(_sl_herdr_log)" \
-    "${want} --token cache_low=cache cold --clear-token cache --ttl-ms 86400000"
-  # The same session in another pane has its own marker and sets its token at once
-  : > "${_SL_SB}/herdr.log"
-  _sl_run 140 "$(_sl_json ".session_id = \"h5\" | .prompt_cache = {warm: false, caching_observed: true,
-    recache_tokens_if_cold: 142000}")" HERDR_PANE_ID=w2:p1 HERDR_BIN_PATH="${_SL_SB}/herdr-stub"
-  zselect -t 30 || :
-  _sl_expect_eq "herdr: the same session in another pane sets its token" "$(_sl_herdr_log)" \
-    "pane report-metadata w2:p1 --source user:cache --token cache_low=cache cold --clear-token cache --ttl-ms 86400000"
-  # A resumed session with no prompt_cache and a 2 h old transcript is cold
-  printf '{}\n' > "${t}"
-  touch -t "$(date -r $(( _SL_NOW - 7200 )) +%Y%m%d%H%M.%S)" "${t}"
-  : > "${_SL_SB}/herdr.log"
-  _sl_run 140 "$(_sl_json ".session_id = \"h6\" | .transcript_path = \"${t}\"
-    | .context_window.current_usage.cache_read_input_tokens = 90000")" \
-    HERDR_PANE_ID=w1:p1 HERDR_BIN_PATH="${_SL_SB}/herdr-stub"
-  zselect -t 30 || :
-  _sl_expect_eq "herdr: a cold resumed transcript sets cold" "$(_sl_herdr_log)" \
-    "${want} --token cache_low=cache cold --clear-token cache --ttl-ms 86400000"
+# ── (9b) compacted session ─────────────────────────────────────────────────
+function _sl_compacted {
   # After a compaction (idle compaction included) Claude Code reports
   # recache_tokens_if_cold as null and a zero current_usage until the next
-  # request: still cold for the token, but no takeover (the size is unknown)
-  : > "${_SL_SB}/herdr.log"
+  # request: the session is cold, but no takeover (the size is unknown)
   # shellcheck disable=SC2016  # $now is a jq variable, expanded by _sl_json
   _sl_run 140 "$(_sl_json '.session_id = "h6b" | .prompt_cache = {warm: false, caching_observed: true,
     ttl: "1h", expires_at: ($now - 10), recache_tokens_if_cold: null}
     | .context_window.current_usage = {input_tokens: 0, output_tokens: 0,
-      cache_creation_input_tokens: 0, cache_read_input_tokens: 0}')" \
-    HERDR_PANE_ID=w1:p1 HERDR_BIN_PATH="${_SL_SB}/herdr-stub"
-  zselect -t 30 || :
-  _sl_expect_eq "herdr: a compacted session with an unknown re-cache size sets cold" "$(_sl_herdr_log)" \
-    "${want} --token cache_low=cache cold --clear-token cache --ttl-ms 86400000"
+      cache_creation_input_tokens: 0, cache_read_input_tokens: 0}')"
   _sl_expect_eq "compacted: an unknown re-cache size makes no takeover" \
     "$(_sl_plain "$(_sl_line 2)")" "░░░░░░░░░░ 0K · Cache Expired"
-  # The same null size with a warm cache sets nothing
-  : > "${_SL_SB}/herdr.log"
-  # shellcheck disable=SC2016  # $now is a jq variable, expanded by _sl_json
-  _sl_run 140 "$(_sl_json '.session_id = "h6c" | .prompt_cache = {warm: true, caching_observed: true,
-    ttl: "1h", expires_at: ($now + 1800), recache_tokens_if_cold: null}')" \
-    HERDR_PANE_ID=w1:p1 HERDR_BIN_PATH="${_SL_SB}/herdr-stub"
-  zselect -t 30 || :
-  _sl_expect_eq "herdr: a warm cache with an unknown re-cache size clears the token" "$(_sl_herdr_log)" \
-    "${want} --clear-token cache --clear-token cache_low"
-  # No herdr env: no call
-  : > "${_SL_SB}/herdr.log"
-  _sl_run 140 "$(_sl_json ".session_id = \"h7\" | .prompt_cache = {warm: false, caching_observed: true,
-    recache_tokens_if_cold: 142000}")"
-  zselect -t 10 || :
-  _sl_expect_eq "herdr: outside a herdr pane nothing runs" "$(_sl_herdr_log)" ""
-  # A failed herdr call leaves no marker, so the next run retries. The stub
-  # logs its call, so "ran and wrote nothing" is told from "never ran".
-  # shellcheck disable=SC2016  # $@ belongs to the stub, not this shell
-  printf '#!/bin/zsh\nprint -r -- "$@" >> %q\nexit 1\n' "${_SL_SB}/herdr-fail.log" > "${_SL_SB}/herdr-fail"
-  chmod 755 "${_SL_SB}/herdr-fail"
-  "${_SL_SB}/herdr-fail" warm-up >/dev/null 2>&1 || :
-  : > "${_SL_SB}/herdr-fail.log"
-  _sl_run 140 "$(_sl_json ".session_id = \"h8\" | .prompt_cache = {warm: false, caching_observed: true,
-    recache_tokens_if_cold: 142000}")" HERDR_PANE_ID=w1:p1 HERDR_BIN_PATH="${_SL_SB}/herdr-fail"
-  for (( i = 0; i < 50; i++ )); do
-    [[ -s "${_SL_SB}/herdr-fail.log" ]] && break
-    zselect -t 3 || :
-  done
-  zselect -t 10 || :
-  _sl_expect_eq "herdr: the failing call ran" "$(wc -l < "${_SL_SB}/herdr-fail.log" | tr -d ' ')" "1"
-  _sl_expect_lacks "herdr: a failed call writes no marker" \
-    "$(cat "${_SL_SB}/Library/Caches/statusline/herdr-cache-w1_p1" 2>/dev/null)" "h8 "
-  _sl_run 140 "$(_sl_json ".session_id = \"h8\" | .prompt_cache = {warm: false, caching_observed: true,
-    recache_tokens_if_cold: 142000}")" HERDR_PANE_ID=w1:p1 HERDR_BIN_PATH="${_SL_SB}/herdr-fail"
-  for (( i = 0; i < 50; i++ )); do
-    (( $(wc -l < "${_SL_SB}/herdr-fail.log") >= 2 )) && break
-    zselect -t 3 || :
-  done
-  _sl_expect_eq "herdr: the next run retries a failed call" "$(wc -l < "${_SL_SB}/herdr-fail.log" | tr -d ' ')" "2"
-
-  # The token belongs to the pane. Session A cold, then session B (after
-  # /clear) warm in the same pane clears it, then A again (/resume): A must
-  # set it again, although its own last value was the same. A marker keyed
-  # by session let the old value stand for up to the 600 s refresh.
-  : > "${_SL_SB}/herdr.log"
-  _sl_run 140 "$(_sl_json '.session_id = "hA" | .prompt_cache = {warm: false, caching_observed: true,
-    recache_tokens_if_cold: 142000}')" HERDR_PANE_ID=w3:p1 HERDR_BIN_PATH="${_SL_SB}/herdr-stub"
-  zselect -t 30 || :
-  # shellcheck disable=SC2016  # $now is a jq variable, expanded by _sl_json
-  _sl_run 140 "$(_sl_json '.session_id = "hB" | .prompt_cache = {warm: true, caching_observed: true,
-    expires_at: ($now + 3000), hit_ratio: 0.9, recache_tokens_if_cold: 1000}')" \
-    HERDR_PANE_ID=w3:p1 HERDR_BIN_PATH="${_SL_SB}/herdr-stub"
-  zselect -t 30 || :
-  : > "${_SL_SB}/herdr.log"
-  _sl_run 140 "$(_sl_json '.session_id = "hA" | .prompt_cache = {warm: false, caching_observed: true,
-    recache_tokens_if_cold: 142000}')" HERDR_PANE_ID=w3:p1 HERDR_BIN_PATH="${_SL_SB}/herdr-stub"
-  for (( i = 0; i < 50; i++ )); do
-    [[ -s "${_SL_SB}/herdr.log" ]] && break
-    zselect -t 3 || :
-  done
-  _sl_expect_eq "herdr: a session back in a pane another session used sets its token again" \
-    "$(_sl_herdr_log)" \
-    "pane report-metadata w3:p1 --source user:cache --token cache_low=cache cold --clear-token cache --ttl-ms 86400000"
-  _sl_expect_eq "herdr: the pane marker names the session and the value" \
-    "$(cat "${_SL_SB}/Library/Caches/statusline/herdr-cache-w3_p1")" "hA cache cold"
-  # A 5m TTL gets no countdown token: the whole TTL is inside the lead
-  _sl_herdr_run h9 true 240 '.prompt_cache.ttl = "5m"'
-  _sl_expect_eq "herdr: a warm 5m TTL clears the tokens instead of a countdown" "$(_sl_herdr_log)" \
-    "${want} --clear-token cache --clear-token cache_low"
 }
 
 # ── (9) cache_alert ────────────────────────────────────────────────────────
@@ -1525,7 +1354,7 @@ function _sl_run_spawn {
   local five="${_SL_SB}/Library/Caches/statusline/usage/five"
   if [[ -f "${five}" ]]; then printf '%s 55\n' "${_SL_NOW}" > "${five}"; fi
   printf '%s' "$1" | _run_no_tty env -u CLAUDE_CODE_AUTO_COMPACT_WINDOW \
-    -u GIT_DIR -u GIT_WORK_TREE -u STATUSLINE_NOW -u HERDR_PANE_ID -u HERDR_BIN_PATH \
+    -u GIT_DIR -u GIT_WORK_TREE -u STATUSLINE_NOW \
     GIT_CEILING_DIRECTORIES="${_SL_SB}" \
     HOME="${_SL_SB}" COLUMNS=140 PATH="${_SL_SB}/shims:${PATH}" \
     STATUSLINE_OSASCRIPT="${_SL_SB}/osascript-stub" \
@@ -1705,15 +1534,6 @@ function run_statusline {
   _SL_SB=""
   trap '[[ -n "${_SL_SB}" ]] && /bin/rm -rf "${_SL_SB}"' EXIT
   _sl_setup
-  # Canary: a herdr pane's real HERDR_* variables reach ./test, and a runner
-  # that keeps them sets tokens on the live pane. Every runner must unset them,
-  # so a stub that logs any call stands in for the whole suite.
-  local herdr_pane_was="${HERDR_PANE_ID-}" herdr_bin_was="${HERDR_BIN_PATH-}"
-  local herdr_pane_set="${HERDR_PANE_ID+1}" herdr_bin_set="${HERDR_BIN_PATH+1}"
-  # shellcheck disable=SC2016  # $@ belongs to the stub, not this shell
-  printf '#!/bin/zsh\nprint -r -- "$@" >> %q\n' "${_SL_SB}/herdr-leak.log" > "${_SL_SB}/herdr-leak"
-  chmod 755 "${_SL_SB}/herdr-leak"
-  export HERDR_PANE_ID=leak:p0 HERDR_BIN_PATH="${_SL_SB}/herdr-leak"
   _sl_exit_codes
   _sl_context
   _sl_usage
@@ -1726,16 +1546,11 @@ function run_statusline {
   _sl_expired
   _sl_resumed_cold
   _sl_cache_alert
-  _sl_herdr_token
+  _sl_compacted
   _sl_guards
   _sl_subagent
   _sl_spawns
   _sl_no_modules
-  zselect -t 10 || :
-  _sl_expect_eq "no runner reaches the herdr pane it inherits" \
-    "$(cat "${_SL_SB}/herdr-leak.log" 2>/dev/null)" ""
-  if [[ -n "${herdr_pane_set}" ]]; then export HERDR_PANE_ID="${herdr_pane_was}"; else unset HERDR_PANE_ID; fi
-  if [[ -n "${herdr_bin_set}" ]]; then export HERDR_BIN_PATH="${herdr_bin_was}"; else unset HERDR_BIN_PATH; fi
   /bin/rm -rf "${_SL_SB}"
   trap - EXIT
 }

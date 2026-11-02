@@ -160,7 +160,6 @@ function run_config_root {
     /Users/tester/.claude/CLAUDE.md
     /Users/tester/.claude/rules/x.md
     /Users/tester/.claude/hooks/some-hook
-    /Users/tester/.claude/hooks/herdr-agent-state.sh.bak
     /Users/tester/.claude
     /Users/tester/.claude/projects
     /Users/tester/.claude/projects-x/y
@@ -212,7 +211,6 @@ function run_config_root {
     /Users/tester/.claude/projects/p/s.jsonl
     /Users/tester/.claude/dev-mods/s/m/hooks/hooks.json
     /Users/tester/.claude/plans/some-plan.md
-    /Users/tester/.claude/hooks/herdr-agent-state.sh
     /Users/tester/.codex/config.toml
     /Users/tester/.codex/sessions/2026/10/20/r.jsonl
     /Users/tester/.codex/log/codex.log
@@ -295,7 +293,6 @@ EOF'
   _cr_expect PASS 'echo hi > ${HOME}/.claude/dev-mods/s/x'
   _cr_expect PASS 'echo hi > ~/.claude/plans/p.md'
   _cr_expect DENY 'rm -rf ~/.claude/plans' 'the plans directory itself'
-  _cr_expect PASS 'echo hi > ~/.claude/hooks/herdr-agent-state.sh'
   _cr_expect PASS 'echo hi > ~/.codex/config.toml'
   _cr_expect PASS 'echo hi > ~/.codex/sessions/s.jsonl'
   _cr_expect PASS 'echo hi > ~/.codex/log/x'

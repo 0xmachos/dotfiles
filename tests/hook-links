@@ -55,9 +55,9 @@ function _hlk_check_registration {
   fi
 
   # 1. Registration parity. A script a third-party installer writes straight
-  # into ~/.claude/hooks/ (herdr's integration) has no repo copy to register;
+  # into ~/.claude/hooks/ has no repo copy to register: list it here, and
   # check 2 still requires it to be present.
-  local -a third_party=(hooks/herdr-agent-state.sh)
+  local -a third_party=()
   for dest in "${_HLK_DESTS[@]}"; do
     if (( ${third_party[(Ie)${dest}]} )); then
       _pass "third-party: ${dest} is installed by its own tool, not deployed from claude/"

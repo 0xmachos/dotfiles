@@ -39,7 +39,7 @@ keybind = shift+enter=text:\x1b\r
 macos-option-as-alt = left
 
 # Cmd+K sends Ctrl+L to the pane. The default clear_screen only clears
-# Ghostty's own screen, and herdr redraws its panes over it.
+# Ghostty's own screen, and a multiplexer redraws its panes over it.
 keybind = super+k=text:\x0c
 # Copy/ Paste
 # Clear selection after copy (default false)
