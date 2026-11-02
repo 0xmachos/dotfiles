@@ -301,7 +301,15 @@ setopt HIST_IGNORE_SPACE
 
 ### Change into Initial Directory ###
 
-if [[ -d "${INITIAL_DIR}" ]]; then
+# Rex starts a new tab or split in the source pane's folder: keep it. A Rex
+# shell with no source pane starts in / or in the Rex server folder under
+# ~/Library, so it still moves to INITIAL_DIR.
+_initial_dir_cd=1
+if [[ "${TERM_PROGRAM:-}" == rex && "${PWD}" != / && "${PWD}" != "${HOME}/Library/"* ]]; then
+  _initial_dir_cd=0
+fi
+if [[ -d "${INITIAL_DIR}" && ${_initial_dir_cd} -eq 1 ]]; then
   # shellcheck disable=SC2164
   cd "${INITIAL_DIR}"
 fi
+unset _initial_dir_cd
