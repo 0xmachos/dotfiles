@@ -12,6 +12,13 @@
 # copy for every other reason, a subagent payload, an unsafe or wrong-length
 # id, a missing or relative transcript path, empty stdin and junk JSON, and
 # exit 0 when the pbcopy stub fails or is missing.
+# Handoff cases: a marker on the pasteboard keeps it; a recent handoff file
+# (0 to 3 human prompts after its mtime) is copied byte-exact; a stale,
+# foreign, unmarked, symlinked or oversize one falls back to the resume
+# command; a missing pbpaste counts as "no marker"; the marker in the hook
+# equals a whole line in claude/skills/handoff/SKILL.md.
+# The pbpaste seam (RESUME_COPY_PBPASTE) and the handoff root seam
+# (RESUME_COPY_HANDOFF_ROOT) keep the run off the real pasteboard and tint.
 #
 # Run: ./test resume-copy
 # ShellCheck: lint with `shellcheck --shell=bash tests/resume-copy`.
@@ -26,8 +33,67 @@ function _rcp_run {
   /bin/rm -f "${rcp_cap}"
   rc=0
   printf '%s' "${payload}" |
-    RESUME_COPY_PBCOPY="${pb}" /bin/zsh "${SCRIPT_DIR}/claude/hooks/resume-copy-hook" \
+    RESUME_COPY_PBCOPY="${pb}" RESUME_COPY_PBPASTE="${rcp_pp}" \
+      RESUME_COPY_HANDOFF_ROOT="${rcp_root}" \
+      /bin/zsh "${SCRIPT_DIR}/claude/hooks/resume-copy-hook" \
       >/dev/null 2>&1 || rc=$?
+}
+
+function _rcp_expect {
+  # Assert the last run exited 0 and copied exactly $2, labelled $1.
+  local got
+  if [[ -f "${rcp_cap}" ]]; then
+    # The sentinel keeps a trailing newline that $(...) would strip.
+    got="$(/bin/cat "${rcp_cap}"; print -n x)"
+    got="${got%x}"
+  else
+    got="<no copy>"
+  fi
+  if [[ "${rc}" -eq 0 && "${got}" == "$2" ]]; then
+    _pass "$1"
+  else
+    _fail "$1: expected '${2//$'\n'/\\n}', got '${got//$'\n'/\\n}' (rc=${rc})"
+  fi
+}
+
+function _rcp_iso {
+  # Print epoch $1 as an ISO 8601 UTC timestamp with milliseconds.
+  /usr/bin/jq -nr --argjson t "$1" '$t | todate | sub("Z$"; ".500Z")'
+}
+
+function _rcp_tx {
+  # Write transcript $1: one human prompt before epoch $2, then $3 human
+  # prompts after it. The other entries after epoch $2 are not prompts and
+  # must not count: a peer message, /exit (origin null), a tool result in
+  # the earlier prompt, and a junk line.
+  local out="$1" base="$2" n="$3" i
+  {
+    /usr/bin/jq -cn --arg ts "$(_rcp_iso $(( base - 60 )))" \
+      '{type: "user", origin: {kind: "human"}, promptId: "p0", timestamp: $ts,
+        message: {role: "user", content: "write a handoff"}}'
+    for (( i = 1; i <= n; i++ )); do
+      /usr/bin/jq -cn --arg ts "$(_rcp_iso $(( base + 60 * i )))" --arg p "p${i}" \
+        '{type: "user", origin: {kind: "human"}, promptId: $p, timestamp: $ts,
+          message: {role: "user", content: "next"}}'
+    done
+    /usr/bin/jq -cn --arg ts "$(_rcp_iso $(( base + 30 )))" \
+      '{type: "user", origin: {kind: "peer"}, promptId: "peer1", timestamp: $ts,
+        message: {role: "user", content: "note"}}'
+    /usr/bin/jq -cn --arg ts "$(_rcp_iso $(( base + 1000 )))" \
+      '{type: "user", origin: null, promptId: "exit1", timestamp: $ts,
+        message: {role: "user", content: "<command-name>/exit</command-name>"}}'
+    /usr/bin/jq -cn --arg ts "$(_rcp_iso $(( base + 40 )))" \
+      '{type: "user", promptId: "p0", timestamp: $ts,
+        message: {role: "user", content: [{type: "tool_result"}]}}'
+    print -r -- 'not json {'
+  } > "${out}"
+}
+
+function _rcp_handoff {
+  # Write handoff file $1: text $2 plus a trailing newline, mtime epoch $3.
+  /bin/mkdir -p "${1:h}"
+  print -r -- "$2" > "$1"
+  /usr/bin/touch -d "$(/usr/bin/jq -nr --argjson t "$3" '$t | todate')" "$1"
 }
 
 function _rcp_pl {
@@ -57,17 +123,24 @@ function run_resume_copy {
     return 0
   fi
 
-  local rcp_sb rcp_cap rcp_pb rcp_tp rc got want r bad
+  local rcp_sb rcp_cap rcp_pb rcp_pp rcp_clip rcp_root rcp_tp rc got want r bad
   rcp_sb="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/resume-copy-test.XXXXXX")"
   rcp_cap="${rcp_sb}/pasteboard"
   rcp_pb="${rcp_sb}/pbcopy"
+  rcp_pp="${rcp_sb}/pbpaste"
+  rcp_clip="${rcp_sb}/clip"
+  rcp_root="${rcp_sb}/tint"
   rcp_tp="${rcp_sb}/transcript.jsonl"
+  /bin/mkdir -p "${rcp_root}"
   print -r -- '{}' > "${rcp_tp}"
+  print -rn -- 'unrelated text' > "${rcp_clip}"
   print -rl -- '#!/bin/sh' "exec /bin/cat > '${rcp_cap}'" > "${rcp_pb}"
+  print -rl -- '#!/bin/sh' "exec /bin/cat '${rcp_clip}'" > "${rcp_pp}"
   print -rl -- '#!/bin/sh' 'exit 1' > "${rcp_sb}/pbcopy-fail"
-  /bin/chmod 755 "${rcp_pb}" "${rcp_sb}/pbcopy-fail"
+  /bin/chmod 755 "${rcp_pb}" "${rcp_pp}" "${rcp_sb}/pbcopy-fail"
   # A new stub can take seconds on its first exec (EDR scan): warm it once.
   print -n '' | "${rcp_pb}"
+  "${rcp_pp}" >/dev/null
 
   # Session id shape, built at runtime (a UUID literal trips the PII scanner).
   local sid="0a1b2c3d-4e5f-6789-abcd-ef01"
@@ -126,6 +199,82 @@ function run_resume_copy {
   _rcp_nocopy "pbcopy fails"
   _rcp_run "$(_rcp_pl prompt_input_exit "${sid}" "${rcp_tp}" "")" "${rcp_sb}/no-such-pbcopy"
   _rcp_nocopy "pbcopy missing"
+
+  # 8. Handoff marker and per-session handoff file.
+  local marker skill_md hf base htext resume other_sid
+  marker="$(/usr/bin/sed -n "s/^readonly marker='\(.*\)'\$/\1/p" \
+    "${SCRIPT_DIR}/claude/hooks/resume-copy-hook")"
+  skill_md="${SCRIPT_DIR}/claude/skills/handoff/SKILL.md"
+  if [[ -n "${marker}" && -f "${skill_md}" ]] &&
+      command grep -qxF -- "${marker}" "${skill_md}"; then
+    _pass "marker '${marker}' is a whole line in the handoff skill"
+  else
+    _fail "marker parity: hook marker '${marker}' is not a whole line in ${skill_md}"
+  fi
+
+  base=1793000000
+  hf="${rcp_root}/claude-handoff-${sid}/paste.txt"
+  htext="${marker}"$'\n'"Read HANDOFF-Test.md and run its staleness probe."
+  resume="claude --resume ${sid}"
+
+  # 8a. Marker on the pasteboard: keep it, copy nothing.
+  print -rn -- "${marker}"$'\n'"another session's handoff" > "${rcp_clip}"
+  _rcp_tx "${rcp_tp}" "${base}" 0
+  _rcp_run "$(_rcp_pl prompt_input_exit "${sid}" "${rcp_tp}" "")" "${rcp_pb}"
+  _rcp_nocopy "handoff marker on the pasteboard"
+
+  # 8b. The marker on the pasteboard also wins over a recent handoff file.
+  _rcp_handoff "${hf}" "${htext}" "${base}"
+  _rcp_run "$(_rcp_pl prompt_input_exit "${sid}" "${rcp_tp}" "")" "${rcp_pb}"
+  _rcp_nocopy "marker on the pasteboard and a recent handoff file"
+  print -rn -- 'unrelated text' > "${rcp_clip}"
+
+  # 8c. Recent handoff: 0 or 3 prompts after it copy the file byte-exact.
+  for r in 0 3; do
+    _rcp_tx "${rcp_tp}" "${base}" "${r}"
+    _rcp_run "$(_rcp_pl prompt_input_exit "${sid}" "${rcp_tp}" "")" "${rcp_pb}"
+    _rcp_expect "handoff, ${r} prompts after it: copies it, no trailing newline" "${htext}"
+  done
+
+  # 8d. Stale handoff: 4 prompts after it copy the resume command.
+  _rcp_tx "${rcp_tp}" "${base}" 4
+  _rcp_run "$(_rcp_pl prompt_input_exit "${sid}" "${rcp_tp}" "")" "${rcp_pb}"
+  _rcp_expect "handoff, 4 prompts after it: copies the resume command" "${resume}"
+
+  # 8e. Handoff file without the marker on its first line.
+  _rcp_tx "${rcp_tp}" "${base}" 0
+  _rcp_handoff "${hf}" "Read HANDOFF-Test.md"$'\n'"${marker}" "${base}"
+  _rcp_run "$(_rcp_pl prompt_input_exit "${sid}" "${rcp_tp}" "")" "${rcp_pb}"
+  _rcp_expect "handoff file without the marker: copies the resume command" "${resume}"
+  /bin/rm -rf "${hf:h}"
+
+  # 8f. Handoff file is a symlink to a valid handoff.
+  _rcp_handoff "${rcp_sb}/real-paste.txt" "${htext}" "${base}"
+  /bin/mkdir -p "${hf:h}"
+  /bin/ln -s "${rcp_sb}/real-paste.txt" "${hf}"
+  _rcp_run "$(_rcp_pl prompt_input_exit "${sid}" "${rcp_tp}" "")" "${rcp_pb}"
+  _rcp_expect "handoff file is a symlink: copies the resume command" "${resume}"
+  /bin/rm -rf "${hf:h}"
+
+  # 8g. Handoff file over 64 KiB.
+  # shellcheck disable=SC2296  # (l:65536::x:) pads to 65536
+  _rcp_handoff "${hf}" "${htext}"$'\n'"${(l:65536::x:)${:-}}" "${base}"
+  _rcp_run "$(_rcp_pl prompt_input_exit "${sid}" "${rcp_tp}" "")" "${rcp_pb}"
+  _rcp_expect "handoff file over 64 KiB: copies the resume command" "${resume}"
+  /bin/rm -rf "${hf:h}"
+
+  # 8h. Another session's handoff: this session copies its resume command.
+  other_sid="ffffffff-4e5f-6789-abcd-ef01"
+  other_sid+="23456789"
+  _rcp_handoff "${rcp_root}/claude-handoff-${other_sid}/paste.txt" "${htext}" "${base}"
+  _rcp_run "$(_rcp_pl prompt_input_exit "${sid}" "${rcp_tp}" "")" "${rcp_pb}"
+  _rcp_expect "another session's handoff: copies the resume command" "${resume}"
+
+  # 8i. pbpaste missing: counts as no marker.
+  print -rn -- "${marker}" > "${rcp_clip}"
+  rcp_pp="${rcp_sb}/no-such-pbpaste"
+  _rcp_run "$(_rcp_pl prompt_input_exit "${sid}" "${rcp_tp}" "")" "${rcp_pb}"
+  _rcp_expect "pbpaste missing: copies the resume command" "${resume}"
 
   /bin/rm -rf "${rcp_sb}"
   return 0
