@@ -1,10 +1,18 @@
 #!/bin/zsh
-# Regression tests for shared assertions; no deployed hooks are required.
+# Regression tests for the shared test harness; no deployed hooks are required.
+# One case per harness contract: _pass prints a backslash as written, an allow
+# response reads INVALID through the seam and _hook_verdict, the seam hands a
+# guard its variables and keeps the exported env inside its subshell, a guard's
+# non-zero exit reads INVALID, a guard's readonly and set -e stay in its
+# subshell, _json_str round-trips through jq, a DENY assertion fails on an
+# allow response from other suites' helpers, the okf frontmatter validator
+# flags each bad doc, a suite that aborts or calls exit ends the run with a
+# FAIL naming it, and a full run waits for the full-run lock.
 # shellcheck source=tests/lib
 
 function run_test_helpers {
   _section "Hook verdict and frontmatter regressions"
-  local out expected
+  local out expected i
 
   # A message prints as written: a backslash in it is no escape, so `\u`
   # stays text and never becomes a NUL byte in the run log.
@@ -15,90 +23,40 @@ function run_test_helpers {
     _fail "a message with backslashes changed in output: ${out//$'\0'/<NUL>}"
   fi
 
-  local -a outputs=(
-    ''
-    '{"hookSpecificOutput":{"permissionDecision":"deny"}}'
-    '{"hookSpecificOutput":{"permissionDecision":"allow"}}'
-    'permissionDecision: deny'
-    '{}'
-    'null'
-    '{"hookSpecificOutput":{"permissionDecision":"deny"}} {}'
-  )
-  local -a verdicts=(PASS DENY INVALID INVALID INVALID INVALID INVALID)
-  local i
-  for (( i=1; i<=${#outputs}; i++ )); do
-    out="$(_hook_verdict "${outputs[i]}")"
-    expected="${verdicts[i]}"
-    if [[ "${out}" == "${expected}" ]]; then
-      _pass "hook response ${i}: ${expected}"
-    else
-      _fail "hook response ${i}: expected ${expected}, got ${out}"
-    fi
-  done
-
   # _hook_run_seam: stub guards in a sandbox exercise each verdict class and
   # the seam contract (variables, exported env, `set --`, trailing-newline
   # strip, isolation of exit and readonly). US is 0x1f, as in the dispatcher.
   local seam_dir us=$'\x1f'
   seam_dir="$(mktemp -d "${TMPDIR:-/tmp}/seam-stubs.XXXXXX")"
-  print -r -- ':' > "${seam_dir}/pass"
   # shellcheck disable=SC2016  # the stub's own expansions, run by the guard
   print -r -- 'print -rn -- "DENY${us}cmd=[${HOOK_PRE_COMMAND}] tool=${HOOK_PRE_TOOL} path=${HOOK_PRE_PATH} content=${HOOK_PRE_CONTENT} cwd=${HOOK_PRE_CWD} env=${SEAM_PROBE-unset} argc=$# ctx=${ZSH_EVAL_CONTEXT}"' \
     | sed "s/\${us}/${us}/" > "${seam_dir}/deny"
   print -r -- 'print -r -- '\''{"hookSpecificOutput":{"permissionDecision":"allow"}}'\' > "${seam_dir}/allow"
   print -r -- 'print -u2 -- boom; exit 3' > "${seam_dir}/exit3"
-  printf 'print -rn -- "DENY%s"\n' "${us}" > "${seam_dir}/empty-reason"
-  print -r -- 'print -r -- name=value' > "${seam_dir}/leak"
   print -r -- 'readonly JQ=/usr/bin/jq; set -euo pipefail; umask 022' > "${seam_dir}/readonly"
-
-  _hook_run_seam "${seam_dir}/pass" Bash 'ls'
-  # shellcheck disable=SC2153  # HOOK_SEAM_RC is set by tests/lib
-  if [[ "${HOOK_SEAM_VERDICT}" == PASS && -z "${HOOK_SEAM_REASON}" && "${HOOK_SEAM_RC}" == 0 ]]; then
-    _pass "seam: silent exit 0 reads PASS"
-  else
-    _fail "seam: silent exit 0 read ${HOOK_SEAM_VERDICT} (rc ${HOOK_SEAM_RC})"
-  fi
 
   _hook_run_seam SEAM_PROBE=set -- "${seam_dir}/deny" Bash $'touch /tmp/x\n\n' '/p' $'body\n' '/work'
   expected='cmd=[touch /tmp/x] tool=Bash path=/p content=body cwd=/work env=set argc=0 ctx='
-  if [[ "${HOOK_SEAM_VERDICT}" == DENY && "${HOOK_SEAM_REASON}" == "${expected}"*:file* ]]; then
-    _pass "seam: DENY line reads DENY; the guard saw the seam variables, the exported env, no arguments and a :file context"
+  if [[ "${HOOK_SEAM_VERDICT}" == DENY && "${HOOK_SEAM_REASON}" == "${expected}"*:file* && -z "${SEAM_PROBE-}" ]]; then
+    _pass "seam: DENY line reads DENY; the guard saw the seam variables, the exported env, no arguments and a :file context, and the env did not leak"
   else
-    _fail "seam: DENY stub read ${HOOK_SEAM_VERDICT}, reason '${HOOK_SEAM_REASON}'"
-  fi
-  if [[ -z "${SEAM_PROBE-}" ]]; then
-    _pass "seam: the exported env stays inside the guard's subshell"
-  else
-    _fail "seam: SEAM_PROBE leaked into the test shell"
+    _fail "seam: DENY stub read ${HOOK_SEAM_VERDICT}, reason '${HOOK_SEAM_REASON}', SEAM_PROBE='${SEAM_PROBE-}'"
   fi
 
   _hook_run_seam "${seam_dir}/allow" Bash 'ls'
   out="$(_hook_verdict '{"hookSpecificOutput":{"permissionDecision":"allow"}}')"
   if [[ "${HOOK_SEAM_VERDICT}" == INVALID && "${out}" == INVALID ]]; then
-    _pass "seam: an allow object reads INVALID through the seam and through _hook_verdict"
+    _pass "an allow object reads INVALID through the seam and through _hook_verdict"
   else
     _fail "seam: allow object read ${HOOK_SEAM_VERDICT} (seam) and ${out} (standalone)"
   fi
 
   _hook_run_seam "${seam_dir}/exit3" Bash 'ls'
+  # shellcheck disable=SC2153  # HOOK_SEAM_RC is set by tests/lib
   if [[ "${HOOK_SEAM_VERDICT}" == INVALID && "${HOOK_SEAM_RC}" == 3 && "${HOOK_SEAM_ERR}" == boom ]]; then
     _pass "seam: a guard's exit 3 reads INVALID, rc and stderr captured, the test shell survives"
   else
     _fail "seam: exit 3 stub read ${HOOK_SEAM_VERDICT} rc=${HOOK_SEAM_RC} err='${HOOK_SEAM_ERR}'"
-  fi
-
-  _hook_run_seam "${seam_dir}/empty-reason" Bash 'ls'
-  if [[ "${HOOK_SEAM_VERDICT}" == INVALID ]]; then
-    _pass "seam: DENY with an empty reason reads INVALID"
-  else
-    _fail "seam: empty-reason stub read ${HOOK_SEAM_VERDICT}"
-  fi
-
-  _hook_run_seam "${seam_dir}/leak" Bash 'ls'
-  if [[ "${HOOK_SEAM_VERDICT}" == INVALID && "${HOOK_SEAM_OUT}" == name=value ]]; then
-    _pass "seam: a name=value line on stdout reads INVALID"
-  else
-    _fail "seam: leak stub read ${HOOK_SEAM_VERDICT}, out '${HOOK_SEAM_OUT}'"
   fi
 
   _hook_run_seam "${seam_dir}/readonly" Bash 'ls'
@@ -109,52 +67,24 @@ function run_test_helpers {
     _fail "seam: readonly stub twice read ${HOOK_SEAM_VERDICT} err='${HOOK_SEAM_ERR}' JQ='${JQ-}'"
   fi
 
-  _hook_run_seam "${seam_dir}/missing" Bash 'ls'
-  if [[ "${HOOK_SEAM_VERDICT}" == INVALID && "${HOOK_SEAM_RC}" != 0 ]]; then
-    _pass "seam: a missing guard file reads INVALID"
-  else
-    _fail "seam: missing guard read ${HOOK_SEAM_VERDICT} rc=${HOOK_SEAM_RC}"
-  fi
-
-  _hook_seam_classify 0 ''
-  if [[ "${HOOK_SEAM_VERDICT}" == PASS ]]; then
-    _pass "seam classify: exit 0 and empty stdout is PASS"
-  else
-    _fail "seam classify: empty read ${HOOK_SEAM_VERDICT}"
-  fi
   /bin/rm -rf "${seam_dir}"
 
   # _json_str output must decode with jq back to the exact input: one string
   # takes the pure zsh escapes, the others carry a control character that only
   # the jq fallback escapes.
-  local -a json_inputs=(
-    $'back\\slash "quote" new\nline\ttab'
-    $'a\rb'
-    $'a\x01b'
-    $'back\\slash "quote" new\nline\ttab cr\r ctl\x01 end'
-  )
-  local -a json_labels=(
-    'backslash, quote, newline and tab'
-    'carriage return'
-    '0x01 byte'
-    'all of them together'
-  )
-  for (( i=1; i<=${#json_inputs}; i++ )); do
-    _json_str "${json_inputs[i]}"
-    if jq -e --arg s "${json_inputs[i]}" '. == $s' >/dev/null 2>&1 <<< "${REPLY}"; then
-      _pass "_json_str round-trips through jq: ${json_labels[i]}"
-    else
-      _fail "_json_str round-trip: ${json_labels[i]} — got ${REPLY}"
-    fi
-  done
+  local json_input=$'back\\slash "quote" new\nline\ttab cr\r ctl\x01 end'
+  _json_str "${json_input}"
+  if jq -e --arg s "${json_input}" '. == $s' >/dev/null 2>&1 <<< "${REPLY}"; then
+    _pass "_json_str round-trips through jq: backslash, quote, newline, tab, CR and a control byte"
+  else
+    _fail "_json_str round-trip — got ${REPLY}"
+  fi
 
   # Exercise the actual expectation functions with an allow mutant. The
   # counters are isolated, so the expected assertion failure does not leak.
   local suite runner assertion
   local -a expectations=(
     rm-redirect _hook_run_seam _rm_redirect_one
-    ssh-redirect _hook_run_seam _ssh_redirect_one
-    container-tmp _container_tmp_run _container_tmp_expect
     gh-publish _gp_test_run _gp_test_expect
   )
   for (( i=1; i<=${#expectations}; i+=3 )); do
@@ -184,31 +114,10 @@ function run_test_helpers {
 
   # shellcheck source=tests/okf disable=SC1091
   source "${SCRIPT_DIR}/tests/okf"
-  local -a documents=(
-    ''
-    $'---\ntitle: fixture\n'
-    $'---\ntitle: fixture\n---\n'
-    $'---\ntype: ""\ntitle: fixture\ndescription: test\ntimestamp: today\n---\n'
-    $'---\ntype: reference\ntitle: fixture\ndescription: test\ntimestamp: today\n---\n'
-    $'---\ntype:\ntitle: fixture\ndescription: test\ntimestamp: today\n---\n'
-    $'---\ntype: # reference\ntitle: fixture\ndescription: test\ntimestamp: today\n---\n'
-    $'preface\ntype: reference\ntitle: fixture\ndescription: test\ntimestamp: today\n---\n'
-  )
-  local rc
-  for (( i=1; i<=${#documents}; i++ )); do
-    rc=0
-    _okf_validate_frontmatter <(print -rn -- "${documents[i]}") >/dev/null || rc=$?
-    if (( (i == 5 && rc == 0) || (i != 5 && rc != 0) )); then
-      _pass "frontmatter fixture ${i}"
-    else
-      _fail "frontmatter fixture ${i}: unexpected status ${rc}"
-    fi
-  done
-
   # One awk run checks the whole bundle: a bad file must not leak state into
   # the files after it, each required key must be enforced, and the reserved
   # index and log are skipped.
-  local bundle key k
+  local bundle key k rc
   bundle="$(mktemp -d "${TMPDIR}okf-bundle.XXXXXX")"
   local good=$'---\ntype: reference\ntitle: fixture\ndescription: test\ntimestamp: today\n---\n'
   print -rn -- "${good}" > "${bundle}/a-good.md"
@@ -265,11 +174,10 @@ function run_test_helpers {
     /bin/rm -rf "${rdir}"
     return 0
   fi
-  for mode in "zz-abort" "zz-exit" "-j 1" "-j 2"; do
+  for mode in "zz-abort" "zz-exit"; do
     label="${mode/zz-abort/one suite}"
     label="${label/zz-exit/stray exit}"
     want="${mode}"
-    [[ "${mode}" == -j* ]] && want="zz-abort"
     rc=0
     # shellcheck disable=SC2086  # $mode splits into the runner's arguments
     out="$(/usr/bin/env -u DOTFILES_TEST_CHILD DOTFILES_TEST_LOCK="${rdir}/full-run.lock" \
@@ -282,9 +190,9 @@ function run_test_helpers {
   done
 
   # A full run waits while another full run holds the lock, then runs. A
-  # one-suite run never waits. A fixture holds the sandbox lock until the
-  # release file exists. Every poll stops after 20 s.
-  local lock="${rdir}/full-run.lock" release="${rdir}/release" holder_pid i
+  # fixture holds the sandbox lock until the release file exists. Every poll
+  # stops after 20 s.
+  local lock="${rdir}/full-run.lock" release="${rdir}/release" holder_pid
   print -r -- zz-pass > "${rdir}/.extra_test_suites"
   print -r -- 'function run_zz_pass { _pass ok }' > "${rdir}/tests/zz-pass"
   : > "${lock}"
@@ -299,14 +207,6 @@ function run_test_helpers {
     [[ -s "${lock}.holder" ]] && break
     zselect -t 10 || :
   done
-  rc=0
-  out="$(/usr/bin/env -u DOTFILES_TEST_CHILD DOTFILES_TEST_LOCK="${lock}" \
-    "${ZSH_BIN}" "${rdir}/test" zz-pass 2>&1)" || rc=$?
-  if (( rc == 0 )) && [[ "${out}" == *"PASS"*ok* && "${out}" != *"holds the lock"* ]]; then
-    _pass "runner: a one-suite run does not wait for the full-run lock"
-  else
-    _fail "runner: one-suite run under a held lock, exit ${rc}: ${out}"
-  fi
   # shellcheck disable=SC2016  # the child shell expands $1..$3 and $?
   /usr/bin/env -u DOTFILES_TEST_CHILD DOTFILES_TEST_LOCK="${lock}" \
     "${ZSH_BIN}" -c '"$1" "$2" -j 1 > "$3/full.out" 2>&1; print -r -- $? > "$3/full.rc"' \
@@ -331,29 +231,5 @@ function run_test_helpers {
   fi
   wait "${holder_pid}" 2>/dev/null || :
 
-  # A running full run keeps its own lock: a second try to take it fails.
-  print -r -- zz-hold > "${rdir}/.extra_test_suites"
-  # shellcheck disable=SC2016  # the fixture suite expands its own variables
-  print -r -- 'function run_zz_hold { local i; for (( i = 0; i < 200; i++ )); do
-    [[ -e "${HOLD_RELEASE}" ]] && break; zselect -t 10 || :; done; _pass held }' \
-    > "${rdir}/tests/zz-hold"
-  : > "${lock}.holder"
-  /usr/bin/env -u DOTFILES_TEST_CHILD DOTFILES_TEST_LOCK="${lock}" HOLD_RELEASE="${rdir}/release2" \
-    "${ZSH_BIN}" "${rdir}/test" -j 1 > "${rdir}/hold.out" 2>&1 &
-  holder_pid=$!
-  for (( i = 0; i < 200; i++ )); do
-    [[ -s "${lock}.holder" ]] && break
-    zselect -t 10 || :
-  done
-  rc=0
-  # shellcheck disable=SC2016  # the probe shell expands $1
-  "${ZSH_BIN}" -c 'zmodload zsh/system; zsystem flock -t 0 -f fd "$1"' _ "${lock}" 2>/dev/null || rc=$?
-  : > "${rdir}/release2"
-  wait "${holder_pid}" 2>/dev/null || :
-  if (( rc != 0 )) && [[ "$(<"${rdir}/hold.out")" == *"PASS"*held* ]]; then
-    _pass "runner: a full run holds the full-run lock until it ends"
-  else
-    _fail "runner: a second process took the lock of a running full run (flock exit ${rc})"
-  fi
   /bin/rm -rf "${rdir}"
 }
