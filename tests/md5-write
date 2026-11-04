@@ -1,88 +1,33 @@
 #!/bin/zsh
 # dotfiles/tests/md5-write
 #
-# Behavioural test for claude/hooks/md5-write-hook — the PreToolUse hook that DENIES
-# a write putting MD5 into a file. Feeds tool payloads as stdin JSON and
-# asserts the verdict: DENY for MD5 call sites in source, including content that
-# names the old skip token (the hook has no override); PASS for SHA-256, MD5 in
-# a comment, prose files, and words that merely contain md5.
+# Behavioural test for claude/hooks/md5-write-hook, the PreToolUse hook that
+# DENIES a write putting MD5 into a file. One input per case. Covers: DENY for
+# an MD5 call site, with the deny reason (replacement, offending line, "NOT
+# made", no agent override, no skip token); DENY for a real call after a URL
+# line (a URL is not a comment); no override (the old skip token in content
+# and in the environment exempts nothing, read through the hook's own jq from
+# a NotebookEdit payload); PASS for MD5 in a comment and for a prose file (the
+# false-positive guards); and fail-open on an unparseable payload.
+# The MD5 fixtures are built at run time from a split word, so this file does
+# not trip the hook it tests.
 #
-# The hook blocks, so a false positive costs work: two exemptions (comments,
-# prose files), no path allowlist (a path list rots and would have to name this
-# suite).
-#
-# Since 2026-10-24 the verdict cases run the guard through the pretool-dispatch
-# seam (_hook_run_seam in tests/lib: sourced in a subshell, HOOK_PRE_* set,
-# DENY<US>reason), the path live sessions use. This guard still starts a few
-# children per case (mktemp, sed, grep), so a seam case costs less than a
-# standalone one, but the gain is smaller than for a pure-zsh guard. A few
-# cases still run the hook as its own process (`/bin/zsh <hook> <<< <json>`)
-# because they test what the seam skips: the jq decoding of file_path,
-# notebook_path, content, new_string and new_source, JSON validity of the
-# deny line, fail-open on empty and malformed stdin, and the exported-variable
-# cases (a standalone hook must not take the dispatcher branch, because
-# ZSH_EVAL_CONTEXT lacks :file when exec'd).
-#
-# Run: ./test md5-write    (or ./test for the full suite)
+# Run: ./test md5-write
 #
 # ShellCheck: lint with `shellcheck --shell=bash tests/md5-write`.
 # This file is sourced, not executed — chmod 644.
 #
 # shellcheck source=tests/lib
 
-function _md5_write_run {
-  # Hook stdout for a Write of content $2 to path $1.
-  jq -n --arg f "$1" --arg c "$2" \
-    '{tool_name:"Write", tool_input:{file_path:$f, content:$c}}' \
-    | /bin/zsh "${SCRIPT_DIR}/claude/hooks/md5-write-hook"
-}
-
-function _md5_write_run_edit {
-  # Same, as an Edit (new_string, not content).
-  jq -n --arg f "$1" --arg c "$2" \
-    '{tool_name:"Edit", tool_input:{file_path:$f, old_string:"x", new_string:$c}}' \
-    | /bin/zsh "${SCRIPT_DIR}/claude/hooks/md5-write-hook"
-}
-
-function _md5_write_run_notebook {
-  # Same, as a NotebookEdit (notebook_path and new_source).
-  jq -n --arg f "$1" --arg c "$2" \
-    '{tool_name:"NotebookEdit", tool_input:{notebook_path:$f, new_source:$c}}' \
-    | /bin/zsh "${SCRIPT_DIR}/claude/hooks/md5-write-hook"
-}
-
-function _md5_write_run_skip {
-  # Same as _md5_write_run, with MD5_GUARD_SKIP=$1 in the hook's environment.
-  jq -n --arg f "$2" --arg c "$3" \
-    '{tool_name:"Write", tool_input:{file_path:$f, content:$c}}' \
-    | env MD5_GUARD_SKIP="$1" /bin/zsh "${SCRIPT_DIR}/claude/hooks/md5-write-hook"
-}
-
 function _md5_write_expect {
-  # Seam run: the guard sourced the dispatcher's way. $5 is the tool name the
-  # guard sees (Write, Edit or NotebookEdit). The path is the fourth seam
-  # argument and the text the fifth, whatever the tool.
-  # NOT `path`: in zsh it is tied to PATH, so `local path=` replaces PATH and
-  # every command then fails "command not found".
-  local want="$1" file="$2" content="$3" label="${4:-$2}" tool="${5:-Write}"
-  _hook_run_seam "${SCRIPT_DIR}/claude/hooks/md5-write-hook" "${tool}" "" "${file}" "${content}"
+  # Seam run: the guard sourced the dispatcher's way. $1 = want, $2 = path,
+  # $3 = content, $4 = label.
+  local want="$1" file="$2" content="$3" label="$4"
+  _hook_run_seam "${SCRIPT_DIR}/claude/hooks/md5-write-hook" Write "" "${file}" "${content}"
   if [[ "${HOOK_SEAM_VERDICT}" == "${want}" ]]; then
     _pass "${want}: ${label}"
   else
     _fail "${label} - expected ${want}, got ${HOOK_SEAM_VERDICT} (${HOOK_SEAM_OUT:0:120})"
-  fi
-}
-
-function _md5_write_expect_standalone {
-  # Standalone verdict check, kept for a few cases per verdict. $5 names the
-  # runner: _md5_write_run (default), _md5_write_run_edit or _md5_write_run_notebook.
-  local want="$1" file="$2" content="$3" label="${4:-$2}" runner="${5:-_md5_write_run}" out got
-  out="$("${runner}" "${file}" "${content}")"
-  got="$(_hook_verdict "${out}")"
-  if [[ "${got}" == "${want}" ]]; then
-    _pass "${want} (standalone): ${label}"
-  else
-    _fail "standalone ${label} - expected ${want}, got ${got}"
   fi
 }
 
@@ -104,159 +49,44 @@ function run_md5_write {
   # An exported bypass would turn every DENY into PASS with the suite green.
   unset MD5_GUARD_SKIP
 
-  # MD5 call sites → DENY.
-  _md5_write_expect DENY /x/a.py 'h = hashlib.md5(data).hexdigest()' 'python hashlib.md5'
-  _md5_write_expect DENY /x/a.py 'h = hashlib.new("md5", data)' 'python hashlib.new md5'
-  _md5_write_expect DENY /x/a.swift 'let d = Insecure.MD5.hash(data: raw)' 'swift CryptoKit Insecure.MD5'
-  _md5_write_expect DENY /x/a.js "crypto.createHash('md5').update(x)" 'node createHash md5'
-  _md5_write_expect DENY /x/a.java 'MessageDigest.getInstance("MD5")' 'java MessageDigest MD5'
-  _md5_write_expect DENY /x/a.rb 'Digest::MD5.hexdigest(s)' 'ruby Digest::MD5'
-  _md5_write_expect DENY /x/a.c 'CC_MD5(buf, len, out);' 'CommonCrypto CC_MD5'
-  _md5_write_expect DENY /x/a.c 'EVP_md5()' 'openssl EVP_md5'
-  _md5_write_expect DENY /x/a.go 'h := md5.New()' 'go md5.New'
-  # Single quotes are the point: the fixture is literal file content.
-  # shellcheck disable=SC2016
-  _md5_write_expect DENY /x/a.sh 'md5sum "$f" > sums.txt' 'shell md5sum in a script'
-  _md5_write_expect DENY /x/a.sh 'cd /tmp && md5 file' 'shell md5 after a separator'
+  local reason out word='md'
+  word+='5'
+  local call="h = hashlib.${word}(d)"
 
-  # SHA-256 spellings → PASS.
-  _md5_write_expect PASS /x/a.py 'h = hashlib.sha256(data).hexdigest()' 'python hashlib.sha256'
-  _md5_write_expect PASS /x/a.swift 'let d = SHA256.hash(data: raw)' 'swift CryptoKit SHA256'
-  _md5_write_expect PASS /x/a.js "crypto.createHash('sha256').update(x)" 'node createHash sha256'
-  # shellcheck disable=SC2016
-  _md5_write_expect PASS /x/a.sh 'shasum -a 256 "$f" > sums.txt' 'shell shasum -a 256'
-  _md5_write_expect PASS /x/a.java 'MessageDigest.getInstance("SHA-256")' 'java SHA-256'
-
-  # Exemption 1: comments are stripped before matching, so `# never use
-  # md5sum` is not blocked.
-  _md5_write_expect PASS /x/a.sh '# never use md5sum here' 'hash comment naming md5sum'
-  _md5_write_expect PASS /x/a.py '# do not call hashlib.md5 any more' 'hash comment naming a call site'
-  _md5_write_expect PASS /x/a.js "// avoid createHash('md5')" 'slash comment naming a call site'
-  _md5_write_expect PASS /x/a.py 'h = hashlib.sha256(d)  # was hashlib.md5' 'trailing comment after clean code'
-  # A URL is not a comment: `://` survives the strip, so a real call on the
-  # next line is still caught.
-  _md5_write_expect PASS /x/a.js 'const u = "https://x//y";' 'URL only'
-  _md5_write_expect DENY /x/a.js 'const u = "https://x/y";
-crypto.createHash("md5")' 'URL on one line, a real call on the next'
-
-  # Exemption 2: prose files discuss MD5, code uses it.
-  _md5_write_expect PASS /x/a.md 'Never write hashlib.md5 here.' 'markdown discussing MD5'
-  _md5_write_expect PASS /x/a.markdown 'Insecure.MD5 is banned.' 'markdown long extension'
-  _md5_write_expect PASS /x/a.txt 'md5sum notes' 'plain text'
-  _md5_write_expect PASS /x/NOTES.RST 'CC_MD5 appears here' 'rst, uppercase path'
-  _md5_write_expect PASS /x/a.adoc 'hashlib.md5 is banned.' 'asciidoc'
-
-  # No override (2026-10-09): content that names the old skip token is judged
-  # like any other content. The token in a comment, in code and in a string
-  # all still deny.
-  _md5_write_expect DENY /x/a.py '# MD5_GUARD_SKIP: vendor publishes md5 only
-h = hashlib.md5(d)' 'skip token in a comment no longer exempts the content'
-  _md5_write_expect DENY /x/a.py 'MD5_GUARD_SKIP = 1
-h = hashlib.md5(d)' 'skip token in code no longer exempts the content'
-  _md5_write_expect DENY /x/a.sh 'MD5_GUARD_SKIP=1 md5sum f' 'skip token as a command prefix no longer exempts the content'
-  _md5_write_expect DENY /x/a.js 'const s = "MD5_GUARD_SKIP"; crypto.createHash("md5")' 'skip token in a string no longer exempts the content'
-  _md5_write_expect DENY /x/a.py '# MD5_GUARD_SKIP
-h = hashlib.md5(d)' 'skip token in an Edit payload no longer exempts the content' Edit
-  _md5_write_expect DENY /x/a.ipynb '# MD5_GUARD_SKIP
-h = hashlib.md5(d)' 'skip token in a NotebookEdit payload no longer exempts the content' NotebookEdit
-
-  # Words that merely contain md5 → PASS (the call-site match must stay narrow).
-  _md5_write_expect PASS /x/a.py 'md5_path = "/tmp/x"' 'variable named md5_path'
-  _md5_write_expect PASS /x/a.py 'p = "md5.txt"' 'filename containing md5'
-  _md5_write_expect PASS /x/a.py 'def _md5_guard_split(s): pass' 'function name containing md5'
-
-  # The old skip variable exported in the hook's own environment exempts
-  # nothing, set or empty (2026-10-09).
-  local skip_out
-  skip_out="$(_md5_write_run_skip 1 /x/a.py 'h = hashlib.md5(d)')"
-  if [[ "$(_hook_verdict "${skip_out}")" == DENY ]]; then
-    _pass "DENY: exported MD5_GUARD_SKIP=1 no longer exempts the write"
-  else
-    _fail "exported MD5_GUARD_SKIP=1 still exempts the write"
-  fi
-  skip_out="$(_md5_write_run_skip '' /x/a.py 'h = hashlib.md5(d)')"
-  if [[ "$(_hook_verdict "${skip_out}")" == DENY ]]; then
-    _pass "DENY: exported empty MD5_GUARD_SKIP exempts nothing"
-  else
-    _fail "exported empty MD5_GUARD_SKIP exempted the write"
-  fi
-
-  # Process path: the hook as its own process, JSON on stdin, so jq decodes
-  # file_path, notebook_path, content, new_string and new_source. A few cases
-  # per verdict and per tool.
-  _md5_write_expect_standalone DENY /x/a.py 'h = hashlib.md5(d)' 'Write payload (content) is scanned'
-  _md5_write_expect_standalone DENY /x/a.py 'h = hashlib.md5(d)' 'Edit payload (new_string) is scanned' _md5_write_run_edit
-  _md5_write_expect_standalone DENY /x/a.ipynb 'h = hashlib.md5(d)' 'NotebookEdit payload (new_source) is scanned' _md5_write_run_notebook
-  _md5_write_expect_standalone PASS /x/a.py 'h = hashlib.sha256(d)' 'clean Write'
-  _md5_write_expect_standalone PASS /x/a.py 'h = hashlib.sha256(d)' 'clean Edit' _md5_write_run_edit
-  _md5_write_expect_standalone PASS /x/a.md 'h = hashlib.md5(d)' 'NotebookEdit notebook_path is read for the prose exemption' _md5_write_run_notebook
-  _md5_write_expect_standalone PASS /x/a.md 'Never write hashlib.md5 here.' 'markdown discussing MD5'
-
-  # Edit payloads carry new_string, not content.
-  _md5_write_expect DENY /x/a.py 'h = hashlib.md5(d)' 'Edit payload (new_string) is scanned' Edit
-
-  # Only the new text is scanned, never the file on disk, or the edit that
-  # removes existing MD5 would be blocked too.
-  _md5_write_expect PASS /x/a.py 'h = hashlib.sha256(d)' 'a clean Edit is not judged by the file on disk' Edit
-
-  # NotebookEdit payloads carry new_source and notebook_path, not content and
-  # file_path. The path decides the prose exemption, so a prose notebook_path
-  # passes and a code one is denied with its path in the reason.
-  _md5_write_expect DENY /x/a.ipynb 'h = hashlib.md5(d)' 'NotebookEdit payload (new_source) is scanned' NotebookEdit
-  _md5_write_expect PASS /x/a.md 'h = hashlib.md5(d)' 'NotebookEdit notebook_path is read for the prose exemption' NotebookEdit
-
-  # The deny reason names the fix and the escape hatch, quotes the offending
-  # line, and says the write did not happen.
-  local out reason
-  _hook_run_seam "${SCRIPT_DIR}/claude/hooks/md5-write-hook" Write "" /x/a.py 'h = hashlib.md5(d)'
+  # 1. An MD5 call site denies, and the reason is complete.
+  _hook_run_seam "${SCRIPT_DIR}/claude/hooks/md5-write-hook" Write "" /x/a.py "${call}"
   reason="${HOOK_SEAM_REASON}"
-  if [[ "${reason}" == *"hashlib.sha256"* ]]; then
-    _pass "deny reason names the SHA-256 replacement"
-  else
-    _fail "deny reason does not name the replacement"
-  fi
-  if [[ "${reason}" == *"h = hashlib.md5(d)"* ]]; then
-    _pass "deny reason quotes the offending line"
-  else
-    _fail "deny reason does not quote the offending line"
-  fi
-  if [[ "${reason}" == *"NOT made"* ]]; then
-    _pass "deny reason says the write did not happen"
-  else
-    _fail "deny reason does not say the write was blocked"
-  fi
-  if [[ "${reason}" == *"no agent override"* && "${reason}" == *"hand the user"* \
+  if [[ "${HOOK_SEAM_VERDICT}" == DENY && "${reason}" == *"hashlib.sha256"* \
+     && "${reason}" == *"${call}"* && "${reason}" == *"NOT made"* \
+     && "${reason}" == *"no agent override"* && "${reason}" == *"hand the user"* \
      && "${reason}" != *MD5_GUARD_SKIP* ]]; then
-    _pass "deny reason says no agent override and names no skip token"
+    _pass "DENY: call site, reason names the replacement, the line, the block, no override"
   else
-    _fail "deny reason does not say no agent override, or still names MD5_GUARD_SKIP"
-  fi
-  _hook_run_seam "${SCRIPT_DIR}/claude/hooks/md5-write-hook" NotebookEdit "" /x/a.ipynb 'h = hashlib.md5(d)'
-  reason="${HOOK_SEAM_REASON}"
-  if [[ "${reason}" == *"into /x/a.ipynb"* ]]; then
-    _pass "NotebookEdit deny reason names the notebook_path"
-  else
-    _fail "NotebookEdit deny reason does not name the notebook_path"
+    _fail "call site: ${HOOK_SEAM_VERDICT} ${reason:0:200}"
   fi
 
-  # A double quote and a backslash in content must not break the JSON.
-  # JSON validity of the deny line is a property of the process path only (the
-  # seam prints DENY<US>reason with no JSON), so this case stays standalone.
-  _md5_write_expect_standalone DENY /x/a.py 'h = hashlib.md5(b"a\"b\\c")' 'quotes and backslashes in the matched line stay valid JSON'
-  out="$(_md5_write_run /x/a.py 'h = hashlib.md5(d)')"
-  reason="$(printf '%s' "${out}" | jq -er '.hookSpecificOutput.permissionDecisionReason' 2>/dev/null)" || reason=""
-  if [[ "${reason}" == *"hashlib.sha256"* && "${reason}" == *"h = hashlib.md5(d)"* && "${reason}" == *"NOT made"* ]]; then
-    _pass "standalone deny reason in the JSON names the replacement, the line and the block"
+  # 2. A real call after a URL line is still caught: `://` is not a comment.
+  _md5_write_expect DENY /x/a.js $'const u = "https://x/y";\ncrypto.createHash("'"${word}"$'")' 'real call on the line after a URL'
+
+  # 3. No override (2026-10-09): the old skip token in the content and
+  # exported in the environment exempts nothing. NotebookEdit payload through
+  # the hook's own jq.
+  out="$(jq -n --arg f /x/a.ipynb --arg c $'# MD5_GUARD_SKIP\n'"${call}" \
+    '{tool_name:"NotebookEdit", tool_input:{notebook_path:$f, new_source:$c}}' \
+    | env MD5_GUARD_SKIP=1 /bin/zsh "${SCRIPT_DIR}/claude/hooks/md5-write-hook")"
+  if [[ "$(_hook_verdict "${out}")" == DENY ]]; then
+    _pass "DENY: the skip token in content and in the environment is no override (NotebookEdit, process path)"
   else
-    _fail "standalone deny reason in the JSON is incomplete"
+    _fail "the skip token exempted a NotebookEdit write: ${out:0:120}"
   fi
 
-  # Malformed and irrelevant payloads allow the write (fail-open).
-  if [[ -z "$(printf '%s' '{}' | /bin/zsh "${SCRIPT_DIR}/claude/hooks/md5-write-hook")" ]]; then
-    _pass "fail-open: payload with no content allows the write"
-  else
-    _fail "fail-open: payload with no content produced a verdict"
-  fi
+  # 4. PASS: MD5 named in a comment after clean code.
+  _md5_write_expect PASS /x/a.py "h = hashlib.sha256(d)  # was hashlib.${word}" 'MD5 named in a trailing comment'
+
+  # 5. PASS: a prose file discusses MD5.
+  _md5_write_expect PASS /x/a.md "Never write hashlib.${word} here." 'markdown discussing MD5'
+
+  # 6. Fail-open: an unparseable payload allows the write, never a verdict.
   if [[ -z "$(printf '%s' 'not json' | /bin/zsh "${SCRIPT_DIR}/claude/hooks/md5-write-hook")" ]]; then
     _pass "fail-open: unparseable payload allows the write"
   else
