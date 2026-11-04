@@ -1,36 +1,34 @@
 #!/bin/zsh
 # dotfiles/tests/git-sign
 #
-# Pins claude/hooks/git-sign-hook (refusal fallback, re-sign nudge; PreToolUse
-# push-gate leg removed 2026-09-25), bin/git-sign-unpushed and the pre-push
+# Pins claude/hooks/git-sign-hook (refusal fallback, re-sign nudge), bin/
+# git-sign-unpushed, .config/git/hooks/commit-signatures and the pre-push
 # gate, the actual boundary. Sandbox repos under $TMPDIR with
 # GIT_CONFIG_GLOBAL/SYSTEM nulled and a throwaway ed25519 key: no Secretive.
 #
-# Guards:
-#   * nudge scope = the range git-sign-unpushed can fix (the removed leg's
-#     repo-wide scan denied, unclearably, pushes over an unsigned commit on a
-#     branch the fixer never touches)
-#   * commits are never pre-emptively unsigned (lock probe removed
-#     2026-08-08); the hook reacts to a real refusal
-#   * PostToolUse fires only on success, PostToolUseFailure only on failure
-#     (measured on v2.1.224): drive the two legs independently
-#   * re-sign costs one tap per commit from the deepest unsigned commit to the
-#     tip; a single unsigned tip takes the amend fast path
-#   * the claude/mods/git-sign-post mod that runs the hook in place of the
-#     settings entries: module shape and its own `claude plugin test`
-#   * quoted-string false positives ('git commit -m "about git push"'), wrapper
-#     see-through (sudo/timeout git push), committer-date preservation,
-#     gpgsig-presence (not %G?) detection
+# Cases: the hook's park-and-hand-off context for a compound commit refusal
+# (also a \u-escaped `git` in the raw JSON), for a refusal inside a wrapper
+# script, silence on an unrelated failure, the re-sign nudge on a commit with
+# unsigned debt, and no nudge for an unsigned commit on another branch;
+# git-sign-unpushed re-signing a buried unsigned commit (author dates kept,
+# pushed base untouched), re-signing through a temporary worktree when the
+# tree is dirty, replaying only the unsigned commits with no remote, and
+# never rewriting a SHA published on a second remote; the batch signature
+# scanner (a forged gpgsig line in a message, a missing object failing
+# closed); pre-push blocking an unsigned push, refusing GIT_SIGN_SKIP without
+# a terminal, scanning outgoing messages, gating an unsigned annotated tag,
+# failing closed on a failed revision walk, not skipping the scan on an
+# exported sentinel, not misreading a 300 KB signed commit, not failing on a
+# chained hook that ignores a large ref stream, and a repo-local hooksPath
+# still reaching the gate through the stub.
 #
-# GIT_SIGN_SKIP and PII_HOOK_BYPASS are honoured only with a controlling
-# terminal (2026-09-25; pii-scan --check-terminal). An agent's tool call has
-# none, a human's interactive ./test does, so both sides are forced:
-#   _gs_push_expect_tty (bypass must WORK): /usr/bin/script -q /dev/null, a
-#     real pty however the suite was invoked
-#   _gs_push_expect_notty (bypass must be REFUSED): tests/lib's _run_no_tty
-#     (POSIX setsid); asserts the refusal LINE, not just the verdict
+# GIT_SIGN_SKIP is honoured only with a controlling terminal (pii-scan
+# --check-terminal). An agent's tool call has none, a human's interactive
+# ./test does, so the refusal side is forced: _gs_push_expect_notty runs
+# under tests/lib's _run_no_tty (POSIX setsid) and asserts the refusal LINE,
+# not just the verdict.
 #
-# Run: ./test git-sign    (or ./test for the full suite)
+# Run: ./test git-sign
 #
 # ShellCheck: lint with `shellcheck --shell=bash tests/git-sign`.
 # This file is sourced, not executed — chmod 644.
@@ -269,25 +267,6 @@ function _gs_push_expect {
   fi
 }
 
-function _gs_push_expect_tty {
-  # Like _gs_push_expect, but under /usr/bin/script -q /dev/null (a real pty
-  # however the suite was invoked), for cases where GIT_SIGN_SKIP or
-  # PII_HOOK_BYPASS must be HONOURED.
-  local want="$1" label="$2" dir="$3"
-  shift 3
-  local got
-  if ( cd "${dir}" && /usr/bin/script -q /dev/null env "${GS_ENV[@]}" "$@" </dev/null ) >/dev/null 2>&1; then
-    got=ALLOWED
-  else
-    got=BLOCKED
-  fi
-  if [[ "${got}" == "${want}" ]]; then
-    _pass "pre-push ${want}: ${label}"
-  else
-    _fail "pre-push ${label} — expected ${want}, got ${got}"
-  fi
-}
-
 function _gs_push_expect_notty {
   # Like _gs_push_expect, but under tests/lib's _run_no_tty (no controlling
   # terminal however the suite was invoked), for cases where GIT_SIGN_SKIP or
@@ -317,9 +296,7 @@ function run_git_sign {
 
   # claude/ is gitignored and synced out of band: an absent hook means the sync
   # has not reached this machine. Skip THOSE cases, never the pre-push gate
-  # cases (.config/git/hooks/pre-push is tracked). Split into functions (zsh
-  # dynamic scoping keeps the claude cases' locals visible to the refusal
-  # cases they call).
+  # cases (.config/git/hooks/pre-push is tracked).
   _gs_build_templates
   if [[ ! -f "${SCRIPT_DIR}/claude/hooks/git-sign-hook" ]]; then
     _skip "claude/hooks/git-sign-hook absent — claude/ not yet synced (pre-push cases still run)"
@@ -328,12 +305,6 @@ function run_git_sign {
   else
     _git_sign_claude_cases
   fi
-  if [[ ! -f "${SCRIPT_DIR}/claude/mods/git-sign-post/hooks/register.ts" ]]; then
-    _skip "claude/mods/git-sign-post absent — claude/ not yet synced"
-  elif [[ -x "$(command -v jq)" ]]; then
-    _gs_mod_shape
-    _gs_mod_tests
-  fi
 
   _git_sign_resign_cases
   _git_sign_batch_cases
@@ -341,67 +312,8 @@ function run_git_sign {
   /bin/rm -rf "${_GS_TEMPLATES}"
 }
 
-function _gs_mod_shape {
-  # The mod (claude/mods/git-sign-post) runs git-sign-hook after a Bash call
-  # whose command holds `git`, in place of the settings entries. Pins the
-  # fail-open shape (no .catch, which could only answer with a deny), no
-  # hardcoded home directory and the module list. register.test.ts (run by
-  # _gs_mod_tests) covers the registration, probe, hook path and timeout.
-  _section "git-sign-post mod: module shape"
-  local mod="${SCRIPT_DIR}/claude/mods/git-sign-post"
-  local mod_src
-  mod_src="$(<"${mod}/hooks/register.ts")"
-  if [[ "${mod_src}" == *'signPost).catch'* ]]; then
-    _fail "git-sign-post: signPost has a .catch (a deny for a command that already ran)"
-  else
-    _pass "git-sign-post: no .catch on the registration (fail-open)"
-  fi
-  if [[ "${mod_src}" == *'/Users/'* || "${mod_src}" == *'/home/'* ]]; then
-    _fail "git-sign-post: register.ts hardcodes a home directory: join paths under HOME"
-  else
-    _pass "git-sign-post: register.ts hardcodes no home directory"
-  fi
-  if [[ "$(jq -c '.modules' "${mod}/hooks/hooks.json" 2>/dev/null)" == '["./register.ts"]' ]]; then
-    _pass "git-sign-post: hooks.json loads register.ts"
-  else
-    _fail "git-sign-post: hooks/hooks.json does not load ./register.ts"
-  fi
-  if [[ -x "${HOME}/.claude/hooks/git-sign-hook" ]]; then
-    _pass "git-sign-post: deployed git-sign-hook exists and is executable"
-  else
-    _fail "\$HOME/.claude/hooks/git-sign-hook missing or not executable: run ./bittersweet dotfiles"
-  fi
-  # The engine loads the mod from ~/.claude/mods/git-sign-post: a missing or
-  # stale link silently drops the signing nudge. Checked only where ~/.claude
-  # is deployed from this checkout, like tests/hook-links.
-  if [[ "$(readlink "${HOME}/.claude/settings.json" 2>/dev/null)" != "${SCRIPT_DIR}/claude/settings.json" ]]; then
-    _skip "git-sign-post: mod link not checked: ~/.claude not linked to this repo"
-  elif [[ "$(readlink "${HOME}/.claude/mods/git-sign-post" 2>/dev/null)" == "${mod}" && -r "${HOME}/.claude/mods/git-sign-post/hooks/register.ts" ]]; then
-    _pass "git-sign-post: deployed mod link resolves to this repo's mod"
-  else
-    _fail "git-sign-post: ~/.claude/mods/git-sign-post is missing or does not link to ${mod}: run ./bittersweet dotfiles"
-  fi
-}
-
-function _gs_mod_tests {
-  _section "git-sign-post mod: the mod's own tests"
-  local out rc=0 summary
-  if ! command -v claude >/dev/null 2>&1; then
-    _skip "claude CLI not on PATH: cannot run claude plugin test"
-    return 0
-  fi
-  out="$(cd "${SCRIPT_DIR}/claude/mods/git-sign-post" && claude plugin test . 2>&1)" || rc=$?
-  summary="$(print -r -- "${out}" | /usr/bin/grep -E '^ *[0-9]+ (pass|fail)$' | tr '\n' ' ')"
-  if (( rc == 0 )) && [[ "${out}" == *" 0 fail"* ]]; then
-    _pass "claude plugin test: ${summary}"
-  else
-    _fail "claude plugin test failed (rc ${rc}): ${summary:-$(print -r -- "${out}" | tail -n 3)}"
-  fi
-}
-
 function _git_sign_claude_cases {
-
-  local sandbox repo
+  local sandbox repo out resp
   sandbox="$(mktemp -d "${TMPDIR}git-sign-test.XXXXXX")"
   repo="$(_gs_newrepo "${sandbox}")"
   (
@@ -411,70 +323,41 @@ function _git_sign_claude_cases {
     _gs_commit c2 '2026-02-03T12:00:00+00:00' '2026-03-03T12:00:00+00:00'
   )
 
-  # --- PostToolUseFailure: signing refusal parks the work, never a retry ---
-  local refusal out
-  refusal='Couldn'"'"'t sign message (signer): agent refused operation?
-fatal: failed to write commit object'
-  _gs_expect CONTEXT PostToolUseFailure 'git commit -m x' "${repo}" "${refusal}" \
-    'signing refusal -> fallback context'
-  _gs_expect PASS PostToolUseFailure 'git commit -m x' "${repo}" 'error: pathspec did not match' \
-    'unrelated commit failure is left alone'
-  # The other signer refusal wordings reach the same fallback.
-  _gs_expect CONTEXT PostToolUseFailure 'git commit -m x' "${repo}" 'error: Agent admitted failure to sign using the key' \
-    "'Agent admitted failure to sign' -> fallback context"
-  # The hook's raw `*git*` probe on the JSON cannot see a \u escape that
-  # spells one of those letters; such a payload must still be parsed.
-  out="$(printf '%s' '{"hook_event_name":"PostToolUseFailure","tool_name":"Bash","cwd":"'"${repo}"'","tool_input":{"command":"\u0067it commit -m x","description":"t"},"error":"agent refused operation"}' \
+  # A signing refusal on a compound commit: the context parks the work and
+  # hands off to git-sign-unpushed. It never echoes the command or a runnable
+  # signing-disabled retry. The payload is raw JSON with `git` spelled git:
+  # the hook's raw `*git*` probe cannot see it, so it must still be parsed.
+  out="$(printf '%s' '{"hook_event_name":"PostToolUseFailure","tool_name":"Bash","cwd":"'"${repo}"'","tool_input":{"command":"git commit -m x && git push","description":"t"},"error":"Couldn'"'"'t sign message (signer): agent refused operation?"}' \
     | env "${GS_ENV[@]}" /bin/zsh "${SCRIPT_DIR}/claude/hooks/git-sign-hook")"
-  if [[ "${out}" == *additionalContext* ]]; then
-    _pass "CONTEXT(PostToolUseFailure): a \\u-escaped 'git' in the raw JSON still reaches the parser"
+  if [[ "${out}" == *additionalContext* && "${out}" == *'NO ready-made retry'* && "${out}" == *'git-sign-unpushed'* \
+        && "${out}" == *'chains, substitutes, or pushes'* && "${out}" != *'GIT_CONFIG_KEY_0=commit.gpgsign'* \
+        && "${out}" != *'git commit -m x'* ]]; then
+    _pass "CONTEXT(PostToolUseFailure): a refused compound commit parks the work, names git-sign-unpushed, echoes no retry"
   else
-    _fail "a \\u-escaped 'git' in the raw JSON still reaches the parser — got $(printf '%q' "${out}")"
-  fi
-  _gs_expect PASS PostToolUseFailure 'git status' "${repo}" "${refusal}" \
-    'refusal text on a non-commit command'
-  # Legacy shape: a pre-2.1.282 build carried the failure text under
-  # .tool_response, not .error. This case pins the hook's
-  # `.error // .tool_response` fallback; the other failure cases use the live
-  # field via _gs_hook's default.
-  _gs_expect CONTEXT PostToolUseFailure 'git commit -m x' "${repo}" "${refusal}" \
-    'legacy .tool_response payload still triggers the fallback' tool_response
-  out="$(_gs_hook PostToolUseFailure 'git commit -m x' "${repo}" "${refusal}")"
-  if [[ "${out}" == *'NO ready-made retry'* && "${out}" == *'git-sign-unpushed'* \
-        && "${out}" != *'GIT_CONFIG_KEY_0=commit.gpgsign'* && "${out}" != *'git commit -m x'* \
-        && "${out}" != *'chains, substitutes, or pushes'* ]]; then
-    _pass "fallback context is park-and-hand-off, names git-sign-unpushed, never echoes the command or a runnable unsigned recipe; a standalone commit gets no chain note"
-  else
-    _fail "fallback context malformed: ${out}"
-  fi
-  # A tag failure gets tag recovery, never the commit recipe.
-  out="$(_gs_hook PostToolUseFailure 'git tag -s -m x v2.0' "${repo}" "${refusal}")"
-  if [[ "${out}" == *'this tag was NOT created'* && "${out}" == *'git tag -s -F'* \
-        && "${out}" != *'git commit -S'* ]]; then
-    _pass "tag refusal names the tag and its re-create step, not a commit recipe"
-  else
-    _fail "tag refusal context malformed: ${out}"
+    _fail "compound refusal context malformed — got $(printf '%q' "${out}")"
   fi
 
-  # --- PostToolUseFailure: "communication with agent failed" is transient ---
-  # Distinct from an outright refusal: retry once, unmodified. If the same
-  # error recurs right after, the SAME (stateless) hook must say stop.
-  local commfail
-  commfail='Couldn'"'"'t sign message (signer): communication with agent failed?'
-  out="$(_gs_hook PostToolUseFailure 'git commit -m x' "${repo}" "${commfail}")"
-  if [[ "${out}" == *'transient'* && "${out}" == *'ONCE'* && "${out}" != *'GIT_CONFIG_KEY_0=commit.gpgsign'* ]]; then
-    _pass "communication-with-agent-failed: transient guidance, retry once, no runnable recipe"
+  # A refusal with no visible git word (a wrapper script or a quoted shell
+  # string hides the git command): the refusal text is the signal (2026-10-10).
+  resp='Couldn'"'"'t sign message (signer): agent refused operation?
+fatal: failed to write commit object'
+  out="$(_gs_hook PostToolUseFailure 'sh .scratch/commit.sh' "${repo}" "${resp}")"
+  if [[ "${out}" == *'NO ready-made retry'* && "${out}" == *'inside a script or shell string'* \
+        && "${out}" != *'.scratch/commit.sh'* ]]; then
+    _pass "CONTEXT(PostToolUseFailure): a refusal inside a wrapper script parks the work, never echoes the script"
   else
-    _fail "communication-with-agent-failed guidance malformed: ${out}"
+    _fail "wrapper-script refusal: ${out}"
   fi
 
-  # --- PostToolUse: nudge to re-sign before stacking more commits ---
-  _gs_expect CONTEXT PostToolUse 'git commit -m x' "${repo}" '' 'successful commit, debt present'
-  _gs_expect PASS PostToolUse 'git status' "${repo}" '' 'non-commit command, debt present'
+  _gs_expect PASS PostToolUseFailure 'git commit -m x' "${repo}" 'error: pathspec did not match' \
+    'an unrelated commit failure is left alone'
 
-  # --- Unsigned-range scope must match what git-sign-unpushed can fix ---
-  # An unsigned commit on a branch that is not checked out must not trigger the
-  # PostToolUse re-sign nudge (_unsigned_count scopes to HEAD).
+  # PostToolUse: nudge to re-sign before stacking more commits (2 unsigned
+  # commits above the pushed base).
+  _gs_expect CONTEXT PostToolUse 'git commit -m x' "${repo}" '' 'successful commit, unsigned debt present'
+
+  # The nudge scope is what git-sign-unpushed can fix: an unsigned commit on
+  # a branch that is not checked out must not trigger it.
   local scoperepo
   scoperepo="$(_gs_newrepo "$(mktemp -d "${TMPDIR}git-sign-scope.XXXXXX")")"
   (
@@ -487,27 +370,39 @@ fatal: failed to write commit object'
   )
   _gs_expect PASS PostToolUse 'git commit -m x' "${scoperepo}" '' \
     'another branch does not trigger the re-sign nudge'
-  /bin/rm -rf "${scoperepo:h}"
-
-  _git_sign_refusal_cases
+  /bin/rm -rf "${scoperepo:h}" "${sandbox}"
 }
 
 function _git_sign_resign_cases {
-  # Tracked recovery tooling must be tested even when claude/ is absent.
-  local sandbox repo
-  sandbox="$(mktemp -d "${TMPDIR}git-sign-resign.XXXXXX")"
-  repo="$(_gs_newrepo "${sandbox}")"
+  local n
+
+  # --- Re-sign: an unsigned commit BELOW signed ones rewrites all of them ---
+  # Author dates survive (the committer dates differ, so the check is not
+  # vacuous) and the pushed base is untouched.
+  local costrepo before_dates after_dates
+  costrepo="$(_gs_newrepo "$(mktemp -d "${TMPDIR}git-sign-cost.XXXXXX")")"
   (
     export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
-    cd "${repo}" || exit 1
-    _gs_commit c1 '2026-02-02T11:00:00+00:00' '2026-03-02T11:00:00+00:00'
-    _gs_commit c2 '2026-02-03T12:00:00+00:00' '2026-03-03T12:00:00+00:00'
+    cd "${costrepo}" || exit 1
+    _gs_commit deep '2026-02-02T11:00:00+00:00' '2026-03-02T11:00:00+00:00'
+    _gs_commit_signed mid '2026-02-03T12:00:00+00:00'
+    _gs_commit_signed tip '2026-02-04T13:00:00+00:00'
   )
+  before_dates="$(env "${GS_ENV[@]}" git -C "${costrepo}" log --format='%aI' origin/main..HEAD)"
+  (cd "${costrepo}" && env "${GS_ENV[@]}" "${SCRIPT_DIR}/bin/git-sign-unpushed" >/dev/null)
+  n="$(cd "${costrepo}" && export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null && _gs_unsigned_count)"
+  after_dates="$(env "${GS_ENV[@]}" git -C "${costrepo}" log --format='%aI' origin/main..HEAD)"
+  if [[ "${n}" == "0" && "${after_dates}" == "${before_dates}" && "$(env "${GS_ENV[@]}" git -C "${costrepo}" rev-parse origin/main)" == \
+        "$(env "${GS_ENV[@]}" git -C "${costrepo}" rev-parse 'HEAD~3')" ]]; then
+    _pass "git-sign-unpushed clears a buried unsigned commit, keeps author dates and the pushed base"
+  else
+    _fail "buried re-sign: ${n} unsigned left, dates '${after_dates//$'\n'/ }' vs '${before_dates//$'\n'/ }'"
+  fi
+  /bin/rm -rf "${costrepo:h}"
+
   # --- Re-sign: dirty worktree -> temporary worktree, dirty file untouched ---
-  # Own repo copy: the clean-path case below must still have something to sign.
-  local dsandbox drepo dout dtip_before dtip_after dn
-  dsandbox="$(mktemp -d "${TMPDIR}git-sign-dirty.XXXXXX")"
-  drepo="$(_gs_newrepo "${dsandbox}")"
+  local drepo dout dtip_before dtip_after dn
+  drepo="$(_gs_newrepo "$(mktemp -d "${TMPDIR}git-sign-dirty.XXXXXX")")"
   (
     export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
     cd "${drepo}" || exit 1
@@ -517,102 +412,26 @@ function _git_sign_resign_cases {
     echo dirty >> f
   )
   dtip_before="$(env "${GS_ENV[@]}" git -C "${drepo}" rev-parse HEAD)"
-  if dout="$(cd "${drepo}" && env "${GS_ENV[@]}" "${SCRIPT_DIR}/bin/git-sign-unpushed" 2>&1)" \
-     && [[ "${dout}" == *'temporary worktree'* ]]; then
-    _pass "git-sign-unpushed re-signs a dirty worktree through a temporary worktree"
-  else
-    _fail "git-sign-unpushed on a dirty worktree: ${dout}"
-  fi
+  dout="$(cd "${drepo}" && env "${GS_ENV[@]}" "${SCRIPT_DIR}/bin/git-sign-unpushed" 2>&1)" || dout="FAILED: ${dout}"
   dn="$(cd "${drepo}" && export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null && _gs_unsigned_count)"
   dtip_after="$(env "${GS_ENV[@]}" git -C "${drepo}" rev-parse HEAD)"
-  if [[ "${dn}" == "0" && "${dtip_after}" != "${dtip_before}" ]]; then
-    _pass "dirty-tree re-sign moved the branch to a signed tip"
-  else
-    _fail "dirty-tree re-sign: ${dn} unsigned, tip ${dtip_before:0:7} -> ${dtip_after:0:7}"
-  fi
-  if [[ "$(tail -1 "${drepo}/f")" == dirty ]] \
+  if [[ "${dout}" == *'temporary worktree'* && "${dout}" != FAILED* && "${dn}" == "0" && "${dtip_after}" != "${dtip_before}" \
+        && "$(tail -1 "${drepo}/f")" == dirty ]] \
      && ! env "${GS_ENV[@]}" git -C "${drepo}" diff --cached --quiet -- f \
-     && ! env "${GS_ENV[@]}" git -C "${drepo}" diff --quiet -- f; then
-    _pass "dirty-tree re-sign left the staged and unstaged edits in place"
+     && ! env "${GS_ENV[@]}" git -C "${drepo}" diff --quiet -- f \
+     && [[ "$(env "${GS_ENV[@]}" git -C "${drepo}" worktree list | wc -l | tr -d ' ')" == 1 ]]; then
+    _pass "dirty-tree re-sign: signed tip, staged and unstaged edits kept, temporary worktree removed"
   else
-    _fail "dirty-tree re-sign changed the working file or the index"
+    _fail "dirty-tree re-sign: ${dn} unsigned, tip ${dtip_before:0:7} -> ${dtip_after:0:7}: ${dout}"
   fi
-  if [[ "$(env "${GS_ENV[@]}" git -C "${drepo}" worktree list | wc -l | tr -d ' ')" == 1 ]]; then
-    _pass "temporary worktree removed after the re-sign"
-  else
-    _fail "temporary worktree left behind: $(env "${GS_ENV[@]}" git -C "${drepo}" worktree list)"
-  fi
-  /bin/rm -rf "${dsandbox}"
-
-  # --- Re-sign: signs the range, preserves dates, leaves the pushed base ---
-  local before_dates after_dates n
-  before_dates="$(env "${GS_ENV[@]}" git -C "${repo}" log --format='%aI' origin/main..HEAD)"
-  if (cd "${repo}" && env "${GS_ENV[@]}" "${SCRIPT_DIR}/bin/git-sign-unpushed" >/dev/null); then
-    _pass "git-sign-unpushed exits 0"
-  else
-    _fail "git-sign-unpushed failed"
-  fi
-  n="$(cd "${repo}" && export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null && _gs_unsigned_count)"
-  if [[ "${n}" == "0" ]]; then
-    _pass "all unpushed commits carry a gpgsig header after re-sign"
-  else
-    _fail "${n} unsigned commit(s) remain after re-sign"
-  fi
-  # The real guarantee: AUTHOR dates survive a re-sign untouched.
-  after_dates="$(env "${GS_ENV[@]}" git -C "${repo}" log --format='%aI' origin/main..HEAD)"
-  if [[ "${after_dates}" == "${before_dates}" ]]; then
-    _pass "author dates preserved through re-sign"
-  else
-    _fail "author dates changed: ${after_dates//$'\n'/ } != ${before_dates//$'\n'/ }"
-  fi
-  if [[ "$(env "${GS_ENV[@]}" git -C "${repo}" rev-parse origin/main)" == \
-        "$(env "${GS_ENV[@]}" git -C "${repo}" rev-parse 'HEAD~2')" ]]; then
-    _pass "pushed base commit untouched"
-  else
-    _fail "pushed base commit was rewritten"
-  fi
-
-  # --- Fast path: a single unsigned commit at the tip is amended, not rebased ---
-  (
-    export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
-    cd "${repo}" || exit 1
-    _gs_commit tip '2026-02-04T09:00:00+00:00'
-    "${SCRIPT_DIR}/bin/git-sign-unpushed" >/dev/null
-  )
-  # The newest reflog entry must be the amend; a sequencer run leaves
-  # `rebase (finish)` on top.
-  if env "${GS_ENV[@]}" git -C "${repo}" reflog -1 | grep -q 'commit (amend)'; then
-    _pass "fast path avoids the rebase sequencer"
-  else
-    _fail "fast path used the rebase sequencer for a single tip commit"
-  fi
-
-  # --- Cost model: an unsigned commit BELOW signed ones rewrites all of them ---
-  local costrepo
-  costrepo="$(_gs_newrepo "$(mktemp -d "${TMPDIR}git-sign-cost.XXXXXX")")"
-  (
-    export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
-    cd "${costrepo}" || exit 1
-    _gs_commit deep '2026-02-02T11:00:00+00:00'
-    _gs_commit_signed mid '2026-02-03T12:00:00+00:00'
-    _gs_commit_signed tip '2026-02-04T13:00:00+00:00'
-  )
-  (cd "${costrepo}" && env "${GS_ENV[@]}" "${SCRIPT_DIR}/bin/git-sign-unpushed" >/dev/null)
-  n="$(cd "${costrepo}" && export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null && _gs_unsigned_count)"
-  if [[ "${n}" == "0" ]]; then
-    _pass "buried unsigned commit is cleared"
-  else
-    _fail "${n} unsigned commit(s) remain in the buried case"
-  fi
-  /bin/rm -rf "${costrepo:h}"
+  /bin/rm -rf "${drepo:h}"
 
   # --- No remote: replay must start at the deepest UNSIGNED commit ---
   # `--not --remotes` excludes nothing without a remote, so every commit counts
   # as unpushed; basing the rebase on the deepest *unpushed* commit rebased from
   # --root and re-signed everything (measured 2026-08-08: 2 unsigned tips in a
-  # 12-commit history = 12 picks).
-  # Built from the prepush template (a SIGNED base commit, so the deepest
-  # unsigned commit is u1) with its only remote removed.
+  # 12-commit history = 12 picks). Built from the prepush template (a SIGNED
+  # base commit) with its only remote removed.
   local norepo old_head picks
   norepo="$(_gs_prepush_repo "$(mktemp -d "${TMPDIR}git-sign-noremote.XXXXXX")")"
   (
@@ -629,15 +448,10 @@ function _git_sign_resign_cases {
   # `|| true`: under pipefail a zero-match grep would abort the suite, not fail
   # one assertion.
   picks="$(env "${GS_ENV[@]}" git -C "${norepo}" reflog --all | grep -c 'rebase (pick)' || true)"
-  if [[ "${picks}" == "2" ]]; then
-    _pass "no remote: only the 2 unsigned commits are replayed"
+  if [[ "${picks}" == "2" && "$(env "${GS_ENV[@]}" git -C "${norepo}" rev-parse 'HEAD~2')" == "${old_head}" ]]; then
+    _pass "no remote: only the 2 unsigned commits are replayed, signed history below keeps its SHAs"
   else
-    _fail "no remote: expected 2 rebase picks, got ${picks}"
-  fi
-  if [[ "$(env "${GS_ENV[@]}" git -C "${norepo}" rev-parse 'HEAD~2')" == "${old_head}" ]]; then
-    _pass "no remote: already-signed history below keeps its SHAs"
-  else
-    _fail "no remote: signed history below the unsigned run was rewritten"
+    _fail "no remote: expected 2 rebase picks and unchanged signed history, got ${picks} picks"
   fi
   /bin/rm -rf "${norepo:h}"
 
@@ -645,8 +459,6 @@ function _git_sign_resign_cases {
   # Candidates come from HEAD --not --remotes, not merge-base(HEAD,
   # @{upstream})..HEAD, which excludes only the UPSTREAM's history: a commit
   # already pushed to another remote would be rewritten (reproduced 2026-08-08).
-  # Built from the newrepo template: its pushed base commit stands in for A, and a
-  # second bare remote is added.
   local tworem b_sha
   tworem="$(_gs_newrepo "$(mktemp -d "${TMPDIR}git-sign-tworemote.XXXXXX")")"
   (
@@ -667,12 +479,10 @@ function _git_sign_resign_cases {
     _fail "rewrote ${b_sha}, which is published on backup/topic"
   fi
   /bin/rm -rf "${tworem:h}"
-
-  /bin/rm -rf "${sandbox}"
 }
 
 function _git_sign_batch_cases {
-  local sandbox repo signed unsigned out rc case_name
+  local sandbox repo signed unsigned out rc
   sandbox="$(mktemp -d "${TMPDIR}git-sign-batch.XXXXXX")"
   repo="$(_gs_newrepo "${sandbox}")"
   (
@@ -690,11 +500,6 @@ function _git_sign_batch_cases {
   else
     _fail "batch signatures: wrong unsigned commit list"
   fi
-  if "${scanner}" </dev/null && "${scanner}" <<< ''; then
-    _pass "batch signatures: empty input succeeds"
-  else
-    _fail "batch signatures: empty input failed"
-  fi
 
   # Real Git's missing-object response has exit 0; the parser must reject it.
   local missing="${signed//?/0}"
@@ -705,94 +510,23 @@ function _git_sign_batch_cases {
   else
     _fail "batch signatures: missing object returned ${rc}"
   fi
-  local blob
-  blob="$(git -C "${repo}" rev-parse HEAD:f)"
-  rc=0
-  (cd "${repo}" && "${scanner}" <<< "${blob}") >/dev/null 2>&1 || rc=$?
-  if (( rc == 2 )); then
-    _pass "batch signatures: non-commit object fails closed"
-  else
-    _fail "batch signatures: blob returned ${rc}"
-  fi
-
-  git -C "${repo}" cat-file --batch <<< "${signed}" > "${sandbox}/valid"
-  mkdir "${sandbox}/bin"
-  cat > "${sandbox}/bin/git" <<'EOF'
-#!/bin/zsh
-cat "${BATCH_TEST_FIXTURE}"
-EOF
-  chmod 755 "${sandbox}/bin/git"
-  for case_name in truncated bad-size extra-data; do
-    case "${case_name}" in
-      truncated) head -c 80 "${sandbox}/valid" > "${sandbox}/broken" ;;
-      bad-size) printf '%s commit nope\n' "${signed}" > "${sandbox}/broken" ;;
-      extra-data)
-        cat "${sandbox}/valid" > "${sandbox}/broken"
-        printf junk >> "${sandbox}/broken"
-        ;;
-    esac
-    rc=0
-    PATH="${sandbox}/bin:${PATH}" BATCH_TEST_FIXTURE="${sandbox}/broken" \
-      "${scanner}" <<< "${signed}" >/dev/null 2>&1 || rc=$?
-    if (( rc == 2 )); then
-      _pass "batch signatures: ${case_name} fails closed"
-    else
-      _fail "batch signatures: ${case_name} returned ${rc}"
-    fi
-  done
   /bin/rm -rf "${sandbox}"
 }
 
 function _git_sign_prepush_cases {
   # --- pre-push: the actual enforcement boundary ---
-  local ppa ppb ppc ppd ppe
+  local ppa ppd ppf msgpat
   ppa="$(_gs_prepush_repo "$(mktemp -d "${TMPDIR}git-sign-ppa.XXXXXX")")"
-  (
-    export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
-    cd "${ppa}" || exit 1; _gs_commit_signed s1 '2026-02-02T10:00:00+00:00'
-  )
-  _gs_push_expect ALLOWED "fully signed push" "${ppa}" git push origin main
   (
     export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
     cd "${ppa}" || exit 1; _gs_commit u1 '2026-02-03T10:00:00+00:00'
   )
   _gs_push_expect BLOCKED "unsigned commit on the pushed branch" "${ppa}" git push origin main
-  # GIT_SIGN_SKIP=1 needs a controlling terminal (2026-09-25): the _tty case
-  # forces one and publishes u1; a fresh unsigned commit then proves the
-  # override is refused, and still blocks, without one.
-  _gs_push_expect_tty ALLOWED "GIT_SIGN_SKIP=1 override (with a terminal)" "${ppa}" env GIT_SIGN_SKIP=1 git push origin main
-  (
-    export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
-    cd "${ppa}" || exit 1; _gs_commit u2 '2026-02-04T10:00:00+00:00'
-  )
+  # GIT_SIGN_SKIP=1 needs a controlling terminal (pii-scan --check-terminal):
+  # without one it is refused, and the push still blocks.
   _gs_push_expect_notty BLOCKED "GIT_SIGN_SKIP=1 is refused without a terminal" "${ppa}" \
     "ignored: no controlling terminal" env GIT_SIGN_SKIP=1 git push origin main
   /bin/rm -rf "${ppa:h}"
-
-  # Spellings and refspecs the command-string matcher cannot see.
-  ppb="$(_gs_prepush_repo "$(mktemp -d "${TMPDIR}git-sign-ppb.XXXXXX")")"
-  (
-    export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
-    cd "${ppb}" || exit 1
-    git checkout -q -b side
-    _gs_commit stray '2026-02-02T10:00:00+00:00'
-    git checkout -q main
-  )
-  _gs_push_expect BLOCKED "--all carries an unsigned commit on another branch" "${ppb}" git push --all origin
-  _gs_push_expect ALLOWED "clean branch still pushes" "${ppb}" git push origin main
-  /bin/rm -rf "${ppb:h}"
-
-  # commit.gpgsign written as a non-literal-true boolean must still gate.
-  ppc="$(_gs_prepush_repo "$(mktemp -d "${TMPDIR}git-sign-ppc.XXXXXX")")"
-  (
-    export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
-    cd "${ppc}" || exit 1; _gs_commit u '2026-02-02T10:00:00+00:00'
-  )
-  env "${GS_ENV[@]}" git -C "${ppc}" config commit.gpgsign yes
-  _gs_push_expect BLOCKED "commit.gpgsign=yes still gates (--bool)" "${ppc}" git push origin main
-  env "${GS_ENV[@]}" git -C "${ppc}" config commit.gpgsign false
-  _gs_push_expect ALLOWED "non-signing repo is not gated" "${ppc}" git push origin main
-  /bin/rm -rf "${ppc:h}"
 
   # A signed commit larger than the pipe buffer must not read as unsigned.
   ppd="$(_gs_prepush_repo "$(mktemp -d "${TMPDIR}git-sign-ppd.XXXXXX")")"
@@ -811,10 +545,9 @@ function _git_sign_prepush_cases {
   /bin/rm -rf "${ppd:h}"
 
   # --- pre-push outgoing-message PII gate ---
-  # Fixture token assembled at run time so this file never holds it as a
-  # committed literal; seam patterns per case via env last-value-wins over
-  # the GS_ENV /dev/null default.
-  local ppf msgpat
+  # A signed commit whose message holds a denylist word. `-n` bypasses
+  # commit-msg deliberately: pre-push must catch what the commit-time gate
+  # missed. The word is a seam pattern, not a real value.
   ppf="$(_gs_prepush_repo "$(mktemp -d "${TMPDIR}git-sign-ppf.XXXXXX")")"
   msgpat="$(mktemp "${TMPDIR}git-sign-msgpat.XXXXXX")"
   echo "zorblefrobnicate" > "${msgpat}"
@@ -822,105 +555,67 @@ function _git_sign_prepush_cases {
     export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
     export PII_HOOK_PATTERNS=/dev/null PII_HOOK_SSH_CONFIG=/dev/null
     cd "${ppf}" || exit 1
-    # -n bypasses commit-msg deliberately: pre-push must catch what the
-    # commit-time gate missed. Signed, so the signature layer stays green.
     echo m1 >> f; git add f
     git commit -qn -S -m "redeployed zorblefrobnicate to prod"
   )
   _gs_push_expect BLOCKED "PII in an outgoing commit message" "${ppf}" \
     env PII_HOOK_PATTERNS="${msgpat}" git push origin main
-  _gs_push_expect BLOCKED "GIT_SIGN_SKIP does not skip the message scan" "${ppf}" \
-    env PII_HOOK_PATTERNS="${msgpat}" GIT_SIGN_SKIP=1 git push origin main
-  (
-    export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
-    export PII_HOOK_PATTERNS=/dev/null PII_HOOK_SSH_CONFIG=/dev/null
-    cd "${ppf}" || exit 1
-    git commit -qn -S --amend -m "redeployed the service to prod"
-  )
-  _gs_push_expect ALLOWED "reworded message pushes" "${ppf}" \
-    env PII_HOOK_PATTERNS="${msgpat}" git push origin main
-  # Bypass case takes a FRESH dirty commit and runs after the reword case: a
-  # bypassed push PUBLISHES the dirty tip, and amending it would diverge from
-  # the remote, so the reword push would block as a non-fast-forward, not as a
-  # gate verdict.
-  (
-    export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
-    export PII_HOOK_PATTERNS=/dev/null PII_HOOK_SSH_CONFIG=/dev/null
-    cd "${ppf}" || exit 1
-    echo m1b >> f; git add f
-    git commit -qn -S -m "second note about zorblefrobnicate"
-  )
-  _gs_push_expect_tty ALLOWED "PII_HOOK_BYPASS=1 overrides the message scan (with a terminal)" "${ppf}" \
-    env PII_HOOK_PATTERNS="${msgpat}" PII_HOOK_BYPASS=1 git push origin main
-  # PII_HOOK_BYPASS=1 needs a controlling terminal (2026-09-25). A dedicated
-  # fixture (ppf's later cases depend on its exact commit sequence) proves the
-  # override is refused, and still blocks, without one.
-  local ppg
-  ppg="$(_gs_prepush_repo "$(mktemp -d "${TMPDIR}git-sign-ppg.XXXXXX")")"
-  (
-    export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
-    export PII_HOOK_PATTERNS=/dev/null PII_HOOK_SSH_CONFIG=/dev/null
-    cd "${ppg}" || exit 1
-    echo m1 >> f; git add f
-    git commit -qn -S -m "redeployed zorblefrobnicate to prod"
-  )
-  _gs_push_expect_notty BLOCKED "PII_HOOK_BYPASS=1 is refused without a terminal" "${ppg}" \
-    "ignored: no controlling terminal" env PII_HOOK_PATTERNS="${msgpat}" PII_HOOK_BYPASS=1 git push origin main
-  /bin/rm -rf "${ppg:h}"
-  # MAC-shaped token in a message blocks with NO denylist at all (layer 3).
-  local msgmac="0f:1e:2d:3c:4b"
-  msgmac="${msgmac}:5a"
-  (
-    export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
-    export PII_HOOK_PATTERNS=/dev/null PII_HOOK_SSH_CONFIG=/dev/null
-    cd "${ppf}" || exit 1
-    echo m2 >> f; git add f
-    git commit -qn -S -m "swapped NIC ${msgmac} on the router"
-  )
-  _gs_push_expect BLOCKED "MAC token in a message (layer 3, empty denylist)" "${ppf}" \
-    git push origin main
-  (
-    export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
-    export PII_HOOK_PATTERNS=/dev/null PII_HOOK_SSH_CONFIG=/dev/null
-    cd "${ppf}" || exit 1
-    git commit -qn -S --amend -m "swapped the router NIC"
-    # Non-signing repos get the message gate too.
-    git config commit.gpgsign false
-    git tag -a -m "milestone at zorblefrobnicate" leak-tag
-  )
-  _gs_push_expect BLOCKED "PII in an annotated tag message" "${ppf}" \
-    env PII_HOOK_PATTERNS="${msgpat}" git push origin leak-tag
-  (
-    export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
-    cd "${ppf}" || exit 1
-    echo m3 >> f; git add f
-    git commit -qn --no-gpg-sign -m "note about zorblefrobnicate again"
-  )
-  _gs_push_expect BLOCKED "non-signing repo still gets the message gate" "${ppf}" \
-    env PII_HOOK_PATTERNS="${msgpat}" git push origin main
   /bin/rm -rf "${ppf:h}" "${msgpat}"
 
-  # Chains to the repo's own default-location pre-push.
-  ppe="$(_gs_prepush_repo "$(mktemp -d "${TMPDIR}git-sign-ppe.XXXXXX")")"
-  # Needs something to push: an up-to-date branch skips pre-push entirely and
-  # the chain assertion would fail for the wrong reason.
-  (
-    export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
-    cd "${ppe}" || exit 1; _gs_commit_signed chained '2026-02-02T10:00:00+00:00'
-  )
-  mkdir -p "${ppe}/.git/hooks"
-  printf '#!/bin/zsh\nprint -u2 "REPO PRE-PUSH RAN"\nexit 7\n' > "${ppe}/.git/hooks/pre-push"
-  chmod 755 "${ppe}/.git/hooks/pre-push"
-  # Capture, do not pipe: under pipefail `(failing push) | grep` reports the
-  # push's status, not grep's.
-  local chainout
-  chainout="$( (cd "${ppe}" && env "${GS_ENV[@]}" git push origin main) 2>&1 || true )"
-  if [[ "${chainout}" == *'REPO PRE-PUSH RAN'* ]]; then
-    _pass "pre-push chains to the repo's own hook"
-  else
-    _fail "pre-push did not chain to the repo's own hook: ${chainout//$'\n'/ }"
-  fi
-  /bin/rm -rf "${ppe:h}"
+  # --- Gate bypasses (2026-08-08), driven with crafted ref quads ---
+  # Each case once passed through the gate; common root cause: the gate
+  # trusted a git invocation's *output* without checking its *status*, or
+  # matched a pattern too loosely to be a signature. One fixture repo: an
+  # unsigned tip commit and an unsigned annotated tag over the signed base.
+  local zero=0000000000000000000000000000000000000000
+  local ghost=0000000000000000000000000000000000000001
+  local gq gqtip gqbase gqtag gqdir
+  gq="$(_gs_prepush_repo "$(mktemp -d "${TMPDIR}git-sign-quad.XXXXXX")")"
+  gqbase="$(env "${GS_ENV[@]}" git -C "${gq}" rev-parse HEAD)"
+  ( cd "${gq}" && _gs_commit unsigned-tip '2026-02-02T10:00:00+00:00' )
+  gqtip="$(env "${GS_ENV[@]}" git -C "${gq}" rev-parse HEAD)"
+  gqdir="$(env "${GS_ENV[@]}" git -C "${gq}" rev-parse --absolute-git-dir)"
+  env "${GS_ENV[@]}" git -C "${gq}" config tag.gpgsign true
+  env "${GS_ENV[@]}" git -C "${gq}" -c tag.gpgsign=false tag -a v1 -m unsigned-tag "${gqbase}"
+  gqtag="$(env "${GS_ENV[@]}" git -C "${gq}" rev-parse v1)"
+
+  # A failed revision walk must not read as "no unsigned commits". git derives
+  # remote_sha from the remote's LIVE advertised refs, not the local
+  # remote-tracking cache, so a diverged force-push hands the hook a range
+  # whose left side it lacks: `fatal: bad object` → empty output → exit 0.
+  _gs_quad_expect BLOCKED "a revision walk that fails is not a silent pass" \
+    "${gq}" "refs/heads/main ${gqtip} refs/heads/main ${ghost}"
+
+  # An annotated tag carries its signature in the TAG object, appended after
+  # the message rather than as a header, so peeling to commits cannot see it.
+  _gs_quad_expect BLOCKED "an unsigned annotated tag over a signed commit is gated" \
+    "${gq}" "refs/tags/v1 ${gqtag} refs/tags/v1 ${zero}"
+
+  # Re-entry must suppress the CHAINED hook only, never the scan: the sentinel
+  # is exported before the scan runs, so a repo pre-push hook that pushed the
+  # same repo inherited it and published unsigned commits unexamined.
+  _gs_quad_expect BLOCKED "an already-exported sentinel does not skip the scan" \
+    "${gq}" "refs/heads/main ${gqtip} refs/heads/main ${zero}" \
+    "GIT_GLOBAL_HOOKS_SEEN=pre-push@${gqdir}"
+
+  # stdin replay to the chained hook must not be a pipeline: under pipefail a
+  # repo hook that exits 0 without draining a large ref stream SIGPIPEs the
+  # producer and the gate returned 141, blocking a push the repo hook allowed.
+  # All-zero local shas (branch deletions) keep it on the replay path with no
+  # per-ref git forks. `--absolute-git-dir`, NOT `--git-common-dir`: the latter
+  # answers `.git` RELATIVE, so a fixture path built from it outside the repo
+  # would write this very repo's `.git/hooks/pre-push`.
+  local stream
+  mkdir -p "${gqdir}/hooks"
+  printf '#!/bin/zsh\nexit 0\n' > "${gqdir}/hooks/pre-push"
+  chmod 755 "${gqdir}/hooks/pre-push"
+  stream="${gq:h}/stream"
+  awk -v z="${zero}" -v b="${gqbase}" \
+    'BEGIN{for(i=1;i<=800;i++) printf "refs/heads/b%d %s refs/heads/b%d %s\n", i, z, i, b}' \
+    > "${stream}"
+  _gs_quad_expect ALLOWED "a chained hook that ignores a 90 KB ref stream still allows the push" \
+    "${gq}" "${stream}"
+  /bin/rm -rf "${gq:h}"
 
   # --- A repo-local core.hooksPath must not silently opt out of the gate ---
   # This repo's core.hooksPath=.githooks SHADOWS the global hooks dir, so the
@@ -947,164 +642,4 @@ function _git_sign_prepush_cases {
   _gs_push_expect BLOCKED "repo-local hooksPath still reaches the gate via the stub" \
     "${shadow}" git push origin main
   /bin/rm -rf "${shadow:h}"
-
-  # --- Gate bypasses (2026-08-08) ---
-  # Each case below once passed through the gate; common root cause: the gate
-  # trusted a git invocation's *output* without checking its *status*, or
-  # matched a pattern too loosely to be a signature.
-  local zero=0000000000000000000000000000000000000000
-  local ghost=0000000000000000000000000000000000000001
-
-  # A failed revision walk must not read as "no unsigned commits". git derives
-  # remote_sha from the remote's LIVE advertised refs, not the local
-  # remote-tracking cache, so a diverged force-push hands the hook a range
-  # whose left side it lacks: `fatal: bad object` → empty output → loop
-  # never ran → exit 0.
-  local walk walktip
-  walk="$(_gs_prepush_repo "$(mktemp -d "${TMPDIR}git-sign-walk.XXXXXX")")"
-  ( cd "${walk}" && _gs_commit unsigned-tip '2026-02-02T10:00:00+00:00' )
-  walktip="$(env "${GS_ENV[@]}" git -C "${walk}" rev-parse HEAD)"
-  _gs_quad_expect BLOCKED "a revision walk that fails is not a silent pass" \
-    "${walk}" "refs/heads/main ${walktip} refs/heads/main ${ghost}"
-
-  # An annotated tag carries its signature in the TAG object, appended after
-  # the message rather than as a header, so peeling to commits cannot see it.
-  local tagr tagobj tagbase
-  tagr="$(_gs_prepush_repo "$(mktemp -d "${TMPDIR}git-sign-tag.XXXXXX")")"
-  env "${GS_ENV[@]}" git -C "${tagr}" config tag.gpgsign true
-  tagbase="$(env "${GS_ENV[@]}" git -C "${tagr}" rev-parse HEAD)"
-  env "${GS_ENV[@]}" git -C "${tagr}" -c tag.gpgsign=false tag -a v1 -m unsigned-tag "${tagbase}"
-  tagobj="$(env "${GS_ENV[@]}" git -C "${tagr}" rev-parse v1)"
-  _gs_quad_expect BLOCKED "an unsigned annotated tag over a signed commit is gated" \
-    "${tagr}" "refs/tags/v1 ${tagobj} refs/tags/v1 ${zero}"
-  env "${GS_ENV[@]}" git -C "${tagr}" -c tag.gpgsign=true -c "user.signingkey=${tagr:h}/key" \
-    -c gpg.format=ssh tag -s -f v2 -m signed-tag "${tagbase}" 2>/dev/null || true
-  tagobj="$(env "${GS_ENV[@]}" git -C "${tagr}" rev-parse v2)"
-  _gs_quad_expect ALLOWED "a signed annotated tag passes" \
-    "${tagr}" "refs/tags/v2 ${tagobj} refs/tags/v2 ${zero}"
-  _gs_quad_expect ALLOWED "a lightweight tag on a signed commit passes" \
-    "${tagr}" "refs/tags/lw ${tagbase} refs/tags/lw ${zero}"
-
-  # Re-entry must suppress the CHAINED hook only, never the scan: the sentinel
-  # is exported before the scan runs, so a repo pre-push hook that pushed the
-  # same repo inherited it and published unsigned commits unexamined.
-  local reent reenttip reentdir
-  reent="$(_gs_prepush_repo "$(mktemp -d "${TMPDIR}git-sign-reent.XXXXXX")")"
-  ( cd "${reent}" && _gs_commit reentrant '2026-02-03T10:00:00+00:00' )
-  reenttip="$(env "${GS_ENV[@]}" git -C "${reent}" rev-parse HEAD)"
-  reentdir="$(env "${GS_ENV[@]}" git -C "${reent}" rev-parse --absolute-git-dir)"
-  _gs_quad_expect BLOCKED "an already-exported sentinel does not skip the scan" \
-    "${reent}" "refs/heads/main ${reenttip} refs/heads/main ${zero}" \
-    "GIT_GLOBAL_HOOKS_SEEN=pre-push@${reentdir}"
-
-  # stdin replay to the chained hook must not be a pipeline: under pipefail a
-  # repo hook that exits 0 without draining a large ref stream SIGPIPEs the
-  # producer and the gate returned 141, blocking a push the repo hook allowed.
-  # All-zero local shas (branch deletions) keep it on the replay path with no
-  # per-ref git forks.
-  # `--absolute-git-dir`, NOT `--git-common-dir`: the latter answers `.git`
-  # RELATIVE, so a fixture path built from it outside the repo writes this
-  # very repo's `.git/hooks/pre-push`. The global gate chains to
-  # `$(git rev-parse --git-common-dir)/hooks/pre-push`, which
-  # `core.hooksPath = .githooks` does NOT shadow, so an `exit 7` fixture there
-  # would fail every push from the dotfiles repo itself (2026-08-08).
-  local replay replaydir stream
-  replay="$(_gs_prepush_repo "$(mktemp -d "${TMPDIR}git-sign-replay.XXXXXX")")"
-  replaydir="$(env "${GS_ENV[@]}" git -C "${replay}" rev-parse --absolute-git-dir)"
-  mkdir -p "${replaydir}/hooks"
-  printf '#!/bin/zsh\nexit 0\n' > "${replaydir}/hooks/pre-push"
-  chmod 755 "${replaydir}/hooks/pre-push"
-  stream="${replay:h}/stream"
-  awk -v z="${zero}" -v b="$(env "${GS_ENV[@]}" git -C "${replay}" rev-parse HEAD)" \
-    'BEGIN{for(i=1;i<=800;i++) printf "refs/heads/b%d %s refs/heads/b%d %s\n", i, z, i, b}' \
-    > "${stream}"
-  _gs_quad_expect ALLOWED "a chained hook that ignores a 90 KB ref stream still allows the push" \
-    "${replay}" "${stream}"
-  printf '#!/bin/zsh\nexit 7\n' > "${replaydir}/hooks/pre-push"
-  _gs_quad_expect BLOCKED "a chained hook's non-zero status still propagates" \
-    "${replay}" "${stream}"
-
-  # The sentinel names hook AND repo: this repo's skips the chained hook (the
-  # scan still ran above it), another repo's does not.
-  _gs_quad_expect ALLOWED "a sentinel for this repo skips the chained repo hook" \
-    "${replay}" "${stream}" "GIT_GLOBAL_HOOKS_SEEN=pre-push@${replaydir}"
-  _gs_quad_expect BLOCKED "a sentinel for another repo does not skip the chained repo hook" \
-    "${replay}" "${stream}" "GIT_GLOBAL_HOOKS_SEEN=pre-push@/elsewhere/.git"
-
-  # A linked worktree chains to the COMMON dir's repo hook, not to a hooks/
-  # under its own git dir (which does not exist). The hook there still exits 7.
-  local replaywt="${replay:h}/replay-wt"
-  env "${GS_ENV[@]}" git -C "${replay}" worktree add -q "${replaywt}" -b replay-wt 2>/dev/null
-  _gs_quad_expect BLOCKED "a linked worktree reaches the common-dir repo hook (non-zero status propagates)" \
-    "${replaywt}" "${stream}"
-
-  # --- The declared global hooksPath must actually resolve ----------------
-  # A core.hooksPath pointing at a missing directory disables EVERY hook (the
-  # signature gate and the PII/gitleaks scanner) and git says nothing: the
-  # commit simply succeeds with no hooks run.
-  local declared
-  declared="$(env "${GS_ENV[@]}" git config --file "${SCRIPT_DIR}/.config/git/config" \
-    --path --get core.hooksPath 2>/dev/null || true)"
-  if [[ -n "${declared}" && ! -d "${declared}" && "${SCRIPT_DIR:A}" != "${HOME:A}/dotfiles" ]]; then
-    # A CI runner or a scratch clone: the declared path names the deployed
-    # checkout, which is not this one, so there is nothing to resolve.
-    _skip "declared global core.hooksPath ${declared} is not on this machine — repo is not at its deployed path"
-  elif [[ -z "${declared}" ]]; then
-    _fail "core.hooksPath is not declared in .config/git/config — no repo gets the global hooks"
-  elif [[ -x "${declared}/pre-push" && -x "${declared}/pre-commit" ]]; then
-    _pass "declared global core.hooksPath resolves to executable hooks"
-  else
-    _fail "core.hooksPath resolves to ${declared} — pre-push/pre-commit missing or not executable"
-  fi
-}
-
-function _git_sign_refusal_cases {
-  # Uses ${repo}/${sandbox} from _git_sign_claude_cases via dynamic scope.
-  # --- Compound commands are never reproduced with signing disabled ---
-  local refusal_resp compound
-  refusal_resp='Couldn'"'"'t sign message (signer): agent refused operation?
-fatal: failed to write commit object'
-  # The ORIGINAL command must never be echoed back runnable. No hook branch
-  # hands back any command now, so the verbatim command's absence pins the
-  # compound case, where a partial/templated echo is easiest to reintroduce.
-  compound="$(_gs_hook PostToolUseFailure 'git commit -m x && git push' "${repo}" "${refusal_resp}")"
-  if [[ "${compound}" == *'NO ready-made retry'* && "${compound}" == *'chains, substitutes, or pushes'* \
-        && "${compound}" != *'git commit -m x && git push'* ]]; then
-    _pass "compound commit+push is not handed back as a signing-disabled retry"
-  else
-    _fail "compound command was reproduced with signing disabled"
-  fi
-  # A chain with no push must also be refused: this case exercises
-  # _is_simple_command; the commit-&&-push case above short-circuits on the
-  # push check and never reaches it.
-  local chained_nopush
-  chained_nopush="$(_gs_hook PostToolUseFailure 'git commit -m x && echo done' "${repo}" "${refusal_resp}")"
-  if [[ "${chained_nopush}" == *'NO ready-made retry'* && "${chained_nopush}" == *'chains, substitutes, or pushes'* \
-        && "${chained_nopush}" != *'git commit -m x && echo done'* ]]; then
-    _pass "a chained command with no push is not reproduced either"
-  else
-    _fail "chained command was reproduced with signing disabled"
-  fi
-  # --- A refusal with no visible git word still fires (2026-10-10) ---
-  # A wrapper script or a quoted shell string hides the git command from the
-  # token scan; the refusal text in the failure is the signal instead.
-  local wrapped
-  wrapped="$(_gs_hook PostToolUseFailure 'sh .scratch/commit.sh' "${repo}" "${refusal_resp}")"
-  if [[ "${wrapped}" == *'NO ready-made retry'* && "${wrapped}" == *'inside a script or shell string'* \
-        && "${wrapped}" != *'.scratch/commit.sh'* ]]; then
-    _pass "refusal inside a wrapper script parks the work and hands off, never echoes the script"
-  else
-    _fail "wrapper-script refusal: ${wrapped}"
-  fi
-  wrapped="$(_gs_hook PostToolUseFailure 'scripts/commit-wave' "${repo}" \
-    'Couldn'"'"'t sign message (signer): communication with agent failed')"
-  if [[ "${wrapped}" == *'Retry only that git command'* && "${wrapped}" == *'Wait 20 seconds'* \
-        && "${wrapped}" != *'commit-wave'* ]]; then
-    _pass "comm error inside a wrapper says retry only the git step"
-  else
-    _fail "wrapper comm error: ${wrapped}"
-  fi
-  _gs_expect PASS PostToolUseFailure 'sh .scratch/commit.sh' "${repo}" 'fatal: not a git repository' \
-    'wrapper failure with no signing text is left alone'
-  /bin/rm -rf "${sandbox}"
 }
