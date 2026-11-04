@@ -1,7 +1,11 @@
 #!/bin/zsh
 # tests/agent-reset
 #
-# Hermetic tests for bin/agent-reset (backup -> verify -> wipe). A synthetic
+# Hermetic tests for bin/agent-reset (backup -> verify -> wipe). Covers the
+# self-test, the read-only plan, the wipe gates (no verify stamp, running agent
+# CLI, tampered archive, changed file without --topup), exit 2 for a skipped
+# repo, what a wipe removes and keeps (global state, claude.json, repos, dirty
+# and staged work), --repos-only, restore and the delete guard. A synthetic
 # $HOME fixture in $TMPDIR, driven through the AGENT_RESET_HOME and
 # AGENT_RESET_PS_FILE seams: no real agent state, no network. Fixture repos use
 # real git with GIT_CONFIG_GLOBAL pinned inside the fixture (no signing, no
@@ -243,7 +247,7 @@ run_agent_reset() {
     return 0
   fi
   local quiet="${fix}/ps-quiet" busy="${fix}/ps-busy"
-  local out rc
+  local out rc bad
   # Same git isolation as _ar_run, exported once so the repo checks below call
   # git directly instead of through env.
   local -x GIT_CONFIG_GLOBAL="${fix}/gitconfig" GIT_CONFIG_NOSYSTEM=1
@@ -255,44 +259,33 @@ run_agent_reset() {
     _fail "self-test failed"
   fi
 
-  # 2. plan is read-only and mentions the memory dirs
+  # 2. plan is read-only, lists memory dirs, and predicts the wipe-time skip
   local before after
   before="$(find "${fix}" | sort)"
   rc=0
   out="$(_ar_run "${fix}" "${quiet}" plan 2>&1)" || rc=$?
   after="$(find "${fix}" | sort)"
-  if [[ ${rc} -eq 0 && "${out}" == *"memory dirs"* ]]; then
-    _pass "plan runs and lists memory dirs"
-  else
-    _fail "plan failed (rc=${rc})"
-  fi
-  if [[ "${before}" == "${after}" ]]; then
-    _pass "plan is read-only (fixture unchanged)"
-  else
-    _fail "plan modified the fixture"
-  fi
-  # plan must predict the wipe-time repo decision, not only what would be wiped.
-  if [[ "${out}" == *"action: SKIP: merge in progress"* \
+  if [[ ${rc} -eq 0 && "${out}" == *"memory dirs"* \
+     && "${before}" == "${after}" \
+     && "${out}" == *"action: SKIP: merge in progress"* \
      && "${out}" == *"would be SKIPPED at wipe time"* ]]; then
-    _pass "plan predicts and flags the repos wipe would skip"
+    _pass "plan is read-only, lists memory dirs, flags the repo wipe would skip"
   else
-    _fail "plan did not flag the would-be-skipped repo"
+    _fail "plan wrong (rc=${rc}, fixture changed: $([[ "${before}" == "${after}" ]] && echo no || echo yes))"
   fi
 
-  # 3. backup, then wipe must refuse without a verify stamp
+  # 3. backup
   local bdir=""
   bdir="$(_ar_run "${fix}" "${quiet}" backup --strict-downloads 2> /dev/null | tail -1)" || true
-  if [[ -f "${bdir}/MANIFEST.json" ]]; then
-    _pass "backup produces MANIFEST.json"
+  if [[ -f "${bdir}/MANIFEST.json" \
+     && "$(find "${bdir}/downloads-manual" -name '*.zip' | wc -l | tr -d ' ')" == "6" ]]; then
+    _pass "backup produces MANIFEST.json and ingests six downloads zips"
   else
-    _fail "backup produced no manifest (got: ${bdir})"
+    _fail "backup wrong (got: ${bdir})"
     return 0
   fi
-  if [[ "$(find "${bdir}/downloads-manual" -name '*.zip' | wc -l | tr -d ' ')" == "6" ]]; then
-    _pass "backup ingested six downloads zips"
-  else
-    _fail "downloads ingest wrong"
-  fi
+
+  # 4. wipe must refuse without a verify stamp
   rc=0
   out="$(_ar_run "${fix}" "${quiet}" wipe "${bdir}" --yes 2>&1)" || rc=$?
   if [[ ${rc} -ne 0 && "${out}" == *"verify"* ]]; then
@@ -301,7 +294,7 @@ run_agent_reset() {
     _fail "wipe did not refuse unverified backup (rc=${rc})"
   fi
 
-  # 4. verify passes and writes the stamp
+  # 5. verify passes and writes the stamp
   if _ar_run "${fix}" "${quiet}" verify "${bdir}" > /dev/null 2>&1 \
       && [[ -f "${bdir}/verify-stamp.json" ]]; then
     _pass "verify passes and writes verify-stamp.json"
@@ -310,7 +303,7 @@ run_agent_reset() {
     return 0
   fi
 
-  # 5. process gate: a claude row refuses; the keyagent row alone (ps-quiet)
+  # 6. process gate: a claude row refuses; the keyagent row alone (ps-quiet)
   #    must not (every later case passing proves it).
   rc=0
   out="$(_ar_run "${fix}" "${busy}" wipe "${bdir}" --yes 2>&1)" || rc=$?
@@ -320,7 +313,7 @@ run_agent_reset() {
     _fail "process gate did not trigger (rc=${rc})"
   fi
 
-  # 6. tamper detection: corrupt one archive byte in a COPY of the backup
+  # 7. tamper detection: corrupt one archive byte in a COPY of the backup
   local tdir="${bdir}-tampered"
   cp -R "${bdir}" "${tdir}"
   rm -f "${tdir}/verify-stamp.json"
@@ -333,7 +326,7 @@ run_agent_reset() {
     _fail "verify passed a tampered archive"
   fi
 
-  # 7. change a file after backup: wipe aborts without --topup
+  # 8. change a file after backup: wipe aborts without --topup
   echo '{"more":true}' >> "${fix}/.claude/history.jsonl"
   rc=0
   out="$(_ar_run "${fix}" "${quiet}" wipe "${bdir}" --yes 2>&1)" || rc=$?
@@ -343,60 +336,43 @@ run_agent_reset() {
     _fail "changed-file gate did not trigger (rc=${rc})"
   fi
 
-  # 8. happy-path wipe with --topup. Exit 2, not 0: the mid-merge repo is
-  #    skipped, and a wipe leaving ANY repo unreset must never exit 0
-  #    (silent-success bug, 2026-08-15).
+  # 9. wipe with --topup. Exit 2, not 0: the mid-merge repo is skipped, and a
+  #    wipe leaving ANY repo unreset must never exit 0 (silent-success bug,
+  #    2026-08-15). The skipped and out-of-scope repos stay untouched and are
+  #    reported loudly.
   rc=0
   out="$(_ar_run "${fix}" "${quiet}" wipe "${bdir}" --yes --topup 2>&1)" || rc=$?
-  if [[ ${rc} -eq 2 ]]; then
-    _pass "wipe completes, exits 2 for the skipped repo"
-  elif [[ ${rc} -eq 0 ]]; then
+  if [[ ${rc} -eq 0 ]]; then
     _fail "wipe exited 0 despite skipping a repo (silent success)"
     return 0
-  else
+  elif [[ ${rc} -ne 2 ]]; then
     _fail "wipe failed (rc=${rc}): $(echo "${out}" | tail -3)"
     return 0
   fi
-  if [[ "${out}" == *"-fix-proj/memory"* ]]; then
-    _pass "wipe confirmation lists the memory dir"
+  bad=""
+  [[ -f "${fix}/Dev/mergerepo/CLAUDE.md" ]] || bad+=" mid-merge-swept"
+  [[ -f "${fix}/Desktop/strayrepo/CLAUDE.md" ]] || bad+=" stray-touched"
+  [[ "${out}" == *"merge in progress"* && "${out}" == *"ATTENTION"* ]] || bad+=" skip-not-surfaced"
+  [[ "${out}" == *"SKIP (report-only"* ]] || bad+=" stray-not-reported"
+  if [[ -z "${bad}" ]]; then
+    _pass "wipe exits 2, skips and reports the mid-merge and out-of-scope repos"
   else
-    _fail "memory dir missing from wipe output"
-  fi
-  if ls "${bdir}"/topup-*.tar.gz > /dev/null 2>&1; then
-    _pass "topup archive written"
-  else
-    _fail "no topup archive"
+    _fail "skip handling wrong:${bad}"
   fi
 
-  # keep-list survivors
-  if [[ -f "${fix}/.claude/fake-server.env" \
-     && -f "${fix}/.claude/statusline-command.sh" ]]; then
-    _pass "keep-listed ~/.claude files survive"
-  else
-    _fail "a keep-listed file was deleted"
-  fi
-  # wipe-list gone
-  if [[ ! -e "${fix}/.claude/projects" && ! -e "${fix}/.claude/history.jsonl" \
-     && ! -e "${fix}/.claude/file-history" && ! -e "${fix}/.claude/skills" ]]; then
-    _pass "wipe-listed ~/.claude entries removed"
-  else
-    _fail "a wipe-listed entry survived"
-  fi
-  # symlink removed as a link — its target must be intact
-  if [[ -f "${fix}/liverepo/skillfile" ]]; then
-    _pass "symlink target outside scope untouched"
-  else
-    _fail "wipe followed a symlink into a live target"
-  fi
-  # codex keep-list
-  if [[ -f "${fix}/.codex/auth.json" && ! -e "${fix}/.codex/sessions" \
-     && ! -e "${fix}/.codex/memories" ]]; then
-    _pass "codex keep-list honoured"
-  else
-    _fail "codex keep-list violated"
-  fi
-  # surgical ~/.claude.json rewrite
-  if env AGENT_RESET_HOME="${fix}" python3 - "${fix}" <<'EOF' > /dev/null 2>&1
+  # 10. global state: keep-list survives, wipe-list gone, symlink target
+  #     intact, codex keep-list, surgical ~/.claude.json rewrite, topup archive
+  bad=""
+  [[ -f "${fix}/.claude/fake-server.env" && -f "${fix}/.claude/statusline-command.sh" ]] \
+    || bad+=" keep-claude"
+  [[ ! -e "${fix}/.claude/projects" && ! -e "${fix}/.claude/history.jsonl" \
+     && ! -e "${fix}/.claude/file-history" && ! -e "${fix}/.claude/skills" ]] \
+    || bad+=" wipe-claude"
+  [[ -f "${fix}/liverepo/skillfile" ]] || bad+=" symlink-followed"
+  [[ -f "${fix}/.codex/auth.json" && ! -e "${fix}/.codex/sessions" \
+     && ! -e "${fix}/.codex/memories" ]] || bad+=" codex"
+  ls "${bdir}"/topup-*.tar.gz > /dev/null 2>&1 || bad+=" topup"
+  env AGENT_RESET_HOME="${fix}" python3 - "${fix}" <<'EOF' > /dev/null 2>&1 || bad+=" claude.json"
 import json, sys
 fix = sys.argv[1]
 d = json.load(open(fix + "/.claude.json"))
@@ -408,160 +384,77 @@ assert set(p) == {fix, fix + "/Dev/fixrepo"}, p
 assert p[fix] == {"mcpServers": {"hm": {"command": "h"}}}
 assert p[fix + "/Dev/fixrepo"] == {"mcpServers": {"m1": {"command": "x"}}}
 EOF
-  then
-    _pass "claude.json surgical rewrite (MCP kept, grants dropped)"
+  if [[ -z "${bad}" ]]; then
+    _pass "wipe removes only wipe-listed global state and rewrites claude.json surgically"
   else
-    _fail "claude.json rewrite wrong"
+    _fail "global wipe state wrong:${bad}"
   fi
-  # clean repo: neutral commit removes artifacts; .mcp.json kept; gitignored
-  # settings.local.json in tracked .claude/ swept too
-  local msg
-  msg="$(git -C "${fix}/Dev/fixrepo" log -1 --format=%s 2> /dev/null)"
-  if [[ ! -e "${fix}/Dev/fixrepo/CLAUDE.md" \
-     && ! -e "${fix}/Dev/fixrepo/AGENTS.md" \
-     && -f "${fix}/Dev/fixrepo/.mcp.json" \
-     && "${msg}" == "Reset agent instruction state (2026-08 ablation)" ]]; then
-    _pass "clean repo: artifacts wiped, neutral commit, .mcp.json kept"
-  else
-    _fail "clean-repo handling wrong (last commit: ${msg})"
-  fi
-  if [[ ! -e "${fix}/Dev/fixrepo/.claude" ]]; then
-    _pass "gitignored leftover inside tracked .claude/ swept"
-  else
-    _fail "settings.local.json-style leftover survived"
-  fi
-  # artifact-dirty repo: proceeds via git rm -f with the neutral commit
-  msg="$(git -C "${fix}/Dev/modrepo" log -1 --format=%s 2> /dev/null)"
-  if [[ ! -e "${fix}/Dev/modrepo/CLAUDE.md" \
-     && "${msg}" == "Reset agent instruction state (2026-08 ablation)" ]]; then
-    _pass "artifact-dirty repo wiped (git rm -f), not crashed or skipped"
-  else
-    _fail "artifact-dirty repo mishandled (last commit: ${msg})"
-  fi
-  # home-root repo (dotfiles/RSP layout): reset like any Dev repo, proving
-  # home-root discovery finds it and the delete boundary allows it.
+
+  # 11. repo reset: neutral commit in clean, artifact-dirty, home-root and
+  #     ~/Research repos, .mcp.json kept, gitignored leftover in tracked
+  #     .claude/ swept
+  local msg neutral="Reset agent instruction state (2026-08 ablation)" r
+  bad=""
+  for r in fixrepo modrepo; do
+    msg="$(git -C "${fix}/Dev/${r}" log -1 --format=%s 2> /dev/null)"
+    [[ ! -e "${fix}/Dev/${r}/CLAUDE.md" && "${msg}" == "${neutral}" ]] || bad+=" ${r}"
+  done
   msg="$(git -C "${fix}/dotfiles" log -1 --format=%s 2> /dev/null)"
-  if [[ ! -e "${fix}/dotfiles/CLAUDE.md" \
-     && "${msg}" == "Reset agent instruction state (2026-08 ablation)" ]]; then
-    _pass "home-root repo (dotfiles layout) reset, neutral commit"
-  else
-    _fail "home-root repo mishandled (last commit: ${msg})"
-  fi
-  # ~/Research container repo: discovered and inside the delete boundary.
+  [[ ! -e "${fix}/dotfiles/CLAUDE.md" && "${msg}" == "${neutral}" ]] || bad+=" home-root"
   msg="$(git -C "${fix}/Research/researchrepo" log -1 --format=%s 2> /dev/null)"
-  if [[ ! -e "${fix}/Research/researchrepo/CLAUDE.md" \
-     && "${msg}" == "Reset agent instruction state (2026-08 ablation)" ]]; then
-    _pass "Research container repo reset, neutral commit"
+  [[ ! -e "${fix}/Research/researchrepo/CLAUDE.md" && "${msg}" == "${neutral}" ]] \
+    || bad+=" research"
+  [[ ! -e "${fix}/Dev/fixrepo/AGENTS.md" && -f "${fix}/Dev/fixrepo/.mcp.json" \
+     && ! -e "${fix}/Dev/fixrepo/.claude" ]] || bad+=" fixrepo-leftovers"
+  if [[ -z "${bad}" ]]; then
+    _pass "repos reset with a neutral commit, .mcp.json kept, ignored leftovers swept"
   else
-    _fail "Research container repo mishandled (last commit: ${msg})"
-  fi
-  # worktree-dirty repo: RESET, with the unrelated edit left uncommitted
-  if [[ ! -e "${fix}/Dev/dirtyrepo/CLAUDE.md" ]]; then
-    _pass "worktree-dirty repo reset (unrelated dirt no longer blocks)"
-  else
-    _fail "worktree-dirty repo still skipped"
-  fi
-  if [[ "$(<"${fix}/Dev/dirtyrepo/other.txt")" == "v2" ]] \
-     && git -C "${fix}/Dev/dirtyrepo" diff --quiet \
-        -- other.txt; then
-    _fail "unrelated worktree edit was committed by the reset"
-  else
-    _pass "unrelated worktree edit survives, still uncommitted"
+    _fail "repo reset wrong:${bad}"
   fi
 
-  # staged-work repo: reset commit must contain ONLY the artifacts
-  local sfiles srepo="${fix}/Dev/stagedrepo"
+  # 12. dirty repos: unrelated worktree edit stays uncommitted, the commit
+  #     holds artifacts only, staged work stays staged, a repo with no tracked
+  #     artifact gets no commit and its dirt is untouched
+  local sfiles srepo="${fix}/Dev/stagedrepo" urepo="${fix}/Dev/untrackedrepo"
   sfiles="$(git -C "${srepo}" show --name-only --format= HEAD | sort | tr '\n' ' ')"
-  if [[ ! -e "${srepo}/CLAUDE.md" && ! -e "${srepo}/.claude" \
-     && "${sfiles}" == ".claude/skill.md CLAUDE.md " ]]; then
-    _pass "staged-work repo reset; commit holds artifacts only"
+  bad=""
+  [[ ! -e "${fix}/Dev/dirtyrepo/CLAUDE.md" ]] || bad+=" dirty-skipped"
+  [[ "$(<"${fix}/Dev/dirtyrepo/other.txt")" == "v2" ]] \
+    && ! git -C "${fix}/Dev/dirtyrepo" diff --quiet -- other.txt || bad+=" dirty-committed"
+  [[ ! -e "${srepo}/CLAUDE.md" && ! -e "${srepo}/.claude" \
+     && "${sfiles}" == ".claude/skill.md CLAUDE.md " ]] || bad+=" staged-commit(${sfiles})"
+  [[ "$(git -C "${srepo}" diff --cached --name-only | sort | tr '\n' ' ')" \
+     == "added.c inflight.c " ]] || bad+=" staged-absorbed"
+  [[ ! -e "${urepo}/CLAUDE.md" && ! -e "${urepo}/.claude" ]] || bad+=" untracked-skipped"
+  [[ "$(git -C "${urepo}" log --oneline | wc -l | tr -d ' ')" == "1" \
+     && "$(<"${urepo}/src.c")" == "v2 dirty" && -f "${urepo}/stray.c" ]] \
+    || bad+=" untracked-dirt"
+  if [[ -z "${bad}" ]]; then
+    _pass "unrelated dirt survives: pathspec-limited commit, staged work kept, no commit without tracked artifacts"
   else
-    _fail "staged-work repo commit wrong (files: ${sfiles})"
-  fi
-  if [[ "$(git -C "${srepo}" diff --cached --name-only | sort | tr '\n' ' ')" \
-        == "added.c inflight.c " ]]; then
-    _pass "in-flight staged work still staged, not absorbed"
-  else
-    _fail "in-flight staged work was absorbed or dropped"
-  fi
-
-  # no-tracked-artifact repo: deleted outright, no commit, dirt untouched
-  local urepo="${fix}/Dev/untrackedrepo"
-  if [[ ! -e "${urepo}/CLAUDE.md" && ! -e "${urepo}/.claude" ]]; then
-    _pass "untracked artifacts deleted despite unrelated dirt"
-  else
-    _fail "untracked-artifact repo was skipped over unrelated dirt"
-  fi
-  if [[ "$(git -C "${urepo}" log --oneline | wc -l | tr -d ' ')" == "1" \
-     && "$(<"${urepo}/src.c")" == "v2 dirty" \
-     && -f "${urepo}/stray.c" ]]; then
-    _pass "no commit made and unrelated dirt untouched"
-  else
-    _fail "untracked-artifact repo gained a commit or lost dirt"
+    _fail "dirty repo handling wrong:${bad}"
   fi
 
-  # mid-merge repo: the one dirty state that still blocks
-  if [[ -f "${fix}/Dev/mergerepo/CLAUDE.md" ]]; then
-    _pass "mid-merge repo skipped (pathspec commit impossible)"
-  else
-    _fail "mid-merge repo was swept"
-  fi
-  if [[ "${out}" == *"merge in progress"* && "${out}" == *"ATTENTION"* ]]; then
-    _pass "skipped repos reported loudly at end of wipe"
-  else
-    _fail "skipped repos not surfaced in the wipe summary"
-  fi
-  # HOME-as-project: never a repo (the keep-survivor checks above prove
-  # ~/.claude was not rmtree'd). Out-of-scope stray: report-only.
-  if [[ -f "${fix}/Desktop/strayrepo/CLAUDE.md" ]]; then
-    _pass "out-of-scope repo untouched (skip-and-report)"
-  else
-    _fail "out-of-scope repo was touched"
-  fi
-  if [[ "${out}" == *"SKIP (report-only"* ]]; then
-    _pass "wipe reported the out-of-scope skip"
-  else
-    _fail "out-of-scope skip not reported"
-  fi
-  if [[ -f "${bdir}/wipe-report.json" ]]; then
-    _pass "wipe-report.json written"
-  else
-    _fail "no wipe report"
-  fi
-
-  # 8b. --repos-only reconcile: resolve the blocker, re-run the in-repo leg
-  #     alone. Already-wiped global state is not re-processed; the first run's
-  #     report survives as its record.
+  # 13. --repos-only reconcile: resolve the blocker, re-run the in-repo leg
+  #     alone. Global state is not re-processed, the first report survives.
   git -C "${fix}/Dev/mergerepo" merge --abort > /dev/null 2>&1
   local claude_json_before
   claude_json_before="$(<"${fix}/.claude.json")"
   rc=0
   out="$(_ar_run "${fix}" "${quiet}" wipe "${bdir}" --yes --topup \
         --repos-only 2>&1)" || rc=$?
-  if [[ ${rc} -eq 0 && ! -e "${fix}/Dev/mergerepo/CLAUDE.md" ]]; then
-    _pass "--repos-only reconciles a previously skipped repo (exit 0)"
-  else
-    _fail "--repos-only reconcile failed (rc=${rc})"
-  fi
-  if [[ "${out}" == *"REPOS ONLY"* && "${out}" != *"memory directories"* ]]; then
-    _pass "--repos-only announces its narrowed scope"
-  else
-    _fail "--repos-only scope banner wrong"
-  fi
-  if [[ "$(<"${fix}/.claude.json")" == "${claude_json_before}" \
-     && -f "${fix}/.claude/fake-server.env" ]]; then
-    _pass "--repos-only leaves ~/.claude.json and global state alone"
-  else
-    _fail "--repos-only touched out-of-leg state"
-  fi
-  if [[ -f "${bdir}/wipe-report.json" ]] \
+  if [[ ${rc} -eq 0 && ! -e "${fix}/Dev/mergerepo/CLAUDE.md" \
+     && "${out}" == *"REPOS ONLY"* && "${out}" != *"memory directories"* \
+     && "$(<"${fix}/.claude.json")" == "${claude_json_before}" \
+     && -f "${fix}/.claude/fake-server.env" \
+     && -f "${bdir}/wipe-report.json" ]] \
      && ls "${bdir}"/wipe-report-*.json > /dev/null 2>&1; then
-    _pass "re-run writes a new report, first run's report preserved"
+    _pass "--repos-only reconciles the skipped repo, leaves global state alone, keeps the first report"
   else
-    _fail "wipe-report.json was clobbered by the re-run"
+    _fail "--repos-only reconcile wrong (rc=${rc})"
   fi
 
-  # 9. restore round-trip: bring projects/ back from the archive
+  # 14. restore round-trip: bring projects/ back from the archive
   rc=0
   _ar_run "${fix}" "${quiet}" restore "${bdir}" --scope global-claude \
       --path .claude/projects > /dev/null 2>&1 || rc=$?
@@ -573,7 +466,7 @@ EOF
     _fail "restore failed (rc=${rc})"
   fi
 
-  # 10. The delete guard refuses a path that IS an allowed root (a wipe never
+  # 15. The delete guard refuses a path that IS an allowed root (a wipe never
   #     targets one, so the module is loaded and the guard called directly),
   #     but accepts the agents dir whole and anything below a root.
   if env AGENT_RESET_HOME="${fix}" PYTHONDONTWRITEBYTECODE=1 python3 - <<'EOF' > /dev/null 2>&1
