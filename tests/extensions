@@ -3,7 +3,7 @@
 #
 # Fails if any file in the repo ends in .sh or .zsh: shell identity belongs in
 # the shebang. Skips .git/ only; poc/ and tests/ ARE scanned. The scan reads
-# the working directory, so the fixture cases run it from a scratch tree.
+# the working directory, so the fixture case runs it from a scratch tree.
 #
 # ShellCheck: lint with `shellcheck --shell=bash tests/extensions`.
 # This file is sourced, not executed — chmod 644.
@@ -78,13 +78,12 @@ function _extensions_fixture_case {
 }
 
 function _extensions_test_fixtures {
-  _extensions_fixture_case "a .sh file is reported" $'tool.sh' 'tool.sh'
-  _extensions_fixture_case "a .zsh file is reported" $'tool.zsh' 'tool.zsh'
-  _extensions_fixture_case "nested .sh and .zsh files are reported" $'a/b/one.sh\nc/two.zsh' 'a/b/one.sh c/two.zsh'
-  _extensions_fixture_case "extensionless files and other extensions pass" $'bin/tool\nnotes.md\nx.shx\ny.zsh.txt' ''
-  _extensions_fixture_case ".git is skipped" $'.git/hooks/sample.sh\n.git/zz.zsh\nbin/tool' ''
-  _extensions_fixture_case "a directory named like a script is not a file" $'dir.sh/\nbin/tool' ''
-  _extensions_fixture_case "a hidden .sh file is reported" $'.hidden.sh' '.hidden.sh'
+  # One tree, one scan: nested .sh, .zsh and hidden .sh files are reported;
+  # extensionless files, other extensions, a directory named like a script and
+  # everything under .git are not.
+  _extensions_fixture_case "reports .sh and .zsh files, skips .git, directories and other names" \
+    $'a/b/one.sh\nc/two.zsh\n.hidden.sh\nbin/tool\nnotes.md\nx.shx\ny.zsh.txt\ndir.sh/\n.git/hooks/sample.sh\n.git/zz.zsh' \
+    'a/b/one.sh c/two.zsh .hidden.sh'
 }
 
 function run_extensions {
