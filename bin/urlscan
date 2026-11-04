@@ -1,10 +1,9 @@
 #!/bin/zsh
 # dotfiles/bin/urlscan
-# Wrapper for urlscan-cli that injects API key from 1Password
+# Wrapper for urlscan-cli. bao-mcp-env reads kv/mcp/urlscan (field
+# URLSCAN_API_KEY) through this Mac's Claude AppRole and exports it; no
+# 1Password, no Touch ID. The key never enters argv.
 
 set -euo pipefail
 
-export URLSCAN_API_KEY
-URLSCAN_API_KEY="$(op read 'op://homelab/urlscan/credential')"
-
-exec /opt/homebrew/bin/urlscan "$@"
+exec /usr/local/bin/bao-mcp-env mcp/urlscan /opt/homebrew/bin/urlscan "$@"
