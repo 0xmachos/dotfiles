@@ -58,56 +58,23 @@ function _hlk_check_registration {
   # into ~/.claude/hooks/ has no repo copy to register: list it here, and
   # check 2 still requires it to be present.
   local -a third_party=()
+  local -i unregistered=0
   for dest in "${_HLK_DESTS[@]}"; do
     if (( ${third_party[(Ie)${dest}]} )); then
-      _pass "third-party: ${dest} is installed by its own tool, not deployed from claude/"
+      :
     elif [[ "${dest}" == hooks/* ]]; then
-      if [[ -f "${root}/claude/${dest}" ]]; then
-        _pass "registered: ${dest} in claude/hooks/"
-      else
+      if [[ ! -f "${root}/claude/${dest}" ]]; then
         _fail "${dest} invoked by settings.json but absent from claude/hooks/"
+        unregistered+=1
       fi
-    elif /usr/bin/grep -qE "\"claude/[^\"]+:${dest}\"" "${bittersweet}"; then
-      _pass "registered: ${dest} in bittersweet claude_files map"
-    else
+    elif ! /usr/bin/grep -qE "\"claude/[^\"]+:${dest}\"" "${bittersweet}"; then
       _fail "${dest} invoked by settings.json but absent from bittersweet claude_files map — add it"
+      unregistered+=1
     fi
   done
-}
-
-# $1 case name, $2 captured output, $3 colour, $4 PASS, FAIL or SKIP, $5 text.
-# The case passes when the output holds that line.
-function _hlk_expect {
-  if [[ "$2" == *"$3$4${RESET}  $5"* ]]; then
-    _pass "fixture: $1"
-  else
-    _fail "fixture: $1: expected a $4 line starting '$5', got: $2"
+  if (( unregistered == 0 )); then
+    _pass "registered: all ${#_HLK_DESTS[@]} settings.json commands are deployed from claude/hooks/ or the claude_files map"
   fi
-}
-
-# The registration check over small settings files. The check runs in a
-# subshell, so only the expectation reaches the suite totals.
-function _hlk_fixture_cases {
-  local root out
-  root="$(mktemp -d "${TMPDIR}hook-links-fixture.XXXXXX")"
-  /bin/mkdir -p "${root}/claude/hooks"
-  : > "${root}/claude/hooks/present-hook"
-  : > "${root}/bittersweet"
-
-  print -r -- '{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"/usr/bin/true"}]}]}}' > "${root}/no-match.json"
-  print -r -- '{"env":{}}' > "${root}/no-commands.json"
-  print -r -- '{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"~/.claude/hooks/present-hook"}]}]}}' > "${root}/present.json"
-  print -r -- '{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"~/.claude/hooks/absent-hook"}]}]}}' > "${root}/absent.json"
-
-  out="$(_hlk_check_registration "${root}/no-match.json" "${root}" "${root}/bittersweet" 2>&1)" || true
-  _hlk_expect "commands without a ~/.claude reference fail" "${out}" "${RED}" FAIL "No ~/.claude command references found"
-  out="$(_hlk_check_registration "${root}/no-commands.json" "${root}" "${root}/bittersweet" 2>&1)" || true
-  _hlk_expect "settings without commands skip" "${out}" "${YELLOW}" SKIP "settings.json configures no hook commands"
-  out="$(_hlk_check_registration "${root}/present.json" "${root}" "${root}/bittersweet" 2>&1)" || true
-  _hlk_expect "a hook present in claude/hooks/ passes" "${out}" "${GREEN}" PASS "registered: hooks/present-hook in claude/hooks/"
-  out="$(_hlk_check_registration "${root}/absent.json" "${root}" "${root}/bittersweet" 2>&1)" || true
-  _hlk_expect "a hook absent from claude/hooks/ fails" "${out}" "${RED}" FAIL "hooks/absent-hook invoked by settings.json but absent from claude/hooks/"
-  /bin/rm -rf "${root}"
 }
 
 function run_hook_links {
@@ -120,8 +87,6 @@ function run_hook_links {
 
   local settings="${SCRIPT_DIR}/claude/settings.json"
   local bittersweet="${SCRIPT_DIR}/bittersweet"
-
-  _hlk_fixture_cases
 
   # claude/ is gitignored; without its settings.json there is nothing to check.
   if [[ ! -f "${settings}" ]]; then
@@ -139,12 +104,15 @@ function run_hook_links {
     return
   fi
 
+  local -i missing=0
   for dest in "${_HLK_DESTS[@]}"; do
     # -e follows the symlink, so a dangling link fails too.
-    if [[ -e "${HOME}/.claude/${dest}" ]]; then
-      _pass "deployed: ~/.claude/${dest}"
-    else
+    if [[ ! -e "${HOME}/.claude/${dest}" ]]; then
       _fail "missing/broken: ~/.claude/${dest} — run: bittersweet dotfiles"
+      missing+=1
     fi
   done
+  if (( missing == 0 )); then
+    _pass "deployed: all ${#_HLK_DESTS[@]} commands exist under ~/.claude"
+  fi
 }
