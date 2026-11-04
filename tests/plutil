@@ -1,7 +1,9 @@
 #!/bin/zsh
 # dotfiles/tests/plutil
 #
-# Validate plist and mobileconfig files with plutil(1).
+# Validate every plist and mobileconfig file with plutil(1): one scan over the
+# whole tree, one summary result. A failure falls back to per-file runs so each
+# diagnostic names its file.
 #
 # ShellCheck: lint with `shellcheck --shell=bash tests/plutil`.
 # This file is sourced, not executed — chmod 644.
@@ -25,17 +27,13 @@ function run_plutil {
   # per-file runs so each diagnostic names its file.
   local output
   if /usr/bin/plutil -lint "${files[@]}" >/dev/null 2>&1; then
-    for file in "${files[@]}"; do
-      _pass "${file:t}"
-    done
+    _pass "all ${#files[@]} plist and mobileconfig files pass plutil"
     return
   fi
+  local -i bad=0
   for file in "${files[@]}"; do
     output=""
-    if output="$(/usr/bin/plutil -lint "${file}" 2>&1)"; then
-      _pass "${file:t}"
-    else
-      _fail "${file:t}: ${output}"
-    fi
+    output="$(/usr/bin/plutil -lint "${file}" 2>&1)" || { _fail "${file:t}: ${output}"; bad+=1; }
   done
+  (( bad )) || _fail "plutil rejected the combined scan but no single file"
 }
