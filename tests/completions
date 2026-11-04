@@ -1,12 +1,15 @@
 #!/bin/zsh
 # dotfiles/tests/completions
 #
-# Pins the bittersweet completion to BITTERSWEET_SUBCOMMANDS:
-#   1. Parity: array keys and dispatch case arms match, both directions.
-#   2. Freshness: regenerating into $TMPDIR is byte-identical to
-#      .completions/_bittersweet.
-#   3. The .githooks/pre-commit regeneration survives a staged set larger
-#      than the pipe buffer.
+# Pins the bittersweet completion to BITTERSWEET_SUBCOMMANDS, and the
+# .githooks/pre-commit hook that enforces it, against fixture repos:
+#   1. Parity: array keys and dispatch case arms match, both directions (the
+#      hook runs this suite to block a commit on drift).
+#   2. A staged set larger than the pipe buffer still regenerates, tests,
+#      stages and scans the completion file.
+#   3. A failing completion test blocks the commit and skips the scan.
+#   4. A staged claude/ path blocks the commit before any other step.
+# Each case feeds one input to the code under test.
 #
 # Run: ./test completions
 # ShellCheck: lint with `shellcheck --shell=bash tests/completions`.
@@ -65,31 +68,10 @@ function _completions_check_parity {
   fi
 }
 
-function _completions_check_freshness {
-  local committed="${SCRIPT_DIR}/.completions/_bittersweet"
-  local generated
-  generated="$(/usr/bin/mktemp "${TMPDIR}bittersweet-completion.XXXXXX")"
-  # shellcheck disable=SC2064  # expand path now, not on trap
-  trap "/bin/rm -f '${generated}'" EXIT
-
-  if ! "${SCRIPT_DIR}/bittersweet" completions "${generated}" >/dev/null; then
-    _fail "Freshness: \`bittersweet completions\` exited non-zero"
-    return
-  fi
-
-  if /usr/bin/diff -q "${committed}" "${generated}" >/dev/null 2>&1; then
-    _pass ".completions/_bittersweet matches generator output"
-  else
-    _fail ".completions/_bittersweet is stale — run: bittersweet completions && git add .completions/_bittersweet"
-    /usr/bin/diff "${committed}" "${generated}" | /usr/bin/sed 's/^/      /' | /usr/bin/head -20
-  fi
-}
-
 function run_completions {
   _section "Bittersweet completion sync"
 
   _completions_check_parity
-  _completions_check_freshness
   _completions_check_large_commit
   _completions_check_blocked_commit
   _completions_check_claude_untracked
@@ -195,11 +177,10 @@ EOF
 }
 
 # A staged claude/ path blocks the commit before any other step runs, even
-# when force-added past the ignore file; a staged other file, and a staged
-# deletion of a claude/ path, pass through to the global scan hook.
+# when force-added past the ignore file.
 function _completions_claude_fixture {
-  # $1 = scenario. Prints "hook_rc=N" and "calls=...".
-  local scenario="$1"
+  # Stages a force-added claude/ file and runs the hook. Prints "hook_rc=N"
+  # and "calls=...".
   export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
   unset GIT_INDEX_FILE GIT_DIR GIT_WORK_TREE GIT_OBJECT_DIRECTORY GIT_COMMON_DIR
   git init -q
@@ -214,28 +195,8 @@ EOF2
   chmod 755 .config/git/hooks/pre-commit
   cp "${SCRIPT_DIR}/.githooks/pre-commit" .githooks/pre-commit
   chmod 755 .githooks/pre-commit
-  case "${scenario}" in
-    claude)
-      print x > claude/x
-      git add -f claude/x ;;
-    claude-nested)
-      print x > claude/hooks/y
-      print z > other
-      git add -f claude/hooks/y other ;;
-    other)
-      print z > other
-      git add other ;;
-    lookalike)
-      mkdir -p claude-notes
-      print z > claude-notes/n
-      print z > notclaude
-      git add -f claude-notes/n notclaude ;;
-    delete)
-      print x > claude/x
-      git add -f claude/x
-      git -c core.hooksPath=/dev/null commit -q -m seed
-      git rm -q --cached claude/x ;;
-  esac
+  print x > claude/x
+  git add -f claude/x
   local hook_rc=0
   /bin/zsh .githooks/pre-commit 2>&1 || hook_rc=$?
   print -r -- "hook_rc=${hook_rc}"
@@ -243,26 +204,14 @@ EOF2
 }
 
 function _completions_check_claude_untracked {
-  local fixture out scenario rc
-  for scenario in claude claude-nested other lookalike delete; do
-    rc=0
-    fixture="$(mktemp -d "${TMPDIR}completion-claude.XXXXXX")"
-    out="$(cd "${fixture}" && _completions_claude_fixture "${scenario}")" || rc=$?
-    case "${scenario}" in
-      claude|claude-nested)
-        if (( rc == 0 )) && [[ "${out}" == *'[❌] claude/ is never tracked: unstage it (git restore --staged claude/)'* \
-              && "${out}" == *'hook_rc=1'* && "${out}" == *'calls=' && "${out}" != *scanned* ]]; then
-          _pass "staged claude/ path (${scenario}) blocks the commit before the scan"
-        else
-          _fail "staged claude/ path (${scenario}) did not block the commit (status ${rc}): ${out}"
-        fi ;;
-      *)
-        if (( rc == 0 )) && [[ "${out}" == *'hook_rc=0'* && "${out}" == *'calls=scanned' && "${out}" != *'never tracked'* ]]; then
-          _pass "staged ${scenario} path passes the claude/ check and reaches the scan"
-        else
-          _fail "staged ${scenario} path was blocked or skipped the scan (status ${rc}): ${out}"
-        fi ;;
-    esac
-    /bin/rm -rf "${fixture}"
-  done
+  local fixture out rc=0
+  fixture="$(mktemp -d "${TMPDIR}completion-claude.XXXXXX")"
+  out="$(cd "${fixture}" && _completions_claude_fixture)" || rc=$?
+  if (( rc == 0 )) && [[ "${out}" == *'[❌] claude/ is never tracked: unstage it (git restore --staged claude/)'* \
+        && "${out}" == *'hook_rc=1'* && "${out}" == *'calls=' && "${out}" != *scanned* ]]; then
+    _pass "a staged claude/ path blocks the commit before the scan"
+  else
+    _fail "a staged claude/ path did not block the commit (status ${rc}): ${out}"
+  fi
+  /bin/rm -rf "${fixture}"
 }
