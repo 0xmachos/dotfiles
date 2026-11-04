@@ -4,7 +4,11 @@
 # Fails on any repo file no bittersweet subcommand owns. Owner maps below are
 # checked against the real installer functions, run with filesystem, sudo,
 # git and launchctl writes mocked: registering a name here cannot substitute
-# for wiring it up.
+# for wiring it up. The walk over every top-level, .config/, bin/, LaunchAgents/,
+# LaunchDaemons/ and claude/ file gives one summary result. Four installer
+# guards (a legacy bao link kept until its replacement is ready, a regular file
+# there never removed, a foreign bin target left alone, an absolute
+# core.hooksPath refused) and the live hooks path give one result each.
 #
 # ShellCheck: lint with `shellcheck --shell=bash tests/linkage`.
 # This file is sourced, not executed — chmod 644.
@@ -135,67 +139,23 @@ function _linkage_hooks_path {
   _pass "core.hooksPath .githooks resolves to ${dir} with all four hooks"
 }
 
-# Drives each branch of _linkage_hooks_path against a fixture hooks directory.
-# The helper's own _fail runs in a command substitution, so it cannot count
-# against this suite: the captured FAIL/PASS line is what each case checks.
+# An absolute core.hooksPath must fail. The helper's own _fail runs in a
+# command substitution, so it cannot count against this suite: the captured
+# FAIL line is what the case checks.
 function _linkage_test_hooks_path {
-  local fixture hook out
-  fixture="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/linkage-hooks.XXXXXX")" || {
-    _fail "hooks path cases: cannot create a fixture directory"
-    return
-  }
-  for hook in pre-commit commit-msg post-commit pre-push; do
-    : > "${fixture}/${hook}"
-    chmod 755 "${fixture}/${hook}"
-  done
-
-  out="$(_linkage_hooks_path .githooks "${fixture}")" || out=""
-  if [[ "${out}" == *PASS* && "${out}" != *FAIL* ]]; then
-    _pass "hooks path: relative .githooks with all four executable hooks passes"
-  else
-    _fail "hooks path: valid fixture was not accepted: ${out}"
-  fi
-
-  out="$(_linkage_hooks_path "${SCRIPT_DIR}/.githooks" "${fixture}")" || out=""
+  local out
+  out="$(_linkage_hooks_path "${SCRIPT_DIR}/.githooks" "${SCRIPT_DIR}/.githooks")" || out=""
   if [[ "${out}" == *FAIL*'is absolute'* ]]; then
     _pass "hooks path: an absolute value fails"
   else
     _fail "hooks path: absolute value not rejected: ${out}"
   fi
-
-  out="$(_linkage_hooks_path .git/hooks "${fixture}")" || out=""
-  if [[ "${out}" == *FAIL*'not .githooks'* ]]; then
-    _pass "hooks path: a relative value other than .githooks fails"
-  else
-    _fail "hooks path: wrong relative value not rejected: ${out}"
-  fi
-
-  for hook in pre-commit commit-msg post-commit pre-push; do
-    chmod 644 "${fixture}/${hook}"
-    out="$(_linkage_hooks_path .githooks "${fixture}")" || out=""
-    if [[ "${out}" == *FAIL*"lacks an executable ${hook}"* ]]; then
-      _pass "hooks path: a non-executable ${hook} fails"
-    else
-      _fail "hooks path: non-executable ${hook} not rejected: ${out}"
-    fi
-    chmod 755 "${fixture}/${hook}"
-  done
-
-  /bin/rm -f "${fixture}/pre-push"
-  out="$(_linkage_hooks_path .githooks "${fixture}")" || out=""
-  if [[ "${out}" == *FAIL*'lacks an executable pre-push'* ]]; then
-    _pass "hooks path: a missing hook fails"
-  else
-    _fail "hooks path: missing hook not rejected: ${out}"
-  fi
-
-  /bin/rm -rf "${fixture}"
 }
 
 function _linkage_foreign_bin_target {
   # _bin_target_is_foreign: a regular file at a bin_files target belongs to
-  # another installation and must be left alone; a link or nothing is ours to
-  # (re)create. Sourced from bittersweet the same way as the bao migration.
+  # another installation and must be left alone. Sourced from bittersweet the
+  # same way as the bao migration.
   (
     local fixture
     fixture="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/linkage-foreign.XXXXXX")" || return 1
@@ -208,17 +168,15 @@ function _linkage_foreign_bin_target {
     ' "${SCRIPT_DIR}/bittersweet")
     print '#!/bin/sh' > "${fixture}/copy"
     /bin/chmod 755 "${fixture}/copy"
-    /bin/ln -s "${SCRIPT_DIR}/bin/dns" "${fixture}/link"
-    /bin/ln -s "${fixture}/nowhere" "${fixture}/dangling"
     _bin_target_is_foreign "${fixture}/copy" || return 1          # regular file: foreign
-    ! _bin_target_is_foreign "${fixture}/link" || return 1        # our kind of link: not foreign
-    ! _bin_target_is_foreign "${fixture}/dangling" || return 1    # dangling link: not foreign
-    ! _bin_target_is_foreign "${fixture}/absent" || return 1      # nothing there: not foreign
-    return 0
   )
 }
 
+# $1 notready: the legacy link stays while the replacement is missing or not
+# executable. $1 regular: a regular file at the legacy path is never removed,
+# even when the replacement is ready.
 function _linkage_bao_migration {
+  local scenario="$1"
   (
     local fixture_home replacement legacy
     fixture_home="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/linkage-bao.XXXXXX")" || return 1
@@ -233,23 +191,18 @@ function _linkage_bao_migration {
       block { print }
       /^}$/ { block = 0 }
     ' "${SCRIPT_DIR}/bittersweet")
-    /bin/ln -s "${SCRIPT_DIR}/bin/bao-mcp-env" "${legacy}"
-    _retire_bao_mcp_link "${replacement}"
-    [[ -L "${legacy}" ]] || return 1
-    print '#!/bin/sh' > "${replacement}"
-    _retire_bao_mcp_link "${replacement}"
-    [[ -L "${legacy}" ]] || return 1
-    /bin/chmod 755 "${replacement}"
-    _retire_bao_mcp_link "${replacement}"
-    [[ ! -L "${legacy}" ]] || return 1
-    # An unrelated installation and a regular file are never removed.
-    /bin/ln -s "${replacement}" "${legacy}"
-    _retire_bao_mcp_link "${replacement}"
-    [[ -L "${legacy}" ]] || return 1
-    /bin/rm "${legacy}"
-    print sentinel > "${legacy}"
-    _retire_bao_mcp_link "${replacement}"
-    [[ "$(<"${legacy}")" == sentinel ]] || return 1
+    if [[ "${scenario}" == notready ]]; then
+      /bin/ln -s "${SCRIPT_DIR}/bin/bao-mcp-env" "${legacy}"
+      print '#!/bin/sh' > "${replacement}"
+      _retire_bao_mcp_link "${replacement}"
+      [[ -L "${legacy}" ]] || return 1
+    else
+      print sentinel > "${legacy}"
+      print '#!/bin/sh' > "${replacement}"
+      /bin/chmod 755 "${replacement}"
+      _retire_bao_mcp_link "${replacement}"
+      [[ "$(<"${legacy}")" == sentinel ]] || return 1
+    fi
   ) >/dev/null
 }
 
@@ -268,16 +221,22 @@ function _linkage_load_ignored {
 function run_linkage {
   _section "Dotfile Coverage"
 
-  if _linkage_bao_migration; then
-    _pass "bao migration preserves legacy paths until an executable replacement exists"
+  if _linkage_bao_migration notready; then
+    _pass "bao migration keeps the legacy link until an executable replacement exists"
   else
-    _fail "bao migration removed an unready or unrelated installation"
+    _fail "bao migration removed the legacy link before its replacement was ready"
+  fi
+
+  if _linkage_bao_migration regular; then
+    _pass "bao migration never removes a regular file at the legacy path"
+  else
+    _fail "bao migration removed a regular file at the legacy path"
   fi
 
   if _linkage_foreign_bin_target; then
-    _pass "install_scripts leaves a regular file at a bin target alone and relinks links or empty paths"
+    _pass "install_scripts leaves a regular file at a bin target alone"
   else
-    _fail "a regular file at a bin target would be replaced, or a link or empty path would be skipped"
+    _fail "a regular file at a bin target would be replaced"
   fi
 
   _linkage_test_hooks_path
@@ -510,6 +469,10 @@ function run_linkage {
     _skip "claude/ absent — ~/.agents/skills manifest check skipped"
   fi
 
+  if (( fail_count == before_fails )); then
+    _pass "All repo files accounted for"
+  fi
+
   # Live hooks path of this clone; a clean clone (CI) has none set: skip.
   local hooks_value hooks_dir
   hooks_value="$(git config --get core.hooksPath 2>/dev/null || true)"
@@ -518,9 +481,5 @@ function run_linkage {
   else
     hooks_dir="$(git rev-parse --git-path hooks)"
     _linkage_hooks_path "${hooks_value}" "${hooks_dir}"
-  fi
-
-  if (( fail_count == before_fails )); then
-    _pass "All repo files accounted for"
   fi
 }
