@@ -152,8 +152,8 @@ function run_test_helpers {
   # counters are isolated, so the expected assertion failure does not leak.
   local suite runner assertion
   local -a expectations=(
-    rm-redirect _rm_redirect_run _rm_redirect_expect
-    ssh-redirect _ssh_redirect_run _ssh_redirect_expect
+    rm-redirect _hook_run_seam _rm_redirect_one
+    ssh-redirect _hook_run_seam _ssh_redirect_one
     container-tmp _container_tmp_run _container_tmp_expect
     gh-publish _gp_test_run _gp_test_expect
   )
