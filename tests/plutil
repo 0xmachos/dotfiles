@@ -16,7 +16,7 @@ function run_plutil {
   while IFS=$'\n' read -r file; do
     files+=("${file}")
   done < <(/usr/bin/find . -maxdepth 4 \
-            -type f \
+            -type f -not -path "./.claude/*" \
             \( -name "*.plist" -o -name "*.mobileconfig" \))
 
   (( ${#files} )) || return 0
