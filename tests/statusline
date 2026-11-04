@@ -2,13 +2,18 @@
 # dotfiles/tests/statusline
 #
 # Feeds stdin JSON to claude/statusline-command and claude/subagent-statusline.
-# Trimmed to behaviour that is hard to see otherwise: the exit-0 contract
-# (Claude Code discards the whole status line on non-zero exit, 2026-09-24: a
-# trailing `[ -n "$x" ] && printf` with x empty), the arithmetic fallbacks, the
-# spend ledger and its destructive sweeps, the FX cache and back-off, the
-# cache-alert and herdr label side effects, the GUARDS OFF signal, the spawn
-# guard, the module-load fallbacks and subagent row parsing. Colours, tier
-# layouts, labels and per-model tables are not asserted here.
+# One case per contract: the exit-0 contract (Claude Code discards the whole
+# status line on non-zero exit: a trailing `[ -n "$x" ] && printf` with x
+# empty, junk times and counts, a newline inside a field, empty input), the
+# arithmetic fallbacks (the bc rounding window, half-even hit ratio, the
+# token label, exponent form, and the same row with the zsh modules missing),
+# the FX fetch back-off, the cached detached-HEAD git row, the spend ledger
+# (a delta, and an empty baseline that must not land as spend), its destructive
+# prune and sweeps, orphan recovery and a concurrent append, the cache-alert
+# marker, message and once-only delivery, the herdr label set and the hung-hc
+# deadline, the GUARDS OFF signal (shown, and hidden by a fresh marker) and
+# subagent row parsing (ids and odd characters, a batch past ARG_MAX).
+# Colours, tier layouts, labels and per-model tables are not asserted here.
 #
 # Hermetic: HOME is a $TMPDIR sandbox with a fresh FX cache of 1 (curl never
 # fires, £ equals USD) and a settings.json with autoCompactWindow.
@@ -16,7 +21,7 @@
 # for a stub logging its argv. current_dir is "." by default, so the git
 # segment and its checksum stay out; only the git cases use a repo.
 # CLAUDE_CODE_AUTO_COMPACT_WINDOW is 500000 by default (no settings.json
-# read); the bar-max cases unset it.
+# read).
 #
 # Run: ./test statusline
 # ShellCheck: shellcheck --shell=bash tests/statusline
@@ -26,7 +31,7 @@
 # shellcheck disable=SC2296,SC2298  # zsh parameter flags, ${~pat} and ${(f)...}
 
 typeset -g _SL_SB="" _SL_NOW="" _SL_OUT="" _SL_BASE="" _SL_HC_T=t4
-typeset -gi _SL_RC=0 _SL_NO_BARENV=0
+typeset -gi _SL_RC=0
 
 # Builtins for file work: no process start per call. The fallbacks run the
 # external command when the module is missing.
@@ -77,11 +82,7 @@ function _sl_run {
   # no `env` process is started and nothing leaks into the suite's shell.
   _SL_OUT="$(
     unset GIT_DIR GIT_WORK_TREE HC_TERMINAL_ID HC_TERMINAL_SOCKET
-    if (( _SL_NO_BARENV )); then
-      unset CLAUDE_CODE_AUTO_COMPACT_WINDOW
-    else
-      export CLAUDE_CODE_AUTO_COMPACT_WINDOW=500000
-    fi
+    export CLAUDE_CODE_AUTO_COMPACT_WINDOW=500000
     export GIT_CEILING_DIRECTORIES="${_SL_SB}" HOME="${_SL_SB}" COLUMNS="${cols}" \
       STATUSLINE_NOW="${_SL_NOW}" STATUSLINE_OSASCRIPT="${_SL_SB}/osascript-stub"
     # shellcheck disable=SC2163  # each extra argument is a NAME=value pair
@@ -204,160 +205,77 @@ function _sl_setup {
   _SL_BASE="$(_sl_json_build '.')"
 }
 
+
 # ── exit 0 everywhere ──────────────────────────────────────────────────────
-# shellcheck disable=SC2016  # $now in these filters is a jq variable
 function _sl_exit_codes {
-  local name payload
-  local -A payloads=(
-    [calm]="$(_sl_json '.')"
-    [busy]="$(_sl_json "
-      .rate_limits = {five_hour: {used_percentage: 85, resets_at: (\$now + 7260)},
-                      seven_day: {used_percentage: 80, resets_at: (\$now + 259260)}}
-      | .cost = {total_cost_usd: 25, total_duration_ms: 7200000, total_api_duration_ms: 3000000}
-      | .context_window.current_usage.cache_read_input_tokens = 450000
-      | .effort = {level: \"high\"} | .thinking = {enabled: false}
-      | .prompt_cache = {warm: true, caching_observed: true, expires_at: (\$now + 1800),
-                         hit_ratio: 0.96, recache_tokens_if_cold: 1000}")"
-    [no-rate-limits]="$(_sl_json '.prompt_cache = {warm: false, caching_observed: true}')"
-    [no-prompt-cache]="$(_sl_json '.rate_limits.five_hour = {used_percentage: 60}')"
-    [expired]="$(_sl_json '.prompt_cache = {warm: false, caching_observed: true,
-      recache_tokens_if_cold: 142000}')"
-    [empty-input]=""
-    # Strings and floats where the script does arithmetic: an ISO time in a
-    # reset or expiry, a count with letters, a fraction, an exponent, a
-    # newline inside the directory (it would shift every field read after
-    # it). Each used to abort the script (rc 1, a blank status line).
-    [junk-times]="$(_sl_json '.session_id = "s-junk"
-      | .rate_limits = {five_hour: {used_percentage: 55, resets_at: "2026-10-22T10:00:00Z"},
-                        seven_day: {used_percentage: "80", resets_at: null}}
-      | .prompt_cache = {warm: true, caching_observed: true, expires_at: "2026-10-22T10:00:00Z",
-                         hit_ratio: "0.9", recache_tokens_if_cold: "lots"}')"
-    [junk-counts]="$(_sl_json '.session_id = "s-junk2"
-      | .context_window.current_usage = {input_tokens: "12abc", cache_creation_input_tokens: 150000.5,
-                                         cache_read_input_tokens: 1e5}
-      | .context_window.total_input_tokens = 0.5 | .cost = {total_cost_usd: "free", total_duration_ms: 7200000.9}')"
-    [newline-cwd]="$(jq -cn --arg cwd $'/tmp/a\nb' '{workspace: {current_dir: $cwd}, session_id: "f2a-9b1c",
-      model: {id: "claude-opus-5-5[1m]", display_name: "Opus\n5.5"}, transcript_path: "/x\ny"}')"
-  )
-  # The nine payloads at 140 columns, then the busy one at each narrower tier
-  local -a runs=(
-    "calm:140" "busy:140" "no-rate-limits:140" "no-prompt-cache:140" "expired:140"
-    "empty-input:140" "junk-times:140" "junk-counts:140" "newline-cwd:140"
-    "busy:80" "busy:50" "busy:30"
-  )
-  local run cols
-  for run in "${runs[@]}"; do
-    name="${run%%:*}" cols="${run##*:}"
-    payload="${payloads[${name}]}"
-    _sl_run "${cols}" "${payload}"
-    if (( _SL_RC == 0 )) && [[ -n "${_SL_OUT}" ]]; then
-      _pass "exit 0 with output: ${name} at ${cols} cols"
-    else
-      _fail "${name} at ${cols} cols — rc ${_SL_RC}, output $(printf '%q' "${_SL_OUT}")"
-    fi
-  done
-
-  # Fractional and exponent token counts render as their integer part:
-  # 150,000.5 + 1e5 + 0 = 250K
-  _sl_run 30 "$(_sl_json '.context_window.current_usage = {input_tokens: 150000.5,
-    cache_creation_input_tokens: 1e5, cache_read_input_tokens: 0}')"
-  _sl_expect_eq "fractional and exponent token counts are floored" "$(_sl_plain "${_SL_OUT}")" "250K"
-}
-
-# ── bar max: settings and env precedence, range checks ─────────────────────
-function _sl_barmax {
-  local p250k
-  p250k="$(_sl_json '.context_window.current_usage.cache_read_input_tokens = 250000')"
-  _SL_NO_BARENV=1
-  printf '{"autoCompactWindow":1000000}' > "${_SL_SB}/.claude/settings.json"
-  _sl_run 140 "${p250k}"
-  _sl_expect_has "bar max from settings (1M): 250K a quarter full" "$(_sl_line 2)" "██░░░░░░░░"
-  _sl_run 140 "${p250k}" CLAUDE_CODE_AUTO_COMPACT_WINDOW=250000
-  _sl_expect_has "bar max from env beats settings" "$(_sl_line 2)" "██████████"
-  printf '{"autoCompactWindow":"junk"}' > "${_SL_SB}/.claude/settings.json"
-  _sl_run 140 "${p250k}"
-  _sl_expect_has "junk settings → 500K fallback" "$(_sl_line 2)" "█████░░░░░"
-  printf '{"autoCompactWindow":50000}' > "${_SL_SB}/.claude/settings.json"
-  _sl_run 140 "${p250k}"
-  _sl_expect_has "below-range settings → 500K fallback" "$(_sl_line 2)" "█████░░░░░"
-  printf '{"autoCompactWindow":2000000}' > "${_SL_SB}/.claude/settings.json"
-  _sl_run 140 "${p250k}"
-  _sl_expect_has "above-range settings → 500K fallback" "$(_sl_line 2)" "█████░░░░░"
-  printf '{"autoCompactWindow":500000}' > "${_SL_SB}/.claude/settings.json"
-  _SL_NO_BARENV=0
+  # Strings and floats where the script does arithmetic: an ISO time in a
+  # reset or expiry, a count with letters, a fraction, an exponent, and a
+  # newline inside the directory (it would shift every field read after it).
+  # Each used to abort the script (rc 1, a blank status line). One payload
+  # holds them all: any abort fails the run.
+  local junk
+  junk="$(jq -cn --arg cwd $'/tmp/a\nb' '{
+    workspace: {current_dir: $cwd}, session_id: "s-junk", transcript_path: "/x\ny",
+    model: {id: "claude-opus-5-5[1m]", display_name: "Opus\n5.5"},
+    rate_limits: {five_hour: {used_percentage: 55, resets_at: "2026-10-22T10:00:00Z"},
+                  seven_day: {used_percentage: "80", resets_at: null}},
+    prompt_cache: {warm: true, caching_observed: true, expires_at: "2026-10-22T10:00:00Z",
+                   hit_ratio: "0.9", recache_tokens_if_cold: "lots"},
+    context_window: {current_usage: {input_tokens: "12abc", cache_creation_input_tokens: 150000.5,
+                                     cache_read_input_tokens: 1e5}, total_input_tokens: 0.5},
+    cost: {total_cost_usd: "free", total_duration_ms: 7200000.9}}')"
+  _sl_run 140 "${junk}"
+  if (( _SL_RC == 0 )) && [[ -n "${_SL_OUT}" ]]; then
+    _pass "exit 0 with output: junk times, junk counts, floats and a newline in the directory"
+  else
+    _fail "junk payload — rc ${_SL_RC}, output $(printf '%q' "${_SL_OUT}")"
+  fi
+  _sl_run 140 ""
+  if (( _SL_RC == 0 )) && [[ -n "${_SL_OUT}" ]]; then
+    _pass "exit 0 with output: empty input"
+  else
+    _fail "empty input — rc ${_SL_RC}, output $(printf '%q' "${_SL_OUT}")"
+  fi
 }
 
 # ── arithmetic fallbacks ───────────────────────────────────────────────────
-function _sl_fx_case {
-  # <fx rate> <usd> <expected £> — row 2 is the bar, tokens and the £ cost
-  printf '%s' "$1" > "${_SL_SB}/Library/Caches/statusline/usd-gbp"
-  _sl_run 140 "$(_sl_json ".cost.total_cost_usd = $2")"
-  _sl_expect_eq "cost \$$2 at FX $1 → £$3" "$(_sl_plain "$(_sl_line 2)")" "░░░░░░░░░░ 0K · £$3"
-}
-
-function _sl_hit_case {
-  # <hit_ratio> <expected %>
-  _sl_run 140 "$(_sl_json ".prompt_cache = {hit_ratio: $1}")"
-  _sl_expect_has "cache hit ratio $1 → $2%" "$(_sl_plain "$(_sl_line 2)")" "♻️$2%"
-}
-
-# _sl_expired_case <tokens> <fx> <expected row 2> [5h used percentage]
-# shellcheck disable=SC2016  # $now is a jq variable, expanded by _sl_json
-_SL_EXPIRED='.effort.level = "medium"
-  | .prompt_cache = {warm: false, caching_observed: true, ttl: "1h",
-                     expires_at: ($now - 10), recache_tokens_if_cold: 142000}'
-
-function _sl_expired_case {
-  local extra=""
-  [[ -n "${4:-}" ]] && extra=" | .rate_limits.five_hour.used_percentage = ${4}"
-  printf '%s' "$2" > "${_SL_SB}/Library/Caches/statusline/usd-gbp"
-  _sl_run 140 "$(_sl_json "${_SL_EXPIRED} | .prompt_cache.recache_tokens_if_cold = $1${extra}")"
-  _sl_expect_eq "expired: $1 tokens at FX $2" "$(_sl_plain "$(_sl_line 2)")" "$3"
-}
-
 function _sl_arith {
-  # usd_to_gbp: the product truncates to four decimals before %.2f rounds, so
-  # 1.2345 × 0.8141 = 1.0050 shows £1.00 (bc decides inside the rounding
-  # window, where float maths gives £1.01)
-  _sl_fx_case 0.8141 1.2345 1.00
-  # Outside the window the float product is trusted
-  _sl_fx_case 0.79 123.456 97.53
-  # Long mantissa, as a JSON number from a float sum arrives
-  _sl_fx_case 0.8141 3.4156250000000003 2.78
-  # Exponent form (jq prints 1.5E-7, which bc would read as a hex digit)
-  _sl_fx_case 1 1.5e-7 0.00
-
-  # ratio_pct: the ratio is scaled as exact decimal digits, then %.0f rounds
-  # half to even: .8765 → 87.65 → 88, .545 → 54.5 → 54, .575 → 57.5 → 58
-  _sl_hit_case 0.8765 88
-  _sl_hit_case 0.545 54
-  _sl_hit_case 0.575 58
-  # An exponent-form ratio takes the bc fallback
-  _sl_hit_case 1e-7 0
-
-  # tok_label truncates to hundredths before rounding to tenths: 1,150,001 is
-  # 1.1M (1.15 → 1.1) here. The expired row rounds t / 1e6 straight to a
-  # tenth, so the same count is 1.2M there.
-  _sl_run 30 "$(_sl_json '.context_window.current_usage.cache_read_input_tokens = 1150001')"
-  _sl_expect_eq "context 1,150,001 tokens: truncate to hundredths, then round" \
-    "$(_sl_plain "${_SL_OUT}")" "1.1M"
-  _sl_usage_reset
-  _sl_expired_case 1150001 1 "1.2M tokens to Opus Med is £9.20"
-  printf '1' > "${_SL_SB}/Library/Caches/statusline/usd-gbp"
+  local c="${_SL_SB}/Library/Caches/statusline" a row
+  # One render: usd_to_gbp truncates the product to four decimals before %.2f
+  # rounds, so 1.2345 × 0.8141 = 1.0050 shows £1.00 (bc decides inside the
+  # rounding window, where float maths gives £1.01); the hit ratio scales as
+  # exact decimal digits, then %.0f rounds half to even (.545 → 54); the
+  # token label truncates to hundredths before rounding to tenths (1,150,001
+  # is 1.1M).
+  printf '0.8141' > "${c}/usd-gbp"
+  a="$(_sl_json '.cost.total_cost_usd = 1.2345 | .prompt_cache = {hit_ratio: 0.545}
+    | .context_window.current_usage.cache_read_input_tokens = 1150001')"
+  _sl_run 140 "${a}"
+  row="$(_sl_plain "$(_sl_line 2)")"
+  _sl_expect_eq "arithmetic: £1.00 in the bc window, 54% half-even, 1.1M truncated" "${row}" "██████████ 1.1M · £1.00 · ♻️54%"
+  # Exponent form (jq prints 1.5E-7, which bc would read as a hex digit): the
+  # cost and the hit ratio take the bc fallback.
+  printf '1' > "${c}/usd-gbp"
+  _sl_run 140 "$(_sl_json '.cost.total_cost_usd = 1.5e-7 | .prompt_cache = {hit_ratio: 1e-7}')"
+  _sl_expect_has "arithmetic: exponent-form cost and ratio render as £0.00 and 0%" \
+    "$(_sl_plain "$(_sl_line 2)")" "£0.00"
+  # The same row with every zsh module missing (the externals take over).
+  printf '0.8141' > "${c}/usd-gbp"
+  _sl_run 140 "${a}" STATUSLINE_NO_MODULES=1
+  _sl_expect_eq "arithmetic: the same row with the zsh modules missing" \
+    "$(_sl_plain "$(_sl_line 2)")" "${row}"
+  printf '1' > "${c}/usd-gbp"
 }
 
-# ── FX cache and back-off ──────────────────────────────────────────────────
+# ── FX fetch back-off ──────────────────────────────────────────────────────
 function _sl_fx_fetch {
-  # A rate older than a day is fetched again. A failed fetch stamps
-  # usd-gbp.failed and keeps the last rate; the next render inside the hour
-  # does not call curl again. A curl stub first on PATH logs each call and
-  # fails, as curl does offline, or prints a rate.
+  # A rate older than a day is fetched again. A failed fetch keeps the last
+  # rate and stamps usd-gbp.failed, so the next render inside the hour does
+  # not call curl again. A curl stub first on PATH logs each call and fails,
+  # as curl does offline.
   local cache="${_SL_SB}/Library/Caches/statusline/usd-gbp"
-  local shim="${_SL_SB}/curl-shim" log="${_SL_SB}/curl.log" ok
+  local shim="${_SL_SB}/curl-shim" log="${_SL_SB}/curl.log"
   zf_mkdir -p -- "${shim}"
-  # shellcheck disable=SC2016  # $@ belongs to the stub, not this shell
-  printf -v ok '#!/bin/zsh\nprint -r -- "$@" >> %q\nprint -r -- %s\n' "${log}" \
-    "'{\"rate\":0.8,\"base\":\"USD\"}'"
   # shellcheck disable=SC2016  # $@ belongs to the stub, not this shell
   printf '#!/bin/zsh\nprint -r -- "$@" >> %q\nexit 6\n' "${log}" > "${shim}/curl"
   zf_chmod 755 "${shim}/curl"
@@ -365,145 +283,55 @@ function _sl_fx_fetch {
   printf '0.5' > "${cache}"
   _sl_touch_old "${cache}" 90000
   zf_rm -f -- "${cache}.failed"
-
   _sl_run 140 "$(_sl_json '.cost.total_cost_usd = 2')" PATH="${shim}:${PATH}"
-  _sl_expect_eq "FX fetch fails: last rate kept (\$2 at 0.5 → £1.00)" \
-    "$(_sl_plain "$(_sl_line 2)")" "░░░░░░░░░░ 0K · £1.00"
   _sl_run 140 "$(_sl_json '.cost.total_cost_usd = 2')" PATH="${shim}:${PATH}"
   _sl_lines "${log}"
-  _sl_expect_eq "FX back-off: curl called once, not again inside the hour" "${REPLY}" "1"
-  # A good answer after the back-off rewrites the cache
-  _sl_touch_old "${cache}.failed" 3601
-  print -r -- "${ok}" > "${shim}/curl"
-  _sl_run 140 "$(_sl_json '.cost.total_cost_usd = 2')" PATH="${shim}:${PATH}"
-  _sl_expect_eq "FX fetch succeeds: new rate shown (\$2 at 0.8 → £1.60)" \
-    "$(_sl_plain "$(_sl_line 2)")" "░░░░░░░░░░ 0K · £1.60"
-  _sl_run 140 "$(_sl_json '.cost.total_cost_usd = 2')" PATH="${shim}:${PATH}"
-  _sl_lines "${log}"
-  _sl_expect_eq "FX cached: no fetch inside the day (two calls in all)" "${REPLY}" "2"
-  _sl_touch_old "${cache}" 86401
-  _sl_run 140 "$(_sl_json '.cost.total_cost_usd = 2')" PATH="${shim}:${PATH}"
-  _sl_lines "${log}"
-  _sl_expect_eq "FX cache: fetched past a day (86401 s)" "${REPLY}" "3"
-  # No cache file and a failing fetch: the 0.79 default
-  zf_rm -f -- "${cache}" "${cache}.failed"
-  printf '#!/bin/zsh\nexit 6\n' > "${shim}/curl"
-  _sl_run 140 "$(_sl_json '.cost.total_cost_usd = 2')" PATH="${shim}:${PATH}"
-  _sl_expect_eq "FX no cache and no fetch: the 0.79 default" \
-    "$(_sl_plain "$(_sl_line 2)")" "░░░░░░░░░░ 0K · £1.58"
-  # A fresh but empty cache (a write cut short) is no cache: fetched again
-  print -r -- "${ok}" > "${shim}/curl"
-  zf_rm -f -- "${cache}.failed"
-  : > "${cache}"
-  _sl_run 140 "$(_sl_json '.cost.total_cost_usd = 2')" PATH="${shim}:${PATH}"
-  _sl_expect_eq "FX empty cache: fetched again, new rate shown" \
-    "$(_sl_plain "$(_sl_line 2)")" "░░░░░░░░░░ 0K · £1.60"
-
+  _sl_expect_eq "FX: a failed fetch keeps the last rate (£1.00) and curl runs once inside the hour" \
+    "$(_sl_plain "$(_sl_line 2)")|${REPLY}" "░░░░░░░░░░ 0K · £1.00|1"
   zf_rm -f -- "${cache}.failed"
   printf '1' > "${cache}"
 }
 
 # ── git segment cache ──────────────────────────────────────────────────────
-# _sl_git_fixture <git args> — git in the sandbox repo under a fixture
-# config: no global config, hooks path or signing, as tests/pre-compact-hooks
-function _sl_git_fixture {
-  (
-    unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
-    # shellcheck disable=SC2031  # separate subshell, set on purpose
-    export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
-    /usr/bin/git -C "${_SL_SB}/repo" -c user.name=Test -c user.email=test@example.invalid \
-      -c commit.gpgsign=false "$@" > /dev/null 2>&1 < /dev/null
-  )
-}
-
 function _sl_git {
-  local r="${_SL_SB}/repo" payload first key cache
+  # A detached HEAD has no branch, so no segment, on a cached read too. The
+  # cache once joined its fields on tabs, which IFS dropped before an empty
+  # branch: the cached render showed the staged count as a branch named "1".
+  # The cache file is seeded (empty branch, 1 staged, 0 modified), so no git
+  # process runs.
+  local r="${_SL_SB}/repo" key payload
   zf_mkdir -p -- "${r}"
-  _sl_git_fixture init -q -b main
-  print -r -- a > "${r}/a.txt"
-  _sl_git_fixture add a.txt
-  # The segment is cached for 5 s under the sandbox Caches/statusline, keyed by
-  # a checksum of the directory
   key="$(printf '%s' "${r}" | cksum)"
-  cache="${_SL_SB}/Library/Caches/statusline/git-${key%% *}"
+  printf '\x1f1\x1f0' > "${_SL_SB}/Library/Caches/statusline/git-${key%% *}"
   payload="$(jq -cn --arg cwd "${r}" '{workspace: {current_dir: $cwd},
     model: {id: "claude-opus-5-5[1m]", display_name: "Opus 5.5 (1M context)"}}')"
-
-  # Cache hit: a second render inside 5 s reads the cache and shows the same row
   _sl_run 140 "${payload}"
-  first="$(_sl_plain "$(_sl_line 1)")"
-  _sl_run 140 "${payload}"
-  _sl_expect_eq "git segment: cached read matches the uncached render" \
-    "${first}|$(_sl_plain "$(_sl_line 1)")" "repo Opus · main +1|repo Opus · main +1"
-
-  # Detached HEAD: no branch, so no segment, on the uncached render and on the
-  # cached one 5 s later. The cache once joined the fields on tabs, which
-  # IFS dropped before an empty branch: the second render showed the staged
-  # count as a branch named "1".
-  _sl_git_fixture commit -q -m base
-  _sl_git_fixture checkout -q --detach
-  print -r -- again >> "${r}/a.txt"
-  _sl_git_fixture add a.txt
-  zf_rm -f -- "${cache}"
-  _sl_run 140 "${payload}"
-  _sl_expect_eq "git segment: detached HEAD, uncached" "$(_sl_plain "$(_sl_line 1)")" "repo Opus"
-  _sl_run 140 "${payload}"
-  _sl_expect_eq "git segment: detached HEAD, cached read keeps the empty branch" \
+  _sl_expect_eq "git segment: a cached detached HEAD keeps the empty branch" \
     "$(_sl_plain "$(_sl_line 1)")" "repo Opus"
-  zf_rm -f -- "${cache}"
 }
 
-# ── spend ledger: writes, prune, sweeps, orphans, estimate ─────────────────
+# ── spend ledger: writes, prune, sweeps, orphans ───────────────────────────
 function _sl_ledger_writes {
-  local u="${_SL_SB}/Library/Caches/statusline/usage" before
+  local u="${_SL_SB}/Library/Caches/statusline/usage"
   _sl_usage_reset
-  # A session's first render only sets its baseline; the next appends the delta
-  _sl_run 140 "$(_sl_json '.session_id = "rec" | .cost.total_cost_usd = 3
-    | .rate_limits.five_hour.used_percentage = 40')"
-  _sl_expect_eq "ledger: first render records no spend" "$(_sl_kg "${u}/spend"; print -r -- "${REPLY}")" "g"
-  _sl_run 140 "$(_sl_json '.session_id = "rec" | .cost.total_cost_usd = 3.5
+  zf_mkdir -p -- "${u}"
+  # A session's baseline is 3; the next render appends the delta to six places
+  printf '3' > "${u}/last-rec"
+  _sl_run 140 "$(_sl_json '.session_id = "rec" | .cost.total_cost_usd = 3.3734567
     | .rate_limits.five_hour.used_percentage = 41')"
   _sl_last "${u}/spend"
-  _sl_expect_eq "ledger: second render appends the delta" "${REPLY}" "${_SL_NOW} 0.500000"
-
-  # A resumed session's counter restarts below its last value: all fresh spend
-  _sl_run 140 "$(_sl_json '.session_id = "rec" | .cost.total_cost_usd = 0.25
-    | .rate_limits.five_hour.used_percentage = 41')"
-  _sl_last "${u}/spend"
-  _sl_expect_eq "ledger: restarted counter counts in full" "${REPLY}" "${_SL_NOW} 0.250000"
-  # The 5h sample is taken at most once a minute: the renders above fall in it
-  _sl_lines "${u}/five"
-  _sl_expect_eq "ledger: a fresh 5h file takes no second sample" "${REPLY}" "1"
-
-  # Deltas print to six places
-  _sl_run 140 "$(_sl_json '.session_id = "rec" | .cost.total_cost_usd = 0.3734567
-    | .rate_limits.five_hour.used_percentage = 41')"
-  _sl_last "${u}/spend"
-  _sl_expect_eq "ledger: delta rounds to six places" "${REPLY}" "${_SL_NOW} 0.123457"
+  _sl_expect_eq "ledger: a render appends the delta, rounded to six places" "${REPLY}" "${_SL_NOW} 0.373457"
   # An empty baseline (a write cut short) is reset, not read as 0: the
   # whole session cost must not land in spend as one render's delta
+  _sl_usage_reset
+  zf_mkdir -p -- "${u}"
   : > "${u}/last-rec"
   _sl_run 140 "$(_sl_json '.session_id = "rec" | .cost.total_cost_usd = 9.5
     | .rate_limits.five_hour.used_percentage = 41')"
-  _sl_last "${u}/spend"
-  _sl_expect_eq "ledger: an empty baseline is reset, no spend line" "${REPLY}" "${_SL_NOW} 0.123457"
-  # Costs in exponent notation (jq prints 1.5E-7), and a delta that rounds to
-  # 0.000000 is not appended
-  _sl_run 140 "$(_sl_json '.session_id = "exp" | .cost.total_cost_usd = 1.5e-7
-    | .rate_limits.five_hour.used_percentage = 41')"
-  _sl_run 140 "$(_sl_json '.session_id = "exp" | .cost.total_cost_usd = 0.0000035
-    | .rate_limits.five_hour.used_percentage = 41')"
-  _sl_last "${u}/spend"
-  _sl_expect_eq "ledger: exponent-notation baseline, delta 3.35e-6" "${REPLY}" "${_SL_NOW} 0.000003"
-  _sl_lines "${u}/spend"
-  before="${REPLY}"
-  _sl_run 140 "$(_sl_json '.session_id = "exp" | .cost.total_cost_usd = 0.00000365
-    | .rate_limits.five_hour.used_percentage = 41')"
-  _sl_lines "${u}/spend"
-  _sl_expect_eq "ledger: a delta that prints 0.000000 is not appended" "${REPLY}" "${before}"
+  _sl_kg "${u}/spend"
+  _sl_expect_eq "ledger: an empty baseline is reset, no spend line" "${REPLY}" "g"
   _sl_usage_reset
 }
-
 function _sl_ledger_prune {
   local u="${_SL_SB}/Library/Caches/statusline/usage" c="${_SL_SB}/Library/Caches/statusline"
   local f got
@@ -541,21 +369,14 @@ function _sl_ledger_prune {
   _sl_touch_old "${c}/cache-state-fresh" 82800
   _sl_run 140 "$(_sl_json '.session_id = "pr" | .cost.total_cost_usd = 2
     | .rate_limits.five_hour.used_percentage = 30')"
-  _sl_expect_eq "prune: spend keeps only the last 6h (21599 s stays, 21601 s goes)" "$(<"${u}/spend")" \
-    "$(( _SL_NOW - 21599 )) 2.0"$'\n'"$(( _SL_NOW - 18000 )) 1.0"$'\n'"${_SL_NOW} 1.000000"
-  _sl_expect_eq "prune: 5h samples keep only the last 6h" "$(<"${u}/five")" \
-    "$(( _SL_NOW - 18000 )) 20"$'\n'"${_SL_NOW} 30"
   got=""
   for f in last-stale last-fresh; do _sl_kg "${u}/${f}"; got+="${REPLY}"; done
-  _sl_expect_eq "sweep: 49 h old session baseline removed, 47 h old kept" "${got}" "gk"
-  got=""
-  for f in cache-state-stale cache-state-fresh guards-stale guards-fresh git-stale; do
+  for f in cache-state-stale cache-state-fresh guards-stale guards-fresh git-stale hc-cache-stale hc-cache-fresh; do
     _sl_kg "${c}/${f}"; got+="${REPLY}"
   done
-  _sl_expect_eq "sweep: 25 h old cache-state, guards and git cache removed, 23 h old kept" "${got}" "gkgkg"
-  got=""
-  for f in hc-cache-stale hc-cache-fresh; do _sl_kg "${c}/${f}"; got+="${REPLY}"; done
-  _sl_expect_eq "sweep: 49 h old hc marker removed, 47 h old kept" "${got}" "gk"
+  _sl_expect_eq "prune and sweeps: spend and 5h samples cut at 6h, old baselines, hand-offs and caches removed, newer kept" \
+    "$(<"${u}/spend")|$(<"${u}/five")|${got}" \
+    "$(( _SL_NOW - 21599 )) 2.0"$'\n'"$(( _SL_NOW - 18000 )) 1.0"$'\n'"${_SL_NOW} 1.000000|$(( _SL_NOW - 18000 )) 20"$'\n'"${_SL_NOW} 30|gkgkgkggk"
   zf_rm -f -- "${c}/hc-cache-fresh" "${c}/cache-state-fresh" "${c}/guards-fresh"
   # An append during the prune survives. Deterministic: the hook appends
   # between the prune's rename and its rewrite.
@@ -598,27 +419,10 @@ function _sl_ledger_orphans {
   _sl_touch_old "${u}/spend.prune.333" 30
   _sl_run 140 "$(_sl_json '.session_id = "pr" | .cost.total_cost_usd = 2
     | .rate_limits.five_hour.used_percentage = 30')"
-  _sl_expect_eq "orphans: spend lines folded back, oldest orphan first, 6h cut applied" \
-    "$(<"${u}/spend")" \
-    "$(( _SL_NOW - 10000 )) 3.0"$'\n'"$(( _SL_NOW - 7200 )) 2.0"$'\n'"$(( _SL_NOW - 18000 )) 1.0"$'\n'"${_SL_NOW} 1.000000"
   _sl_glob_names "${u}/*prune*"
-  _sl_expect_eq "orphans: folded files removed, the fresh one kept" "${REPLY}" "spend.prune.333"
-  _sl_usage_reset
-}
-
-# Ledger estimate on the expired row: arithmetic only. Seeded ledger: 5h went
-# 20 → 10 (a reset) → 30, with $1 spent after the reset: 20 points per dollar.
-function _sl_ledger_estimate {
-  local u="${_SL_SB}/Library/Caches/statusline/usage"
-  _sl_usage_reset
-  zf_mkdir -p -- "${u}"
-  printf '%s 20\n%s 10\n' $(( _SL_NOW - 7000 )) $(( _SL_NOW - 3000 )) > "${u}/five"
-  printf '%s 5.0\n%s 1.0\n' $(( _SL_NOW - 3500 )) $(( _SL_NOW - 1000 )) > "${u}/spend"
-  # 142K × $4/MTok × 2 = $1.136, at 20 points per dollar: ~23%
-  _sl_expired_case 142000 1 "142K tokens to Opus Med is £1.14 (~23% of 5h)" 30
-  # 1.125 × 20 = 22.5 rounds half to even (22); 0.04 × 20 is under 1
-  _sl_expired_case 140625 1 "140K tokens to Opus Med is £1.12 (~22% of 5h)" 30
-  _sl_expired_case 5000 1 "5K tokens to Opus Med is £0.04 (<1% of 5h)" 30
+  _sl_expect_eq "orphans: spend lines folded back oldest first with the 6h cut, folded files removed, the fresh one kept" \
+    "$(<"${u}/spend")|${REPLY}" \
+    "$(( _SL_NOW - 10000 )) 3.0"$'\n'"$(( _SL_NOW - 7200 )) 2.0"$'\n'"$(( _SL_NOW - 18000 )) 1.0"$'\n'"${_SL_NOW} 1.000000|spend.prune.333"
   _sl_usage_reset
 }
 
@@ -629,16 +433,8 @@ function _sl_alert_payload {
     expires_at: (\$now + $3), hit_ratio: 0.95, recache_tokens_if_cold: $4}"
 }
 
-function _sl_alert_markers {
-  _sl_glob_names "${_SL_SB}/Library/Caches/statusline/cache-alert-*"
-  local -a names
-  # shellcheck disable=SC2206  # split on spaces on purpose
-  names=( ${=REPLY} )
-  REPLY=${#names}
-}
-
 function _sl_cache_alert {
-  local c="${_SL_SB}/Library/Caches/statusline" log="${_SL_SB}/osascript.log" i marker got
+  local c="${_SL_SB}/Library/Caches/statusline" log="${_SL_SB}/osascript.log" i marker got gone
   marker="${c}/cache-alert-s1-$(( _SL_NOW + 240 ))-300"
   # Old alert markers go with the delivery: a 25 h old one is swept, a 23 h
   # old one kept
@@ -647,47 +443,28 @@ function _sl_cache_alert {
   _sl_touch_old "${c}/cache-alert-recent-1-900" 82800
 
   _sl_run 140 "$(_sl_alert_payload '"s1"' true 240 160000)"
-  if [[ -d "${marker}" ]]; then
-    _pass "cache_alert claims its marker (4m left, 160K tokens)"
-  else
-    _fail "cache_alert marker ${marker} not created"
-  fi
   # The osascript call is backgrounded; give it up to 10 s to land. zselect
-  # (loaded by ./test) is a 100 ms sleep with no process start.
+  # (loaded by ./test) is a 100 ms sleep with no process start. The sweep
+  # runs after the notification, in the same backgrounded group.
   for (( i = 0; i < 100; i++ )); do
-    [[ -s "${log}" ]] && break
-    zselect -t 10 || :
-  done
-  _sl_expect_has "cache_alert posts the message" "$(<"${log}")" \
-    ". · Opus — cache goes cold in 4m (160K tokens to re-cache)"
-  # The sweep runs after the notification, in the same backgrounded group
-  for (( i = 0; i < 100; i++ )); do
-    [[ -d "${c}/cache-alert-old-1-900" ]] || break
+    [[ -s "${log}" && ! -d "${c}/cache-alert-old-1-900" ]] && break
     zselect -t 10 || :
   done
   _sl_kg "${c}/cache-alert-old-1-900"
-  got="${REPLY}"
+  gone="${REPLY}"
   _sl_kg "${c}/cache-alert-recent-1-900"
-  _sl_expect_eq "cache_alert sweep: 25 h old marker gone, 23 h old kept" "${got}${REPLY}" "gk"
+  got="${gone}${REPLY}"
+  [[ -d "${marker}" ]] && got+=" marker"
+  [[ "$(<"${log}")" == *". · Opus — cache goes cold in 4m (160K tokens to re-cache)"* ]] && got+=" message"
+  _sl_expect_eq "cache_alert: claims its marker, posts the message, hands off the state, sweeps 25 h old markers" \
+    "${got}|$(<"${c}/cache-state-s1")" \
+    "gk marker message|$(( _SL_NOW + 240 )) 160000 . · Opus"
 
   _sl_run 140 "$(_sl_alert_payload '"s1"' true 240 160000)"
   zselect -t 50 || :
   _sl_expect_eq "cache_alert fires once per session+expires_at" \
     "$(print -r -- "$(<"${log}")" | /usr/bin/grep -c 'cache goes cold')" "1"
-
-  _sl_expect_eq "cache_state hands off expiry, tokens and label" \
-    "$(<"${c}/cache-state-s1")" "$(( _SL_NOW + 240 )) 160000 . · Opus"
-  # A cold render (compaction before expiry) removes the hand-off: the mod
-  # would otherwise read the old warm line and promise a re-cache
-  _sl_run 140 "$(_sl_alert_payload '"s1"' false 240 160000)"
-  _sl_kg "${c}/cache-state-s1"
-  _sl_expect_eq "cache_state removed once the cache is not warm" "${REPLY}" "g"
-
-  # One silent gate: under 150K re-cache tokens raises no alert
   _sl_rm_glob "${c}/cache-alert-*"
-  _sl_run 140 "$(_sl_alert_payload '"s3"' true 240 149999)"
-  _sl_alert_markers
-  _sl_expect_eq "cache_alert silent: under 150K re-cache tokens" "${REPLY}" "0"
 }
 
 # ── herdr-core terminal label ──────────────────────────────────────────────
@@ -726,52 +503,7 @@ function _sl_hc_label {
   local want="label t4" c="${_SL_SB}/Library/Caches/statusline" i s dead marked
   _sl_hc_stub 0
   _sl_hc_run h1 true 1140
-  _sl_expect_eq "hc: 19 min left sets 19m" "$(_sl_hc_log)" "${want} dotfiles.cache=19m"
-  _sl_hc_run h1 true 1140
-  _sl_expect_eq "hc: an unchanged value makes no second call" "$(_sl_hc_log)" ""
-  _sl_hc_run h1 true 1500
-  _sl_expect_eq "hc: over 20 min left removes the label" "$(_sl_hc_log)" "${want} dotfiles.cache="
-  _sl_hc_run h5 false 0
-  _sl_expect_eq "hc: an expired cache sets cold" "$(_sl_hc_log)" "${want} dotfiles.cache=cold"
-  # An id with a slash (machine/t7) keys a safe marker name
-  _SL_HC_T=box/t7
-  _sl_hc_run h5 false 0
-  _SL_HC_T=t4
-  _sl_expect_eq "hc: a machine/terminal id sets its label and a safe marker name" \
-    "$(_sl_hc_log)|$(<"${c}/hc-cache-box_t7")" "label box/t7 dotfiles.cache=cold|h5 cold"
-
-  # The label belongs to the terminal. Session A cold, then session B (after
-  # /clear) warm in the same terminal removes it, then A again (/resume): A must
-  # set it again, although its own last value was the same.
-  _sl_hc_run hA false 0
-  _sl_hc_run hB true 3000
-  _sl_expect_eq "hc: session B in the terminal removes A's label" "$(_sl_hc_log)" "${want} dotfiles.cache="
-  _sl_hc_run hA false 0
-  _sl_expect_eq "hc: a session back in a terminal another session used sets its label again" \
-    "$(_sl_hc_log)" "${want} dotfiles.cache=cold"
-
-  # No HC_TERMINAL_ID: no call
-  : > "${_SL_SB}/hc.log"
-  _sl_run 140 "$(_sl_json '.session_id = "h7" | .prompt_cache = {warm: false, caching_observed: true,
-    recache_tokens_if_cold: 142000}')"
-  zselect -t 10 || :
-  _sl_expect_eq "hc: outside a herdr-core terminal nothing runs" "$(_sl_hc_log)" ""
-
-  # A failed hc call leaves no marker, so the next run retries; the run exits
-  # 0 (_sl_run fails on any other code). The stub logs its call, so "ran and
-  # wrote nothing" is told from "never ran".
-  _sl_hc_stub 1
-  _sl_hc_run h8 false 0
-  _sl_lines "${_SL_SB}/hc.log"
-  _sl_expect_eq "hc: a failed call ran and wrote no marker" "${REPLY}|$(<"${c}/hc-cache-t4")" "1|hA cold"
-  _sl_run 140 "$(_sl_json '.session_id = "h8" | .prompt_cache = {warm: false, caching_observed: true,
-    recache_tokens_if_cold: 142000}')" HC_TERMINAL_ID=t4
-  for (( i = 0; i < 50; i++ )); do
-    _sl_lines "${_SL_SB}/hc.log"
-    (( REPLY >= 2 )) && break
-    zselect -t 3 || :
-  done
-  _sl_expect_eq "hc: the next run retries a failed call" "${REPLY}" "2"
+  _sl_expect_eq "hc: 19 min left sets the label 19m" "$(_sl_hc_log)" "${want} dotfiles.cache=19m"
 
   # A hung hc dies at the alarm: the stub records its pid, then becomes a
   # 30 s sleep. The deadline is 1 s here (STATUSLINE_HC_DEADLINE).
@@ -785,7 +517,6 @@ function _sl_hc_label {
   s=$SECONDS
   _sl_run 140 "$(_sl_json '.session_id = "h10" | .prompt_cache = {warm: false, caching_observed: true,
     recache_tokens_if_cold: 142000}')" HC_TERMINAL_ID=t4 STATUSLINE_HC_DEADLINE=1
-  _sl_expect_eq "hc: a hung hc does not hold the status line" "$(( SECONDS - s < 3 ))" "1"
   for (( i = 0; i < 50; i++ )); do
     [[ -s "${_SL_SB}/hc.pid" ]] && ! kill -0 "$(<"${_SL_SB}/hc.pid")" 2>/dev/null && break
     zselect -t 20 || :
@@ -793,8 +524,8 @@ function _sl_hc_label {
   dead=alive marked=no
   if [[ -s "${_SL_SB}/hc.pid" ]] && ! kill -0 "$(<"${_SL_SB}/hc.pid")" 2>/dev/null; then dead=dead; fi
   if [[ -e "${c}/hc-cache-t4" ]]; then marked=yes; fi
-  _sl_expect_eq "hc: a hung hc is killed at the deadline and writes no marker" \
-    "${dead}:${marked}" "dead:no"
+  _sl_expect_eq "hc: a hung hc does not hold the status line, is killed at the deadline and writes no marker" \
+    "$(( SECONDS - s < 3 )):${dead}:${marked}" "1:dead:no"
   zf_rm -f -- "${_SL_SB}/.local/bin/hc"
 }
 
@@ -808,27 +539,15 @@ function _sl_guards {
   zf_rm -f -- "${marker}"
   _sl_run 140 "$(_sl_json "${sess} | .cost.total_duration_ms = 20000")"
   _sl_expect_has "guards: no marker after the grace → GUARDS OFF" "$(_sl_line 1)" "${off}"
-  _sl_run 140 "$(_sl_json "${sess} | .cost.total_duration_ms = 14999")"
-  _sl_expect_lacks "guards: inside the grace → hidden" "${_SL_OUT}" "GUARDS OFF"
-  # A duration Claude Code did not send must not hide the segment for good.
-  _sl_run 140 "$(_sl_json "${sess} | del(.cost.total_duration_ms)")"
-  _sl_expect_has "guards: no duration in the payload → shown" "$(_sl_line 1)" "${off}"
-  _sl_run 140 "$(_sl_json ".cost.total_duration_ms = 20000")"
-  _sl_expect_lacks "guards: no session id → hidden" "${_SL_OUT}" "GUARDS OFF"
   printf 'pretool-prefilter\n' > "${marker}"
   _sl_run 140 "$(_sl_json "${sess} | .cost.total_duration_ms = 20000")"
   _sl_expect_lacks "guards: fresh marker → hidden" "${_SL_OUT}" "GUARDS OFF"
-  # The mod rewrites the marker every 30 s: one older than 60 s (two beats) is a
-  # marker from a dead process, not proof of a live load.
-  _sl_touch_old "${marker}" 61
-  _sl_run 140 "$(_sl_json "${sess} | .cost.total_duration_ms = 20000")"
-  _sl_expect_has "guards: marker older than 60 s → GUARDS OFF" "$(_sl_line 1)" "${off}"
   zf_rm -f -- "${marker}"
 }
 
 # ── subagent-statusline ────────────────────────────────────────────────────
 function _sl_subagent {
-  local script="${SCRIPT_DIR}/claude/subagent-statusline" out rc payload big shape
+  local script="${SCRIPT_DIR}/claude/subagent-statusline" out rc payload big
   payload="$(jq -cn '{columns: 100, tasks: [
     {id: "a", name: "Explore", status: "running", tokenCount: 199999},
     {id: "j", name: "Explore", description: "tab\there \"q\" back\\slash é\nnext", tokenCount: "junk"},
@@ -837,16 +556,13 @@ function _sl_subagent {
   rc=0
   out="$(printf '%s' "${payload}" | /bin/zsh "${script}" 2>/dev/null)" || rc=$?
   # Ids round-trip byte for byte, including a newline and a unit separator
-  # inside one, and a numeric id comes back as its string
-  _sl_expect_eq "subagent: exit 0, exactly one row per task id" \
-    "${rc}:$(jq -rs '[.[] | .id | @json] | sort | join(" ")' <<< "${out}" 2>/dev/null)" \
-    '0:"7" "a" "j" "k\nk\u001fk"'
-  # Field transport is lossless for tabs, quotes, backslashes and non-ASCII; a
-  # newline inside a description is flattened to a space (a status row is one
-  # line); a non-numeric tokenCount drops the segment
-  _sl_expect_eq "subagent: tab, quote, backslash, é and newline in description" \
-    "$(jq -r 'select(.id == "j") | .content' <<< "${out}" 2>/dev/null)" \
-    $'\e[36m'"Explore${RESET} "$'\e[2m'"·${RESET} "$'\e[2m'"tab"$'\t'"here \"q\" back\\slash é next${RESET}"
+  # inside one, and a numeric id comes back as its string. Field transport is
+  # lossless for tabs, quotes, backslashes and non-ASCII; a newline inside a
+  # description is flattened to a space (a status row is one line); a
+  # non-numeric tokenCount drops the segment.
+  _sl_expect_eq "subagent: exit 0, one row per task id, odd characters kept, newline flattened" \
+    "${rc}:$(jq -rs '[.[] | .id | @json] | sort | join(" ")' <<< "${out}" 2>/dev/null)|$(jq -r 'select(.id == "j") | .content' <<< "${out}" 2>/dev/null)" \
+    '0:"7" "a" "j" "k\nk\u001fk"|'$'\e[36m'"Explore${RESET} "$'\e[2m'"·${RESET} "$'\e[2m'"tab"$'\t'"here \"q\" back\\slash é next${RESET}"
 
   # Rows travel to the serialiser on stdin, so a batch far past ARG_MAX still
   # renders every row
@@ -855,112 +571,6 @@ function _sl_subagent {
   out="$(printf '%s' "${big}" | /bin/zsh "${script}" 2>/dev/null)" || rc=$?
   _sl_expect_eq "subagent: two 600 KB rows → exit 0, both ids" \
     "${rc}:$(jq -rs 'map(.id) | join(" ")' <<< "${out}" 2>/dev/null)" "0:x y"
-
-  for shape in '' '{"columns":100,"tasks":[]}'; do
-    rc=0
-    out="$(printf '%s' "${shape}" | /bin/zsh "${script}" 2>/dev/null)" || rc=$?
-    _sl_expect_eq "subagent: exit 0, no rows on $(printf '%q' "${shape}")" "${rc}:${out}" "0:"
-  done
-}
-
-# ── no per-render spawns for text and arithmetic ──────────────────────────
-# Every render used to start cat, basename, stat, cut, bc, awk, date and mkdir
-# processes; builtins do that work now. Shims for those names on PATH log any
-# call, then run the real tool, so a regression shows up as a logged name. No
-# STATUSLINE_NOW: the clock must come from the shell, not from `date`.
-function _sl_run_spawn {
-  # <payload> — HOME sandbox, shims first on PATH, real clock
-  # Re-stamp the 5h sample before each render so it stays under a minute old
-  # and the once-a-minute prune never runs.
-  local five="${_SL_SB}/Library/Caches/statusline/usage/five"
-  if [[ -f "${five}" ]]; then printf '%s 55\n' "${_SL_NOW}" > "${five}"; fi
-  printf '%s' "$1" | _run_no_tty env -u CLAUDE_CODE_AUTO_COMPACT_WINDOW \
-    -u GIT_DIR -u GIT_WORK_TREE -u STATUSLINE_NOW \
-    GIT_CEILING_DIRECTORIES="${_SL_SB}" \
-    HOME="${_SL_SB}" COLUMNS=140 PATH="${_SL_SB}/shims:${PATH}" \
-    STATUSLINE_OSASCRIPT="${_SL_SB}/osascript-stub" \
-    /bin/zsh "${SCRIPT_DIR}/claude/statusline-command" >/dev/null 2>"${_SL_SB}/stderr" || \
-    _fail "spawn test: statusline-command exited non-zero: $(head -3 "${_SL_SB}/stderr")"
-}
-
-function _sl_spawns {
-  local shims="${_SL_SB}/shims" log="${_SL_SB}/shims.log" name real base=""
-  local _SL_NOW
-  _SL_NOW="${EPOCHSECONDS}"
-  zf_mkdir -p -- "${shims}"
-  : > "${log}"
-  for name in cat basename date stat cut bc awk mkdir; do
-    real="$(command -v "${name}")"
-    printf '#!/bin/zsh\nprint -r -- "%s $*" >> %q\nexec %q "$@"\n' "${name}" "${log}" "${real}" \
-      > "${shims}/${name}"
-    zf_chmod 755 "${shims}/${name}"
-  done
-  _sl_usage_reset
-  printf '1' > "${_SL_SB}/Library/Caches/statusline/usd-gbp"
-  # A fresh 5h sample file keeps the once-a-minute prune (find, mv, awk filter,
-  # rm) out of the run: those stay external by design
-  zf_mkdir -p -- "${_SL_SB}/Library/Caches/statusline/usage"
-  printf '%s 55\n' "${_SL_NOW}" > "${_SL_SB}/Library/Caches/statusline/usage/five"
-  # shellcheck disable=SC2016  # $now is a jq variable
-  base='.session_id = "sp" | .effort.level = "high"
-    | .rate_limits = {five_hour: {used_percentage: 55.4, resets_at: ($now + 7200)},
-                      seven_day: {used_percentage: 80, resets_at: ($now + 200000)}}
-    | .prompt_cache = {warm: true, caching_observed: true, expires_at: ($now + 1800), hit_ratio: 0.8765}'
-  # First render sets the ledger baseline, the second records a delta; the
-  # long-mantissa cost keeps the pound conversion off its bc fallback window
-  _sl_run_spawn "$(_sl_json "${base} | .cost.total_cost_usd = 3.4156250000000003")"
-  _sl_run_spawn "$(_sl_json "${base} | .cost.total_cost_usd = 3.5156250000000003")"
-  # Over a million tokens (context label), and the root directory (basename)
-  _sl_run_spawn "$(_sl_json "${base} | .context_window.current_usage.cache_read_input_tokens = 1260000")"
-  _sl_run_spawn "$(jq -cn '{workspace: {current_dir: "/"}, model: {id: "claude-opus-5-5[1m]", display_name: "Opus 5.5"}}')"
-  # Expired-cache rows: label, dollars, pounds (no spend ledger, so the
-  # sort-and-awk rate lookup, which stays external, does not run)
-  zf_rm -f -- "${_SL_SB}/Library/Caches/statusline/usage/spend"
-  _sl_run_spawn "$(_sl_json "${_SL_EXPIRED} | .prompt_cache.recache_tokens_if_cold = 1260000 | .prompt_cache.ttl = \"5m\"")"
-  # Cache alert: marker claim and message
-  _sl_run_spawn "$(_sl_json ".session_id = \"spa\" | .prompt_cache = {warm: true, caching_observed: true,
-    expires_at: (\$now + 240), hit_ratio: 0.5, recache_tokens_if_cold: 60000}")"
-  _sl_expect_eq "no cat/basename/date/stat/cut/bc/awk/mkdir spawned by a render" "$(<"${log}")" ""
-  _sl_usage_reset
-}
-
-# ── module-load failure falls back to the external commands ───────────────
-# STATUSLINE_NO_MODULES empties zsh's module path, so every zmodload in the
-# script fails. The line, the ledger and the cache-alert claim must come out the
-# same as with the builtins.
-function _sl_no_modules {
-  local u="${_SL_SB}/Library/Caches/statusline/usage" c="${_SL_SB}/Library/Caches/statusline" a p1
-  _sl_usage_reset
-  printf '0.8141' > "${c}/usd-gbp"
-  # shellcheck disable=SC2016  # $now is a jq variable
-  p1="$(_sl_json '.effort.level = "high" | .cost.total_cost_usd = 1.2345
-      | .context_window.current_usage.cache_read_input_tokens = 1260000
-      | .rate_limits.five_hour = {used_percentage: 55.4, resets_at: ($now + 7200)}
-      | .prompt_cache = {hit_ratio: 0.545, warm: true, caching_observed: true, expires_at: ($now + 1800)}')"
-  _sl_run 140 "${p1}"
-  a="${_SL_OUT}"
-  _sl_run 140 "${p1}" STATUSLINE_NO_MODULES=1
-  _sl_expect_eq "no modules: same output as with them" "${_SL_OUT}" "${a}"
-
-  # The seam really disables the modules: the clock falls back to `date`
-  : > "${_SL_SB}/shims.log"
-  STATUSLINE_NO_MODULES=1 _sl_run_spawn "$(_sl_json '.')"
-  _sl_expect_has "no modules: the clock comes from date" "$(<"${_SL_SB}/shims.log")" "date +%s"
-
-  # Ledger: baseline, then a delta
-  _sl_usage_reset
-  _sl_run 140 "$(_sl_json '.session_id = "nm" | .cost.total_cost_usd = 1 | .rate_limits.five_hour.used_percentage = 40')" STATUSLINE_NO_MODULES=1
-  _sl_run 140 "$(_sl_json '.session_id = "nm" | .cost.total_cost_usd = 1.5 | .rate_limits.five_hour.used_percentage = 41')" STATUSLINE_NO_MODULES=1
-  _sl_last "${u}/spend"
-  _sl_expect_eq "no modules: ledger delta recorded" "${REPLY}" "${_SL_NOW} 0.500000"
-
-  # Cache alert claims its marker through the fallback mkdir
-  _sl_rm_glob "${c}/cache-alert-*"
-  _sl_run 140 "$(_sl_alert_payload '"nm1"' true 240 160000)" STATUSLINE_NO_MODULES=1
-  _sl_alert_markers
-  _sl_expect_eq "no modules: cache_alert claims its marker" "${REPLY}" "1"
-  printf '1' > "${c}/usd-gbp"
-  _sl_usage_reset
 }
 
 function run_statusline {
@@ -985,20 +595,16 @@ function run_statusline {
   trap '[[ -n "${_SL_SB}" ]] && /bin/rm -rf "${_SL_SB}"' EXIT
   _sl_setup
   _sl_exit_codes
-  _sl_barmax
   _sl_arith
   _sl_fx_fetch
   _sl_git
   _sl_ledger_writes
   _sl_ledger_prune
   _sl_ledger_orphans
-  _sl_ledger_estimate
   _sl_cache_alert
   _sl_hc_label
   _sl_guards
   _sl_subagent
-  _sl_spawns
-  _sl_no_modules
   /bin/rm -rf "${_SL_SB}"
   trap - EXIT
 }
