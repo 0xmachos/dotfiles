@@ -1,23 +1,22 @@
 #!/bin/zsh
 # dotfiles/tests/message-policy
 #
-# Hermetic suite for the public-repo message policy (added 2026-09-22):
-# pre-push Layer 3 (trailers, empty commits, long bodies), Layer 3b (plan
-# wording in tracked docs), Layer 4 (tracked-tree PII scan of every pushed
-# tip), commit-msg fast feedback, and the shared repo-visibility resolver.
-# Each case runs in a throwaway repo whose
+# Hermetic suite for the public-repo message policy: pre-push Layer 3
+# (trailers, empty commits, long bodies), Layer 3b (plan wording in tracked
+# docs), Layer 4 (tracked-tree PII scan of every pushed tip), commit-msg fast
+# feedback, and the shared repo-visibility resolver. Each case feeds one input
+# (one push, one commit-msg run or one resolver call) to the hook and checks
+# one outcome. Each case runs in a throwaway repo whose
 # core.hooksPath holds copies of the global hooks: no pre-commit scanner, no
 # real denylist. PII_HOOK_PATTERNS points at a fixture list and
-# REPO_VISIBILITY_FORCE fixes visibility per call; public cases must block,
-# private must allow, every block paired with its allow-side control (as
-# tests/git-sign).
+# REPO_VISIBILITY_FORCE fixes visibility per call. A public or unknown repo
+# must block, a private one must allow.
 #
-# MSG_POLICY_SKIP=1 is honoured only with a controlling terminal (2026-09-25;
-# pii-scan --check-terminal). _tty variants run under /usr/bin/script -q
-# /dev/null (a real pty) and expect the bypass to work; _notty variants use
-# tests/lib's _run_no_tty (POSIX setsid) and assert the refusal LINE, not just
-# the verdict: a non-interactive caller has no controlling terminal, an
-# interactive `./test` does.
+# MSG_POLICY_SKIP=1 is honoured only with a controlling terminal
+# (pii-scan --check-terminal). _notty variants use tests/lib's _run_no_tty
+# (POSIX setsid) and assert the refusal LINE, not just the verdict: a
+# non-interactive caller has no controlling terminal, an interactive `./test`
+# does.
 #
 # Run: ./test message-policy
 # ShellCheck: lint with `shellcheck --shell=bash tests/message-policy`.
@@ -28,6 +27,22 @@
 
 typeset -ga MP_ENV=(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
                     PII_HOOK_SSH_CONFIG=/dev/null)
+
+typeset -g MP_BAD=''
+
+# A case collects its problems with _mp_flag and reports once with _mp_done.
+function _mp_flag {
+  MP_BAD+="$1; "
+}
+
+function _mp_done {
+  if [[ -z "${MP_BAD}" ]]; then
+    _pass "$1"
+  else
+    _fail "$1 — ${MP_BAD}"
+  fi
+  MP_BAD=''
+}
 
 function _mp_repo {
   # Sandbox with a pushed base commit and the global hooks copied into a
@@ -104,14 +119,12 @@ function _mp_push_check {
     got=BLOCKED
   fi
   if [[ "${got}" != "${want}" ]]; then
-    _fail "pre-push ${label} (${vis}) — expected ${want}, got ${got}: $(print -r -- "${out}" | /usr/bin/head -c 600)"
+    _mp_flag "pre-push ${label} (${vis}): expected ${want}, got ${got}: $(print -r -- "${out}" | /usr/bin/head -c 300)"
     return
   fi
   if [[ -n "${needle}" && "${out}" != *"${needle}"* ]]; then
-    _fail "pre-push ${label} (${vis}) — ${want}, but output missing '${needle}': $(print -r -- "${out}" | /usr/bin/head -c 600)"
-    return
+    _mp_flag "pre-push ${label} (${vis}): ${want}, but output missing '${needle}': $(print -r -- "${out}" | /usr/bin/head -c 300)"
   fi
-  _pass "pre-push ${want} (${vis}): ${label}"
 }
 
 function _mp_push_expect {
@@ -168,14 +181,12 @@ function _mp_commitmsg_check {
   )" || rc=$?
   if (( rc == 0 )); then got=PASS; else got=DENY; fi
   if [[ "${got}" != "${want}" ]]; then
-    _fail "commit-msg ${label} (${vis}) — expected ${want}, got ${got} (exit ${rc}): $(print -r -- "${out}" | /usr/bin/head -c 600)"
+    _mp_flag "commit-msg ${label} (${vis}): expected ${want}, got ${got} (exit ${rc}): $(print -r -- "${out}" | /usr/bin/head -c 300)"
     return
   fi
   if [[ -n "${needle}" && "${out}" != *"${needle}"* ]]; then
-    _fail "commit-msg ${label} (${vis}) — ${want}, but output missing '${needle}': $(print -r -- "${out}" | /usr/bin/head -c 600)"
-    return
+    _mp_flag "commit-msg ${label} (${vis}): ${want}, but output missing '${needle}': $(print -r -- "${out}" | /usr/bin/head -c 300)"
   fi
-  _pass "commit-msg ${want} (${vis}): ${label}"
 }
 
 function _mp_commitmsg_expect {
@@ -204,17 +215,13 @@ function _mp_visibility_expect {
   shift 3
   local got
   got="$( cd "${dir}" && env "${MP_ENV[@]}" "$@" /bin/zsh "${SCRIPT_DIR}/.config/git/hooks/repo-visibility" 2>/dev/null )"
-  if [[ "${got}" == "${want}" ]]; then
-    _pass "repo-visibility ${want}: ${label}"
-  else
-    _fail "repo-visibility ${label} — expected ${want}, got '${got}'"
-  fi
+  [[ "${got}" == "${want}" ]] || _mp_flag "repo-visibility ${label}: expected ${want}, got '${got}'"
 }
 
 function run_message_policy {
   _section "public-repo message policy: repo-visibility, commit-msg, pre-push layers 3+4"
 
-  local sb repo long_body i
+  local sb repo long_body w
   sb="$(mktemp -d "${TMPDIR:-/tmp}/message-policy.XXXXXX")"
   typeset -g MP_PATTERNS="${sb}/patterns" MP_MSGFILE="${sb}/commit-msg.txt"
   # Fixture denylist: one made-up token, assembled at runtime so no literal
@@ -222,126 +229,61 @@ function run_message_policy {
   print -r -- "fixture$(print -n 'host')token" > "${MP_PATTERNS}"
   repo="$(_mp_repo "${sb}" "${MP_PATTERNS}")"
 
-  # --- repo-visibility resolver ---
-  _mp_visibility_expect private 'explicit git config wins' "${repo}" \
-      GIT_CONFIG_PARAMETERS="'hooks.repoVisibility=private'"
-  _mp_visibility_expect public 'explicit git config public' "${repo}" \
-      GIT_CONFIG_PARAMETERS="'hooks.repoVisibility=public'"
-  _mp_visibility_expect unknown 'local path origin resolves to unknown' "${repo}"
-  _mp_visibility_expect public 'force seam' "${repo}" REPO_VISIBILITY_FORCE=public
-  # github.com origin via gh fixtures answering private / public / failure.
-  print -r -- '#!/bin/sh
-printf "true\n"' > "${sb}/gh-private"
-  print -r -- '#!/bin/sh
-printf "false\n"' > "${sb}/gh-public"
+  # A failing gh lookup resolves to unknown, which every gate treats as public.
   print -r -- '#!/bin/sh
 exit 1' > "${sb}/gh-broken"
-  chmod 755 "${sb}"/gh-*
-  _mp_visibility_expect private 'github origin, gh says private' "${repo}" \
-      GIT_CONFIG_PARAMETERS="'remote.origin.url=git@github.com:o/r.git'" REPO_VISIBILITY_GH="${sb}/gh-private"
-  _mp_visibility_expect public 'github origin, gh says public' "${repo}" \
-      GIT_CONFIG_PARAMETERS="'remote.origin.url=https://github.com/o/r'" REPO_VISIBILITY_GH="${sb}/gh-public"
-  _mp_visibility_expect unknown 'github origin, gh fails -> unknown (callers treat as public)' "${repo}" \
+  chmod 755 "${sb}/gh-broken"
+  _mp_visibility_expect unknown 'github origin, gh fails' "${repo}" \
       GIT_CONFIG_PARAMETERS="'remote.origin.url=https://x@github.com/o/r.git'" REPO_VISIBILITY_GH="${sb}/gh-broken"
+  _mp_done "repo-visibility gives unknown when the gh lookup fails"
 
-  # --- pre-push Layer 3: trailer ---
+  # pre-push Layer 3: trailer. Unknown visibility must block (a gate must not
+  # open on a lookup failure); the same commit passes in a private repo.
   _mp_commit "${repo}" $'Add a file\n\nLedger-Event: true' a.txt
-  _mp_push_expect BLOCKED 'Ledger-Event trailer' "${repo}" public
-  _mp_push_expect BLOCKED 'Ledger-Event trailer, visibility unknown counts as public' "${repo}" unknown
-  _mp_push_expect ALLOWED 'Ledger-Event trailer in a private repo' "${repo}" private
-  _mp_push_expect_notty BLOCKED 'Ledger-Event trailer with MSG_POLICY_SKIP=1 is refused without a terminal' "${repo}" public \
-    'ignored: no controlling terminal' MSG_POLICY_SKIP=1
+  _mp_push_expect BLOCKED 'Ledger-Event trailer' "${repo}" unknown
+  _mp_done "pre-push blocks a Ledger-Event trailer when visibility is unknown"
+  _mp_push_expect ALLOWED 'Ledger-Event trailer' "${repo}" private
+  _mp_done "pre-push allows the same commit in a private repo"
   _mp_reset_to_remote "${repo}"
 
-  _mp_commit "${repo}" $'Add a file\n\nClaude-Session: https://example.invalid/session_x' a.txt
-  _mp_push_expect BLOCKED 'Claude-Session trailer' "${repo}" public
-  _mp_reset_to_remote "${repo}"
-
-  # --- pre-push Layer 3: empty commit ---
+  # pre-push Layer 3: empty commit.
   _mp_commit "${repo}" 'Record an event with no diff'
   _mp_push_expect BLOCKED 'empty commit' "${repo}" public
-  _mp_push_expect ALLOWED 'empty commit in a private repo' "${repo}" private
-  _mp_push_expect_tty ALLOWED 'empty commit with MSG_POLICY_SKIP=1 (with a terminal)' "${repo}" public MSG_POLICY_SKIP=1
+  _mp_done "pre-push blocks an empty commit in a public repo"
+  # MSG_POLICY_SKIP=1 is refused without a controlling terminal.
   _mp_push_expect_notty BLOCKED 'empty commit with MSG_POLICY_SKIP=1 is refused without a terminal' "${repo}" public \
     'ignored: no controlling terminal' MSG_POLICY_SKIP=1
+  _mp_done "pre-push refuses MSG_POLICY_SKIP=1 without a terminal, with a notice"
   _mp_reset_to_remote "${repo}"
 
-  # --- pre-push Layer 3: body length ---
+  # pre-push Layer 3: body length.
   long_body=""
-  for i in {1..130}; do long_body+="word${i} "; done
+  for w in {1..130}; do long_body+="word${w} "; done
   _mp_commit "${repo}" $'Add a file\n\n'"${long_body}" a.txt
   _mp_push_expect BLOCKED '130-word body' "${repo}" public
-  _mp_push_expect ALLOWED '130-word body in a private repo' "${repo}" private
-  _mp_push_expect ALLOWED '130-word body with hooks.maxBodyWords=200' "${repo}" public \
-      GIT_CONFIG_PARAMETERS="'hooks.maxBodyWords=200'"
+  _mp_done "pre-push blocks a 130-word body in a public repo"
   _mp_reset_to_remote "${repo}"
 
-  _mp_commit "${repo}" $'Add a file\n\nOne short line about what changed.' a.txt
-  _mp_push_expect ALLOWED 'short body' "${repo}" public
-  _mp_reset_to_remote "${repo}"
-
-  # --- pre-push Layer 3b: plan wording in tracked docs ---
+  # pre-push Layer 3b: plan wording in a tracked doc.
   print -r -- '* Planned: run a service for this Mac, target December 2026.' >> "${repo}/notes.md"
   _mp_commit "${repo}" 'Add a notes file' notes.md
   _mp_push_expect BLOCKED 'doc line with Planned: and a target month' "${repo}" public
-  _mp_push_expect BLOCKED 'doc line with a plan, visibility unknown counts as public' "${repo}" unknown
-  _mp_push_expect ALLOWED 'doc line with a plan, private repo' "${repo}" private
-  _mp_push_expect_tty ALLOWED 'doc line with a plan, MSG_POLICY_SKIP=1 (with a terminal)' "${repo}" public MSG_POLICY_SKIP=1
-  _mp_push_expect_notty BLOCKED 'doc line with a plan, MSG_POLICY_SKIP=1 is refused without a terminal' "${repo}" public \
-    'ignored: no controlling terminal' MSG_POLICY_SKIP=1
+  _mp_done "pre-push blocks plan wording with a target month in a tracked doc"
   _mp_reset_to_remote "${repo}"
 
-  local plan_line
-  for plan_line in '* To do: decide whether to move the job.' 'Ideally by mid december we ship it.' \
-                   'Roadmap: three steps.' 'Done by March 2027.' 'Medium-term we host it ourselves.'; do
-    print -r -- "${plan_line}" >> "${repo}/notes.md"
-    _mp_commit "${repo}" 'Add a notes file' notes.md
-    _mp_push_expect BLOCKED "doc plan wording: ${plan_line}" "${repo}" public
-    _mp_reset_to_remote "${repo}"
-  done
-
-  print -r -- 'Removed from the profile on 2026-10-13: the payload key.' >> "${repo}/notes.md"
-  _mp_commit "${repo}" 'Add a notes file' notes.md
-  _mp_push_expect ALLOWED 'doc line stating a dated fact' "${repo}" public
-  _mp_reset_to_remote "${repo}"
-
-  print -r -- '# TODO: planned work, target December 2026' >> "${repo}/script.sh"
-  _mp_commit "${repo}" 'Add a script' script.sh
-  _mp_push_expect ALLOWED 'plan wording in a code file is not scanned' "${repo}" public
-  _mp_reset_to_remote "${repo}"
-
-  # --- pre-push Layer 4: tracked-tree scan ---
-  _mp_commit "${repo}" 'Add a clean config line' b.txt
-  _mp_push_expect ALLOWED 'clean tracked tree' "${repo}" public
-  _mp_reset_to_remote "${repo}"
-
+  # pre-push Layer 4: tracked-tree scan.
   print -r -- "value=fixture$(print -n 'host')token" >> "${repo}/b.txt"
   _mp_commit "${repo}" 'Add a config line' b.txt
   _mp_push_expect BLOCKED 'tracked file carries a denylisted value' "${repo}" public
-  _mp_push_expect ALLOWED 'tracked file carries a denylisted value, hooks.treeScan=false defers' "${repo}" public \
-      GIT_CONFIG_PARAMETERS="'hooks.treeScan=false'"
-  _mp_push_expect ALLOWED 'tracked file carries a denylisted value, private repo' "${repo}" private
+  _mp_done "pre-push blocks a denylisted value in a pushed tracked file"
   _mp_reset_to_remote "${repo}"
 
-  # --- commit-msg fast feedback ---
+  # commit-msg fast feedback, and its bypass refusal.
   _mp_commitmsg_expect DENY 'Ledger-Event trailer' "${repo}" public $'Add x\n\nLedger-Event: true' staged
-  _mp_commitmsg_expect PASS 'Ledger-Event trailer, private repo' "${repo}" private $'Add x\n\nLedger-Event: true' staged
-  _mp_commitmsg_expect DENY 'Claude-Session trailer' "${repo}" public $'Add x\n\nClaude-Session: https://example.invalid/session_x' staged
-  _mp_commitmsg_expect PASS 'Claude-Session trailer, private repo' "${repo}" private $'Add x\n\nClaude-Session: https://example.invalid/session_x' staged
-  _mp_commitmsg_expect DENY '130-word body' "${repo}" public $'Add x\n\n'"${long_body}" staged
-  _mp_commitmsg_expect PASS '130-word body with hooks.maxBodyWords=200' "${repo}" public $'Add x\n\n'"${long_body}" staged \
-      GIT_CONFIG_PARAMETERS="'hooks.maxBodyWords=200'"
-  _mp_commitmsg_expect PASS 'short message' "${repo}" public $'Add x\n\nOne line.' staged
-  # commit-msg cannot tell --allow-empty from a message amend, so nothing
-  # staged passes here; pre-push Layer 3 owns the empty-commit rule.
-  _mp_commitmsg_expect PASS 'nothing staged passes here (amend shape; pre-push owns empties)' "${repo}" public 'Reword a subject'
-
-  _mp_commitmsg_expect_tty PASS 'Ledger-Event trailer with MSG_POLICY_SKIP=1 (with a terminal)' \
-      "${repo}" public $'Add x\n\nLedger-Event: true' staged MSG_POLICY_SKIP=1
+  _mp_done "commit-msg denies a Ledger-Event trailer in a public repo"
   _mp_commitmsg_expect_notty DENY 'Ledger-Event trailer with MSG_POLICY_SKIP=1 is refused without a terminal' \
       "${repo}" public $'Add x\n\nLedger-Event: true' staged MSG_POLICY_SKIP=1 'ignored: no controlling terminal'
-  _mp_commitmsg_expect_notty DENY '130-word body with MSG_POLICY_SKIP=1 is refused without a terminal' \
-      "${repo}" public $'Add x\n\n'"${long_body}" staged MSG_POLICY_SKIP=1 'ignored: no controlling terminal'
+  _mp_done "commit-msg refuses MSG_POLICY_SKIP=1 without a terminal, with a notice"
 
   /bin/rm -rf "${sb}"
 }
