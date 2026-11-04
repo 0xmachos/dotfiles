@@ -33,6 +33,13 @@
 # claude/ absent. The live check also diffs the ~/.agents/skills copies against
 # claude/skills, so a stale copy fails.
 #
+# Each group is one scan over every file it covers with one summary result; a
+# fault names its file in a FAIL line. A skip inside a group suppresses the
+# group's result, since the group was not fully checked. Groups: Codex
+# truncation (size cap and intact tail), regrowth caps, rule frontmatter shape,
+# link direction (repo and global sources), REVIEW.md and the Code Review Rules
+# section, bittersweet deploy parity, live global links, live skill copies.
+#
 # Run: ./test agents-md
 #
 # ShellCheck: lint with `shellcheck --shell=bash tests/agents-md`.
@@ -57,6 +64,20 @@ function _agents_size {
   echo "${st[1]}"
 }
 
+# Runs "$@" in this shell and passes with $1 when the run added no FAIL and no
+# SKIP.
+function _agents_group {
+  local summary="$1"
+  shift
+  # SC2154: the counters come from tests/lib.
+  # shellcheck disable=SC2154
+  local -i f0=${fail_count} s0=${skip_count}
+  "$@"
+  if (( fail_count == f0 && skip_count == s0 )); then
+    _pass "${summary}"
+  fi
+}
+
 function _agents_check_cap {
   local label="$1" file="$2" size
   size="$(_agents_size "${file}")"
@@ -66,7 +87,6 @@ function _agents_check_cap {
     return
   fi
 
-  _pass "${label}: ${size} B, under the ${_AGENTS_CAP_BYTES} B Codex cap"
   if (( size >= _AGENTS_WARN_BYTES )); then
     echo "      ${YELLOW}warn${RESET}  ${label} is past 75% of the cap — start moving detail into internals/"
   fi
@@ -77,9 +97,7 @@ function _agents_check_cap {
 # the pattern when a new last section is added, or the check stops guarding.
 function _agents_check_tail {
   local label="$1" file="$2" pattern="$3"
-  if /usr/bin/grep -q "${pattern}" "${file}"; then
-    _pass "${label}: tail intact (${pattern} present)"
-  else
+  if ! /usr/bin/grep -q "${pattern}" "${file}"; then
     _fail "${label}: last section (${pattern}) missing — truncated or partially written, and it is still under the cap so the size check cannot catch it"
   fi
 }
@@ -96,7 +114,7 @@ readonly _CAP_SKILL_LINES=500
 
 # $1 label, $2 file, $3 "max_bytes max_lines". Reuses _agents_size for bytes.
 function _agents_check_regrowth {
-  local label="$1" file="$2" max_b="${3%% *}" max_l="${3##* }" bytes lines bad=0
+  local label="$1" file="$2" max_b="${3%% *}" max_l="${3##* }" bytes lines
   local content newlines
   [[ -f "${file}" ]] || return 0
   bytes="$(_agents_size "${file}")"
@@ -106,12 +124,11 @@ function _agents_check_regrowth {
   newlines="${content//[^$'\n']/}"
   lines="${#newlines}"
   if (( max_b > 0 && bytes > max_b )); then
-    _fail "${label}: ${bytes} B over the ${max_b} B regrowth cap"; bad=1
+    _fail "${label}: ${bytes} B over the ${max_b} B regrowth cap"
   fi
   if (( max_l > 0 && lines > max_l )); then
-    _fail "${label}: ${lines} lines over the ${max_l}-line regrowth cap"; bad=1
+    _fail "${label}: ${lines} lines over the ${max_l}-line regrowth cap"
   fi
-  (( bad )) || _pass "${label}: ${bytes} B / ${lines} lines, within the regrowth cap"
 }
 
 # Frontmatter lines of $1 (between the first two '---' fences), empty if none.
@@ -128,13 +145,12 @@ function _agents_frontmatter {
   done < "$1"
 }
 
-function _agents_check_rule_file {
-  local file="$1" name fm cap
+# Rule frontmatter shape of $1: no globs:/alwaysApply: key, and paths: absent
+# or a block list.
+function _agents_check_rule_shape {
+  local file="$1" name fm
   name="${file:t}"
   fm="$(_agents_frontmatter "${file}")"
-  cap="${_CAP_RULE_LINES}"
-  [[ "${name}" == orchestration.md ]] && cap="${_CAP_ORCH_LINES}"
-  _agents_check_regrowth "rules/${name}" "${file}" "0 ${cap}"
 
   # `(^|\n)` anchors each pattern to a line start; the space classes exclude \n so a match stays on one line.
   local -r key_re=$'(^|\n)(globs|alwaysApply):'
@@ -143,8 +159,6 @@ function _agents_check_rule_file {
   local -r item_re=$'(^|\n)[ \t\r\f\v]*-[ \t\r\f\v]+[^ \t\r\f\v\n]'
   if [[ "${fm}" =~ ${key_re} ]]; then
     _fail "rules/${name}: carries a globs:/alwaysApply: key — not Claude Code frontmatter; use paths: as a list"
-  else
-    _pass "rules/${name}: no globs:/alwaysApply: keys"
   fi
   # paths: must have nothing after the colon on its own line, followed by
   # '- item' lines (block list, any indent). A value on the same line is a
@@ -154,8 +168,6 @@ function _agents_check_rule_file {
     _fail "rules/${name}: paths: is not a block list"
   elif [[ "${fm}" =~ ${bare_re} && ! "${fm}" =~ ${item_re} ]]; then
     _fail "rules/${name}: paths: has no list items"
-  else
-    _pass "rules/${name}: paths: absent or a block list"
   fi
 }
 
@@ -163,7 +175,7 @@ function _agents_check_regrowth_all {
   # null_glob: an empty rules/ or skills/ is a no-op, not a glob error. setopt,
   # not (N) qualifiers, which shellcheck --shell=bash cannot parse.
   setopt local_options null_glob
-  local f
+  local f cap
   [[ -d "${SCRIPT_DIR}/claude" ]] || {
     _skip "regrowth caps: claude/ absent — pending out-of-band sync"
     return
@@ -171,11 +183,50 @@ function _agents_check_regrowth_all {
   _agents_check_regrowth "global-claude.md" "${SCRIPT_DIR}/claude/global-claude.md" "${_CAP_GLOBAL}"
   _agents_check_regrowth "global-agents.md" "${SCRIPT_DIR}/claude/global-agents.md" "${_CAP_AGENTS_GLOBAL}"
   _agents_check_regrowth "repo AGENTS.md" "${SCRIPT_DIR}/AGENTS.md" "${_CAP_AGENTS}"
+  _agents_check_regrowth "REVIEW.md" "${SCRIPT_DIR}/REVIEW.md" "${_CAP_REVIEW}"
   for f in "${SCRIPT_DIR}"/claude/rules/*.md; do
-    _agents_check_rule_file "${f}"
+    cap="${_CAP_RULE_LINES}"
+    [[ "${f:t}" == orchestration.md ]] && cap="${_CAP_ORCH_LINES}"
+    _agents_check_regrowth "rules/${f:t}" "${f}" "0 ${cap}"
   done
   for f in "${SCRIPT_DIR}"/claude/skills/*/SKILL.md; do
     _agents_check_regrowth "skills/${f:h:t}/SKILL.md" "${f}" "0 ${_CAP_SKILL_LINES}"
+  done
+}
+
+function _agents_check_rule_shape_all {
+  setopt local_options null_glob
+  local f
+  [[ -d "${SCRIPT_DIR}/claude" ]] || {
+    _skip "rule frontmatter shape: claude/ absent — pending out-of-band sync"
+    return
+  }
+  for f in "${SCRIPT_DIR}"/claude/rules/*.md; do
+    _agents_check_rule_shape "${f}"
+  done
+}
+
+# Codex truncation: every guidance file stays under the cap and keeps its last
+# section.
+function _agents_check_truncation {
+  local label file pattern
+  local -a rows=(
+    "repo AGENTS.md|${SCRIPT_DIR}/AGENTS.md|^## Before you stop"
+    "global-claude.md|${SCRIPT_DIR}/claude/global-claude.md|^## Asking the user to act or decide"
+    "global-agents.md|${SCRIPT_DIR}/claude/global-agents.md|^## Machine notes"
+  )
+  local row
+  for row in "${rows[@]}"; do
+    label="${row%%|*}"
+    file="${row#*|}"
+    pattern="${file#*|}"
+    file="${file%%|*}"
+    if [[ ! -f "${file}" ]]; then
+      _skip "${label}: absent — clone or claude/ pending out-of-band sync, truncation check skipped"
+      continue
+    fi
+    _agents_check_cap "${label}" "${file}"
+    _agents_check_tail "${label}" "${file}" "${pattern}"
   done
 }
 
@@ -187,18 +238,13 @@ function _agents_check_review {
     _fail "REVIEW.md missing — reviewers have no rulebook"
     return
   fi
-  if /usr/bin/git -C "${SCRIPT_DIR}" ls-files --error-unmatch REVIEW.md >/dev/null 2>&1; then
-    _pass "REVIEW.md is tracked"
-  else
+  if ! /usr/bin/git -C "${SCRIPT_DIR}" ls-files --error-unmatch REVIEW.md >/dev/null 2>&1; then
     _fail "REVIEW.md is not tracked — it is the public rulebook and must be in git"
   fi
-  _agents_check_regrowth "REVIEW.md" "${review}" "${_CAP_REVIEW}"
   # Newline-padded text, so a heading matches only as a whole line.
   text=$'\n'"$(<"${review}")"$'\n'
   for heading in 'What to flag' 'Evidence bar' 'Severity' 'Skip' 'Report shape'; do
-    if [[ "${text}" == *$'\n'"## ${heading}"$'\n'* ]]; then
-      _pass "REVIEW.md: section '${heading}' present"
-    else
+    if [[ "${text}" != *$'\n'"## ${heading}"$'\n'* ]]; then
       _fail "REVIEW.md: section '${heading}' missing"
     fi
   done
@@ -206,8 +252,6 @@ function _agents_check_review {
   # nicknames) are the pii-tree suite's job, not this one's.
   if /usr/bin/grep -qiwE 'claude|codex|muse|fable|opus|sonnet|anthropic' "${review}"; then
     _fail "REVIEW.md names a harness or model — it is published; phrase the check as a mechanism"
-  else
-    _pass "REVIEW.md: no harness or model names"
   fi
 }
 
@@ -224,12 +268,21 @@ function _agents_check_review_section {
     _fail "${label}: '## Code Review Rules' sits after '## Before you stop' — the tail must stay last"
   elif ! /usr/bin/grep -q 'REVIEW\.md' "${file}"; then
     _fail "${label}: Code Review Rules does not point at REVIEW.md"
-  else
-    _pass "${label}: Code Review Rules present, before the tail, pointing at REVIEW.md"
   fi
 }
 
-function _agents_check_repo_scope {
+function _agents_check_review_all {
+  _agents_check_review
+  if [[ -f "${SCRIPT_DIR}/AGENTS.md" ]]; then
+    _agents_check_review_section "repo AGENTS.md" "${SCRIPT_DIR}/AGENTS.md"
+  else
+    _skip "repo AGENTS.md absent — Code Review Rules check skipped"
+  fi
+}
+
+# Link direction. Repo: AGENTS.md is the real file and CLAUDE.md links to it.
+# Global: both source files are real files, not links.
+function _agents_check_directions {
   local repo_agents="${SCRIPT_DIR}/AGENTS.md"
   local repo_claude="${SCRIPT_DIR}/CLAUDE.md"
 
@@ -238,14 +291,9 @@ function _agents_check_repo_scope {
   if [[ ! -e "${repo_agents}" && ! -L "${repo_claude}" && ! -e "${repo_claude}" ]]; then
     _skip "repo: neither AGENTS.md nor CLAUDE.md present — clone pending out-of-band sync"
   else
-    if [[ -f "${repo_agents}" && ! -L "${repo_agents}" ]]; then
-      _pass "repo: AGENTS.md is a regular file (the single source)"
-      _agents_check_cap "repo AGENTS.md" "${repo_agents}"
-      _agents_check_tail "repo AGENTS.md" "${repo_agents}" '^## Before you stop'
-      _agents_check_review_section "repo AGENTS.md" "${repo_agents}"
-    elif [[ -L "${repo_agents}" ]]; then
+    if [[ -L "${repo_agents}" ]]; then
       _fail "repo: AGENTS.md is a symlink — the direction is inverted; AGENTS.md must be the real file (Codex never reads CLAUDE.md)"
-    else
+    elif [[ ! -f "${repo_agents}" ]]; then
       _fail "repo: AGENTS.md missing — Codex and Muse read no project guidance here"
     fi
 
@@ -263,39 +311,56 @@ function _agents_check_repo_scope {
         _fail "repo: CLAUDE.md points at '${target}', expected the relative target 'AGENTS.md'"
       elif [[ ! -e "${repo_claude}" ]]; then
         _fail "repo: CLAUDE.md is a dangling symlink to '${target}'"
-      else
-        _pass "repo: CLAUDE.md -> AGENTS.md, resolving"
       fi
     fi
   fi
-}
 
-function _agents_check_global_source {
   local global_src="${SCRIPT_DIR}/claude/global-claude.md"
-
   # -f follows symlinks, so test -L separately: an inverted source is otherwise
   # missed wherever the live check skips.
   if [[ -L "${global_src}" ]]; then
-    _fail "global: claude/global-claude.md is itself a symlink — the direction is inverted; it must be the real file both ~/.claude/CLAUDE.md and ~/.codex/AGENTS.md point at"
+    _fail "global: claude/global-claude.md is itself a symlink — the direction is inverted; it must be the real file ~/.claude/CLAUDE.md points at"
   elif [[ ! -f "${global_src}" ]]; then
     _skip "global: claude/global-claude.md absent — claude/ pending out-of-band sync"
-  else
-    _agents_check_cap "global-claude.md" "${global_src}"
-    _agents_check_tail "global-claude.md" "${global_src}" '^## Asking the user to act or decide'
   fi
   local agents_src="${SCRIPT_DIR}/claude/global-agents.md"
   if [[ -L "${agents_src}" ]]; then
     _fail "global: claude/global-agents.md is itself a symlink — it must be the real file both ~/.codex/AGENTS.md and ~/.config/muse/AGENTS.md link to"
   elif [[ ! -f "${agents_src}" ]]; then
     _skip "global: claude/global-agents.md absent — claude/ pending out-of-band sync"
-  else
-    _agents_check_cap "global-agents.md" "${agents_src}"
-    _agents_check_tail "global-agents.md" "${agents_src}" '^## Machine notes'
   fi
 }
 
-# Skills Codex shares through ~/.agents/skills copies. The fixture cases shadow
-# the list with a shorter local one.
+# Deploy-code parity (hermetic): catches a bittersweet regression where this
+# repo is not the live deployment.
+function _agents_check_deploy_parity {
+  local bittersweet="${SCRIPT_DIR}/bittersweet" live_path
+  # Single quotes on purpose: match the literal ${SCRIPT_DIR}/${HOME} text.
+  # shellcheck disable=SC2016
+  for live_path in '${HOME}/.codex/AGENTS.md' '${HOME}/.config/muse/AGENTS.md'; do
+    if ! /usr/bin/grep -q "_symlink \"\${SCRIPT_DIR}/claude/global-agents.md\" \"${live_path}\"" "${bittersweet}"; then
+      _fail "bittersweet: no _symlink deploying claude/global-agents.md to ${live_path} — the reviewer harnesses would read a stale or absent file"
+    fi
+  done
+
+  # The Claude half deploys via a claude_files map entry, not a _symlink call,
+  # so it needs its own guard (a dropped row is invisible where the live check
+  # skips).
+  if ! /usr/bin/grep -q '"claude/global-claude.md:CLAUDE.md"' "${bittersweet}"; then
+    _fail "bittersweet: claude/global-claude.md absent from the claude_files map — Claude Code would lose its global instructions"
+  fi
+
+  # shellcheck disable=SC2016
+  if ! /usr/bin/grep -q '"\${SCRIPT_DIR}/claude/global-claude.md"' "${bittersweet}"; then
+    _fail "bittersweet: claude/global-claude.md missing from sensitive_files — it names hosts and must be mode 600"
+  fi
+  # shellcheck disable=SC2016
+  if ! /usr/bin/grep -q '"\${SCRIPT_DIR}/claude/global-agents.md"' "${bittersweet}"; then
+    _fail "bittersweet: claude/global-agents.md missing from sensitive_files — it names hosts and must be mode 600"
+  fi
+}
+
+# Skills Codex shares through ~/.agents/skills copies.
 typeset -a _AGENTS_SHARED_SKILLS=(git-history-repair zsh-style macos-security-footguns bao-admin swift-conventions rust-conventions npm-conventions python-conventions objc-conventions ci-conventions)
 
 # $1 home dir. ~/.claude/CLAUDE.md must link to claude/global-claude.md;
@@ -315,8 +380,6 @@ function _agents_check_live_links {
       _fail "global: ${live} points at '$(readlink "${live}")', expected ${src}"
     elif [[ ! -e "${live}" ]]; then
       _fail "global: ${live} is a dangling symlink"
-    else
-      _pass "global: ${live} -> claude/${src:t}"
     fi
   done
 }
@@ -326,235 +389,35 @@ function _agents_check_live_links {
 # copy).
 function _agents_check_live_skills {
   local home="$1" shared
-  if [[ -d "${home}/.agents/skills" && ! -L "${home}/.agents/skills" ]]; then
-    _pass "global: ~/.agents/skills is a real directory"
-  else
+  if [[ ! -d "${home}/.agents/skills" || -L "${home}/.agents/skills" ]]; then
     _fail "global: ~/.agents/skills must be a real directory of skill copies (run: bittersweet dotfiles)"
   fi
   for shared in "${_AGENTS_SHARED_SKILLS[@]}"; do
     if [[ -L "${home}/.agents/skills/${shared}" ]]; then
       _fail "global: ~/.agents/skills/${shared} is a symlink; a copy is required (run: bittersweet dotfiles)"
-    elif /usr/bin/diff -rq "${SCRIPT_DIR}/claude/skills/${shared}" "${home}/.agents/skills/${shared}" >/dev/null 2>&1; then
-      _pass "global: ~/.agents/skills/${shared} matches claude/skills/${shared}"
-    else
+    elif ! /usr/bin/diff -rq "${SCRIPT_DIR}/claude/skills/${shared}" "${home}/.agents/skills/${shared}" >/dev/null 2>&1; then
       _fail "global: ~/.agents/skills/${shared} is missing or stale (run: bittersweet dotfiles)"
     fi
   done
 }
 
-# Runs "$@" with SCRIPT_DIR pointing at $1 and sets REPLY to its output. The
-# command substitution is a subshell, so the pass and fail counters the
-# handler moves never reach the suite totals.
-function _agents_run_in {
-  # shellcheck disable=SC2034
-  local SCRIPT_DIR="$1"
-  shift
-  REPLY="$("$@" 2>&1)" || true
-}
-
-# $1 case name, $2 captured output, $3 colour, $4 PASS, FAIL or SKIP, $5 text.
-# The case passes when the output holds that line.
-function _agents_expect {
-  if [[ "$2" == *"$3$4${RESET}  $5"* ]]; then
-    _pass "fixture: $1"
-  else
-    _fail "fixture: $1: expected a $4 line starting '$5', got: $2"
-  fi
-}
-
-# The repo-scope and global-source handlers over small fixture trees. Each
-# handler runs in a subshell with its own counters, so only the expectation
-# reaches the suite totals.
-function _agents_fixture_cases {
-  local root
-  local -r tail=$'## Code Review Rules\nSee REVIEW.md.\n## Before you stop\n'
-  root="$(mktemp -d "${TMPDIR}agents-md-fixture.XXXXXX")"
-  /bin/mkdir -p "${root}"/{empty,good,copy,missing,other,dangling,inverted,noagents}/claude "${root}"/{gsym,gabsent,gok}/claude
-
-  print -rn -- "${tail}" > "${root}/good/AGENTS.md"
-  ln -s AGENTS.md "${root}/good/CLAUDE.md"
-
-  print -rn -- "${tail}" > "${root}/copy/AGENTS.md"
-  print -rn -- "${tail}" > "${root}/copy/CLAUDE.md"
-
-  print -rn -- "${tail}" > "${root}/missing/AGENTS.md"
-
-  print -rn -- "${tail}" > "${root}/other/AGENTS.md"
-  print -rn -- "${tail}" > "${root}/other/NOTES.md"
-  ln -s NOTES.md "${root}/other/CLAUDE.md"
-
-  ln -s AGENTS.md "${root}/dangling/CLAUDE.md"
-
-  print -rn -- "${tail}" > "${root}/inverted/CLAUDE.md"
-  ln -s CLAUDE.md "${root}/inverted/AGENTS.md"
-
-  print -rn -- "${tail}" > "${root}/noagents/CLAUDE.md"
-
-  _agents_run_in "${root}/empty" _agents_check_repo_scope
-  _agents_expect "repo: neither file present skips" "${REPLY}" "${YELLOW}" SKIP "repo: neither AGENTS.md nor CLAUDE.md present"
-  _agents_run_in "${root}/good" _agents_check_repo_scope
-  _agents_expect "repo: CLAUDE.md -> AGENTS.md passes" "${REPLY}" "${GREEN}" PASS "repo: CLAUDE.md -> AGENTS.md, resolving"
-  if [[ "${REPLY}" == *FAIL* ]]; then
-    _fail "fixture: repo: a correct pair reports no failure: ${REPLY}"
-  else
-    _pass "fixture: repo: a correct pair reports no failure"
-  fi
-  _agents_run_in "${root}/copy" _agents_check_repo_scope
-  _agents_expect "repo: CLAUDE.md as a regular file fails" "${REPLY}" "${RED}" FAIL "repo: CLAUDE.md is a regular file, not a symlink"
-  _agents_run_in "${root}/missing" _agents_check_repo_scope
-  _agents_expect "repo: CLAUDE.md missing fails" "${REPLY}" "${RED}" FAIL "repo: CLAUDE.md missing"
-  _agents_run_in "${root}/other" _agents_check_repo_scope
-  _agents_expect "repo: CLAUDE.md pointing elsewhere fails" "${REPLY}" "${RED}" FAIL "repo: CLAUDE.md points at 'NOTES.md', expected the relative target 'AGENTS.md'"
-  _agents_run_in "${root}/dangling" _agents_check_repo_scope
-  _agents_expect "repo: CLAUDE.md link to an absent AGENTS.md fails" "${REPLY}" "${RED}" FAIL "repo: AGENTS.md missing"
-  _agents_expect "repo: dangling CLAUDE.md fails" "${REPLY}" "${RED}" FAIL "repo: CLAUDE.md is a dangling symlink to 'AGENTS.md'"
-  _agents_run_in "${root}/inverted" _agents_check_repo_scope
-  _agents_expect "repo: AGENTS.md as a symlink fails" "${REPLY}" "${RED}" FAIL "repo: AGENTS.md is a symlink"
-  _agents_run_in "${root}/noagents" _agents_check_repo_scope
-  _agents_expect "repo: AGENTS.md missing fails" "${REPLY}" "${RED}" FAIL "repo: AGENTS.md missing"
-
-  ln -s elsewhere.md "${root}/gsym/claude/global-claude.md"
-  print -rn -- $'## Asking the user to act or decide\n' > "${root}/gok/claude/global-claude.md"
-  print -rn -- $'## Machine notes\n' > "${root}/gok/claude/global-agents.md"
-  _agents_run_in "${root}/gsym" _agents_check_global_source
-  _agents_expect "global: a symlinked source fails" "${REPLY}" "${RED}" FAIL "global: claude/global-claude.md is itself a symlink"
-  _agents_run_in "${root}/gabsent" _agents_check_global_source
-  _agents_expect "global: an absent source skips" "${REPLY}" "${YELLOW}" SKIP "global: claude/global-claude.md absent"
-  _agents_run_in "${root}/gok" _agents_check_global_source
-  _agents_expect "global: a regular source with its tail passes" "${REPLY}" "${GREEN}" PASS "global-claude.md: tail intact"
-  /bin/rm -rf "${root}"
-  _agents_home_fixture_cases
-}
-
-# The ~/.claude, ~/.codex and ~/.agents handlers over fixture home dirs; the
-# real $HOME is never read. SCRIPT_DIR is a fixture tree holding the source
-# file and the skills.
-function _agents_home_fixture_cases {
-  local root skill sd
-  local -a _AGENTS_SHARED_SKILLS=(link-skill stale-skill gone-skill good-skill)
-  root="$(mktemp -d "${TMPDIR}agents-md-home.XXXXXX")"
-  sd="${root}/repo"
-  /bin/mkdir -p "${sd}/claude" "${root}"/{ok,notlink,wrong,dangling,skills,nodir,dirlink}/home/{.claude,.codex,.config/muse,.agents} "${root}/other/realskills" "${root}/nosrc/claude"
-  print -rn -- $'## Asking the user to act or decide\n' > "${sd}/claude/global-claude.md"
-  print -rn -- $'## Machine notes\n' > "${sd}/claude/global-agents.md"
-  print -rn -- $'## Machine notes\n' > "${root}/other/elsewhere.md"
-
-  # Links: ok links both files to the source; notlink holds regular files;
-  # wrong links elsewhere; dangling links to a source that is absent.
-  ln -s "${sd}/claude/global-claude.md" "${root}/ok/home/.claude/CLAUDE.md"
-  ln -s "${sd}/claude/global-agents.md" "${root}/ok/home/.codex/AGENTS.md"
-  ln -s "${sd}/claude/global-agents.md" "${root}/ok/home/.config/muse/AGENTS.md"
-  print -rn -- x > "${root}/notlink/home/.claude/CLAUDE.md"
-  print -rn -- x > "${root}/notlink/home/.codex/AGENTS.md"
-  print -rn -- x > "${root}/notlink/home/.config/muse/AGENTS.md"
-  ln -s "${root}/other/elsewhere.md" "${root}/wrong/home/.claude/CLAUDE.md"
-  ln -s "${root}/other/elsewhere.md" "${root}/wrong/home/.codex/AGENTS.md"
-  ln -s "${root}/other/elsewhere.md" "${root}/wrong/home/.config/muse/AGENTS.md"
-  ln -s "${root}/nosrc/claude/global-claude.md" "${root}/dangling/home/.claude/CLAUDE.md"
-  ln -s "${root}/nosrc/claude/global-agents.md" "${root}/dangling/home/.codex/AGENTS.md"
-  ln -s "${root}/nosrc/claude/global-agents.md" "${root}/dangling/home/.config/muse/AGENTS.md"
-
-  _agents_run_in "${sd}" _agents_check_live_links "${root}/ok/home"
-  _agents_expect "live links: ~/.claude/CLAUDE.md linked to the source passes" "${REPLY}" "${GREEN}" PASS "global: ${root}/ok/home/.claude/CLAUDE.md -> claude/global-claude.md"
-  _agents_expect "live links: ~/.codex/AGENTS.md linked to the source passes" "${REPLY}" "${GREEN}" PASS "global: ${root}/ok/home/.codex/AGENTS.md -> claude/global-agents.md"
-  _agents_expect "live links: ~/.config/muse/AGENTS.md linked to the source passes" "${REPLY}" "${GREEN}" PASS "global: ${root}/ok/home/.config/muse/AGENTS.md -> claude/global-agents.md"
-  _agents_run_in "${sd}" _agents_check_live_links "${root}/notlink/home"
-  _agents_expect "live links: ~/.claude/CLAUDE.md as a regular file fails" "${REPLY}" "${RED}" FAIL "global: ${root}/notlink/home/.claude/CLAUDE.md is not a symlink"
-  _agents_expect "live links: ~/.codex/AGENTS.md as a regular file fails" "${REPLY}" "${RED}" FAIL "global: ${root}/notlink/home/.codex/AGENTS.md is not a symlink"
-  _agents_run_in "${sd}" _agents_check_live_links "${root}/wrong/home"
-  _agents_expect "live links: ~/.claude/CLAUDE.md pointing elsewhere fails" "${REPLY}" "${RED}" FAIL "global: ${root}/wrong/home/.claude/CLAUDE.md points at '${root}/other/elsewhere.md'"
-  _agents_expect "live links: ~/.codex/AGENTS.md pointing elsewhere fails" "${REPLY}" "${RED}" FAIL "global: ${root}/wrong/home/.codex/AGENTS.md points at '${root}/other/elsewhere.md'"
-  _agents_run_in "${root}/nosrc" _agents_check_live_links "${root}/dangling/home"
-  _agents_expect "live links: ~/.claude/CLAUDE.md dangling fails" "${REPLY}" "${RED}" FAIL "global: ${root}/dangling/home/.claude/CLAUDE.md is a dangling symlink"
-  _agents_expect "live links: ~/.codex/AGENTS.md dangling fails" "${REPLY}" "${RED}" FAIL "global: ${root}/dangling/home/.codex/AGENTS.md is a dangling symlink"
-  _agents_run_in "${sd}" _agents_check_live_links "${root}/nodir/home"
-  _agents_expect "live links: absent ~/.codex/AGENTS.md fails" "${REPLY}" "${RED}" FAIL "global: ${root}/nodir/home/.codex/AGENTS.md is not a symlink"
-
-  # Skills: the source tree holds every shared skill; the skills home gets a
-  # matching copy of most, a symlink for the first, a stale copy for the second
-  # and no copy for the third.
-  for skill in "${_AGENTS_SHARED_SKILLS[@]}"; do
-    /bin/mkdir -p "${sd}/claude/skills/${skill}"
-    print -rn -- "${skill}" > "${sd}/claude/skills/${skill}/SKILL.md"
-  done
-  /bin/cp -R "${sd}/claude/skills" "${root}/skills/home/.agents/skills"
-  /bin/rm -rf "${root}/skills/home/.agents/skills/${_AGENTS_SHARED_SKILLS[1]}"
-  ln -s "${sd}/claude/skills/${_AGENTS_SHARED_SKILLS[1]}" "${root}/skills/home/.agents/skills/${_AGENTS_SHARED_SKILLS[1]}"
-  print -rn -- stale > "${root}/skills/home/.agents/skills/${_AGENTS_SHARED_SKILLS[2]}/SKILL.md"
-  /bin/rm -rf "${root}/skills/home/.agents/skills/${_AGENTS_SHARED_SKILLS[3]}"
-  ln -s "${root}/other/realskills" "${root}/dirlink/home/.agents/skills"
-
-  _agents_run_in "${sd}" _agents_check_live_skills "${root}/skills/home"
-  _agents_expect "live skills: a real skills directory passes" "${REPLY}" "${GREEN}" PASS "global: ~/.agents/skills is a real directory"
-  _agents_expect "live skills: a symlinked skill fails" "${REPLY}" "${RED}" FAIL "global: ~/.agents/skills/${_AGENTS_SHARED_SKILLS[1]} is a symlink; a copy is required"
-  _agents_expect "live skills: a stale copy fails" "${REPLY}" "${RED}" FAIL "global: ~/.agents/skills/${_AGENTS_SHARED_SKILLS[2]} is missing or stale"
-  _agents_expect "live skills: an absent copy fails" "${REPLY}" "${RED}" FAIL "global: ~/.agents/skills/${_AGENTS_SHARED_SKILLS[3]} is missing or stale"
-  _agents_expect "live skills: a matching copy passes" "${REPLY}" "${GREEN}" PASS "global: ~/.agents/skills/${_AGENTS_SHARED_SKILLS[4]} matches claude/skills/${_AGENTS_SHARED_SKILLS[4]}"
-  _agents_run_in "${sd}" _agents_check_live_skills "${root}/nodir/home"
-  _agents_expect "live skills: an absent skills directory fails" "${REPLY}" "${RED}" FAIL "global: ~/.agents/skills must be a real directory of skill copies"
-  _agents_run_in "${sd}" _agents_check_live_skills "${root}/dirlink/home"
-  _agents_expect "live skills: a symlinked skills directory fails" "${REPLY}" "${RED}" FAIL "global: ~/.agents/skills must be a real directory of skill copies"
-  /bin/rm -rf "${root}"
-}
-
 function run_agents_md {
   _section "Agent guidance: AGENTS.md / CLAUDE.md single-source"
 
-  _agents_fixture_cases
+  _agents_group "guidance files are under Codex's ${_AGENTS_CAP_BYTES} B cap and keep their last section" _agents_check_truncation
+  _agents_group "guidance files, REVIEW.md, rules and skills are within their regrowth caps" _agents_check_regrowth_all
+  _agents_group "rule frontmatter has no globs:/alwaysApply: and paths: is absent or a block list" _agents_check_rule_shape_all
+  _agents_group "AGENTS.md is the real file, CLAUDE.md links to it, and both global sources are real files" _agents_check_directions
+  _agents_group "REVIEW.md is tracked with its sections and no model names, and AGENTS.md carries Code Review Rules before the tail" _agents_check_review_all
+  _agents_group "bittersweet deploys the global files and hardens them" _agents_check_deploy_parity
 
-  # 1. Repo scope.
-  _agents_check_repo_scope
-
-  # 2. Global source file.
-  _agents_check_global_source
-
-  # 3. Deploy-code parity (hermetic): catches a bittersweet regression where
-  #    this repo is not the live deployment.
-  local bittersweet="${SCRIPT_DIR}/bittersweet"
-  # Single quotes on purpose: match the literal ${SCRIPT_DIR}/${HOME} text.
-  local live_path
-  # shellcheck disable=SC2016
-  for live_path in '${HOME}/.codex/AGENTS.md' '${HOME}/.config/muse/AGENTS.md'; do
-    if /usr/bin/grep -q "_symlink \"\${SCRIPT_DIR}/claude/global-agents.md\" \"${live_path}\"" "${bittersweet}"; then
-      _pass "bittersweet: ${live_path} deploys from claude/global-agents.md"
-    else
-      _fail "bittersweet: no _symlink deploying claude/global-agents.md to ${live_path} — the reviewer harnesses would read a stale or absent file"
-    fi
-  done
-
-  # The Claude half deploys via a claude_files map entry, not a _symlink call,
-  # so it needs its own guard (a dropped row is invisible where step 4 skips).
-  if /usr/bin/grep -q '"claude/global-claude.md:CLAUDE.md"' "${bittersweet}"; then
-    _pass "bittersweet: ~/.claude/CLAUDE.md registered in the claude_files map"
-  else
-    _fail "bittersweet: claude/global-claude.md absent from the claude_files map — Claude Code would lose its global instructions"
-  fi
-
-  # shellcheck disable=SC2016
-  if /usr/bin/grep -q '"\${SCRIPT_DIR}/claude/global-claude.md"' "${bittersweet}"; then
-    _pass "bittersweet: claude/global-claude.md is hardened (sensitive_files)"
-  else
-    _fail "bittersweet: claude/global-claude.md missing from sensitive_files — it names hosts and must be mode 600"
-  fi
-  # shellcheck disable=SC2016
-  if /usr/bin/grep -q '"\${SCRIPT_DIR}/claude/global-agents.md"' "${bittersweet}"; then
-    _pass "bittersweet: claude/global-agents.md is hardened (sensitive_files)"
-  else
-    _fail "bittersweet: claude/global-agents.md missing from sensitive_files — it names hosts and must be mode 600"
-  fi
-
-  # 3b. Review rulebook and regrowth caps. Before the live gate below, which
-  #     returns early: REVIEW.md is tracked, so its checks run on a clean clone.
-  _agents_check_review
-  _agents_check_regrowth_all
-
-  # 4. Live deployment: gated like tests/hook-links, meaningful only when this
-  #    repo is the active deployment.
+  # Live deployment: gated like tests/hook-links, meaningful only when this
+  # repo is the active deployment.
   if [[ "$(readlink "${HOME}/.claude/settings.json" 2>/dev/null)" != "${SCRIPT_DIR}/claude/settings.json" ]]; then
     _skip "global deployment: ~/.claude not linked to this repo (run: bittersweet dotfiles)"
     return
   fi
 
-  _agents_check_live_links "${HOME}"
-  _agents_check_live_skills "${HOME}"
+  _agents_group "the home .claude, .codex and .config/muse global files link to the claude/ sources" _agents_check_live_links "${HOME}"
+  _agents_group "the home .agents/skills holds a current copy of each shared skill" _agents_check_live_skills "${HOME}"
 }
