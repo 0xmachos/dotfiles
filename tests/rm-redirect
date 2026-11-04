@@ -4,27 +4,26 @@
 # Behavioural test for claude/hooks/rm-redirect-hook (PreToolUse): feeds commands
 # to the hook and asserts the verdict. Rationale for each class is in that
 # hook's own header.
-# Since 2026-10-24 the verdict cases run the guard through the pretool-dispatch
-# seam (_hook_run_seam in tests/lib, which sources the hook in a subshell with
-# HOOK_PRE_* set and reads DENY<US>reason). That is the path live sessions use.
-# It costs about 5 ms a case with no process start, against about 50 ms and 6
-# execs for a standalone run. The hook copies with one literal changed and the
-# oversized commands go through the seam too (the command is a variable, not
-# argv or stdin). These cases stay standalone (`/bin/zsh <hook>` with JSON on
-# stdin, through _hook_verdict) for the process path: a few PASS and DENY
-# verdicts with the JSON deny reason, the at-cap and past-cap sizes on stdin,
-# the empty and malformed stdin cases, the exit status of a DENY, and the case
-# with HOOK_PRE_DISPATCH exported (a standalone hook must not skip, because
-# ZSH_EVAL_CONTEXT lacks :file when exec'd). The near-deadline cases keep
-# their retry count under the seam.
 #
-# Contract (2026-09-25): plain rm/unlink/shred/gshred at ANY command position
-# PASSES (the shell alias already trashes it). DENY is only the forms that
-# skip the alias: a quoted or escaped rm-family word; a path-qualified one
-# (2026-10-09); a wrapper that execs its target directly, sudo and doas
+# Contract: plain rm/unlink/shred/gshred at ANY command position PASSES (the
+# shell alias already trashes it). DENY is only the forms that skip the alias:
+# a quoted, escaped, mid-word-decorated or case-variant rm-family word; a
+# path-qualified one; a wrapper that execs its target directly, sudo and doas
 # included; find/gfind/fd/fdfind with an rm-family target; a bare rm-family
 # word in a heredoc body or sh/bash/zsh/dash/ksh -c string (child shells have
 # no alias table); `git clean -f`/`--force` without `-n`/`--dry-run`.
+#
+# Covers, one input each: every deny class with the fragment its reason must
+# carry (decorated word, path-qualified word, xargs, sudo, find, fd, git clean,
+# heredoc body, -c string, case variant); the closed parser bugs (a second
+# qualifying line, a backslash-newline join, the byte budget); the PASS guard
+# for bare rm and for rm-family words as arguments; the fail-open contract
+# (line cap, deadline, malformed stdin); and an exported HOOK_PRE_DISPATCH that
+# must not make a standalone hook skip.
+# Verdict cases run the guard through the pretool-dispatch seam
+# (_hook_run_seam in tests/lib). The hook copy with one literal changed and the
+# oversized commands go through the seam too (the command is a variable, not
+# argv or stdin).
 #
 # Run: ./test rm-redirect
 # ShellCheck: lint with `shellcheck --shell=bash tests/rm-redirect`.
@@ -36,63 +35,44 @@
 #
 # shellcheck source=tests/lib
 
-# Standalone run: the hook as its own process, JSON on stdin. Echoes stdout.
-function _rm_redirect_run {
-  # Echo the hook's stdout for Bash command $1.
-  jq -n --arg c "$1" '{tool_name:"Bash", tool_input:{command:$c}}' \
-    | /bin/zsh "${SCRIPT_DIR}/claude/hooks/rm-redirect-hook"
-}
+# Wrong results collected by _rm_redirect_check, reported by _rm_redirect_finish.
+typeset -g RMR_T_BAD=''
 
-# Seam run: the guard sourced the dispatcher's way (HOOK_SEAM_VERDICT and
-# HOOK_SEAM_REASON hold the result).
-function _rm_redirect_expect {
-  # Optional $4/$5: a fragment the deny reason must contain and the label for
-  # that second check, made on the same hook run. Optional $6: how many runs to
-  # allow before a wrong verdict counts (default 1; the hook's 0.3 s deadline
-  # fails open under load, so a near-cap DENY gets retries).
-  local want="$1" cmd="$2" label="${3:-$2}" frag="${4:-}" fraglabel="${5:-}" tries="${6:-1}" got=''
+function _rm_redirect_check {
+  # Seam verdict of command $2 against wanted verdict $1. Optional $3: a
+  # fragment the deny reason must contain. Optional $4: how many runs to allow
+  # before a wrong verdict counts (default 1; the hook's 0.3 s deadline fails
+  # open under load, so a near-cap DENY gets retries). A miss is added to
+  # RMR_T_BAD.
+  local want="$1" cmd="$2" frag="${3:-}" tries="${4:-1}" got=''
   local -i t
   for (( t = 1; t <= tries; t++ )); do
     _hook_run_seam "${SCRIPT_DIR}/claude/hooks/rm-redirect-hook" Bash "${cmd}"
     got="${HOOK_SEAM_VERDICT}"
     [[ "${got}" == "${want}" ]] && break
   done
-  if [[ "${got}" == "${want}" ]]; then
-    _pass "${want}: ${label}"
-  else
-    _fail "${label} — expected ${want}, got ${got} (${HOOK_SEAM_OUT:0:120})"
-  fi
-  [[ -n "${frag}" ]] || return 0
-  if [[ "${HOOK_SEAM_REASON}" == *"${frag}"* ]]; then
-    _pass "${fraglabel}"
-  else
-    _fail "${fraglabel} — output lacks: ${frag}"
+  if [[ "${got}" != "${want}" ]]; then
+    RMR_T_BAD+=" [${cmd:0:50} want ${want} got ${got}]"
+  elif [[ -n "${frag}" && "${HOOK_SEAM_REASON}" != *"${frag}"* ]]; then
+    RMR_T_BAD+=" [${cmd:0:50} reason lacks: ${frag}]"
   fi
 }
 
-# Standalone verdict check, kept for a few cases per verdict. Same arguments.
-function _rm_redirect_expect_standalone {
-  local want="$1" cmd="$2" label="${3:-$2}" frag="${4:-}" fraglabel="${5:-}" tries="${6:-1}" out got
-  local -i rc t
-  for (( t = 1; t <= tries; t++ )); do
-    rc=0
-    out="$(_rm_redirect_run "${cmd}")" || rc=$?
-    got="$(_hook_verdict "${out}")" || got=INVALID
-    [[ "${got}" == "${want}" ]] && break
-  done
-  if [[ "${got}" == "${want}" ]]; then
-    _pass "${want} (standalone): ${label}"
+function _rm_redirect_finish {
+  # Report the collected misses as one case labelled $1, then reset.
+  if [[ -z "${RMR_T_BAD}" ]]; then
+    _pass "$1"
   else
-    _fail "standalone ${label} — expected ${want}, got ${got}"
+    _fail "$1 —${RMR_T_BAD}"
   fi
-  # The hook exits 0 for every verdict; a nonzero status is recorded, not fatal.
-  (( rc == 0 )) || _fail "standalone ${label} — hook exited ${rc}"
-  [[ -n "${frag}" ]] || return 0
-  if [[ "${out}" == *"${frag}"* ]]; then
-    _pass "${fraglabel}"
-  else
-    _fail "${fraglabel} — output lacks: ${frag}"
-  fi
+  RMR_T_BAD=''
+}
+
+function _rm_redirect_one {
+  # One input, one case: _rm_redirect_check with labelled result.
+  # $1 want, $2 command, $3 label, $4 reason fragment, $5 tries.
+  _rm_redirect_check "$1" "$2" "${4:-}" "${5:-1}"
+  _rm_redirect_finish "$1: $3"
 }
 
 function _rm_redirect_lines_command {
@@ -102,33 +82,6 @@ function _rm_redirect_lines_command {
   for (( k = 1; k < $1; k++ )); do rm_redirect_lines+=(a); done
   # shellcheck disable=SC2296
   REPLY="${(F)rm_redirect_lines}"
-}
-
-function _rm_redirect_bytes_command {
-  # REPLY = a command of exactly $1 characters: `\rm x` first, then 8000-
-  # character lines (under the per-line cap) cut to length. The last character
-  # is not a newline, which `$(...)` would strip.
-  # shellcheck disable=SC2034
-  local rm_redirect_none='' rm_redirect_filler
-  # shellcheck disable=SC2296
-  rm_redirect_filler="${(l:8000::a:)rm_redirect_none}"
-  local -a rm_redirect_lines=('\rm x')
-  local -i k
-  for (( k = 1; k <= 66; k++ )); do rm_redirect_lines+=("${rm_redirect_filler}"); done
-  # shellcheck disable=SC2296
-  local rm_redirect_all="${(F)rm_redirect_lines}"
-  REPLY="${rm_redirect_all[1,$1-1]}a"
-}
-
-function _rm_redirect_calls_command {
-  # REPLY = a command whose `\rm x` is tokeniser call number $1 + 1: $1 lines of
-  # `echo 'rm'` (each quoted, so each takes the tokeniser) ahead of it.
-  local -a rm_redirect_call_lines
-  local -i k
-  for (( k = 1; k <= $1; k++ )); do rm_redirect_call_lines+=("echo 'rm'"); done
-  rm_redirect_call_lines+=('\rm x')
-  # shellcheck disable=SC2296
-  REPLY="${(F)rm_redirect_call_lines}"
 }
 
 function _rm_redirect_make_copy {
@@ -146,15 +99,11 @@ function _rm_redirect_make_copy {
   print -r -- "${changed}" > "${dir}/hook"
 }
 
-function _rm_redirect_copy_expect {
-  # Run hook copy $1/hook through the seam on command $3 and assert verdict $2,
-  # labelled $4.
+function _rm_redirect_copy_check {
+  # Run hook copy $1/hook through the seam on command $3. A verdict other
+  # than $2 is added to RMR_T_BAD.
   _hook_run_seam "$1/hook" Bash "$3"
-  if [[ "${HOOK_SEAM_VERDICT}" == "$2" ]]; then
-    _pass "$2: $4"
-  else
-    _fail "$4 - expected $2, got ${HOOK_SEAM_VERDICT} (${HOOK_SEAM_OUT:0:120})"
-  fi
+  [[ "${HOOK_SEAM_VERDICT}" == "$2" ]] || RMR_T_BAD+=" [$4: want $2 got ${HOOK_SEAM_VERDICT}]"
 }
 
 function run_rm_redirect {
@@ -171,161 +120,23 @@ function run_rm_redirect {
     return
   fi
 
-  # Bare rm-family word at any command position → PASS (the alias handles it;
-  # a deny would only add a permission round-trip).
-  _rm_redirect_expect PASS 'rm -rf foo'
-  _rm_redirect_expect PASS 'rm foo.txt'
-  _rm_redirect_expect PASS 'rm -rf ~/Documents/x/.ruff_cache'
-  _rm_redirect_expect PASS 'a && rm b'
-  _rm_redirect_expect PASS 'a; rm b'
-  _rm_redirect_expect PASS '(rm foo)'
-  _rm_redirect_expect PASS $'rm -rf a\nls' 'rm -rf a<NL>ls (multiline)'
-  _rm_redirect_expect PASS 'time rm foo.txt'          # guards against over-including `time` as a bypass wrapper
-  _rm_redirect_expect PASS 'unlink foo'
-  _rm_redirect_expect PASS 'shred foo'
-  _rm_redirect_expect PASS 'gshred foo'
+  # Deny classes: one input each, with the reason fragment it must carry.
+  _rm_redirect_one DENY '\rm foo.txt' 'a backslash-escaped rm skips the alias' trash
+  _rm_redirect_one DENY '/bin/rm foo' 'a path-qualified rm is the real binary' 'exact /bin/rm command for their own terminal'
+  _rm_redirect_one DENY 'echo foo | xargs rm' 'xargs cannot see the alias' 'xargs trash'
+  _rm_redirect_one DENY 'sudo rm foo' 'sudo is a bypass wrapper' 'exact command'
+  _rm_redirect_one DENY "find . -name '*.tmp' -delete" 'find -delete' '-exec trash {} +'
+  _rm_redirect_one DENY 'fd -X rm' 'fd -X with an rm target' '-X rm'
+  _rm_redirect_one DENY 'git clean -fdx' 'git clean -f without -n' 'git clean -n'
+  _rm_redirect_one DENY $'bash <<EOF\nrm foo\nEOF' 'a bare rm in a shell heredoc body'
+  _rm_redirect_one DENY "bash -c 'rm foo'" 'a bare rm in a bash -c string'
+  _rm_redirect_one DENY 'RM foo' 'a case variant (the filesystem is case-insensitive)'
 
-  # 2026-09-25: a re-declared `local segment match` in the per-line loop
-  # leaks the previous line's values to stdout on the SECOND qualifying line,
-  # which _hook_verdict reads as INVALID, not PASS.
-  _rm_redirect_expect PASS $'rm -rf a\nrm -rf b' 'two qualifying lines, both PASS'
-
-  # Non-rm command words → PASS, unchanged. The old escape hatches (a
-  # path-qualified rm, sudo/doas) DENY since 2026-10-09: see the sections below.
-  _rm_redirect_expect DENY '/bin/rm foo'               'path-qualified rm denies'
-  _rm_redirect_expect DENY 'sudo rm -rf /Library/x'    'sudo is a BYPASS wrapper, not an escape'
-  _rm_redirect_expect DENY 'sudo find /tmp -delete'    'sudo find -delete is checked like find -delete'
-  _rm_redirect_expect PASS 'git rm foo'
-  _rm_redirect_expect PASS 'docker rm c1'
-  _rm_redirect_expect PASS 'npm rm pkg'
-  _rm_redirect_expect PASS 'echo rm'
-  _rm_redirect_expect PASS 'cd /tmp/rm-stuff && ls'
-  _rm_redirect_expect PASS 'trash foo'
-  _rm_redirect_expect PASS 'builtin rm foo'            # rm is not a zsh builtin — inert
-  _rm_redirect_expect PASS 'find . -exec mv {} /tmp \;'      # non-rm -exec target
-  _rm_redirect_expect DENY 'find . -exec /bin/rm {} +'       'find -exec with a path-qualified rm target'
-  _rm_redirect_expect PASS $'cat <<EOF > script.sh\nrm foo\nEOF' 'heredoc writing rm into a file it does not execute'
-
-  # sudo/doas are no escape (2026-10-09): every class is checked as if they
-  # were absent, and a body run by `sudo bash` has no alias table.
-  _rm_redirect_expect DENY 'sudo git clean -fdx'                       'sudo git clean is checked too'
-  _rm_redirect_expect DENY $'sudo bash <<EOF\nrm foo\nEOF'             'sudo bash heredoc body is scanned'
-  _rm_redirect_expect DENY $'sudo -s <<EOF\nrm foo\nEOF'               'bare sudo -s heredoc: sudo itself is the consumer'
-  _rm_redirect_expect DENY $'doas sh <<EOF\nrm foo\nEOF'               'doas sh heredoc body is scanned'
-  _rm_redirect_expect DENY 'doas rm foo'                               'doas rm'
-  _rm_redirect_expect DENY 'sudo -u root rm foo'                       'sudo operand flag walk'
-  _rm_redirect_expect DENY 'sudo -E -- rm foo'                         'sudo flags and --'
-  _rm_redirect_expect DENY 'sudo xargs rm'                             'sudo before xargs'
-  _rm_redirect_expect DENY 'sudo -s "rm foo"'                          'sudo -s with the command as one string'
-  _rm_redirect_expect DENY 'sudo \rm foo'                              'sudo before a decorated rm'
-  _rm_redirect_expect PASS 'sudo ls /tmp'                              'sudo before a harmless command'
-  _rm_redirect_expect PASS 'sudo git rm foo'                           'sudo git rm stays an argument'
-  _rm_redirect_expect PASS 'sudo -u root trash foo'                    'sudo trash'
-  _rm_redirect_expect DENY 'sudo rm foo' 'sudo rm deny reason' \
-    'exact command' 'sudo deny reason tells the agent to hand the user the command'
-
-  # A path-qualified rm-family word denies EVERYWHERE (2026-10-09): bare, after
-  # a wrapper or xargs, as a find/fd target, in a shell heredoc body.
-  _rm_redirect_expect DENY 'xargs -0 /bin/rm'                          'xargs with a path-qualified rm'
-  _rm_redirect_expect DENY 'command /bin/rm foo'                       'command with a path-qualified rm'
-  _rm_redirect_expect DENY $'bash <<EOF\n/bin/rm foo\nEOF'             'heredoc body: a path-qualified rm denies there too'
-  _rm_redirect_expect DENY '/usr/bin/unlink foo'                       'path-qualified unlink'
-  _rm_redirect_expect DENY '/opt/homebrew/bin/gshred foo'              'path-qualified gshred'
-  _rm_redirect_expect DENY './rm foo'                                  'relative path-qualified rm'
-  _rm_redirect_expect DENY 'a && /bin/rm b'                            'path-qualified rm after &&'
-  _rm_redirect_expect DENY 'env FOO=1 /bin/rm foo'                     'path-qualified rm after env assignments'
-  _rm_redirect_expect DENY '/bin/rm foo' 'path-qualified rm deny reason' \
-    'exact /bin/rm command for their own terminal' 'path-qualified deny reason says to hand the user the /bin/rm command'
-  _rm_redirect_expect PASS 'ls /bin/rm'                                'path-qualified rm as an argument'
-  _rm_redirect_expect PASS 'cat /bin/rm-notes.txt'                     'path containing rm as an argument'
-  _rm_redirect_expect PASS '/bin/ls /tmp/rm'                           'path-qualified non-rm command'
-
-  # command -v/-V is a lookup, not an invocation — never execs anything.
-  _rm_redirect_expect PASS 'command -v rm'
-  _rm_redirect_expect PASS 'command -V gshred'
-
-  # A path-qualified word skips alias lookup and denies; quoting or escaping
-  # it changes nothing.
-  _rm_redirect_expect DENY '"/bin/rm" foo'              'quoted absolute path'
-  _rm_redirect_expect DENY '\/bin/rm foo'               'escaped absolute path'
-
-  # fd/fdfind -x/-X/--exec/--exec-batch, PASS side: non-rm target. A path-
-  # qualified target denies (2026-10-09).
-  _rm_redirect_expect PASS 'fd -e tmp -x mv {} /tmp'    'fd -x with a non-rm target'
-  _rm_redirect_expect DENY 'fd -x /bin/rm'              'fd -x with a path-qualified rm target'
-  _rm_redirect_expect DENY 'fd -x sudo rm'              'fd -x with sudo before the rm target'
-  _rm_redirect_expect DENY 'fd -X /usr/bin/unlink'      'fd -X with a path-qualified unlink target'
-  _rm_redirect_expect DENY 'fd --exec env rm {}'        'fd --exec with a wrapper before the rm target'
-  _rm_redirect_expect PASS 'fd -x echo rm {}'           'fd -x with rm as an argument'
-  _rm_redirect_expect DENY 'fd -x /bin/rm' 'fd path-qualified deny reason' \
-    'exact command for their own terminal' 'fd path-qualified deny reason says to hand the user the command'
-
-  # find -exec/-execdir/-ok/-okdir: the target resolves through the wrapper
-  # walk and path-qualified words deny (2026-10-09).
-  _rm_redirect_expect DENY 'find . -execdir /usr/bin/unlink {} \;'  'find -execdir with a path-qualified unlink'
-  _rm_redirect_expect DENY 'find . -ok /bin/rm {} \;'               'find -ok with a path-qualified rm'
-  _rm_redirect_expect DENY 'find . -exec sudo rm {} +'              'find -exec with sudo before rm'
-  _rm_redirect_expect DENY 'find . -exec nice -n 5 rm {} \;'        'find -exec with a wrapper and flag before rm'
-  _rm_redirect_expect DENY 'find . -exec "/bin/rm" {} +'            'find -exec with a quoted path-qualified rm'
-  _rm_redirect_expect PASS 'find . -exec echo rm {} \;'             'find -exec with rm as an argument'
-  _rm_redirect_expect PASS 'find . -exec git rm {} \;'              'find -exec with git rm'
-  _rm_redirect_expect DENY 'find . -exec /bin/rm {} +' 'find path-qualified deny reason' \
-    'exact command for their own terminal' 'find path-qualified deny reason says to hand the user the command'
-
-  # env -S is NOT a declared gap (2026-09-25): it splits its string argument
-  # and execs the result, the same BYPASS class as `env rm f`, so it DENIES.
-  _rm_redirect_expect DENY 'env -S "rm f"'
-  _rm_redirect_expect DENY "env -S 'FOO=1 rm f'"        'env -S with a leading VAR= inside the string'
-  _rm_redirect_expect PASS 'env -S "python3 x"'         'env -S with a non-rm-family string'
-
-  # Declared gap (hook header, "Declared gaps"): tested, not silently skipped.
-  _rm_redirect_expect PASS 'unalias rm; rm -rf x'       'declared gap: alias redefinition is not tracked'
-
-  # The {}-tokeniser fix cuts both ways: `{ cmd; }` still isolates its content.
-  _rm_redirect_expect PASS '{ rm foo; }'                'brace group: bare rm inside still PASSes'
-
-  # A heredoc fed to a non-shell consumer stays data, decorated form or not.
-  _rm_redirect_expect PASS $'python3 - <<EOF\n\\rm x\nEOF' 'non-shell heredoc consumer: decorated rm inside is still data'
-
-  # Decorated (quoted/escaped) rm-family word → DENY: it suppresses alias
-  # lookup. Explicit labels: _pass/_fail print via zsh's builtin echo, which
-  # interprets a leading \r/\u (cosmetic only).
-  # The deny message must name the replacement tool (decorated form: bare rm
-  # PASSes).
-  _rm_redirect_expect DENY '\rm foo.txt' 'backslash-escaped rm' \
-    trash 'deny reason names trash'
-  _rm_redirect_expect DENY '"rm" foo.txt'
-  _rm_redirect_expect DENY "'rm' foo.txt"
-  _rm_redirect_expect DENY '\unlink foo.txt' 'backslash-escaped unlink'
-  _rm_redirect_expect DENY '"shred" foo.txt'
-  _rm_redirect_expect DENY "\$'rm' foo.txt" 'ANSI-C quoted rm'
-
-  # `$'` inside a DOUBLE-quoted string is two literal characters, not ANSI-C
-  # quoting (2026-09-25): zsh prints `echo "cost: $'"` verbatim, and a later
-  # `\rm` on the line is unaffected.
-  _rm_redirect_expect DENY $'echo "cost: $\x27"; \\rm foo' 'unbalanced ANSI-C marker inside a double-quoted string'
-
-  # The whole-command pre-filter matches a STRIPPED copy (2026-09-25): a
-  # mid-word decoration splits the letters in the raw text, so a raw-only
-  # check would exit early and PASS a real bypass.
-  _rm_redirect_expect DENY 'r"m" foo'  'mid-word quote decoration reaches the pre-filter'
-  _rm_redirect_expect DENY 'r\m foo'   'mid-word backslash decoration reaches the pre-filter'
-
-  # The per-line length cap runs BEFORE the per-line quote/escape strip
-  # (2026-09-25): an oversized line must not burn time ahead of a later short
-  # line carrying the decorated form.
+  # Closed parser bugs.
+  _rm_redirect_one DENY $'rm -rf build\nfind . -name "*.o" -delete' 'a denying second qualifying line (a repeated local leaked name=value)'
+  _rm_redirect_one DENY $'find . -name "*.pyc" \\\n  -delete' 'a backslash-newline join'
   # shellcheck disable=SC2034
-  local rm_redirect_empty='' rm_redirect_oversized_probe
-  # shellcheck disable=SC2296
-  rm_redirect_oversized_probe="echo \"${(l:72000::w:)rm_redirect_empty}\""$'\n''\rm x'
-  _rm_redirect_expect DENY "${rm_redirect_oversized_probe}" 'an oversized quoted line must not shadow a later short DENY'
-
-  # The byte budget counts MATCHING lines only (2026-09-25): non-matching lines
-  # ahead of a short real match must not exhaust it. The filler word holds no
-  # "rm", "unlink", "shred", "find" or "clean" substring. 34 lines of 8005
-  # characters (under RM_LINE_CAP) total 272170, past the 262144 budget. The
-  # scan sits near the hook's 0.3 s deadline, which can miss under load,
-  # so it gets retries.
+  local rm_redirect_empty='' rm_redirect_budget_probe
   # shellcheck disable=SC2034
   local -a rm_redirect_budget_lines
   local -i rm_redirect_bi
@@ -333,298 +144,43 @@ function run_rm_redirect {
     # shellcheck disable=SC2296
     rm_redirect_budget_lines+=("echo ${(l:8000::z:)rm_redirect_empty}")
   done
-  local rm_redirect_budget_probe
   # shellcheck disable=SC2296
   rm_redirect_budget_probe="${(F)rm_redirect_budget_lines}"$'\n''\rm x'
-  _rm_redirect_expect DENY "${rm_redirect_budget_probe}" 'non-matching lines ahead of a match must not exhaust the budget' '' '' 3
+  # 34 non-matching lines pass the 262144 byte budget: they must not hide a
+  # later deny. The scan sits near the 0.3 s deadline, so it gets retries.
+  _rm_redirect_one DENY "${rm_redirect_budget_probe}" 'non-matching lines past the byte budget do not shadow a later deny' '' 3
 
-  # Fail-open size caps (hook header, "Fail-open by convention"): 4000 raw
-  # lines and 524288 characters. At the cap the command is scanned and DENIEs;
-  # one past it PASSes without a scan. The just-under cases get 3 runs, since
-  # the 0.3 s deadline also fails open under load.
-  _rm_redirect_lines_command 4000
-  _rm_redirect_expect DENY "${REPLY}" '4000 lines, at the line cap, still scanned' '' '' 3
+  # PASS guard.
+  _rm_redirect_one PASS 'rm -rf foo' 'bare rm (the shell alias trashes it)'
+  _rm_redirect_one PASS 'git rm foo' 'rm as a git argument'
+  _rm_redirect_one PASS 'git clean -n' 'git clean with -n'
+
+  # Fail-open contract.
   _rm_redirect_lines_command 4001
-  _rm_redirect_expect PASS "${REPLY}" '4001 lines, past the line cap, fails open'
-  _rm_redirect_bytes_command 524288
-  _rm_redirect_expect DENY "${REPLY}" '524288 characters, at the byte cap, still scanned' '' '' 3
-  _rm_redirect_bytes_command 524289
-  _rm_redirect_expect PASS "${REPLY}" '524289 characters, past the byte cap, fails open'
-
-  # Hook copies with one literal changed reach the branches the real deadline
-  # hides. A deadline already in the past fails open at once. A deadline pushed
-  # out to 600 s leaves the 700-call tokeniser cap (a backstop for a missing
-  # zsh/datetime) as the only limit: call 700 is scanned, call 701 fails open.
+  _rm_redirect_one PASS "${REPLY}" '4001 lines, past the line cap, fails open'
   local rm_redirect_copy_dir
   rm_redirect_copy_dir="$(mktemp -d "${TMPDIR:-/tmp}/rm-redirect-copy.XXXXXX")"
   if _rm_redirect_make_copy "${rm_redirect_copy_dir}" 'EPOCHREALTIME + 0.3' 'EPOCHREALTIME - 600'; then
-    _rm_redirect_copy_expect "${rm_redirect_copy_dir}" PASS '\rm foo' 'deadline already passed: a command that DENYs fails open'
-  fi
-  if _rm_redirect_make_copy "${rm_redirect_copy_dir}" 'EPOCHREALTIME + 0.3' 'EPOCHREALTIME + 600'; then
-    _rm_redirect_calls_command 699
-    _rm_redirect_copy_expect "${rm_redirect_copy_dir}" DENY "${REPLY}" 'tokeniser call 700, at the cap, still scanned'
-    _rm_redirect_calls_command 700
-    _rm_redirect_copy_expect "${rm_redirect_copy_dir}" PASS "${REPLY}" 'tokeniser call 701, past the cap, fails open'
+    _rm_redirect_copy_check "${rm_redirect_copy_dir}" PASS '\rm foo' 'deadline already passed'
+    _rm_redirect_finish "PASS: a deadline already passed fails open"
   fi
   /bin/rm -rf "${rm_redirect_copy_dir}"
-
-  # TWO heredoc introducers on a line (2026-09-25) run the per-heredoc block
-  # of _rm_redirect_scan_heredocs (`hdch`, `hconsumer_raw`) twice; a
-  # re-declared bare local there leaks the first heredoc's values.
-  _rm_redirect_expect DENY $'bash <<A; bash <<B\nrm foo\nA\nls\nB' 'two heredocs on one line, shell consumer'
-  _rm_redirect_expect PASS $'cat <<A; cat <<B\nrm foo\nA\nls\nB'  'two heredocs on one line, non-shell consumer'
-
-  # Wrapper that execs its target directly → DENY.
-  _rm_redirect_expect DENY 'command rm foo'
-  _rm_redirect_expect DENY 'env rm foo'
-  _rm_redirect_expect DENY 'env -u FOO rm foo'         # operand-flag walk
-  _rm_redirect_expect DENY 'nice rm foo'
-  _rm_redirect_expect DENY 'nohup rm foo'
-  # Per-class deny text (2026-09-25): each class names a rewrite that works,
-  # not a generic "use plain rm".
-  _rm_redirect_expect DENY 'echo foo | xargs rm' 'echo foo | xargs rm' \
-    'xargs trash' 'xargs deny reason says xargs trash'
-  _rm_redirect_expect DENY 'xargs -0 rm < list'
-  _rm_redirect_expect DENY '( exec rm foo )'
-  _rm_redirect_expect DENY 'xargs -I{} rm {}'          # {} must not fracture the segment into a bare "rm"
-  _rm_redirect_expect DENY 'gtimeout 5 rm foo'
-  _rm_redirect_expect DENY 'noglob rm foo'
-  _rm_redirect_expect DENY '\time rm foo'              'decorated time is BYPASS, unlike bare time'
-  _rm_redirect_expect DENY 'builtin command rm foo'    'builtin falls through to command'
-  _rm_redirect_expect DENY 'builtin exec rm foo'       'builtin falls through to exec'
-  _rm_redirect_expect DENY 'command time rm f'         'RM_WRAPPER blames command, not time' \
-    'command rm' 'command time rm f blames command in the reason text'
-  _rm_redirect_expect DENY 'time command rm f'         'RM_WRAPPER blames command even when time comes first' \
-    'command rm' 'time command rm f blames command in the reason text'
-
-  # find/gfind → DENY.
-  _rm_redirect_expect DENY "find . -name '*.tmp' -delete" "find . -name '*.tmp' -delete" \
-    '-exec trash {} +' 'find deny reason says -exec trash {} +'
-  _rm_redirect_expect DENY 'find . -exec rm {} \;'
-  _rm_redirect_expect DENY 'find . -exec rm {} +'
-  _rm_redirect_expect DENY 'gfind . -delete'
-
-  # fd/fdfind → DENY (2026-09-25 — same -exec-target class as find).
-  _rm_redirect_expect DENY 'fd -e tmp -x rm' 'fd -e tmp -x rm' \
-    '-x trash' 'fd deny reason says -x trash'
-  # fd's -x and -X differ (per-match vs batched exec) and match
-  # case-sensitively (2026-09-25); the reason must name the flag typed.
-  _rm_redirect_expect DENY 'fd -X rm' 'fd -X rm' \
-    '-X rm' 'fd -X deny reason says -X, not -x'
-  _rm_redirect_expect DENY 'fd --exec rm {}'
-  _rm_redirect_expect DENY 'fdfind -x gshred'
-
-  # nocorrect/coproc/repeat (2026-09-25) are transparent prefixes, like bare
-  # `time`: PASS bare, DENY when the rm-family word is decorated. `repeat`'s
-  # numeric operand must not resolve as the command word.
-  _rm_redirect_expect PASS 'nocorrect rm foo'
-  _rm_redirect_expect PASS 'coproc rm foo'
-  _rm_redirect_expect PASS 'repeat 3 rm foo'
-  _rm_redirect_expect DENY 'nocorrect \rm foo'  'nocorrect before a decorated rm'
-  _rm_redirect_expect DENY 'coproc \rm foo'     'coproc before a decorated rm'
-  _rm_redirect_expect DENY 'repeat 3 \rm foo'   'repeat before a decorated rm, past the numeric operand'
-
-  # git clean -f without -n → DENY; git clean -n / git rm → PASS.
-  _rm_redirect_expect DENY 'git clean -fdx' 'git clean -fdx' \
-    'git clean -n' 'git clean deny reason says git clean -n'
-  _rm_redirect_expect DENY 'git clean --force'
-  _rm_redirect_expect DENY 'git -C x clean -f'
-  _rm_redirect_expect PASS 'git clean -n'
-  _rm_redirect_expect PASS 'git clean -f -n'
-
-  # A heredoc body fed to a shell has no alias → DENY even for the bare word.
-  _rm_redirect_expect DENY $'bash <<EOF\nrm foo\nEOF' 'bash heredoc body: bare rm'
-
-  # 2026-09-25: ssh, su and a $-word consumer are also shell consumers.
-  _rm_redirect_expect DENY $'ssh host <<EOF\nrm foo\nEOF'        'ssh heredoc body has no alias either'
-  _rm_redirect_expect DENY $'su - someone <<EOF\nrm foo\nEOF'   'su heredoc body has no alias either'
-  _rm_redirect_expect DENY $'$SHELL <<EOF\nrm foo\nEOF'         'dynamic $-word consumer fails toward scanning'
-
-  # sh/bash/zsh/dash/ksh -c strings (2026-10-09): the string is re-scanned as a
-  # command, at most RM_MAX_DEPTH (3) levels deep, and runs in a child shell
-  # with no alias table, so a bare rm inside it denies too.
-  _rm_redirect_expect DENY "bash -c 'rm foo'"                          'bash -c string with a bare rm'
-  _rm_redirect_expect DENY 'sh -c "rm foo"'                            'sh -c double-quoted string'
-  _rm_redirect_expect DENY "zsh -c 'ls; rm foo'"                       'zsh -c string, rm after a separator'
-  _rm_redirect_expect DENY "dash -c 'rm foo'"                          'dash -c'
-  _rm_redirect_expect DENY "ksh -c 'rm foo'"                           'ksh -c'
-  _rm_redirect_expect DENY "bash -lc 'rm foo'"                         'combined -lc flag'
-  _rm_redirect_expect DENY "bash --norc -c 'rm foo'"                   '-c after a long option'
-  _rm_redirect_expect DENY "bash -c 'rm foo' arg0"                     '-c string followed by arguments'
-  _rm_redirect_expect DENY "/bin/bash -c 'rm foo'"                     'path-qualified shell'
-  _rm_redirect_expect DENY "sudo bash -c 'rm foo'"                     'sudo before the shell'
-  _rm_redirect_expect DENY "env FOO=1 sh -c 'rm foo'"                  'env before the shell'
-  _rm_redirect_expect DENY "nohup bash -c 'rm foo'"                    'nohup before the shell'
-  _rm_redirect_expect DENY "xargs -I{} sh -c 'rm {}'"                  'xargs sh -c string'
-  _rm_redirect_expect DENY "bash -c 'find . -delete'"                  'find -delete inside a -c string'
-  _rm_redirect_expect DENY "bash -c 'git clean -fdx'"                  'git clean inside a -c string'
-  _rm_redirect_expect DENY "bash -c '/bin/rm foo'"                     'path-qualified rm inside a -c string'
-  _rm_redirect_expect DENY "bash -c 'sudo rm foo'"                     'sudo rm inside a -c string'
-  _rm_redirect_expect DENY "bash -c 'xargs rm'"                        'xargs rm inside a -c string'
-  _rm_redirect_expect DENY "bash -c \"bash -c 'rm foo'\""              'two levels of -c'
-  _rm_redirect_expect DENY "bash -c \"sh -c \\\"sh -c 'rm foo'\\\"\""  'three levels of -c, at the depth bound'
-  _rm_redirect_expect PASS "bash -c \"sh -c \\\"sh -c \\\\\\\"sh -c 'rm foo'\\\\\\\"\\\"\"" 'four levels of -c, past the depth bound, fails open'
-  _rm_redirect_expect DENY "bash -c 'rm foo' 'bar'; ls"               '-c string then another command'
-  _rm_redirect_expect PASS "bash -c 'echo hi'"                         'harmless -c string'
-  _rm_redirect_expect PASS "bash -c 'git rm foo'"                      'git rm inside a -c string'
-  _rm_redirect_expect PASS "bash -c 'echo rm'"                         'rm as an argument inside a -c string'
-  _rm_redirect_expect PASS 'bash script.sh rm'                         'a script argument, no -c'
-  _rm_redirect_expect PASS 'bash -c'                                   '-c with no string'
-  # A quoted string that runs on over several lines is one -c string.
-  _rm_redirect_expect DENY $'bash -c \'true\nrm foo\''                 'multi-line single-quoted -c string'
-  _rm_redirect_expect DENY $'bash -c "set -e\n  rm foo\n"'             'multi-line double-quoted -c string'
-  _rm_redirect_expect DENY $'sudo bash -c \'\nunlink foo\n\''          'multi-line -c string opened on an empty line'
-  _rm_redirect_expect PASS $'bash -c \'true\nls\n\''                   'multi-line -c string with no rm'
-  _rm_redirect_expect PASS $'git commit -m "a\nb rm"'                  'multi-line quoted text under a non-shell command'
-
-  # A quoted string is ONE word (2026-10-09), so spaces inside it no longer
-  # shift the walk: `-C "my dir"` skips one operand, `-name "a b"` is one word.
-  _rm_redirect_expect DENY 'git -C "my dir" clean -fdx'                'quoted operand with a space before clean'
-  _rm_redirect_expect DENY 'find . -name "a b" -delete'                'quoted find operand with a space'
-  _rm_redirect_expect PASS 'echo "rm foo"'                             'a quoted string holding rm is one non-rm word'
-  _rm_redirect_expect DENY 'env -S "rm foo"'                           'env -S string is split back into words'
-
-  # Wrappers caffeinate, arch, chronic, ionice and watch exec their target
-  # directly (2026-10-09), like nice and nohup.
-  _rm_redirect_expect DENY 'caffeinate rm foo'                         'caffeinate rm'
-  _rm_redirect_expect DENY 'caffeinate -t 5 rm foo'                    'caffeinate operand flag'
-  _rm_redirect_expect DENY 'arch -arm64 rm foo'                        'arch rm'
-  _rm_redirect_expect DENY 'arch -arch x86_64 rm foo'                  'arch -arch operand'
-  _rm_redirect_expect DENY 'chronic rm foo'                            'chronic rm'
-  _rm_redirect_expect DENY 'ionice -c 3 rm foo'                        'ionice operand flag'
-  _rm_redirect_expect DENY 'watch rm foo'                              'watch rm'
-  _rm_redirect_expect DENY 'watch -n 5 rm foo'                         'watch operand flag'
-  _rm_redirect_expect DENY 'watch -n 5 "rm foo"'                       'watch with the command as one string'
-  _rm_redirect_expect DENY 'caffeinate /bin/rm foo'                    'caffeinate before a path-qualified rm'
-  _rm_redirect_expect DENY 'caffeinate -i find . -delete'              'caffeinate before find -delete'
-  _rm_redirect_expect DENY $'caffeinate bash <<EOF\nrm foo\nEOF'       'caffeinate before a shell heredoc'
-  _rm_redirect_expect PASS 'caffeinate -t 5 ls'                        'caffeinate before a harmless command'
-  _rm_redirect_expect PASS 'watch -n 5 ls'                             'watch before a harmless command'
-  _rm_redirect_expect DENY 'caffeinate rm foo' 'caffeinate deny reason' \
-    'caffeinate rm' 'caffeinate is named in the deny reason'
-
-  # A remote ssh command line is a declared gap (hook header, "Declared
-  # gaps"): the remote alias table is invisible to the hook.
-  _rm_redirect_expect PASS 'ssh host rm -rf /tmp/x'  'declared gap: a remote command line is not this shell'
-
-  # A decorated form inside `{ cmd; }` still denies; the {}-fix only protects
-  # the literal xargs -I{} shape.
-  _rm_redirect_expect DENY '{ \rm foo; }'               'brace group: decorated rm inside still DENIEs'
-
-  # Reserved words and `!` are transparent prefixes (2026-09-25); otherwise
-  # "do"/"then" resolved as RM_WORD and the body was never inspected.
-  _rm_redirect_expect DENY 'for d in a b; do find $d -delete; done'      'do is transparent, not the command word'
-  _rm_redirect_expect DENY 'for f in *; do \rm $f; done'                'do before a decorated rm'
-  _rm_redirect_expect DENY 'if true; then command rm f; fi'             'then is transparent'
-  _rm_redirect_expect DENY 'while read f; do env rm $f; done < list'    'do before an env-wrapped rm'
-  _rm_redirect_expect DENY '! \rm foo'                                  '! is transparent'
-
-  # 2026-09-25: with a re-declared `local segment match`, the FIRST line's
-  # values reach stdout ahead of the deny JSON: INVALID, not DENY.
-  _rm_redirect_expect DENY $'rm -rf build\nfind . -name "*.o" -delete' 'two qualifying lines, the second denies'
-
-  # Backslash-newline joins into one logical line in a real shell
-  # (2026-09-25), so a wrapped find/git-clean/xargs form must still DENY.
-  _rm_redirect_expect DENY $'find . -name "*.pyc" \\\n  -delete'       'backslash-newline continuation: find -delete'
-  _rm_redirect_expect DENY $'find . \\\n  -name "*.pyc" \\\n  -delete'  'three-line continuation: inner join loop runs twice'
-  _rm_redirect_expect DENY $'git clean \\\n  -fdx'                     'backslash-newline continuation: git clean -fdx'
-  _rm_redirect_expect DENY $'echo foo | xargs \\\n  rm'                'backslash-newline continuation: xargs rm'
-
-  # A continuation needs an ODD trailing backslash run outside a comment
-  # (2026-09-25): `echo foo\\`<NL> prints `foo\` and the next line stands
-  # alone (EVEN, no join); `# note \`<NL> is a comment (no join). Three
-  # backslashes (ODD) still join.
-  _rm_redirect_expect DENY $'echo foo\\\\\n\\rm x'         'even trailing backslash count: no join, next line stands alone'
-  _rm_redirect_expect DENY $'# note \\\n\\rm x'             'comment ending in backslash: no join, next line stands alone'
-  _rm_redirect_expect DENY $'echo hi # trailing \\\n\\rm x' 'trailing comment ending in backslash: no join'
-  _rm_redirect_expect DENY $'find . -name x\\\\\\\n  -delete' 'odd run of three backslashes still joins'
-
-  # The process path (JSON on stdin, the hook's own jq, _hook_verdict): a few
-  # PASS and DENY verdicts, the JSON deny reason, a leak check on a two-line
-  # command, and the sizes at and past the caps carried on stdin.
-  _rm_redirect_expect_standalone PASS 'rm -rf foo'
-  _rm_redirect_expect_standalone PASS 'git clean -n'
-  _rm_redirect_expect_standalone PASS $'rm -rf a\nrm -rf b' 'two qualifying lines, both PASS'
-  _rm_redirect_expect_standalone DENY '\rm foo.txt' 'backslash-escaped rm' \
-    trash 'standalone deny reason names trash'
-  _rm_redirect_expect_standalone DENY 'sudo rm foo' 'sudo rm'
-  _rm_redirect_expect_standalone DENY "bash -c 'rm foo'" 'bash -c string with a bare rm'
-  _rm_redirect_expect_standalone DENY $'rm -rf build\nfind . -name "*.o" -delete' 'two qualifying lines, the second denies'
-  _rm_redirect_bytes_command 524288
-  _rm_redirect_expect_standalone DENY "${REPLY}" '524288 characters on stdin, at the byte cap, still scanned' '' '' 3
-  _rm_redirect_bytes_command 524289
-  _rm_redirect_expect_standalone PASS "${REPLY}" '524289 characters on stdin, past the byte cap, fails open'
-
-  # An exported HOOK_PRE_DISPATCH must not make a standalone hook skip its
-  # stdin: ZSH_EVAL_CONTEXT lacks :file when the hook is exec'd, so the
-  # command comes from the JSON, not from HOOK_PRE_COMMAND.
-  local rm_redirect_env_out rm_redirect_env_got
-  rm_redirect_env_out="$(jq -n --arg c '\rm foo' '{tool_name:"Bash", tool_input:{command:$c}}' \
-    | HOOK_PRE_DISPATCH=1 HOOK_PRE_COMMAND='ls' /bin/zsh "${SCRIPT_DIR}/claude/hooks/rm-redirect-hook")" || rm_redirect_env_out=''
-  rm_redirect_env_got="$(_hook_verdict "${rm_redirect_env_out}")" || rm_redirect_env_got=INVALID
-  if [[ "${rm_redirect_env_got}" == DENY ]]; then
-    _pass "DENY (standalone): exported HOOK_PRE_DISPATCH does not skip the stdin path"
-  else
-    _fail "exported HOOK_PRE_DISPATCH skipped a standalone run — got ${rm_redirect_env_got}"
-  fi
-
-  # Malformed/empty stdin → PASS (fail-open), matching every other hook.
-  if [[ -z "$(printf '' | /bin/zsh "${SCRIPT_DIR}/claude/hooks/rm-redirect-hook")" ]]; then
-    _pass "PASS: empty stdin (fail-open)"
-  else
-    _fail "empty stdin did not fail open"
-  fi
+  local rm_redirect_out rm_redirect_got
   if [[ -z "$(printf 'not json' | /bin/zsh "${SCRIPT_DIR}/claude/hooks/rm-redirect-hook")" ]]; then
-    _pass "PASS: malformed stdin (fail-open)"
+    _pass "PASS: malformed stdin fails open"
   else
     _fail "malformed stdin did not fail open"
   fi
 
-  # rc=0 on a DENY too (hook header, "Fail-open by convention").
-  if /usr/bin/jq -n --arg c '\rm foo' '{tool_name:"Bash", tool_input:{command:$c}}' \
-      | /bin/zsh "${SCRIPT_DIR}/claude/hooks/rm-redirect-hook" > /dev/null; then
-    _pass "DENY still exits 0"
+  # An exported HOOK_PRE_DISPATCH must not make a standalone hook skip its
+  # stdin: ZSH_EVAL_CONTEXT lacks :file when the hook is exec'd, so the
+  # command comes from the JSON, not from HOOK_PRE_COMMAND.
+  rm_redirect_out="$(jq -n --arg c '\rm foo' '{tool_name:"Bash", tool_input:{command:$c}}' \
+    | HOOK_PRE_DISPATCH=1 HOOK_PRE_COMMAND='ls' /bin/zsh "${SCRIPT_DIR}/claude/hooks/rm-redirect-hook")" || rm_redirect_out=''
+  rm_redirect_got="$(_hook_verdict "${rm_redirect_out}")" || rm_redirect_got=INVALID
+  if [[ "${rm_redirect_got}" == DENY ]]; then
+    _pass "DENY (standalone): an exported HOOK_PRE_DISPATCH does not skip the stdin path"
   else
-    _fail "a DENY verdict must not exit nonzero"
+    _fail "exported HOOK_PRE_DISPATCH skipped a standalone run — got ${rm_redirect_got}"
   fi
-
-  # Case variants at a command position DENY: the alias is case-sensitive,
-  # the filesystem is not (2026-09-29). A path-qualified variant denies too
-  # (2026-10-09); a non-command-position variant stays PASS.
-  _rm_redirect_expect DENY 'RM foo'
-  _rm_redirect_expect DENY 'Rm -rf foo'
-  _rm_redirect_expect DENY 'UNLINK foo'
-  _rm_redirect_expect DENY 'Shred foo'
-  _rm_redirect_expect DENY 'a && RM b'                   'case variant after &&'
-  _rm_redirect_expect DENY $'ls\nRM b'                   'case variant on a later line'
-  _rm_redirect_expect DENY '/bin/RM foo'                 'path-qualified case variant'
-  _rm_redirect_expect PASS 'echo RM foo'                 'case variant as an argument'
-  _rm_redirect_expect PASS 'RMDIR foo'                   'non-rm-family word in capitals'
-
-  # Deny text is one line, at most 120 characters, of the form
-  # "<what is blocked>: <what to use instead>." (2026-09-29).
-  local shape reason
-  for shape in '\rm foo' 'RM foo' 'xargs rm' 'command rm foo' 'find . -delete' \
-               'find . -exec rm {} +' 'fd -X rm' 'fd --exec rm' 'git clean -fdx' \
-               $'bash <<EOF\nrm x\nEOF' 'nocorrect \rm foo' 'env rm foo' \
-               '/bin/rm foo' '/usr/bin/unlink foo' 'sudo rm foo' 'doas find . -delete' \
-               'find . -exec /bin/rm {} +' 'fd -x /bin/rm' "bash -c 'rm foo'" 'watch rm foo'; do
-    _hook_run_seam "${SCRIPT_DIR}/claude/hooks/rm-redirect-hook" Bash "${shape}"
-    reason="${HOOK_SEAM_REASON}"
-    if [[ -n "${reason}" && "${reason}" != *$'\n'* && ${#reason} -le 120 \
-          && "${reason}" == *': '* && "${reason}" == *. ]]; then
-      _pass "deny text is one short line (${#reason} chars): ${shape//$'\n'/<NL>}"
-    else
-      _fail "deny text not one short line (${#reason} chars): ${shape//$'\n'/<NL>}: ${reason}"
-    fi
-  done
-
-  # Multi-line commands run every hook loop more than once; output must be
-  # empty (PASS) or one JSON object (DENY), never stray "name=value" lines
-  # from a re-executed untyped local.
-  _rm_redirect_expect PASS $'echo "a"\necho \'b\'\nrm c\nrm d'          'quoted lines then plain rm lines: segment loop twice'
-  _rm_redirect_expect PASS $'cat <<A <<B\nx\nA\ny\nB\nrm q\nrm r'       'two heredocs then plain rm lines'
-  _rm_redirect_expect PASS $'echo "rm a"; echo "rm b"\necho "unlink c"\nls'  'quoted rm words on several lines'
-  _rm_redirect_expect DENY $'echo "a"\necho \'b\'\nfind . -name x\nRM c'  'quoted lines then a case-variant deny'
-  _rm_redirect_expect DENY $'cat <<A <<B\nx\nA\ny\nB\n\\rm q'          'two heredocs then a decorated deny'
 }
