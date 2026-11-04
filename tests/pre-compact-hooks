@@ -421,7 +421,7 @@ function run_pre_compact_hooks {
   _pch_rpl compact "${sid}" "${pch_tp}" ',"agent_id":"sub-1"'
   _pch_run compact-resume "${pl}" "PRE_COMPACT_STORE=${rstore}"
   _pch_quiet "resume: agent_id present"
-  for bad in '../evil' 'a/b' '' 'abc' "${long200}"; do
+  for bad in 'abcdefgh/../x' 'a/b' '' 'abc' "${long200}"; do
     _pch_rpl compact "${bad}" "${pch_tp}"
     _pch_run compact-resume "${pl}" "PRE_COMPACT_STORE=${rstore}"
     _pch_quiet "resume: bad session id '${bad:0:20}'"
