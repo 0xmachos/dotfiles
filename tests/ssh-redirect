@@ -199,6 +199,23 @@ function run_ssh_redirect {
   _ssh_redirect_expect PASS 'ssh hostb-rex' '-rex alias with no -claude twin'
   _ssh_redirect_expect PASS 'ssh hostd-rex' '-rex name never declared, -claude twin exists'
   _ssh_redirect_expect PASS 'ssh tail-hosta-rex' 'no tail- form for the -rex alias'
+  # The Rex bridge's shared login socket: any destination word denies.
+  _ssh_redirect_expect DENY 'ssh -S "/Users/u/Library/Application Support/rex-remote-bridge/mux-hosta-rex" -o ControlMaster=no anyword' \
+    '-S through the rex-remote-bridge folder'
+  _ssh_redirect_expect DENY 'ssh -S ~/Library/Application\ Support/rex-remote-bridge/mux-x -O exit hostb' \
+    '-S with -O exit through the rex-remote-bridge folder'
+  _ssh_redirect_expect DENY 'ssh -Smux-hosta-rex anyword' 'attached -S naming a mux-<X>-rex socket'
+  _ssh_redirect_expect DENY 'ssh -vS mux-hosta-rex anyword' 'mid-cluster -S naming a mux-<X>-rex socket'
+  _ssh_redirect_expect DENY 'ssh -o ControlPath=/a/rex-remote-bridge/m anyword' '-o ControlPath= through the folder'
+  _ssh_redirect_expect DENY 'ssh -oControlPath=mux-hosta-rex anyword' 'attached -oControlPath= mux-<X>-rex'
+  _ssh_redirect_expect PASS 'ssh -S ~/.ssh/sockets/hostb hostb' '-S on an ordinary control socket'
+  _ssh_redirect_expect PASS 'ssh -S mux-hostb hostb' 'mux- socket without the -rex suffix'
+  _ssh_redirect_seam "${SSHR_T_CONFIG}" "${SSHR_T_HOME}" 'ssh -S mux-hosta-rex anyword'
+  if [[ "${HOOK_SEAM_REASON}" == "That control socket is the Rex bridge's shared SSH login: use the host's -claude alias instead." ]]; then
+    _pass "deny text for the Rex bridge socket names the shared login"
+  else
+    _fail "Rex bridge socket deny text unexpected: ${HOOK_SEAM_OUT}${HOOK_SEAM_ERR}"
+  fi
 
   # No twin → PASS.
   _ssh_redirect_expect PASS 'ssh hostb'
