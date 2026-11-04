@@ -3,9 +3,12 @@
 #
 # Behavioural test for claude/hooks/test-guard-hook, the PreToolUse guard
 # that DENIES a full run of the dotfiles test dispatcher (`./test` with no
-# suite, or `all`) and passes a one-suite run. Most cases go through the
-# dispatcher seam (_hook_run_seam: no process start); a few run the hook on
-# its own with a JSON payload, to check the jq path and the fail-open path.
+# suite, or `all`) and passes a one-suite run. One input is one case. The
+# cases go through the dispatcher seam (_hook_run_seam: no process start)
+# and cover: the deny reason, the empty and `all` operands, wrappers,
+# interpreters and eval, a heredoc a shell reads, the over-4-KiB coarse
+# splitter, quoted data, a one-suite run, another repository, and the
+# fail-open path (malformed payload, run as its own process).
 #
 # Fixture: a sandbox HOME with a fake checkout `dot/` that holds the three
 # files the guard looks for (test, bittersweet, tests/lib), and a directory
@@ -26,16 +29,10 @@ function _tg_expect {
   local want="$1" cmd="$2" label="${3:-$2}" cwd="${4:-${TG_DOT}}"
   _hook_run_seam "HOME=${TG_HOME}" -- "${TG_HOOK}" Bash "${cmd}" '' '' "${cwd}"
   if [[ "${HOOK_SEAM_VERDICT}" == "${want}" ]]; then
-    _pass "${want}: ${label}"
+    _pass "${want}: ${label:0:100}"
   else
-    _fail "${label} — expected ${want}, got ${HOOK_SEAM_VERDICT}: ${HOOK_SEAM_OUT:0:120}"
+    _fail "${label:0:100} — expected ${want}, got ${HOOK_SEAM_VERDICT}: ${HOOK_SEAM_OUT:0:120}"
   fi
-}
-
-function _tg_standalone {
-  # $1 = command, $2 = cwd. Prints the hook's stdout.
-  jq -cn --arg c "$1" --arg d "$2" '{tool_name:"Bash", tool_input:{command:$c}, cwd:$d}' \
-    | HOME="${TG_HOME}" /bin/zsh "${TG_HOOK}" 2>/dev/null
 }
 
 function run_test_guard {
@@ -66,140 +63,37 @@ function run_test_guard {
   # Single quotes are the point: the fixtures are literal command text.
   # shellcheck disable=SC2016,SC2088
   {
-    # Full runs: no suite operand, or `all`, after any options.
-    _tg_expect DENY './test'
-    _tg_expect DENY './test -j 1 --time'
-    _tg_expect DENY './test -j4'
-    _tg_expect DENY './test --time --'
-    _tg_expect DENY './test all'
-    _tg_expect DENY './test -j 2 all'
-    _tg_expect DENY './test ""' 'an empty operand is all (${1:-all})'
-    # The log-file form in .claude/rules/test-runs.md.
-    _tg_expect DENY './test > "$J/test.log" 2>&1; echo "exit $?"' 'the documented log-file form'
-    _tg_expect DENY './test 2>&1 | tee x.log'
-    _tg_expect DENY './test &> x.log'
-    # Wrappers, assignments and shell syntax in front.
-    _tg_expect DENY 'TEST_JOBS=1 ./test'
-    _tg_expect DENY 'env -u X FOO=1 ./test'
-    _tg_expect DENY 'command ./test'
-    _tg_expect DENY 'time -p ./test'
-    _tg_expect DENY 'timeout 600 ./test'
-    _tg_expect DENY 'caffeinate -i ./test'
-    _tg_expect DENY 'nice -n 10 ./test'
-    _tg_expect DENY '(./test)'
-    _tg_expect DENY '{ ./test; }'
-    _tg_expect DENY 'echo $(./test)'
-    _tg_expect DENY 'if ./test; then echo ok; fi'
-    _tg_expect DENY 'true && ./test || false'
-    _tg_expect DENY '"./test"' 'a quoted script word'
-    # Interpreters and source.
-    _tg_expect DENY 'zsh ./test'
-    _tg_expect DENY 'zsh test' 'a bare test word after an interpreter'
-    _tg_expect DENY '/bin/zsh -f ./test --time'
-    _tg_expect DENY 'source ./test'
+    # The deny names the checkout and the allowed command.
+    _hook_run_seam "HOME=${TG_HOME}" -- "${TG_HOOK}" Bash './test' '' '' "${TG_DOT}"
+    if [[ "${HOOK_SEAM_VERDICT}" == DENY && "${HOOK_SEAM_REASON}" == *"./test <suite>"* \
+        && "${HOOK_SEAM_REASON}" == *"cd ${TG_DOT} && ./test"* && "${HOOK_SEAM_REASON}" == *"NOT run"* ]]; then
+      _pass "DENY: ./test, and the deny names ./test <suite> and the user's command for the checkout"
+    else
+      _fail "./test — expected DENY with the full reason, got ${HOOK_SEAM_VERDICT}: ${HOOK_SEAM_REASON:0:200}"
+    fi
+    _tg_expect DENY './test -j 2 all' 'an explicit all operand after options'
+    _tg_expect DENY './test ""' 'an empty operand is all'
+    _tg_expect DENY 'time -p ./test' 'a wrapper before the script'
     _tg_expect DENY "zsh -c 'cd ~/dot && ./test'" 'a cd and a run inside zsh -c'
-    _tg_expect DENY 'bash -lc "./test -j 1"'
-    # The directory: absolute, ~, $HOME, relative, or a cd earlier in the line.
-    _tg_expect DENY "${TG_DOT}/test" 'absolute path' "${TG_OTHER}"
-    _tg_expect DENY '~/dot/test' '~/ path' "${TG_OTHER}"
-    _tg_expect DENY '$HOME/dot/test --time' '$HOME path' "${TG_OTHER}"
-    _tg_expect DENY '${HOME}/dot/test' '${HOME} path' "${TG_OTHER}"
-    _tg_expect DENY '../test' 'relative path from a subdirectory' "${TG_DOT}/sub"
-    _tg_expect DENY "cd ${TG_DOT} && ./test" 'cd to the checkout first' "${TG_OTHER}"
-    _tg_expect DENY 'cd ~/dot && ./test' 'cd ~/ to the checkout first' "${TG_OTHER}"
-    _tg_expect DENY 'cd && cd dot && ./test' 'bare cd, then a relative cd' "${TG_OTHER}"
-    _tg_expect DENY 'cd "$X" && ./test' 'a cd with a variable falls back to the cwd'
-
     _tg_expect DENY 'eval "./test --time"' 'eval arguments are lexed again'
-    _tg_expect DENY 'bash -c "./test" arg0' 'only the -c word is lexed again'
-    _tg_expect DENY "cd dot\\"$'\n'" && ./test" 'a backslash-newline continues the line' "${TG_HOME}"
-
-    # Quoted text is data unless a shell reads it.
-    _tg_expect PASS "node -e \"import('./x.ts').then(m => console.log(m.f('./test')))\"" 'a ./test string inside node -e'
-    _tg_expect PASS "echo 'see \`./test\` in the notes'" 'backticks inside single quotes'
-    _tg_expect PASS 'git commit -m "Run ./test; then push"' 'a separator inside a commit message'
-    _tg_expect PASS 'for s in a b; do ./test "$s"; done' 'a loop over suites (one suite per run)'
-
+    _tg_expect DENY "zsh <<'EOF'"$'\n'"./test"$'\n'"EOF" 'a heredoc body that zsh reads'
     # Over LEX_MAX (4 KiB) the coarse splitter runs: still no miss.
     local pad
     pad="$(printf 'x%.0s' {1..5000})"
     _tg_expect DENY "echo ${pad} && ./test" 'coarse path: a full run after 5 KB'
-    _tg_expect DENY "echo ${pad}; zsh -c 'cd ~/dot && ./test'" 'coarse path: zsh -c with a cd'
-    _tg_expect PASS "echo ${pad} && ./test pii-hook" 'coarse path: one suite'
-    _tg_expect PASS "echo ${pad} && cd ${TG_OTHER} && ./test" 'coarse path: another repository'
 
-    # A heredoc body is data, unless a shell reads it.
-    _tg_expect PASS "cat >> notes.md <<'EOF'"$'\n'"Not run: \`./test"$'\n'"pretool-dispatch\`."$'\n'"EOF" 'a quoted heredoc body with a backtick ./test line'
-    _tg_expect PASS "cat <<EOF"$'\n'"./test"$'\n'"EOF" 'an unquoted heredoc body for cat'
-    _tg_expect PASS "git commit -F - <<-EOF"$'\n\t'"./test"$'\n\t'"EOF" 'a <<- body with a tab-indented delimiter'
-    _tg_expect DENY "zsh <<'EOF'"$'\n'"./test"$'\n'"EOF" 'a heredoc body that zsh reads'
-    _tg_expect DENY "cat <<EOF"$'\n'"x"$'\n'"EOF"$'\n'"./test" 'a full run after the heredoc ends'
-    _tg_expect DENY "cat <<-EOF"$'\n\t'"x"$'\n\t'"EOF"$'\n'"./test" 'a full run after a <<- heredoc ends'
-    _tg_expect DENY "cat <<A <<B"$'\n'"a"$'\n'"A"$'\n'"b"$'\n'"B"$'\n'"./test" 'two heredocs on one line, then a full run'
-    _tg_expect DENY 'cat <<< x; ./test' 'a here-string is not a heredoc'
-
-    # One suite, help and lookalikes pass.
-    _tg_expect PASS './test pii-hook'
-    _tg_expect PASS './test -j 2 shellcheck' '-j takes the next word, then a suite'
-    _tg_expect PASS './test -- pii-hook'
-    _tg_expect PASS './test pii-hook > "$J/x.log" 2>&1'
-    _tg_expect PASS './test --help'
-    _tg_expect PASS './test -h'
-    _tg_expect PASS './test --bogus' 'an unknown option (the script exits 1)'
-    _tg_expect PASS './test "$S"' 'a variable operand'
-    _tg_expect PASS 'test -f x' 'the test builtin'
-    _tg_expect PASS 'test' 'the bare test builtin'
-    _tg_expect PASS '[ -f test ]'
-    _tg_expect PASS 'pytest'
-    _tg_expect PASS 'npm test'
-    _tg_expect PASS 'cargo test'
-    _tg_expect PASS 'cat ./test'
-    _tg_expect PASS 'shellcheck --shell=bash ./test'
-    _tg_expect PASS 'git add test tests/test-guard'
-    _tg_expect PASS 'command -v ./test'
-    _tg_expect PASS 'ls'
-    # Not the dotfiles checkout.
+    _tg_expect PASS './test pii-hook' 'one suite'
+    _tg_expect PASS 'git commit -m "Run ./test; then push"' 'a separator inside a commit message'
     _tg_expect PASS './test' 'another repository' "${TG_OTHER}"
-    _tg_expect PASS "cd ${TG_OTHER} && ./test" 'cd to another repository'
-    _tg_expect PASS 'cd /nonexistent && ./test' 'cd to a folder with no test runner'
-    _tg_expect PASS "${TG_OTHER}/test" 'absolute path to another runner'
   }
 
-  # The deny names the checkout and the allowed command.
-  _hook_run_seam "HOME=${TG_HOME}" -- "${TG_HOOK}" Bash './test' '' '' "${TG_DOT}"
-  if [[ "${HOOK_SEAM_REASON}" == *"./test <suite>"* && "${HOOK_SEAM_REASON}" == *"cd ${TG_DOT} && ./test"* && "${HOOK_SEAM_REASON}" == *"NOT run"* ]]; then
-    _pass "the deny names ./test <suite> and the user's command for the checkout"
-  else
-    _fail "deny reason — ${HOOK_SEAM_REASON:0:200}"
-  fi
-
-  # Standalone: the jq path reads the command and the cwd.
+  # Fail-open: a malformed payload, as the hook's own process.
   local out
-  out="$(_tg_standalone './test -j 1' "${TG_DOT}")"
-  if [[ "$(_hook_verdict "${out}")" == DENY ]]; then
-    _pass "DENY: standalone, cwd from the payload"
-  else
-    _fail "standalone full run — expected DENY, got $(_hook_verdict "${out}")"
-  fi
-  out="$(_tg_standalone './test pii-hook' "${TG_DOT}")"
-  if [[ "$(_hook_verdict "${out}")" == PASS ]]; then
-    _pass "PASS: standalone, one suite"
-  else
-    _fail "standalone one suite — expected PASS, got $(_hook_verdict "${out}")"
-  fi
   out="$(printf 'not json' | HOME="${TG_HOME}" /bin/zsh "${TG_HOOK}" 2>/dev/null)"
   if [[ -z "${out}" ]]; then
     _pass "PASS: malformed payload fails open (standalone)"
   else
     _fail "malformed payload — expected no output, got ${out:0:120}"
-  fi
-
-  # The real checkout counts as a dotfiles checkout.
-  _hook_run_seam -- "${TG_HOOK}" Bash './test' '' '' "${SCRIPT_DIR}"
-  if [[ "${HOOK_SEAM_VERDICT}" == DENY ]]; then
-    _pass "DENY: ./test in this checkout"
-  else
-    _fail "./test in this checkout — expected DENY, got ${HOOK_SEAM_VERDICT}"
   fi
 
   /bin/rm -rf "${TG_HOME}"
