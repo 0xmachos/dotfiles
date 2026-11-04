@@ -13,14 +13,14 @@
 #   - role_id/secret_id reach auth/approle/login only as "@<path>" file
 #     references, never literal argv values or in the login call's env;
 #   - the exec'd child gets exactly the secret's fields verbatim, never
-#     BAO_TOKEN;
+#     BAO_TOKEN, and a NAME="$F" prefix at the start of an argument passes;
 #   - `token revoke -self` fires exactly once, on success and on kv failure;
 #   - a malformed field name aborts rather than reaching `eval`;
-#   - exit codes: 64 usage, 1 on every credential/login/read failure; kv is
-#     never read after a login failure, revoke never skipped after a kv one;
-#   - exit 65 and no exec when a field would reach argv, as a $F or ${F}
-#     reference or a pasted literal of 8 or more characters (2026-10-10); a
-#     NAME="$F" prefix at the start of an argument passes and the child sees it.
+#   - exit 1 on a missing credential, a non-https address, a login failure and
+#     a kv failure: kv is never read after a login failure, revoke is never
+#     skipped after a kv one;
+#   - exit 65 and no exec when a field would reach argv, as a $F reference or
+#     a pasted literal of 8 or more characters (2026-10-10).
 #
 # Run: ./test bao-mcp-env
 # ShellCheck: lint with `shellcheck --shell=bash tests/bao-mcp-env`.
@@ -30,7 +30,7 @@
 # shellcheck disable=SC2016,SC2329
 
 typeset -g BME_T='' BME_REC='' BME_HOME='' BME_CRED_DIR='' BME_BIN='' BME_FX=''
-typeset -g BME_RC=0 BME_CHILD='' BME_KEY_VALUE=''
+typeset -g BME_RC=0 BME_CHILD='' BME_KEY_VALUE='' BME_BAD=''
 typeset -ga BME_EXTRA=()
 
 function _bme_setup {
@@ -102,262 +102,24 @@ function _bme_has {
   return 1
 }
 
-function _bme_expect_rc {
-  local want="$1" label="$2"
-  if (( BME_RC == want )); then
-    _pass "rc ${want}: ${label}"
-  else
-    _fail "${label} — expected rc ${want}, got ${BME_RC}; stderr: $(/usr/bin/head -c 200 "${BME_T}/err")"
-  fi
-}
-
-function _bme_expect_out {
-  local pattern="$1" label="$2"
-  if _bme_has "${BME_T}/out" "${pattern}"; then
-    _pass "stdout has '${pattern}': ${label}"
-  else
-    _fail "${label} — stdout lacks '${pattern}': $(/usr/bin/head -c 300 "${BME_T}/out")"
-  fi
-}
-
-function _bme_expect_err {
-  local pattern="$1" label="$2"
-  if _bme_has "${BME_T}/err" "${pattern}"; then
-    _pass "stderr has '${pattern}': ${label}"
-  else
-    _fail "${label} — stderr lacks '${pattern}': $(/usr/bin/head -c 300 "${BME_T}/err")"
-  fi
-}
-
-function _bme_expect_not_out {
-  local pattern="$1" label="$2"
-  if _bme_has "${BME_T}/out" "${pattern}"; then
-    _fail "${label} — stdout unexpectedly has '${pattern}'"
-  else
-    _pass "${label}"
-  fi
-}
-
-# --- test groups -------------------------------------------------------------
-
-function _bme_test_usage {
-  _section "bao-mcp-env: usage"
-
-  _bme_run
-  _bme_expect_rc 64 "no args"
-  _bme_expect_err 'usage: bao-mcp-env' "no args: usage printed"
-
-  _bme_run mcp/example-service
-  _bme_expect_rc 64 "one arg (missing command)"
-}
-
-function _bme_test_missing_creds {
-  _section "bao-mcp-env: missing credentials"
-
-  # No _bme_write_creds: the fixture dir exists but is empty.
-  _bme_run mcp/example-service /usr/bin/env
-  _bme_expect_rc 1 "credentials absent"
-  _bme_expect_err 'AppRole credentials missing or unreadable' "credentials absent: message"
-  _bme_expect_err 'Library/Application Support/openbao/claude' "credentials absent: message names the real migrated path, space included"
-  if [[ "$(_bme_calls)" == 0 ]]; then
-    _pass "credentials absent: bao never invoked"
-  else
-    _fail "credentials absent: bao was invoked despite missing creds"
-  fi
-}
-
-function _bme_test_missing_addr {
-  _section "bao-mcp-env: missing or malformed server address"
-
-  # The address is private wiring: it must never fall back to a tracked default.
-  _bme_write_creds
-  zf_rm -f "${BME_CRED_DIR}/addr"
-  _bme_run mcp/example-service /usr/bin/env
-  _bme_expect_rc 1 "address file absent"
-  _bme_expect_err 'server address file missing or unreadable' "address file absent: message"
-  if [[ "$(_bme_calls)" == 0 ]]; then
-    _pass "address file absent: bao never invoked"
-  else
-    _fail "address file absent: bao was invoked despite the missing address"
-  fi
-
-  # A non-https line is refused rather than exported.
-  printf 'http://fake-bao.invalid:8200\n' > "${BME_CRED_DIR}/addr"
-  _bme_run mcp/example-service /usr/bin/env
-  _bme_expect_rc 1 "address not https"
-  _bme_expect_err 'must hold one https:// URL' "address not https: message"
-
-  # Only the first line counts, with or without a final newline; an empty file
-  # or a blank first line is refused; blanks around the URL are kept verbatim
-  # (a leading one fails the https:// test, as `head -n 1` did).
-  : > "${BME_CRED_DIR}/addr"
-  _bme_run mcp/example-service /usr/bin/env
-  _bme_expect_rc 1 "address file empty"
-  _bme_expect_err 'must hold one https:// URL' "address file empty: message"
-  if [[ "$(_bme_calls)" == 0 ]]; then
-    _pass "address file empty: bao never invoked"
-  else
-    _fail "address file empty: bao was invoked"
-  fi
-
-  printf '\nhttps://fake-bao.invalid:8200\n' > "${BME_CRED_DIR}/addr"
-  _bme_run mcp/example-service /usr/bin/env
-  _bme_expect_rc 1 "address file with a blank first line"
-
-  printf ' https://fake-bao.invalid:8200\n' > "${BME_CRED_DIR}/addr"
-  _bme_run mcp/example-service /usr/bin/env
-  _bme_expect_rc 1 "address with a leading blank"
-
-  printf 'https://fake-bao.invalid:8200' > "${BME_CRED_DIR}/addr"
-  _bme_run mcp/example-service /usr/bin/env
-  _bme_expect_rc 0 "address file with no trailing newline"
-  _bme_expect_out '^BAO_ADDR=https://fake-bao.invalid:8200$' "no trailing newline: address reaches the child whole"
-
-  printf 'https://first.invalid:1\nhttps://second.invalid:2\n' > "${BME_CRED_DIR}/addr"
-  _bme_run mcp/example-service /usr/bin/env
-  _bme_expect_rc 0 "address file with two lines"
-  _bme_expect_out '^BAO_ADDR=https://first.invalid:1$' "two lines: only the first reaches the child"
-  _bme_expect_not_out 'second.invalid' "two lines: the second never reaches the child"
-
-  # The caller's environment never reaches the child (or this test's output).
-  printf 'https://fake-bao.invalid:8200\n' > "${BME_CRED_DIR}/addr"
-  ( export BME_LEAK_CANARY=caller-env-canary; _bme_run mcp/example-service /usr/bin/env )
-  _bme_expect_not_out 'caller-env-canary' "a variable in the caller's environment does not reach the child"
-
-  printf 'http://first.invalid\nhttps://second.invalid\n' > "${BME_CRED_DIR}/addr"
-  _bme_run mcp/example-service /usr/bin/env
-  _bme_expect_rc 1 "non-https first line is not rescued by an https second line"
-
-  # An address that is a directory is refused, bao never invoked.
-  zf_rm -f "${BME_CRED_DIR}/addr"
-  zf_mkdir "${BME_CRED_DIR}/addr"
-  _bme_run mcp/example-service /usr/bin/env
-  _bme_expect_rc 1 "address path is a directory"
-  _bme_expect_err 'must hold one https:// URL' "address is a directory: message"
-  if [[ "$(_bme_calls)" == 0 ]]; then
-    _pass "address is a directory: bao never invoked"
-  else
-    _fail "address is a directory: bao was invoked"
-  fi
-  zf_rmdir "${BME_CRED_DIR}/addr"
-
-  # An inherited BAO_ADDR never stands in for a bad address file.
-  : > "${BME_CRED_DIR}/addr"
-  BME_EXTRA=(BAO_ADDR=https://inherited.invalid)
-  _bme_run mcp/example-service /usr/bin/env
-  _bme_expect_rc 1 "empty address file with an inherited BAO_ADDR"
-}
-
-function _bme_test_login_failure {
-  _section "bao-mcp-env: AppRole login failure"
-
-  _bme_write_creds
-  BME_EXTRA=(FAKE_BAO_LOGIN_FAIL=1)
-  _bme_run mcp/example-service /usr/bin/env
-  _bme_expect_rc 1 "login denied"
-  _bme_expect_err 'AppRole login failed' "login denied: message"
-  if [[ "$(_bme_calls)" == 1 ]]; then
-    _pass "login denied: exactly one bao call (kv never attempted)"
-  else
-    _fail "login denied: expected exactly 1 bao call, got $(_bme_calls)"
-  fi
-}
-
-function _bme_test_kv_failure {
-  _section "bao-mcp-env: kv read failure"
-
-  _bme_write_creds
-  BME_EXTRA=(FAKE_BAO_KV_FAIL=1)
-  _bme_run mcp/example-service /usr/bin/env
-  _bme_expect_rc 1 "kv read denied"
-  _bme_expect_err 'read of kv/mcp/example-service failed' "kv read denied: message"
-  if [[ "$(_bme_calls)" == 3 ]]; then
-    _pass "kv read denied: login + kv + revoke all attempted (3 bao calls)"
-  else
-    _fail "kv read denied: expected 3 bao calls (login, kv, revoke), got $(_bme_calls)"
-  fi
-  if _bme_has "${BME_REC}/argv.3" '^token$' && _bme_has "${BME_REC}/argv.3" '^revoke$'; then
-    _pass "kv read denied: token revoked even on failure"
-  else
-    _fail "kv read denied: revoke was not the third call — token may be left live: $(cat "${BME_REC}/argv.3" 2>/dev/null)"
-  fi
-}
-
-function _bme_test_success {
-  _section "bao-mcp-env: success path"
-
-  _bme_write_creds
-  _bme_run mcp/example-service /usr/bin/env
-  _bme_expect_rc 0 "success"
-  _bme_expect_out '^FAKE_FIELD_ONE=one-value$' "secret field one exported verbatim"
-  _bme_expect_out '^FAKE_FIELD_TWO=two-value$' "secret field two exported verbatim"
-  if [[ "$(_bme_calls)" == 3 ]]; then
-    _pass "success: login + kv + revoke (3 bao calls)"
-  else
-    _fail "success: expected 3 bao calls, got $(_bme_calls)"
-  fi
-  if _bme_has "${BME_REC}/argv.3" '^token$' && _bme_has "${BME_REC}/argv.3" '^revoke$'; then
-    _pass "success: token revoked before exec"
-  else
-    _fail "success: revoke was not the third call"
-  fi
-
-  # Key hygiene, asserted on the success run's records.
-  _section "bao-mcp-env: key hygiene"
-
-  if _bme_has "${BME_REC}/argv.1" 'role_id=@' && _bme_has "${BME_REC}/argv.1" 'secret_id=@'; then
-    _pass "credentials passed as @file references, not literal argv values"
-  else
-    _fail "credentials not passed as @file references: $(cat "${BME_REC}/argv.1" 2>/dev/null)"
-  fi
-  if _bme_has "${BME_REC}/argv.1" "$(<"${BME_CRED_DIR}/role_id")"; then
-    _fail "role_id's literal file contents leaked into bao's argv"
-  else
-    _pass "role_id's literal contents never appear in bao's argv"
-  fi
-  if _bme_has "${BME_REC}/argv.1" "$(<"${BME_CRED_DIR}/secret_id")"; then
-    _fail "secret_id's literal file contents leaked into bao's argv"
-  else
-    _pass "secret_id's literal contents never appear in bao's argv"
-  fi
-
-  # Credential file contents never appear in any bao call's environment
-  # (bao-mcp-env reads them, it does not pass them through its env).
-  local envfile leaked=0
-  for envfile in "${BME_REC}"/env.*(N); do
-    _bme_has "${envfile}" "$(<"${BME_CRED_DIR}/secret_id")" && leaked=1
-  done
-  if (( leaked )); then
-    _fail "secret_id's literal contents leaked into a bao call's environment"
-  else
-    _pass "secret_id's literal contents never appear in any bao call's environment"
-  fi
-
-  # BAO_TOKEN is unset before exec.
-  if _bme_has "${BME_T}/out" '^BAO_TOKEN='; then
-    _fail "BAO_TOKEN leaked into the exec'd child's environment"
-  else
-    _pass "BAO_TOKEN not present in the exec'd child's environment"
-  fi
-
-  # BAO_ADDR/BAO_CACERT (non-secret) do reach the child: the tool exports
-  # them on purpose.
-  _bme_expect_out '^BAO_ADDR=' "connection config (non-secret) does reach the child, as designed"
-}
-
-function _bme_test_malformed_field {
-  _section "bao-mcp-env: malformed secret field name"
-
-  _bme_write_creds
-  printf '{"data":{"data":{"not a valid name":"x"}}}' > "${BME_T}/malformed.json"
-  BME_EXTRA=(FAKE_BAO_KV_JSON="${BME_T}/malformed.json")
-  _bme_run mcp/example-service /usr/bin/env
-  if (( BME_RC != 0 )); then
-    _pass "malformed field name aborts loudly (rc ${BME_RC}) rather than reaching eval"
-  else
-    _fail "malformed field name did not abort — rc 0, stdout: $(/usr/bin/head -c 200 "${BME_T}/out")"
-  fi
-  _bme_expect_not_out '^not a valid name=' "malformed field never exported"
+# Runs a command that must be refused as a field reaching argv and leaves the
+# problems in BME_BAD (empty when all hold): exit 65, the message names the field
+# and the fix, stdout empty, the child never ran, no value echoed, and login +
+# kv + exactly one revoke. Usage: <field> <command and args...>.
+function _bme_refusal_problems {
+  local field="$1"
+  shift
+  BME_BAD=''
+  _bme_run mcp/example-service "$@"
+  (( BME_RC == 65 )) || BME_BAD+=" rc=${BME_RC}"
+  _bme_has "${BME_T}/err" "bao-mcp-env: field ${field} would reach argv; pass it as an env prefix" \
+    || BME_BAD+=" message"
+  [[ -s "${BME_T}/out" ]] && BME_BAD+=" stdout-not-empty"
+  [[ -e "${BME_REC}/child-ran" ]] && BME_BAD+=" child-ran"
+  _bme_has "${BME_T}/err" "${BME_KEY_VALUE}" && BME_BAD+=" value-echoed"
+  [[ "$(_bme_calls)" == 3 ]] && _bme_has "${BME_REC}/argv.3" '^revoke$' \
+    || BME_BAD+=" revoke(calls=$(_bme_calls))"
+  return 0
 }
 
 # A child that records its start in the record dir and prints its environment.
@@ -368,128 +130,121 @@ function _bme_write_child {
   zf_chmod 700 "${BME_CHILD}"
 }
 
-# One refusal case: <label> <field the message must name> <command and args...>.
-function _bme_expect_refused {
-  local label="$1" field="$2"
-  shift 2
-  _bme_run mcp/example-service "$@"
-  _bme_expect_rc 65 "${label}"
-  _bme_expect_err "bao-mcp-env: field ${field} would reach argv; pass it as an env prefix" "${label}: message names the field and the fix"
-  if [[ -s "${BME_T}/out" ]]; then
-    _fail "${label}: stdout is not empty"
-  else
-    _pass "${label}: stdout empty"
-  fi
-  if [[ -e "${BME_REC}/child-ran" ]]; then
-    _fail "${label}: the child ran despite the refusal"
-  else
-    _pass "${label}: the child never ran"
-  fi
-  if _bme_has "${BME_T}/err" "${BME_KEY_VALUE}"; then
-    _fail "${label}: the message echoes a field value"
-  else
-    _pass "${label}: the message does not echo the value"
-  fi
-  if [[ "$(_bme_calls)" == 3 ]] && _bme_has "${BME_REC}/argv.3" '^revoke$'; then
-    _pass "${label}: the token was revoked, exactly once"
-  else
-    _fail "${label}: expected login + kv + one revoke (3 bao calls), got $(_bme_calls)"
-  fi
-}
+# --- test cases --------------------------------------------------------------
 
-# One passing case: <label> <command and args...>; the child must run.
-function _bme_expect_runs {
-  local label="$1"
-  shift
-  _bme_run mcp/example-service "$@"
-  _bme_expect_rc 0 "${label}"
-  if [[ -e "${BME_REC}/child-ran" ]]; then
-    _pass "${label}: the child ran"
-  else
-    _fail "${label}: the child did not run; stderr: $(/usr/bin/head -c 200 "${BME_T}/err")"
-  fi
-}
+function _bme_test_cases {
+  local bad
 
-function _bme_test_argv_refusal {
-  _section "bao-mcp-env: refuses a field that would reach argv"
-
+  # 1. Success, through an env prefix NAME="$F" (the sanctioned way to use a
+  #    field). Fields reach the child verbatim, BAO_TOKEN does not, the token
+  #    is revoked before exec, and the credentials reach bao only as @file
+  #    references.
+  _section "bao-mcp-env: success path"
   _bme_write_creds
+  _bme_run mcp/example-service /bin/sh -c 'X_PREFIXED="$FAKE_FIELD_ONE" exec /usr/bin/env'
+  bad=''
+  (( BME_RC == 0 )) || bad+=" rc=${BME_RC}"
+  _bme_has "${BME_T}/out" '^FAKE_FIELD_ONE=one-value$' || bad+=" field-one"
+  _bme_has "${BME_T}/out" '^FAKE_FIELD_TWO=two-value$' || bad+=" field-two"
+  _bme_has "${BME_T}/out" '^X_PREFIXED=one-value$' || bad+=" prefix"
+  _bme_has "${BME_T}/out" '^BAO_TOKEN=' && bad+=" BAO_TOKEN-leaked"
+  _bme_has "${BME_T}/out" '^BAO_ADDR=' || bad+=" BAO_ADDR-missing"
+  [[ "$(_bme_calls)" == 3 ]] && _bme_has "${BME_REC}/argv.3" '^revoke$' \
+    || bad+=" revoke(calls=$(_bme_calls))"
+  _bme_has "${BME_REC}/argv.1" 'role_id=@' && _bme_has "${BME_REC}/argv.1" 'secret_id=@' \
+    || bad+=" no-@file-refs"
+  _bme_has "${BME_REC}/argv.1" "$(<"${BME_CRED_DIR}/role_id")" && bad+=" role_id-in-argv"
+  _bme_has "${BME_REC}/argv.1" "$(<"${BME_CRED_DIR}/secret_id")" && bad+=" secret_id-in-argv"
+  local envfile
+  for envfile in "${BME_REC}"/env.*(N); do
+    _bme_has "${envfile}" "$(<"${BME_CRED_DIR}/secret_id")" && bad+=" secret_id-in-env"
+  done
+  if [[ -z "${bad}" ]]; then
+    _pass "success: fields and prefix reach the child, no BAO_TOKEN, credentials only as @file, token revoked"
+  else
+    _fail "success path wrong:${bad}; stderr: $(/usr/bin/head -c 200 "${BME_T}/err")"
+  fi
+
+  # 2. Missing credentials: exit 1, bao never invoked, message names the
+  #    migrated path (space included).
+  _section "bao-mcp-env: failure contracts"
+  zf_rm -f "${BME_CRED_DIR}/role_id" "${BME_CRED_DIR}/secret_id"
+  _bme_run mcp/example-service /usr/bin/env
+  if (( BME_RC == 1 )) && [[ "$(_bme_calls)" == 0 ]] \
+     && _bme_has "${BME_T}/err" 'AppRole credentials missing or unreadable' \
+     && _bme_has "${BME_T}/err" 'Library/Application Support/openbao/claude'; then
+    _pass "credentials absent: exit 1, bao never invoked, message names the real path"
+  else
+    _fail "credentials absent: rc=${BME_RC}, bao calls $(_bme_calls)"
+  fi
+
+  # 3. A non-https address is refused, bao never invoked. The address is
+  #    private wiring and never falls back to a default.
+  _bme_write_creds
+  printf 'http://fake-bao.invalid:8200\n' > "${BME_CRED_DIR}/addr"
+  _bme_run mcp/example-service /usr/bin/env
+  if (( BME_RC == 1 )) && [[ "$(_bme_calls)" == 0 ]] \
+     && _bme_has "${BME_T}/err" 'must hold one https:// URL'; then
+    _pass "address not https: exit 1, bao never invoked"
+  else
+    _fail "address not https: rc=${BME_RC}, bao calls $(_bme_calls)"
+  fi
+
+  # 4. Login failure: exit 1 and kv is never read.
+  _bme_write_creds
+  BME_EXTRA=(FAKE_BAO_LOGIN_FAIL=1)
+  _bme_run mcp/example-service /usr/bin/env
+  if (( BME_RC == 1 )) && [[ "$(_bme_calls)" == 1 ]] \
+     && _bme_has "${BME_T}/err" 'AppRole login failed'; then
+    _pass "login denied: exit 1, exactly one bao call (kv never attempted)"
+  else
+    _fail "login denied: rc=${BME_RC}, bao calls $(_bme_calls)"
+  fi
+
+  # 5. kv failure: exit 1 and the token is still revoked.
+  BME_EXTRA=(FAKE_BAO_KV_FAIL=1)
+  _bme_run mcp/example-service /usr/bin/env
+  if (( BME_RC == 1 )) && [[ "$(_bme_calls)" == 3 ]] \
+     && _bme_has "${BME_REC}/argv.3" '^revoke$' \
+     && _bme_has "${BME_T}/err" 'read of kv/mcp/example-service failed'; then
+    _pass "kv read denied: exit 1, token revoked even on failure"
+  else
+    _fail "kv read denied: rc=${BME_RC}, bao calls $(_bme_calls)"
+  fi
+
+  # 6. A malformed field name aborts rather than reaching eval.
+  printf '{"data":{"data":{"not a valid name":"x"}}}' > "${BME_T}/malformed.json"
+  BME_EXTRA=(FAKE_BAO_KV_JSON="${BME_T}/malformed.json")
+  _bme_run mcp/example-service /usr/bin/env
+  if (( BME_RC != 0 )) && ! _bme_has "${BME_T}/out" '^not a valid name='; then
+    _pass "malformed field name aborts (rc ${BME_RC}) and is never exported"
+  else
+    _fail "malformed field name did not abort cleanly (rc ${BME_RC})"
+  fi
+
+  # 7 and 8. A field that would reach argv is refused with exit 65 and no
+  #    exec. MCP_API_KEY holds 8 or more characters. Fixture values are fakes.
+  _section "bao-mcp-env: refuses a field that would reach argv"
   _bme_write_child
-  # Fixture values are obvious fakes. MCP_API_KEY holds 8 or more characters,
-  # MCP_PORT fewer. Neither name is special-cased by the tool.
   BME_KEY_VALUE='fake-key-value-1'
   printf '{"data":{"data":{"MCP_API_KEY":"%s","MCP_PORT":"8200"}}}' "${BME_KEY_VALUE}" > "${BME_T}/argv.json"
   local json="FAKE_BAO_KV_JSON=${BME_T}/argv.json"
-  local child="${BME_CHILD}"
-
-  # Rule 1: a $F or ${F} reference in an argument.
-  BME_EXTRA=("${json}")
-  _bme_expect_refused "flag then \$F in a shell string" MCP_API_KEY \
-    /bin/sh -c "exec \"${child}\" -H x \"\$MCP_API_KEY\""
-  BME_EXTRA=("${json}")
-  _bme_expect_refused "positional \$F argument" MCP_API_KEY \
-    "${child}" '$MCP_API_KEY'
-  BME_EXTRA=("${json}")
-  _bme_expect_refused "\${F} form" MCP_API_KEY \
-    /bin/sh -c "exec \"${child}\" \"\${MCP_API_KEY}\""
-  BME_EXTRA=("${json}")
-  _bme_expect_refused "\${F:-x} form" MCP_API_KEY \
-    /bin/sh -c "exec \"${child}\" \"\${MCP_API_KEY:-x}\""
-  BME_EXTRA=("${json}")
-  _bme_expect_refused "a short field is still refused by reference, second field named" MCP_PORT \
-    "${child}" '--port=$MCP_PORT'
-  BME_EXTRA=("${json}")
-  _bme_expect_refused "prefix not at the start of the argument" MCP_API_KEY \
-    /bin/sh -c "exec env X=\"\$MCP_API_KEY\" \"${child}\""
-  BME_EXTRA=("${json}")
-  _bme_expect_refused "reference after a prefix" MCP_API_KEY \
-    /bin/sh -c "X=1 exec \"${child}\" \"\$MCP_API_KEY\""
-  BME_EXTRA=("${json}")
-  _bme_expect_refused "command substitution inside a prefix" MCP_API_KEY \
-    /bin/sh -c "X=\"\$(echo \"\$MCP_API_KEY\")\" exec \"${child}\""
-  BME_EXTRA=("${json}")
-  _bme_expect_refused "prefix whose quote does not close before the command" MCP_API_KEY \
-    /bin/sh -c "X=\"\$MCP_API_KEY exec \"${child}\""
-
-  # Rule 2: a pasted literal of 8 or more characters.
-  BME_EXTRA=("${json}")
-  _bme_expect_refused "literal value as an argument" MCP_API_KEY \
-    "${child}" "${BME_KEY_VALUE}"
-  BME_EXTRA=("${json}")
-  _bme_expect_refused "literal value inside a longer argument" MCP_API_KEY \
-    "${child}" "--key=${BME_KEY_VALUE}"
-  BME_EXTRA=("${json}")
-  _bme_expect_refused "literal value inside a prefix of a shell string" MCP_API_KEY \
-    /bin/sh -c "X='${BME_KEY_VALUE}' exec \"${child}\""
-
-  # Passing shapes.
-  BME_EXTRA=("${json}")
-  _bme_expect_runs "a value shorter than 8 characters as an argument is not refused" \
-    "${child}" 8200
-  BME_EXTRA=("${json}")
-  _bme_expect_runs "a longer variable name that starts with the field name (\$MCP_API_KEY_OTHER)" \
-    /bin/sh -c "exec \"${child}\" \"\$MCP_API_KEY_OTHER\""
 
   BME_EXTRA=("${json}")
-  _bme_expect_runs "env prefix NAME=\"\$F\" exec prog" \
-    /bin/sh -c "API_ACCESS_TOKEN=\"\$MCP_API_KEY\" exec \"${child}\""
-  _bme_expect_out '^API_ACCESS_TOKEN=fake-key-value-1$' "env prefix: the child sees the prefix variable"
-  _bme_expect_out '^MCP_API_KEY=fake-key-value-1$' "env prefix: the child still gets the field itself"
+  _bme_refusal_problems MCP_API_KEY /bin/sh -c "exec \"${BME_CHILD}\" -H x \"\$MCP_API_KEY\""
+  if [[ -z "${BME_BAD}" ]]; then
+    _pass "a \$F reference in an argument is refused (65), child never ran, token revoked once"
+  else
+    _fail "\$F reference refusal wrong:${BME_BAD}"
+  fi
 
   BME_EXTRA=("${json}")
-  _bme_expect_runs "two env prefixes" \
-    /bin/sh -c "A=\"\$MCP_API_KEY\" B=\"\${MCP_API_KEY}\" exec \"${child}\""
-  _bme_expect_out '^A=fake-key-value-1$' "two prefixes: first reaches the child"
-  _bme_expect_out '^B=fake-key-value-1$' "two prefixes: second reaches the child"
-
-  BME_EXTRA=("${json}")
-  _bme_expect_runs "bare, single-quoted and double-quoted prefixes" \
-    /bin/sh -c "A=plain B='one \$MCP_API_KEY' C=\"\$MCP_API_KEY\" exec \"${child}\""
-  _bme_expect_out '^C=fake-key-value-1$' "mixed prefixes: the double-quoted one expands"
-
-  BME_EXTRA=("${json}")
-  _bme_expect_runs "prefix after leading blanks" \
-    /bin/sh -c "  API_ACCESS_TOKEN=\"\$MCP_API_KEY\"   exec \"${child}\""
+  _bme_refusal_problems MCP_API_KEY "${BME_CHILD}" "--key=${BME_KEY_VALUE}"
+  if [[ -z "${BME_BAD}" ]]; then
+    _pass "a pasted literal of 8 or more characters is refused (65), child never ran, token revoked once"
+  else
+    _fail "pasted literal refusal wrong:${BME_BAD}"
+  fi
 }
 
 function run_bao_mcp_env {
@@ -503,13 +258,6 @@ function run_bao_mcp_env {
   fi
 
   _bme_setup
-  _bme_test_usage
-  _bme_test_missing_creds
-  _bme_test_missing_addr
-  _bme_test_login_failure
-  _bme_test_kv_failure
-  _bme_test_success
-  _bme_test_malformed_field
-  _bme_test_argv_refusal
+  _bme_test_cases
   _bme_teardown
 }
