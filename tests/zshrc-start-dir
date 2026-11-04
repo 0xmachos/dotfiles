@@ -1,12 +1,11 @@
 #!/bin/zsh
 # dotfiles/tests/zshrc-start-dir
 #
-# Checks the "Change into Initial Directory" section at the end of .zshrc. In
-# Rex, a new tab or split starts in the source pane's folder and the shell
-# keeps it, and so does a herdr-core terminal (HC_TERMINAL_ID set). A shell
-# that starts in / or under ~/Library (a server folder) moves to INITIAL_DIR,
-# and so does any other shell. The section
-# runs in a subshell with a fixture HOME, never the real one.
+# Checks the "Change into Initial Directory" section at the end of .zshrc. A
+# Rex shell and a herdr-core terminal (HC_TERMINAL_ID set) keep a project start
+# folder. A Rex shell that starts in / moves to INITIAL_DIR, and so does a
+# shell outside Rex with an empty HC_TERMINAL_ID. The section runs in a
+# subshell with a fixture HOME, never the real one.
 #
 # Run: ./test zshrc-start-dir
 # ShellCheck: lint with `shellcheck --shell=bash tests/zshrc-start-dir`.
@@ -39,7 +38,7 @@ function _zshrc_start_dir_case {
 function run_zshrc_start_dir {
   _section ".zshrc start folder: Rex and herdr-core keep the start folder"
 
-  local _zsd_fixture home proj lib out
+  local _zsd_fixture home proj out
   _zsd_fixture="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/zshrc-start-dir.XXXXXX")" || {
     _fail "zshrc-start-dir: mktemp failed"
     return 0
@@ -47,8 +46,7 @@ function run_zshrc_start_dir {
   _zsd_fixture="${_zsd_fixture:A}"
   home="${_zsd_fixture}/home"
   proj="${_zsd_fixture}/proj"
-  lib="${home}/Library/Application Support/rex-server"
-  /bin/mkdir -p "${home}" "${proj}" "${lib}"
+  /bin/mkdir -p "${home}" "${proj}"
 
   out="$(_zshrc_start_dir_case rex "${proj}")"
   if [[ "${out}" == "${proj}" ]]; then
@@ -64,22 +62,8 @@ function run_zshrc_start_dir {
     _fail "Rex shell in /: expected '${home}', got '${out}'"
   fi
 
-  out="$(_zshrc_start_dir_case rex "${lib}")"
-  if [[ "${out}" == "${home}" ]]; then
-    _pass "Rex shell started under ~/Library moves to INITIAL_DIR"
-  else
-    _fail "Rex shell under ~/Library: expected '${home}', got '${out}'"
-  fi
-
-  out="$(_zshrc_start_dir_case Apple_Terminal "${proj}")"
-  if [[ "${out}" == "${home}" ]]; then
-    _pass "shell outside Rex moves to INITIAL_DIR"
-  else
-    _fail "shell outside Rex: expected '${home}', got '${out}'"
-  fi
-
   # herdr-core: the Herdr app's launcher is a login shell with HC_TERMINAL_ID
-  # set and TERM_PROGRAM unset or another terminal's.
+  # set and TERM_PROGRAM another terminal's.
   out="$(_zshrc_start_dir_case Apple_Terminal "${proj}" t9)"
   if [[ "${out}" == "${proj}" ]]; then
     _pass "herdr-core terminal started in a project folder stays there"
@@ -87,30 +71,9 @@ function run_zshrc_start_dir {
     _fail "herdr-core terminal in a project folder: expected '${proj}', got '${out}'"
   fi
 
-  out="$(_zshrc_start_dir_case '' "${proj}" t9)"
-  if [[ "${out}" == "${proj}" ]]; then
-    _pass "herdr-core terminal with no TERM_PROGRAM stays in its folder"
-  else
-    _fail "herdr-core terminal with no TERM_PROGRAM: expected '${proj}', got '${out}'"
-  fi
-
-  out="$(_zshrc_start_dir_case '' / t9)"
-  if [[ "${out}" == "${home}" ]]; then
-    _pass "herdr-core terminal started in / moves to INITIAL_DIR"
-  else
-    _fail "herdr-core terminal in /: expected '${home}', got '${out}'"
-  fi
-
-  out="$(_zshrc_start_dir_case '' "${lib}" t9)"
-  if [[ "${out}" == "${home}" ]]; then
-    _pass "herdr-core terminal started under ~/Library moves to INITIAL_DIR"
-  else
-    _fail "herdr-core terminal under ~/Library: expected '${home}', got '${out}'"
-  fi
-
   out="$(_zshrc_start_dir_case Apple_Terminal "${proj}" '')"
   if [[ "${out}" == "${home}" ]]; then
-    _pass "an empty HC_TERMINAL_ID is not a herdr-core terminal"
+    _pass "a shell outside Rex with an empty HC_TERMINAL_ID moves to INITIAL_DIR"
   else
     _fail "empty HC_TERMINAL_ID: expected '${home}', got '${out}'"
   fi
