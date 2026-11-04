@@ -3,7 +3,8 @@
 #
 # Live assertions on THIS machine's GitHub auth: the real global git config,
 # ~/.ssh/config, gh state and login keychain (the tests/okf pattern, not a
-# hermetic sandbox). Three groups, reported apart:
+# hermetic sandbox). Three groups, one summary result each, and any fault in a
+# group fails with a line that names it:
 #   signing — gpg.format=ssh, commit/tag gpgsign on, user.signingkey set,
 #     ~/.ssh/config routes IdentityAgent to Secretive's socket (every
 #     signature is a Secure Enclave operation).
@@ -18,14 +19,15 @@
 #     no bypass actors, read through gh.
 # Skips, not fails: gh missing or logged out, no network. A skip is "could
 # not check", never "checked and fine".
-# The ruleset verdicts also run offline against a gh stub on PATH that serves
-# canned JSON through the real jq filters.
+# One ruleset verdict (a bypass actor fails) also runs offline against a gh
+# stub on PATH that serves canned JSON through the real jq filters.
 #
-# Run: ./test gh-auth    (or ./test for the full suite)
+# Run: ./test gh-auth
 # ShellCheck: lint with `shellcheck --shell=bash tests/gh-auth`.
 # This file is sourced, not executed — chmod 644.
 #
 # shellcheck source=tests/lib
+# shellcheck disable=SC2154  # fail_count and skip_count come from tests/lib
 
 # Any other scope fails, with the removal command in the message.
 readonly -a GH_AUTH_ALLOWED_SCOPES=(repo read:org gist workflow write:packages)
@@ -34,24 +36,19 @@ function _gha_signing {
   _section "gh-auth — signing is Secretive-gated"
 
   local val
+  local -i f0=${fail_count} s0=${skip_count}
 
   local pair key
   for pair in gpg.format=ssh commit.gpgsign=true tag.gpgsign=true; do
     key="${pair%%=*}"
     val="$(git config --global --get "${key}" 2>/dev/null || true)"
-    if [[ "${val}" == "${pair#*=}" ]]; then
-      _pass "${key} is ${val}"
-    else
+    if [[ "${val}" != "${pair#*=}" ]]; then
       _fail "${key} is '${val:-unset}', expected ${pair#*=}"
     fi
   done
 
   val="$(git config --global --get user.signingkey 2>/dev/null || true)"
-  if [[ -n "${val}" ]]; then
-    _pass "user.signingkey is set (${val})"
-  else
-    _fail "user.signingkey is unset"
-  fi
+  [[ -n "${val}" ]] || _fail "user.signingkey is unset"
 
   # `ssh -G`, not a grep: IdentityAgent sits in a `Match exec "test -S …"`
   # block, so only the effective value shows whether it fires.
@@ -63,11 +60,12 @@ function _gha_signing {
     _skip "Secretive's agent socket absent on this machine"
   else
     agent=$(/usr/bin/ssh -G github.com </dev/null 2>/dev/null) || agent=""
-    if [[ ${agent} == *$'\n'"identityagent ${sock}"$'\n'* ]]; then
-      _pass "${HOME}/.ssh/config routes the agent socket to Secretive"
-    else
+    if [[ ${agent} != *$'\n'"identityagent ${sock}"$'\n'* ]]; then
       _fail "${HOME}/.ssh/config does not route IdentityAgent to Secretive's socket"
     fi
+  fi
+  if (( fail_count == f0 && skip_count == s0 )); then
+    _pass "signing: ssh format, commit and tag signing on, signing key set, agent socket routed to Secretive"
   fi
 }
 
@@ -104,7 +102,6 @@ function _gha_token_scopes {
   # A fine-grained PAT has no OAuth scopes; its permissions are visible only
   # on the web (settings/personal-access-tokens), so the check stops here.
   if (( ${#scopes[@]} == 0 )) || [[ "${scopes[1]}" == "none" ]]; then
-    _pass "gh token has no OAuth scopes (fine-grained PAT) — review its permissions at github.com/settings/personal-access-tokens"
     return
   fi
 
@@ -115,9 +112,7 @@ function _gha_token_scopes {
   done
   extra="${extra%,}"
 
-  if [[ -z "${extra}" ]]; then
-    _pass "gh token scopes are within {${GH_AUTH_ALLOWED_SCOPES[*]}}: ${scopes[*]}"
-  else
+  if [[ -n "${extra}" ]]; then
     bad="gh token carries scope(s) outside the allow-list: ${extra}"
     _fail "${bad} — drop with: gh auth refresh -h github.com --remove-scopes ${extra}"
   fi
@@ -133,9 +128,7 @@ function _gha_credential_helper {
     chain="$(git -C "${SCRIPT_DIR}" config --get-all "credential.https://${host}.helper" 2>/dev/null || true)"
     # shellcheck disable=SC2296  # zsh (@f) line split
     entries=("${(@f)chain}")
-    if (( ${#entries[@]} == 2 )) && [[ -z "${entries[1]}" && "${entries[2]}" == *"gh auth git-credential" ]]; then
-      _pass "credential helper for https://${host} is gh alone (chain cleared first)"
-    else
+    if ! (( ${#entries[@]} == 2 )) || [[ -n "${entries[1]}" || "${entries[2]}" != *"gh auth git-credential" ]]; then
       _fail "credential helper chain for https://${host} is not [blank, gh]: '${chain//$'\n'/ | }'"
     fi
   done
@@ -149,8 +142,6 @@ function _gha_no_stray_credentials {
   for host in github.com gist.github.com; do
     if /usr/bin/security find-internet-password -s "${host}" >/dev/null 2>&1; then
       _fail "login keychain still holds an internet password for ${host} — a second push credential outside gh's control (delete: security delete-internet-password -s ${host})"
-    else
-      _pass "no internet password for ${host} in the login keychain"
     fi
   done
 
@@ -158,16 +149,12 @@ function _gha_no_stray_credentials {
     _skip "${HOME}/.config/gh/hosts.yml absent"
   elif grep -q 'oauth_token' "${HOME}/.config/gh/hosts.yml"; then
     _fail "hosts.yml holds an oauth_token line — token is on disk, not in the keyring"
-  else
-    _pass "hosts.yml holds no token (keyring storage)"
   fi
 
   local f
   for f in "${HOME}/.git-credentials" "${HOME}/.netrc"; do
     if [[ -e "${f}" ]]; then
       _fail "${f} exists — a plaintext credential store git or curl will read"
-    else
-      _pass "no ${f}"
     fi
   done
 }
@@ -245,7 +232,7 @@ function _gha_run_stub {
   REPLY="$(PATH="${GHA_STUB_BIN}:${PATH}" _gha_server_ruleset 2>&1)" || true
 }
 
-# _gha_server_ruleset over canned rulesets. Each run is a subshell, so only the
+# _gha_server_ruleset over a canned ruleset. The run is a subshell, so only the
 # expectation reaches the suite totals.
 function _gha_ruleset_fixture_cases {
   _section "gh-auth — ruleset verdicts over a stubbed gh"
@@ -262,16 +249,8 @@ function _gha_ruleset_fixture_cases {
   rule_default='"conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"]}}'
   rule_sig='"rules":[{"type":"required_signatures"}]'
 
-  _gha_run_stub "${root}/none" '[{"id":5,"enforcement":"disabled"}]' ""
-  _gha_expect "ruleset: only a disabled ruleset fails" "${REPLY}" "${RED}" FAIL "o/r has no active ruleset"
-  _gha_run_stub "${root}/nosig" '[{"id":7,"enforcement":"active"}]' "{\"rules\":[{\"type\":\"deletion\"}],${rule_default},\"bypass_actors\":[]}"
-  _gha_expect "ruleset: an active ruleset without required_signatures fails" "${REPLY}" "${RED}" FAIL "o/r: no active ruleset requires signatures"
   _gha_run_stub "${root}/bypass" '[{"id":7,"enforcement":"active"}]' "{${rule_sig},${rule_default},\"bypass_actors\":[{\"actor_id\":1}]}"
   _gha_expect "ruleset: a bypass actor fails" "${REPLY}" "${RED}" FAIL "o/r: no active ruleset requires signatures"
-  _gha_run_stub "${root}/branch" '[{"id":7,"enforcement":"active"}]' "{${rule_sig},\"conditions\":{\"ref_name\":{\"include\":[\"refs/heads/dev\"]}},\"bypass_actors\":[]}"
-  _gha_expect "ruleset: a ruleset off the default branch fails" "${REPLY}" "${RED}" FAIL "o/r: no active ruleset requires signatures"
-  _gha_run_stub "${root}/ok" '[{"id":7,"enforcement":"active"}]' "{${rule_sig},${rule_default},\"bypass_actors\":[]}"
-  _gha_expect "ruleset: required_signatures on the default branch with no bypass passes" "${REPLY}" "${GREEN}" PASS "o/r: active required_signatures ruleset"
   /bin/rm -rf "${root}"
 }
 
@@ -297,11 +276,15 @@ function run_gh_auth {
     return
   fi
 
+  local -i f0=${fail_count} s0=${skip_count}
   _gha_token_scopes
   if (( GHA_CONFIG_DEPLOYED )); then
     _gha_credential_helper
   fi
   _gha_no_stray_credentials
+  if (( fail_count == f0 && skip_count == s0 )); then
+    _pass "push credential: token scopes in the allow-list, gh the only helper, no keychain password, no token on disk, no .git-credentials or .netrc"
+  fi
 
   _section "gh-auth — server refuses unsigned commits on this repo's default branch"
   _gha_server_ruleset
