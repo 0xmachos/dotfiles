@@ -31,7 +31,11 @@ typeset -gi BR_T_RC=0 BR_T_SEQ=0 BR_T_ELAPSED_MS=0
 
 # Scenario knobs, read by the stubs (see _br_t_reset for the defaults).
 typeset -g BR_SERVER_JOB='' BR_LAUNCHCTL_HANG='' BR_PEER_PID='' BR_PEER_MODE=''
-typeset -g BR_CS_MODE='' BR_CS_TEAM='' BR_T_DEADLINE='' BR_T_REAL_PEERPID='' BR_T_STDIN_FD=''
+typeset -g BR_CS_MODE='' BR_CS_TEAM='' BR_T_DEADLINE='' BR_T_REAL_PEERPID='' BR_T_STDIN_FD='' BR_T_MUX_DIR='' BR_SSH_MASTER_FAIL=''
+# The ssh argv after -T for the default mux folder (BR_T_MUX_DIR) and alias.
+typeset -g BR_T_MUX_OPTS='-o ControlMaster=auto -o ControlPersist=2m -o ServerAliveInterval=15 -o ServerAliveCountMax=3'
+# The master-start argv after -S <socket> -E <log>.
+typeset -g BR_T_MASTER_OPTS='-o ControlPersist=2m -o ServerAliveInterval=15 -o ServerAliveCountMax=3'
 
 function _br_t_make_stubs {
   local d="${BR_T_STUBS}"
@@ -59,10 +63,24 @@ print -r -- "codesign $*" >> "${BR_CALLS}"
 exit 0
 MOCK
 
-  # Records its argv, then writes one line to fd 2 and one to fd 1.
+  # Records its argv. A master start (-M) binds the -S socket and writes
+  # nothing, or fails when BR_SSH_MASTER_FAIL is set. A control command (-O)
+  # writes nothing. Any other call writes one line to fd 2 and one to fd 1.
   cat > "${d}/ssh" <<'MOCK'
 #!/bin/zsh
 print -r -- "ssh $*" >> "${BR_CALLS}"
+local -a argv_copy=("$@")
+local sock='' i
+for (( i = 1; i < ${#argv_copy}; i++ )); do
+  [[ "${argv_copy[i]}" == -S ]] && sock="${argv_copy[i+1]}"
+done
+if (( ${argv_copy[(Ie)-M]} )); then
+  [[ -n "${BR_SSH_MASTER_FAIL}" ]] && exit 255
+  zmodload zsh/net/socket
+  zsocket -l "${sock}" || exit 255
+  exit 0
+fi
+(( ${argv_copy[(Ie)-O]} )) && exit 0
 print -r -- "ssh-warning" >&2
 print -r -- "ssh-data"
 exit 0
@@ -122,6 +140,11 @@ function _br_t_reset {
   BR_T_DEADLINE=5
   BR_T_REAL_PEERPID=''
   BR_T_STDIN_FD=''
+  # A short relative folder: the script runs in the case folder, because an
+  # absolute sandbox path is too long for a Unix socket.
+  BR_T_MUX_DIR=m
+  /bin/mkdir -p "${BR_T_BOX}/case${BR_T_SEQ}/m"
+  BR_SSH_MASTER_FAIL=
 }
 
 # _br_t_run: run the script once with fd 1 and fd 2 on files (the socket
@@ -132,19 +155,22 @@ function _br_t_run {
   local -i _br_t_in
   local -a peer_env=("RDB_PEERPID=${BR_T_STUBS}/peerpid")
   [[ -n "${BR_T_REAL_PEERPID}" ]] && peer_env=()
+  local -a mux_env=("RDB_MUX_DIR=${BR_T_MUX_DIR}")
+  [[ -z "${BR_T_MUX_DIR}" ]] && mux_env=()
   start="${EPOCHREALTIME}"
   if [[ -n "${BR_T_STDIN_FD}" ]]; then
     exec {_br_t_in}<&"${BR_T_STDIN_FD}"
   else
     exec {_br_t_in}</dev/null
   fi
-  /usr/bin/env -i \
+  (cd "${BR_T_HOME:h}" && exec /usr/bin/env -i \
     PATH=/usr/bin:/bin \
     HOME="${BR_T_HOME}" \
     RDB_CODESIGN="${BR_T_STUBS}/codesign" \
     RDB_SSH="${BR_T_STUBS}/ssh" \
     RDB_LAUNCHCTL="${BR_T_STUBS}/launchctl" \
     "${peer_env[@]}" \
+    "${mux_env[@]}" \
     RDB_DEADLINE="${BR_T_DEADLINE}" \
     BR_CALLS="${BR_T_CALLS}" \
     BR_SERVER_JOB="${BR_SERVER_JOB}" \
@@ -153,7 +179,8 @@ function _br_t_run {
     BR_PEER_MODE="${BR_PEER_MODE}" \
     BR_CS_MODE="${BR_CS_MODE}" \
     BR_CS_TEAM="${BR_CS_TEAM}" \
-    /bin/zsh "${BR_T_SCRIPT}" <&"${_br_t_in}" > "${BR_T_OUT}" 2> "${BR_T_ERR}" && BR_T_RC=0 || BR_T_RC=$?
+    BR_SSH_MASTER_FAIL="${BR_SSH_MASTER_FAIL}" \
+    /bin/zsh "${BR_T_SCRIPT}") <&"${_br_t_in}" > "${BR_T_OUT}" 2> "${BR_T_ERR}" && BR_T_RC=0 || BR_T_RC=$?
   exec {_br_t_in}<&-
   end="${EPOCHREALTIME}"
   BR_T_ELAPSED_MS=$(( (end - start) * 1000 ))
@@ -234,7 +261,7 @@ function _br_t_static {
   _section "rex-remote-bridge: static checks"
 
   local first line code_first=''
-  local -i bad=0 has_exec=0
+  local -i bad=0 has_exec=0 has_mux=0 has_default=0
   if [[ -x "${BR_T_SCRIPT}" ]]; then _pass "script is executable"; else _fail "script missing or not executable"; return 0; fi
   IFS= read -r first < "${BR_T_SCRIPT}"
   if [[ "${first}" == '#!/bin/zsh' ]]; then _pass "shebang is /bin/zsh"; else _fail "shebang is '${first}'"; fi
@@ -246,16 +273,23 @@ function _br_t_static {
   while IFS= read -r line || [[ -n "${line}" ]]; do
     [[ "${line}" =~ $re_comment ]] && continue
     if [[ -z "${code_first}" && "${line}" != 'umask 077' ]]; then code_first="${line}"; fi
-    if [[ "${line}" =~ $re_noN ]]; then
+    # -N belongs only on the master start (-M), which runs no session.
+    if [[ "${line}" =~ $re_noN && "${line}" != *' -M -N -f '* ]]; then
       _fail "ssh -N must never appear in code: ${line}"
       (( bad += 1 ))
     fi
     # shellcheck disable=SC2016  # literal source text, not an expansion
     [[ "${line}" == *'exec "${B_SSH}" -T "${SSH_TARGET}"'* ]] && has_exec=1
+    # shellcheck disable=SC2016  # literal source text, not an expansion
+    [[ "${line}" == *'exec "${B_SSH}" -T -S "${MUX}" -o ControlMaster=auto'* ]] && has_mux=1
+    # shellcheck disable=SC2016  # literal source text, not an expansion
+    [[ "${line}" == *'B_MUX_DIR="${RDB_MUX_DIR:-${HOME}/Library/Application Support/rex-remote-bridge}"'* ]] && has_default=1
   done < "${BR_T_SCRIPT}"
-  (( bad == 0 )) && _pass "no -N option in code"
+  (( bad == 0 )) && _pass "no -N option in code, except the master start"
   if [[ "${code_first}" == 'exec 2>>'* ]]; then _pass "first command moves fd 2 to the log"; else _fail "first command is '${code_first}'"; fi
   if (( has_exec )); then _pass "code ends in exec ssh -T <alias from the ssh-host file>"; else _fail "code lacks the exec ssh -T SSH_TARGET line"; fi
+  if (( has_mux )); then _pass "code has the multiplexed exec ssh -T -S <mux> line"; else _fail "code lacks the multiplexed exec ssh line"; fi
+  if (( has_default )); then _pass "the mux folder defaults to the 0700 bridge folder"; else _fail "the mux folder default is not the bridge folder"; fi
 
   local plist="${BR_T_PLIST}" v
   if /usr/bin/plutil -lint "${plist}" >/dev/null 2>&1; then _pass "plist lints"; else _fail "plist does not lint"; fi
@@ -323,8 +357,23 @@ function _br_t_good {
   _br_t_reset
   _br_t_run
   _br_t_expect_eq "${BR_T_RC}" 0 "good peer: exit 0"
-  _br_t_expect_count "ssh" 1 "good peer: ssh started once"
-  if _br_t_line_is "ssh -T test-host"; then _pass "good peer: ssh argv is exactly -T <alias>"; else _fail "good peer: no ssh call with argv exactly -T test-host"; fi
+  _br_t_expect_count "ssh" 2 "good peer: a master start and one session"
+  if _br_t_line_is "ssh -M -N -f -S m/mux-test-host -E ${BR_T_HOME}/Library/Logs/rex-remote-bridge.log ${BR_T_MASTER_OPTS} test-host"; then
+    _pass "good peer: the master starts with -M -N -f, the socket, -E <log> and <alias>"
+  else
+    _fail "good peer: no master start argv: $(<"${BR_T_CALLS}")"
+  fi
+  if _br_t_line_is "ssh -T -S m/mux-test-host ${BR_T_MUX_OPTS} test-host"; then
+    _pass "good peer: ssh argv is -T, the mux options and <alias>"
+  else
+    _fail "good peer: no ssh call with the mux argv: $(<"${BR_T_CALLS}")"
+  fi
+  _br_t_expect_log "mux: master start rc=0" "good peer: master start logged"
+  # A second connection while the master socket exists: no second master.
+  : > "${BR_T_CALLS}"
+  _br_t_run
+  _br_t_expect_count "ssh" 1 "good peer, master up: one session, no master start"
+  _br_t_expect_count "ssh -M" 0 "good peer, master up: no master start"
   _br_t_expect_log "pid=4242 connect" "good peer: one log line with pid and decision"
   _br_t_expect_count "peerpid" 1 "good peer: one pid lookup"
   # shellcheck disable=SC2016  # literal requirement text, not an expansion
@@ -395,7 +444,7 @@ function _br_t_gates {
   # No server job: the bridge runs.
   _br_t_reset
   _br_t_run
-  _br_t_expect_count "ssh" 1 "no server job: the bridge runs"
+  _br_t_expect_count "ssh -T" 1 "no server job: the bridge runs"
 
   # A hung launchctl is ended by the deadline and counts as "no job".
   _br_t_reset
@@ -406,7 +455,7 @@ function _br_t_gates {
   else
     _fail "launchctl hang: run took ${BR_T_ELAPSED_MS} ms with a 1 s deadline"
   fi
-  _br_t_expect_count "ssh" 1 "launchctl hang: treated as no job, the bridge runs"
+  _br_t_expect_count "ssh -T" 1 "launchctl hang: treated as no job, the bridge runs"
 
   # Kill switch: log and exit 1, before any lookup.
   _br_t_reset
@@ -415,11 +464,26 @@ function _br_t_gates {
   _br_t_expect_refused "kill switch" "kill switch"
   _br_t_expect_count "peerpid" 0 "kill switch: no peer lookup"
 
+  # Kill switch while a master runs: tell it to exit, start nothing else.
+  _br_t_reset
+  : > "${BR_T_HOME}/Library/Application Support/rex-remote-bridge/disabled"
+  (cd "${BR_T_HOME:h}" && /bin/zsh -c 'zmodload zsh/net/socket; zsocket -l m/mux-test-host')
+  _br_t_run
+  _br_t_expect_eq "${BR_T_RC}" 1 "kill switch, master up: exit 1"
+  _br_t_expect_count "ssh" 1 "kill switch, master up: one ssh call"
+  if _br_t_line_is "ssh -S m/mux-test-host -O exit test-host"; then
+    _pass "kill switch, master up: the master is told to exit"
+  else
+    _fail "kill switch, master up: no -O exit call: $(<"${BR_T_CALLS}")"
+  fi
+  _br_t_expect_eq "$(<"${BR_T_OUT}")" "" "kill switch, master up: nothing written to the socket (fd 1)"
+  _br_t_expect_log "kill switch told the master to exit rc=0" "kill switch, master up: logged"
+
   # Only the first line of the ssh-host file is the alias.
   _br_t_reset
   print -r -- $'other-host\nsecond-line' > "${BR_T_HOME}/Library/Application Support/rex-remote-bridge/ssh-host"
   _br_t_run
-  if _br_t_line_is "ssh -T other-host"; then _pass "ssh-host file: the first line is the alias"; else _fail "ssh-host file: first line not used"; fi
+  if _br_t_line_is "ssh -T -S m/mux-other-host ${BR_T_MUX_OPTS} other-host"; then _pass "ssh-host file: the first line is the alias"; else _fail "ssh-host file: first line not used"; fi
 
   # A missing, empty or malformed ssh-host file: log and exit 1, before any lookup.
   local -a cases=(missing '' empty $'\n' option '-oProxyCommand=sh' space 'a b' slash 'a/b')
@@ -482,6 +546,95 @@ function _br_t_refusals {
   _br_t_expect_refused "peer pid lookup failed rc=142" "pid lookup hang"
 }
 
+# The mux socket path limit: 86 characters use the mux, 87 fall back to a
+# plain login, and the default folder under the long sandbox HOME falls back.
+function _br_t_mux {
+  _section "rex-remote-bridge: mux socket path"
+  local dir86 dir87 fill=''
+  # "/x<fill>/mux-test-host": 2 + fill + 14 characters.
+  fill="$(/usr/bin/printf 'a%.0s' {1..70})"
+  dir86="/x${fill}"
+  dir87="/x${fill}a"
+
+  _br_t_reset
+  BR_T_MUX_DIR="${dir86}"
+  _br_t_run
+  _br_t_expect_eq "${BR_T_RC}" 0 "mux 86: exit 0"
+  _br_t_expect_log "mux: lock not taken" "mux 86: a lock in a missing folder is logged"
+  if _br_t_line_is "ssh -T -S ${dir86}/mux-test-host ${BR_T_MUX_OPTS} test-host"; then
+    _pass "mux 86: an 86-character socket path uses the mux"
+  else
+    _fail "mux 86: no mux argv: $(<"${BR_T_CALLS}")"
+  fi
+
+  _br_t_reset
+  BR_T_MUX_DIR="${dir87}"
+  _br_t_run
+  _br_t_expect_count "ssh" 1 "mux 87: ssh started once"
+  _br_t_expect_log "mux: socket path too long, plain login" "mux 87: the fallback is logged"
+  if _br_t_line_is "ssh -T test-host"; then
+    _pass "mux 87: an 87-character socket path falls back to ssh -T <alias>"
+  else
+    _fail "mux 87: no plain argv: $(<"${BR_T_CALLS}")"
+  fi
+
+  _br_t_reset
+  BR_T_MUX_DIR=''
+  local def="${BR_T_HOME}/Library/Application Support/rex-remote-bridge/mux-test-host"
+  if (( ${#def} > 86 )); then
+    _br_t_run
+    if _br_t_line_is "ssh -T test-host"; then
+      _pass "mux default: the long default folder under the sandbox HOME falls back to plain ssh"
+    else
+      _fail "mux default: unexpected argv: $(<"${BR_T_CALLS}")"
+    fi
+  else
+    _fail "mux default: sandbox path ${#def} characters, the test needs more than 86"
+  fi
+}
+
+# A failed master start is logged and the connection still goes on through
+# ControlMaster=auto.
+function _br_t_mux_fail {
+  _section "rex-remote-bridge: master start fails"
+  _br_t_reset
+  BR_SSH_MASTER_FAIL=1
+  _br_t_run
+  _br_t_expect_eq "${BR_T_RC}" 0 "master fail: exit 0"
+  _br_t_expect_log "mux: master start rc=255" "master fail: logged with rc"
+  if _br_t_line_is "ssh -T -S m/mux-test-host ${BR_T_MUX_OPTS} test-host"; then
+    _pass "master fail: the session still starts with ControlMaster=auto"
+  else
+    _fail "master fail: no session argv: $(<"${BR_T_CALLS}")"
+  fi
+}
+
+# A burst: a second connection waits on the lock while the first starts the
+# master. After the lock it must see the new socket and start no master.
+function _br_t_mux_burst {
+  _section "rex-remote-bridge: connection that waited on the lock"
+  _br_t_reset
+  local box="${BR_T_HOME:h}"
+  : > "${box}/m/mux-test-host.lock"
+  # The holder takes the lock, makes the socket after 1 s, then exits.
+  (cd "${box}" && /bin/zsh -c 'zmodload zsh/system zsh/net/socket
+    zsystem flock -f fd m/mux-test-host.lock || exit 1
+    : > m/holding
+    sleep 1
+    zsocket -l m/mux-test-host') &
+  local -i holder=$! n=0
+  while [[ ! -e "${box}/m/holding" ]] && (( n < 50 )); do sleep 0.1; (( n += 1 )); done
+  _br_t_run
+  wait "${holder}"
+  if (( BR_T_ELAPSED_MS >= 500 )); then
+    _pass "burst: the connection waited on the lock (${BR_T_ELAPSED_MS} ms)"
+  else
+    _fail "burst: the connection did not wait on the lock (${BR_T_ELAPSED_MS} ms)"
+  fi
+  _br_t_expect_count "ssh -M" 0 "burst: no second master after the wait"
+  _br_t_expect_count "ssh -T" 1 "burst: one session on the new master"
+}
+
 function run_rex_remote_bridge {
   zmodload zsh/datetime
 
@@ -504,6 +657,9 @@ function run_rex_remote_bridge {
   _br_t_real_socket
   _br_t_gates
   _br_t_refusals
+  _br_t_mux
+  _br_t_mux_fail
+  _br_t_mux_burst
 
   /bin/rm -rf -- "${BR_T_BOX:?}"
 }

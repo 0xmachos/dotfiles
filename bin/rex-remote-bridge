@@ -13,16 +13,50 @@
 # than Rex for Mac 0.1.0-preview.23 (Preview 1642) ignores the config host too.
 # The script ends in
 #
-#   exec /usr/bin/ssh -T <alias>
+#   exec /usr/bin/ssh -T -S <mux socket> -o ControlMaster=auto \
+#     -o ControlPersist=2m -o ServerAliveInterval=15 -o ServerAliveCountMax=3 <alias>
+#
+# so the connection becomes a byte pipe to the forced command on the remote Rex
+# host, which joins the session to the Rex server socket. Never `-N` on that
+# line (with no session channel the forced command never runs) and never a
+# remote command.
 #
 # <alias> is the SSH Host alias in the first line of
 # ~/Library/Application Support/rex-remote-bridge/ssh-host (one word of
 # [A-Za-z0-9_.-], not starting with `-`). The alias lives only there and in the
 # gitignored ssh config, because the PII hook refuses SSH aliases in tracked
 # files.
-# so the connection becomes a byte pipe to the forced command on the remote Rex host, which
-# joins the session to the Rex server socket. Never `-N` (with no session
-# channel the forced command never runs) and never a remote command.
+#
+# Multiplexing (2026-11-04): the Rex app opens one connection per pane plus a
+# control connection, and reopens all of them at once after a drop. A fresh
+# SSH login per connection costs a key exchange and a Secure Enclave
+# signature. Measured 2026-11-04 under heavy client load: 2 to 10 s per login,
+# so the app gave up with "The Rex data handshake timed out". Now every
+# connection is a session channel on one master login (the forced command
+# still runs per channel). The ssh config's `Match exec` certificate check
+# still runs on every connection; it mints only when the certificate is near
+# its end.
+#   - Master start: when no mux socket exists, the connection takes a lock
+#     (`mux-<alias>.lock`, 30 s wait), checks again, and starts the master with
+#     `ssh -M -N -f` (no session of its own, so `-N` is correct there). That
+#     call returns only after the master listens, so connections that waited
+#     on the lock join it. Without the lock, each connection of a burst made
+#     its own full login. A lock that cannot be taken is logged, and the
+#     connection goes on: `ControlMaster=auto` then makes it a master itself.
+#   - The master writes its errors to the log (`-E`), stays 2 min after its
+#     last channel closes, and ServerAlive ends it within 45 s when the remote
+#     host goes away. Until then, new connections wait on it. The next
+#     connection after that logs in again (ssh removes a stale socket).
+#   - sshd's MaxSessions (default 10) caps channels per master. Past the cap,
+#     ssh falls back to a full login for that connection.
+#   - The socket is `mux-<alias>` in the 0700 bridge folder (mode 0600). After
+#     a change to the alias's destination in the ssh config, end the master:
+#     `ssh -S <mux socket> -O exit <alias>`.
+#   - The -S and -o values win over the Host block's `ControlMaster no` /
+#     `ControlPath none` (ssh keeps the first value).
+#   - When the socket path is longer than 86 bytes (sun_path holds 103 and ssh
+#     adds 17 for its temporary name), the script logs that and falls back to
+#     `exec /usr/bin/ssh -T <alias>`.
 #
 # fd 2 first: the very first command moves fd 2 from the socket to
 # ~/Library/Logs/rex-remote-bridge.log. Any warning from ssh or a tool would
@@ -33,7 +67,8 @@
 #      LaunchAgent that owns this Mac's Rex server. Exit 0, silently: this Mac
 #      is the remote Rex host, so there is nothing to bridge to.
 #   2. Kill switch ~/Library/Application Support/rex-remote-bridge/disabled:
-#      log and exit 1.
+#      log and exit 1. When a master runs, it is told to exit first
+#      (`ssh -O exit`), which ends every Rex connection through it.
 #   3. Alias file: a missing, unreadable or malformed ssh-host file logs and
 #      exits 1.
 #   4. Peer signature check. It fails closed: a failed pid lookup or a bad
@@ -46,6 +81,11 @@
 #     depth: a process of this user can still drive the signed `rex` CLI at the
 #     socket, so it stops casual clients (curl, scripts), not a same-user
 #     attacker.
+#   - The mux socket is a second way in that skips gate 4: while a master
+#     runs, any process of this user can open a channel with
+#     `ssh -S <mux socket>`. That is the same reach as running `ssh <alias>`,
+#     which any process of this user can also do. The kill switch closes it
+#     on the next connection (gate 2).
 #
 # Peer check:
 #   a. The peer pid is getsockopt(fd 0, SOL_LOCAL=0, LOCAL_PEERPID=2), read by
@@ -55,15 +95,17 @@
 #      pid (the check covers the code actually mapped). The requirement:
 #      Apple-anchored, leaf OU AG92C3PT77 (Superlogical, Inc.).
 #
-# The log gets one line per connect or refusal: time, peer pid, decision. ssh
-# itself writes its own warnings to the same file. Every external call runs
+# The log gets one line per connect or refusal: time, peer pid, decision, and
+# one line per mux event (master start, lock failure, path fallback, kill
+# switch exit). ssh itself writes its own warnings to the same file. Every external call runs
 # under a perl `alarm` deadline. Only the pid lookup reads fd 0, and it never
 # reads data from it. The check cannot stop a peer that swaps its code after the
 # check passed.
 #
 # Test seams (environment): RDB_CODESIGN, _SSH, _LAUNCHCTL, _PERL, _PEERPID
 # (program paths; _PEERPID replaces the perl pid lookup and prints the pid),
-# RDB_DEADLINE (seconds, default 5), RDB_NOW (epoch seconds). HOME is the one
+# RDB_DEADLINE (seconds, default 5), RDB_NOW (epoch seconds), RDB_MUX_DIR (the
+# folder of the mux socket, default the bridge folder). HOME is the one
 # path root. Defaults are the real paths.
 # Deployed as a root-owned copy in /usr/local/bin by `./bittersweet scripts`.
 #
@@ -78,10 +120,16 @@ set -uo pipefail
 
 zmodload zsh/datetime
 zmodload -F zsh/stat b:zstat
+zmodload zsh/system
 
 # The server-only host's LaunchAgent (defined in the private infra repo).
 readonly SERVER_JOB='com.local.rex-server'
 readonly LOG_MAX=1048576 # 1 MiB
+# Longest mux socket path: sun_path holds 103 bytes, ssh adds 17 while it binds.
+readonly MUX_PATH_MAX=86
+readonly MUX_PERSIST='2m'
+# Seconds to wait for the master-start lock, and for the master login itself.
+readonly MUX_START_DEADLINE=30
 readonly REQUIREMENT='anchor apple generic and certificate leaf[subject.OU] = "AG92C3PT77"'
 
 # One SSH Host alias word: no leading `-`, so it can never be read as an option.
@@ -91,7 +139,7 @@ readonly RE_TARGET='^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$'
 # shellcheck disable=SC2016  # perl code, not shell expansion
 readonly PEERPID_PERL='alarm shift; my $v = getsockopt(STDIN, 0, 2); defined $v or exit 1; print unpack("i", $v)'
 
-typeset -g B_CODESIGN='' B_SSH='' B_LAUNCHCTL='' B_PERL='' B_PEERPID='' B_LOG=''
+typeset -g B_CODESIGN='' B_SSH='' B_LAUNCHCTL='' B_PERL='' B_PEERPID='' B_LOG='' B_MUX_DIR=''
 typeset -gi B_DEADLINE=5 B_NOW=0
 
 # Results of the external-call helper.
@@ -104,6 +152,9 @@ typeset -g PEER_PID='' PEER_WHY=''
 # The SSH Host alias read from the ssh-host file.
 typeset -g SSH_TARGET=''
 
+# The mux socket path for SSH_TARGET.
+typeset -g MUX=''
+
 function _b_init {
   B_CODESIGN="${RDB_CODESIGN:-/usr/bin/codesign}"
   B_SSH="${RDB_SSH:-/usr/bin/ssh}"
@@ -111,6 +162,7 @@ function _b_init {
   B_PERL="${RDB_PERL:-/usr/bin/perl}"
   B_PEERPID="${RDB_PEERPID:-}"
   B_LOG="${HOME}/Library/Logs/rex-remote-bridge.log"
+  B_MUX_DIR="${RDB_MUX_DIR:-${HOME}/Library/Application Support/rex-remote-bridge}"
   B_NOW="${RDB_NOW:-${EPOCHSECONDS}}"
   if [[ "${RDB_DEADLINE:-}" =~ ^[0-9]{1,2}$ ]] && (( RDB_DEADLINE >= 1 )); then
     B_DEADLINE="${RDB_DEADLINE}"
@@ -190,6 +242,38 @@ function _b_peer_ok {
   return 0
 }
 
+# _b_mux_path: MUX from the mux folder and SSH_TARGET. Returns 1 when the path
+# is longer than MUX_PATH_MAX bytes (counted as bytes in any locale).
+function _b_mux_path {
+  setopt localoptions nomultibyte
+  MUX="${B_MUX_DIR}/mux-${SSH_TARGET}"
+  (( ${#MUX} <= MUX_PATH_MAX ))
+}
+
+# _b_mux_start PID: when no mux socket exists, take the lock, check again and
+# start the master. `ssh -f` returns once the master listens. Never fails: a
+# failed lock or master start is logged and the connection goes on.
+function _b_mux_start {
+  local lockfd=''
+  local -i rc=0
+  [[ -S "${MUX}" ]] && return 0
+  if ! (: >> "${MUX}.lock") 2>/dev/null ||
+    ! zsystem flock -t "${MUX_START_DEADLINE}" -f lockfd "${MUX}.lock" 2>/dev/null; then
+    _b_log "$1" 'mux: lock not taken, no master started'
+    return 0
+  fi
+  if [[ ! -S "${MUX}" ]]; then
+    # shellcheck disable=SC2016  # perl code, not shell expansion
+    "${B_PERL}" -e 'alarm shift; exec { $ARGV[0] } @ARGV or exit 127' \
+      "${MUX_START_DEADLINE}" "${B_SSH}" -M -N -f -S "${MUX}" -E "${B_LOG}" \
+      -o "ControlPersist=${MUX_PERSIST}" -o ServerAliveInterval=15 \
+      -o ServerAliveCountMax=3 "${SSH_TARGET}" </dev/null >/dev/null && rc=0 || rc=$?
+    _b_log "$1" "mux: master start rc=${rc}"
+  fi
+  zsystem flock -u "${lockfd}"
+  return 0
+}
+
 function main {
   _b_init
 
@@ -203,6 +287,10 @@ function main {
   # Gate 2: kill switch.
   if [[ -e "${HOME}/Library/Application Support/rex-remote-bridge/disabled" ]]; then
     _b_log - 'refused: kill switch file present'
+    if _b_read_target && _b_mux_path && [[ -S "${MUX}" ]]; then
+      _b_run "${B_DEADLINE}" "${B_SSH}" -S "${MUX}" -O exit "${SSH_TARGET}"
+      _b_log - "mux: kill switch told the master to exit rc=${RUN_RC}"
+    fi
     return 1
   fi
 
@@ -219,6 +307,12 @@ function main {
   fi
   _b_log "${PEER_PID}" 'connect'
 
+  if _b_mux_path; then
+    _b_mux_start "${PEER_PID}"
+    exec "${B_SSH}" -T -S "${MUX}" -o ControlMaster=auto -o "ControlPersist=${MUX_PERSIST}" \
+      -o ServerAliveInterval=15 -o ServerAliveCountMax=3 "${SSH_TARGET}"
+  fi
+  _b_log "${PEER_PID}" 'mux: socket path too long, plain login'
   exec "${B_SSH}" -T "${SSH_TARGET}"
 }
 
