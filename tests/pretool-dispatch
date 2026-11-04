@@ -4,7 +4,8 @@
 # Behavioural test for claude/hooks/pretool-dispatch, the single PreToolUse
 # process that sources the guards (gh-publish-hook
 # git-bypass-hook muse-exec-hook rm-redirect-hook ssh-redirect-hook
-# sudo-askpass-hook container-tmp-hook tmp-guard-hook config-root-hook md5-write-hook uv-guard-hook) in forked
+# sudo-askpass-hook container-tmp-hook tmp-guard-hook config-root-hook md5-write-hook uv-guard-hook
+# test-guard-hook) in forked
 # subshells. Three parts:
 #   1. Fault injection: a sandbox COPY of the dispatcher beside stub guards
 #      (it finds its guards in its own directory). A stub that fails, prints
@@ -37,7 +38,7 @@ typeset -g PTD_DISPATCHER=''
 typeset -g PTD_DIRS='' PTD_ROUTES='' PTD_HOOKS=''
 typeset -gi PTD_RC=0
 
-typeset -ga PTD_BASH=(gh-publish-hook git-bypass-hook muse-exec-hook rm-redirect-hook ssh-redirect-hook sudo-askpass-hook container-tmp-hook tmp-guard-hook config-root-hook mcp-secret-hook uv-guard-hook)
+typeset -ga PTD_BASH=(gh-publish-hook git-bypass-hook muse-exec-hook rm-redirect-hook ssh-redirect-hook sudo-askpass-hook container-tmp-hook tmp-guard-hook config-root-hook mcp-secret-hook uv-guard-hook test-guard-hook)
 typeset -ga PTD_ALL=("${PTD_BASH[@]}" md5-write-hook)
 
 function _ptd_bash {
@@ -639,6 +640,7 @@ function _ptd_real_guards {
   _ptd_real_deny config-root-hook "$(_ptd_bash 'echo hi > ~/.codex/x')" 'live agent config blocked' 'config-root-hook: Bash redirect into ~/.codex'
   _ptd_real_deny md5-write-hook "$(_ptd_write /x/a.py "h = ${md5_call}")" 'puts MD5 into /x/a.py' 'md5-write-hook: Write with an MD5 call'
   _ptd_real_deny uv-guard-hook "$(_ptd_bash 'pip install requests')" 'pip, venv, conda and the CLT python are not used here' 'uv-guard-hook: pip install'
+  _ptd_real_deny test-guard-hook "$(_ptd_bash "${SCRIPT_DIR}/test --time")" "A full test run is the user's to run" 'test-guard-hook: a full ./test run'
 
   _ptd_real "$(jq -cn '{tool_name:"Edit", tool_input:{file_path:"/tmp/x", old_string:"a", new_string:"b"}}')"
   _ptd_expect DENY 'Edit of a /tmp path (tmp-guard-hook)'
@@ -657,6 +659,7 @@ function _ptd_real_guards {
   _ptd_real_deny git-bypass-hook "$(_ptd_monitor 'git commit --no-verify -m x')" 'git commit --no-verify: give the user the exact command' 'git-bypass-hook: Monitor git commit --no-verify'
   _ptd_monitor_as_bash 'git commit --no-verify -m x' 'git commit --no-verify (git-bypass-hook)'
   _ptd_monitor_as_bash 'python3 -m venv .venv' 'python3 -m venv (uv-guard-hook)'
+  _ptd_monitor_as_bash "${SCRIPT_DIR}/test -j 1" 'a full ./test run (test-guard-hook)'
   _ptd_monitor_as_bash 'echo hi > /tmp/x' 'redirect into /tmp (tmp-guard-hook)'
   _ptd_monitor_as_bash "claude mcp add exa ${key_flag} -- prog" 'claude mcp add with a key flag (mcp-secret-hook)'
   _ptd_monitor_as_bash "${gh_word} issue create -t t --body \"inline body\"" 'inline --body (gh-publish-hook)' "${gh_env[@]}"
@@ -681,6 +684,7 @@ function _ptd_real_guards {
     "config-root-hook|$(_ptd_write "${HOME}/.claude/x" body)" \
     "md5-write-hook|$(_ptd_write /x/a.py "h = ${md5_call}")" \
     "uv-guard-hook|$(_ptd_bash 'pip install requests')" \
+    "test-guard-hook|$(_ptd_bash "${SCRIPT_DIR}/test")" \
     "gh-publish-hook|$(_ptd_bash "${gh_word} issue create -t t --body \"inline body\"")"; do
     extra_env=()
     [[ "${c%%|*}" == gh-publish-hook ]] && extra_env=("${gh_env[@]}")
