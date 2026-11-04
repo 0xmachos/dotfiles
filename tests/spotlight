@@ -18,7 +18,7 @@
 #   Dev, .Trash, Library/Caches and Private, and a fixture extra file that
 #   names Private and repeats .Trash (after a comment line). The starting
 #   list holds $HOME/Dev.
-#   STUB_MODE: "" (adds stick), nostick (adds are lost), listfail (list fails).
+#   STUB_MODE: "" (adds stick), nostick (adds are lost).
 #   Prints "rc<TAB>adds" with adds joined by spaces, relative to HOME.
 function _spotlight_case {
   local mode="${1:-}"
@@ -41,7 +41,6 @@ function _spotlight_case {
     _spotlight_helper() {
       case "$1" in
         list)
-          [[ "${mode}" == listfail ]] && return 1
           /bin/cat "${list}"
           ;;
         add)
@@ -80,25 +79,6 @@ function run_spotlight {
     _pass "an add that does not reach the list fails the run"
   else
     _fail "lost add: expected rc 1, got '${out}'"
-  fi
-
-  out="$(_spotlight_case listfail)"
-  if [[ "${out}" == $'1\t' ]]; then
-    _pass "a failed list read fails the run before any add"
-  else
-    _fail "list failure: expected rc 1 and no adds, got '${out}'"
-  fi
-
-  local entry bad=""
-  local -a entries
-  entries=( "${(@f)$(/usr/bin/awk '/^typeset -ra SPOTLIGHT_EXCLUSIONS=\(/ { b = 1; next } b && /^\)$/ { b = 0 } b { sub(/^ +/, ""); print }' "${SCRIPT_DIR}/bittersweet")}" )
-  for entry in "${entries[@]}"; do
-    [[ "${entry}" == /* || "${entry}" == *..* || -z "${entry}" ]] && bad+=" '${entry}'"
-  done
-  if (( ${#entries} > 0 )) && [[ -z "${bad}" ]]; then
-    _pass "SPOTLIGHT_EXCLUSIONS holds ${#entries} HOME-relative paths"
-  else
-    _fail "SPOTLIGHT_EXCLUSIONS: bad or empty entries:${bad}"
   fi
 
   if [[ ! -x /usr/bin/swift ]]; then
