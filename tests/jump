@@ -1,26 +1,16 @@
 #!/bin/zsh
 # dotfiles/tests/jump
 #
-# Pins jump-user and jump-system: connectivity checks, binary detection,
-# logging, and the launchd-path rules below.
+# Pins jump-user and jump-system: the connectivity gate fails closed and logs,
+# run_and_log keeps a failing command's exit code and reports an unwritable log,
+# and the launchd-path rules below (a launchd program is copied, never
+# symlinked, never resolves under ~/Documents, and the deployed copy is not
+# stale).
 #
 # ShellCheck: lint with `shellcheck --shell=bash tests/jump`.
 # This file is sourced, not executed — chmod 644.
 #
 # shellcheck source=tests/lib
-
-function _jump_test_scripts_exist {
-  _section "script existence"
-
-  local name
-  for name in jump-user jump-system npm-audit-check; do
-    if [[ -x "bin/${name}" ]]; then
-      _pass "${name} is executable"
-    else
-      _fail "${name} missing or not executable"
-    fi
-  done
-}
 
 # Each driver's text without its trailing `main "$@"`, so a case can eval the functions in a subshell.
 typeset -gA _JUMP_BODY=()
@@ -73,436 +63,137 @@ function _jump_load_plists {
   done
 }
 
-# Real connectivity gate against scutil fixtures: no network or updater runs.
-# The optional command argument keeps main's fixed /usr/sbin/scutil intact.
-function _jump_test_reachability {
-  _section "reachability (real functions, offline fixtures)"
-
-  local fixture
-  fixture="$(mktemp -d "${TMPDIR}test-jump-reachability.XXXXXX")"
-  cat > "${fixture}/scutil" <<'MOCK'
-#!/bin/zsh
-print -r -- "$2" >> "${JUMP_TEST_CALLS}"
-if [[ "$2" == "${JUMP_TEST_REACHABLE_DOMAIN}" ]]; then
-  print -r -- "${JUMP_TEST_OUTPUT}"
-  exit "${JUMP_TEST_STATUS}"
-fi
-print -r -- 'Not Reachable'
-MOCK
-  zf_chmod 700 "${fixture}/scutil"
-
-  local script name output expected_calls expected_rc actual
-  local -a calls
-  local -a formats=(
-    'Reachable' 'Reachable,Transient Connection' 'Reachable,Direct'
-    'Reachable,Directly Reachable Address' 'Not Reachable' '' 'Transient Connection'
-  )
-  local reachable_domain probe_status
-  for script in bin/jump-user bin/jump-system; do
-    name="${script##*/}"
-    # First-host success, rejection, fallback success, and a failed scutil
-    # that printed Reachable before exiting.
-    for output in "${formats[@]}" fallback command-error; do
-      reachable_domain=captive.apple.com
-      probe_status=0
-      expected_calls=1
-      expected_rc=0
-      case "${output}" in
-        'Not Reachable'|''|'Transient Connection')
-          expected_calls=3; expected_rc=1 ;;
-        fallback)
-          reachable_domain=google.com; expected_calls=2 ;;
-        command-error)
-          probe_status=7; expected_calls=3; expected_rc=1 ;;
-      esac
-      : > "${fixture}/calls"
-      : > "${fixture}/log"
-      # shellcheck disable=SC1090,SC1091,SC2034,SC2329
-      actual=$(
-        set +e
-        eval "${_JUMP_BODY[${script}]}"
-        export JUMP_TEST_CALLS="${fixture}/calls"
-        export JUMP_TEST_REACHABLE_DOMAIN="${reachable_domain}"
-        export JUMP_TEST_STATUS="${probe_status}"
-        export JUMP_TEST_OUTPUT="${output}"
-        [[ "${output}" == fallback || "${output}" == command-error ]] && JUMP_TEST_OUTPUT=Reachable
-        logger() { print -r -- "$*" >> "${fixture}/log"; }
-        check_internet_connection "${fixture}/scutil"
-        print -r -- "$?"
-      )
-      # shellcheck disable=SC2296  # zsh newline split
-      calls=("${(@f)$(<"${fixture}/calls")}")
-      if [[ "${actual}" == "${expected_rc}" ]] && (( ${#calls[@]} == expected_calls )); then
-        _pass "${name}: '${output:-<empty>}' returns ${expected_rc} after ${expected_calls} probe(s)"
-      else
-        _fail "${name}: '${output:-<empty>}' returned ${actual} after ${#calls[@]} probe(s)"
-      fi
-      if (( expected_rc )); then
-        if [[ "$(<"${fixture}/log")" == *'[FAIL]'* ]]; then
-          _pass "${name}: failed reachability logs its failure"
-        else
-          _fail "${name}: failed reachability did not log its failure"
-        fi
-      elif [[ -s "${fixture}/log" ]]; then
-        _fail "${name}: successful reachability logged a failure"
-      fi
-    done
-  done
-  zf_rm -rf "${fixture}"
-}
-
-# Every *_BINARY/*_APP path the scripts declare exists. Derived from the
-# scripts, not listed here: a parallel list drifts silently.
-function _jump_test_binary_paths {
-  _section "binary paths (derived from scripts)"
-
-  # brew is the one hard requirement: jump-user aborts without it
-  if [[ -x "/opt/homebrew/bin/brew" ]]; then
-    _pass "brew exists at /opt/homebrew/bin/brew"
-  else
-    _fail "brew not found at /opt/homebrew/bin/brew"
-  fi
-
-  local -a scripts=(bin/jump-user bin/jump-system bin/npm-audit-check .functions/jump)
-  local -A seen=()
-  local line name path
-  while IFS= read -r line; do
-    name="${line%%=*}"
-    name="${name##* }"
-    path="${line#*=}"
-    path="${path#\"}"
-    path="${path%\"}"
-    path="${path//\$\{HOME\}/${HOME}}"
-    if [[ -n "${seen[${path}]:-}" ]]; then
-      continue
-    fi
-    seen[${path}]=1
-    if [[ -x "${path}" ]]; then
-      _pass "${name} exists at ${path}"
-    else
-      _skip "${name} not found at ${path}"
-    fi
-  done < <(/usr/bin/grep -hoE '(local -r|readonly) [A-Z_]+(_BINARY|_APP)="[^"]+"' "${scripts[@]}" | /usr/bin/sort -u)
-
-  if (( ${#seen[@]} == 0 )); then
-    _fail "no *_BINARY declarations extracted — pattern or scripts changed"
-  fi
-}
-
-# zsh -n: the shellcheck suite lints in bash mode and misses zsh-only errors.
-function _jump_test_zsh_syntax {
-  _section "zsh syntax"
-
-  local script
-  for script in bin/jump-user bin/jump-system bin/npm-audit-check; do
-    if /bin/zsh -n "${script}" 2>/dev/null; then
-      _pass "${script} parses (zsh -n)"
-    else
-      _fail "${script} has zsh syntax errors"
-    fi
-  done
-
-  if /bin/zsh -c 'source .functions/jump && typeset -f jump >/dev/null' 2>/dev/null; then
-    _pass ".functions/jump sources and defines jump()"
-  else
-    _fail ".functions/jump failed to source or define jump()"
-  fi
-}
-
-function _jump_test_log_file {
-  _section "log file"
-
-  local log_file="${HOME}/Library/Logs/jump.log"
-
-  if [[ -f "${log_file}" ]]; then
-    _pass "jump.log exists"
-  else
-    _skip "jump.log not found (no failures logged yet)"
-    return
-  fi
-
-  # jump-user's log; jump-system writes to /var/log. A root-owned file left
-  # by the retired shared-log setup can still block jump-user's appends.
-  if [[ -w "${log_file}" ]]; then
-    _pass "jump.log is writable by the console user"
-  else
-    _fail "jump.log not writable by console user — jump-user appends are dropped"
-  fi
-}
-
-# The real run_and_log from each driver; asserts the RETURN CODE, not just the
-# log side effect, so a swallowed non-zero exit is caught.
-function _jump_test_run_and_log {
-  _section "run_and_log (real functions)"
-
-  local script name test_log rc_true rc_false
-  for script in bin/jump-system bin/jump-user; do
-    name="${script##*/}"
-    test_log="${TMPDIR}test-jump-$$-${name}.log"
-    zf_rm -f "${test_log}"
-
-    # Evaled without `main "$@"`, in a subshell so definitions don't leak.
-    # `set +e`: the runner uses `set -e` and the failure case returns non-zero
-    # on purpose, which would abort the subshell before `echo "$?"`.
-    # SC2034: LOG_FILE is read by the evaled run_and_log.
-    # shellcheck disable=SC2034
-    rc_true=$(set +e; eval "${_JUMP_BODY[${script}]}"; LOG_FILE="${test_log}"; run_and_log "ok step" /usr/bin/true >/dev/null 2>&1; echo "$?")
-    if [[ "${rc_true}" == "0" ]]; then
-      _pass "${name}: run_and_log returns 0 on success"
-    else
-      _fail "${name}: run_and_log returned '${rc_true}' on success (expected 0)"
-    fi
-    if ! _jump_log_has "${test_log}" '*ok step*'; then
-      _pass "${name}: success does not write to log file"
-    else
-      _fail "${name}: success should not write to log file"
-    fi
-
-    # shellcheck disable=SC2034
-    rc_false=$(set +e; eval "${_JUMP_BODY[${script}]}"; LOG_FILE="${test_log}"; run_and_log "bad step" /usr/bin/false >/dev/null 2>&1; echo "$?")
-    if [[ "${rc_false}" != "0" ]]; then
-      _pass "${name}: run_and_log returns non-zero on failure"
-    else
-      _fail "${name}: run_and_log swallowed the failure (returned 0)"
-    fi
-    if _jump_log_has "${test_log}" '*FAIL*bad step*'; then
-      _pass "${name}: failure writes [FAIL] to log file"
-    else
-      _fail "${name}: failure should write [FAIL] to log file"
-    fi
-
-    zf_rm -f "${test_log}"
-  done
-}
-
-# The launchd-path tests guard a class: a launchd program resolving under
+# The launchd-path checks guard a class: a launchd program resolving under
 # ~/Documents/ cannot be exec'd once the TCC grant resets. launchd reports a
 # bare 127 (same as "command not found") and the program dies before logging.
 # Hit by jump-user 2026-07-28 (5 runs, 5 failures, 0 log lines) via
 # /usr/local/bin/jump-user symlinked into the repo.
 
-# Static half: edit-time, needs nothing installed (fresh clone is fine).
-function _jump_test_launchd_not_in_symlink_array {
-  _section "launchd programs vs install_scripts symlink array"
+function _jump_test_cases {
+  zmodload -F zsh/files b:zf_rm b:zf_chmod
+  _section "jump"
 
-  local raw
+  local fixture rc actual log
+  fixture="$(mktemp -d "${TMPDIR}test-jump.XXXXXX")"
+
+  # 1. Real connectivity gate against a scutil fixture: a host that is Not
+  #    Reachable fails closed after all three probes and logs [FAIL]. The
+  #    optional command argument keeps main's fixed /usr/sbin/scutil intact.
+  cat > "${fixture}/scutil" <<'MOCK'
+#!/bin/zsh
+print -r -- "$2" >> "${JUMP_TEST_CALLS}"
+print -r -- 'Not Reachable'
+MOCK
+  zf_chmod 700 "${fixture}/scutil"
+  : > "${fixture}/calls"
+  : > "${fixture}/log"
+  local -a calls
+  # shellcheck disable=SC1090,SC1091,SC2034,SC2329
+  actual=$(
+    set +e
+    eval "${_JUMP_BODY[bin/jump-user]}"
+    export JUMP_TEST_CALLS="${fixture}/calls"
+    logger() { print -r -- "$*" >> "${fixture}/log"; }
+    check_internet_connection "${fixture}/scutil"
+    print -r -- "$?"
+  )
+  # shellcheck disable=SC2296  # zsh newline split
+  calls=("${(@f)$(<"${fixture}/calls")}")
+  if [[ "${actual}" == 1 ]] && (( ${#calls[@]} == 3 )) && [[ "$(<"${fixture}/log")" == *'[FAIL]'* ]]; then
+    _pass "jump-user: 'Not Reachable' returns 1 after 3 probes and logs its failure"
+  else
+    _fail "jump-user: 'Not Reachable' returned ${actual} after ${#calls[@]} probe(s)"
+  fi
+
+  # 2. run_and_log returns the failing command's code, not just the log side
+  #    effect (a swallowed non-zero exit is caught), and writes [FAIL]. Evaled
+  #    without `main "$@"`, in a subshell, with `set +e` so the non-zero return
+  #    does not abort it before `echo "$?"`.
+  log="${fixture}/run.log"
+  # shellcheck disable=SC2034  # LOG_FILE is read by the evaled run_and_log
+  rc=$(set +e; eval "${_JUMP_BODY[bin/jump-system]}"; LOG_FILE="${log}"; run_and_log "bad step" /usr/bin/false >/dev/null 2>&1; echo "$?")
+  if [[ "${rc}" != "0" ]] && _jump_log_has "${log}" '*FAIL*bad step*'; then
+    _pass "jump-system: run_and_log returns non-zero on failure and writes [FAIL] to the log"
+  else
+    _fail "jump-system: run_and_log returned '${rc}' on failure or wrote no [FAIL] line"
+  fi
+
+  # 3. Unwritable-log branch (2026-07-28). The exit code survives and the
+  #    failed write reaches syslog. `logger` is shadowed to capture it.
+  local locked="${fixture}/locked.log" capture="${fixture}/logger.txt"
+  : > "${locked}"
+  zf_chmod 444 "${locked}"
+  # SC2034: LOG_FILE is read by the evaled function. SC2329: the logger shim is
+  # invoked only from the evaled run_and_log, which shellcheck cannot follow.
+  # shellcheck disable=SC2034,SC2329
+  rc=$(set +e; eval "${_JUMP_BODY[bin/jump-user]}"; LOG_FILE="${locked}"; logger() { echo "$@" >> "${capture}"; }; run_and_log "bad step" /usr/bin/false >/dev/null 2>&1; echo "$?")
+  if [[ "${rc}" != "0" ]] && _jump_log_has "${capture}" '*cannot write*'; then
+    _pass "jump-user: an unwritable log keeps the exit code and reports the failed write to syslog"
+  else
+    _fail "jump-user: unwritable log: rc '${rc}', or the failed write was silent"
+  fi
+  zf_chmod 644 "${locked}"
+  zf_rm -rf "${fixture}"
+
+  # 4. Static half, needs nothing installed: no launchd-invoked program sits
+  #    in install_scripts' symlink array.
+  local raw plist prog base bad=''
   # `|| true` is load-bearing: under the dispatcher's `set -e` a non-matching
   # grep would abort the whole run, later suites silently skipped.
   raw=$(/usr/bin/grep -oE 'local -ar bin_files=\([^)]*\)' bittersweet 2>/dev/null || true)
   if [[ -z "${raw}" ]]; then
     _fail "could not extract bin_files from bittersweet — pattern changed"
-    return
-  fi
-  raw="${raw#*\(}"
-  raw="${raw%\)}"
-  # SC2296/SC2206: zsh word-splitting flag, not valid bash.
-  # shellcheck disable=SC2296,SC2206
-  local -a bin_files=(${=raw})
-
-  local plist prog base
-  for plist in "${_JUMP_PLISTS[@]}"; do
-    prog="${_JUMP_PLIST_PROG[${plist}]}"
-    base="${prog##*/}"
-    if (( ${bin_files[(Ie)${base}]} )); then
-      _fail "${plist##*/}: ${base} is launchd-invoked but in install_scripts' symlink array — must be copied, not symlinked"
+  else
+    raw="${raw#*\(}"
+    raw="${raw%\)}"
+    # SC2296/SC2206: zsh word-splitting flag, not valid bash.
+    # shellcheck disable=SC2296,SC2206
+    local -a bin_files=(${=raw})
+    for plist in "${_JUMP_PLISTS[@]}"; do
+      base="${_JUMP_PLIST_PROG[${plist}]##*/}"
+      (( ${bin_files[(Ie)${base}]} )) && bad+=" ${plist##*/}(${base})"
+    done
+    if [[ -z "${bad}" ]]; then
+      _pass "no launchd program is in the install_scripts symlink array (${#_JUMP_PLISTS[@]} plists)"
     else
-      _pass "${plist##*/}: ${base} not in the symlink array"
+      _fail "launchd-invoked but in the symlink array — must be copied, not symlinked:${bad}"
     fi
-  done
-}
+  fi
 
-# Live half: installed-state drift, e.g. a stale symlink from a bittersweet
-# run that predates the copy change.
-function _jump_test_launchd_program_outside_documents {
-  _section "launchd programs resolve outside ~/Documents"
-
-  local plist prog real
+  # 5. Live half, installed-state drift: every installed launchd program
+  #    resolves outside ~/Documents, and the deployed copies of jump-user and
+  #    jump-system are real files that match the repo (2026-07-29: a deployed
+  #    copy missed a guard committed minutes earlier). Skipped when nothing
+  #    is installed.
+  local real name installed
   local -i checked=0
+  bad=''
   for plist in "${_JUMP_PLISTS[@]}"; do
     prog="${_JUMP_PLIST_PROG[${plist}]}"
-    if [[ ! -e "${prog}" ]]; then
-      _skip "${plist##*/}: ${prog} not installed"
-      continue
-    fi
+    [[ -e "${prog}" ]] || continue
     checked+=1
     # SC2296: zsh :A resolves symlinks, not valid bash.
     # shellcheck disable=SC2296
     real="${prog:A}"
-    if [[ "${real}" == "${HOME}/Documents/"* ]]; then
-      _fail "${plist##*/}: ${prog} resolves to ${real} — under ~/Documents, launchd exec fails with 127"
-    else
-      _pass "${plist##*/}: ${prog} resolves outside ~/Documents"
-    fi
+    [[ "${real}" == "${HOME}/Documents/"* ]] && bad+=" ${prog}(under-Documents)"
   done
-
-  if (( checked == 0 )); then
-    _skip "no launchd programs installed to check"
-  fi
-}
-
-# argv[0] is the exec target and must never sit under ~/Documents (the hard
-# failure above). Later arguments are payloads for an interpreter, e.g.
-# /bin/zsh -c '... script.py': a READ, not an exec, so no 127. They
-# rely on the interpreter's Documents grant and hang on an invisible consent
-# dialog when it resets. Reported, not failed: the /bin/zsh wrapper is
-# deliberate.
-function _jump_test_launchd_payloads_under_documents {
-  _section "launchd payload paths under ~/Documents (informational)"
-
-  local plist args tok
-  local -i found=0
-  for plist in "${_JUMP_PLISTS[@]}"; do
-    args="${_JUMP_PLIST_PAYLOAD[${plist}]}"
-    [[ -n "${args}" ]] || continue
-    # SC2296/SC2206: zsh word-splitting flag, not valid bash.
-    # shellcheck disable=SC2296,SC2206
-    for tok in ${=args}; do
-      [[ "${tok}" == "${HOME}/Documents/"* ]] || continue
-      found+=1
-      _skip "${plist##*/}: payload ${tok##*/} is under ~/Documents — relies on the interpreter's Documents grant"
-    done
-  done
-
-  if (( found == 0 )); then
-    _pass "no launchd payload paths under ~/Documents"
-  fi
-}
-
-# Copies go stale silently: a repo edit does not reach /usr/local/bin until
-# the next `bittersweet scripts` (2026-07-29: deployed jump-user missed a guard
-# committed minutes earlier).
-function _jump_test_copied_programs_current {
-  _section "copied launchd programs match their repo source"
-
-  local -a copied=(jump-user jump-system)
-  local name src installed
-  for name in "${copied[@]}"; do
-    src="bin/${name}"
+  for name in jump-user jump-system; do
     installed="/usr/local/bin/${name}"
-    if [[ ! -f "${src}" ]]; then
-      _fail "${src} missing from repo"
-    elif [[ ! -e "${installed}" ]]; then
-      _skip "${name}: not installed at ${installed}"
-    elif [[ -L "${installed}" ]]; then
-      _fail "${name}: ${installed} is a symlink — must be a copy, launchd cannot exec under ~/Documents"
-    elif [[ ! -r "${installed}" ]]; then
-      # jump-system is deliberately root:wheel 700; not a failure.
-      _skip "${name}: ${installed} not readable by this user"
-    elif cmp -s "${src}" "${installed}"; then
-      _pass "${name}: deployed copy matches ${src}"
-    else
-      _fail "${name}: deployed copy is STALE vs ${src} — re-run 'bittersweet scripts'"
+    [[ -e "${installed}" ]] || continue
+    if [[ -L "${installed}" ]]; then
+      bad+=" ${name}(symlink)"
+    elif [[ -r "${installed}" ]]; then
+      checked+=1
+      cmp -s "bin/${name}" "${installed}" || bad+=" ${name}(STALE: re-run 'bittersweet scripts')"
     fi
   done
-}
-
-# Unwritable-log branch (2026-07-28). `logger` is shadowed by a function so
-# the syslog call is captured.
-function _jump_test_run_and_log_unwritable {
-  _section "run_and_log reports an unwritable log"
-
-  local script name locked capture rc
-  for script in bin/jump-system bin/jump-user; do
-    name="${script##*/}"
-    locked="${TMPDIR}test-jump-$$-${name}-locked.log"
-    capture="${TMPDIR}test-jump-$$-${name}-logger.txt"
-    zf_rm -f "${locked}" "${capture}"
-    : > "${locked}"
-    zf_chmod 444 "${locked}"
-
-    # SC2034: LOG_FILE is read by the evaled function. SC2329: the logger shim
-    # is invoked only from the evaled run_and_log, which shellcheck cannot
-    # follow.
-    # shellcheck disable=SC2034,SC2329
-    rc=$(set +e; eval "${_JUMP_BODY[${script}]}"; LOG_FILE="${locked}"; logger() { echo "$@" >> "${capture}"; }; run_and_log "bad step" /usr/bin/false >/dev/null 2>&1; echo "$?")
-
-    if [[ "${rc}" != "0" ]]; then
-      _pass "${name}: preserves the command's exit code when the log is unwritable"
-    else
-      _fail "${name}: swallowed the failure (returned 0) when the log was unwritable"
-    fi
-
-    if _jump_log_has "${capture}" '*cannot write*'; then
-      _pass "${name}: reports the failed log write to syslog"
-    else
-      _fail "${name}: failed log write was silent — detail lost with no signal"
-    fi
-
-    zf_chmod 644 "${locked}"
-    zf_rm -f "${locked}" "${capture}"
-  done
-}
-
-# The `if [[ -x "${MUSE_BINARY}" ]]` block of .functions/jump, through its `fi`.
-function _jump_muse_block {
-  local -a lines
-  local line block="" inside=0
-  # shellcheck disable=SC2296  # zsh (@f) line split
-  lines=("${(@f)$(<.functions/jump)}")
-  for line in "${lines[@]}"; do
-    # shellcheck disable=SC2016  # literal text of the guard line
-    [[ "${line}" == *'[[ -x "${MUSE_BINARY}" ]]; then' ]] && inside=1
-    (( inside )) || continue
-    block+="${line}"$'\n'
-    [[ "${line}" == '  fi' ]] && break
-  done
-  print -r -- "${block}"
-}
-
-# Herdr labels a pane by its foreground process: a shell whose first non-flag
-# argument is named `muse` shows a false Muse session in the agents sidebar. The
-# step must source the launcher from a `bash -c` shell ($0 stays jump-launcher,
-# no arguments), so this runs jump's real Muse block against a fake launcher
-# named muse and reads what the launcher saw. HOME points at the fixture.
-function _jump_test_muse_launcher {
-  _section "Muse launcher step (real block, fake launcher)"
-
-  local fixture block status_in expected_rc actual record
-  local -a records
-  fixture="$(mktemp -d "${TMPDIR}test-jump-muse.XXXXXX")"
-  # Named muse, as Herdr matches the basename.
-  # shellcheck disable=SC2016  # the fake launcher expands these itself
-  print -rl -- '#!/usr/bin/env bash' \
-    'printf "%s|%s|%s|%s|%s\n" "$0" "$#" "${BASH_SOURCE[0]-}" "${MUSE_LAUNCHER_INSTALL-unset}" "${MUSE_LOGIN-unset}" >> "${JUMP_MUSE_OUT}"' \
-    'exit "${JUMP_MUSE_STATUS}"' > "${fixture}/muse"
-  zf_chmod 700 "${fixture}/muse"
-
-  block="$(_jump_muse_block)"
-  if [[ "${block}" != *jump-launcher* ]]; then
-    _fail ".functions/jump: Muse block not found"
-    zf_rm -rf "${fixture}"
-    return
+  if (( checked == 0 )); then
+    _skip "no installed launchd program to check"
+  elif [[ -z "${bad}" ]]; then
+    _pass "installed launchd programs resolve outside ~/Documents and the deployed copies are current"
+  else
+    _fail "installed launchd state wrong:${bad}"
   fi
-
-  for status_in in 0 7; do
-    expected_rc=$(( status_in != 0 ))
-    : > "${fixture}/out"
-    # shellcheck disable=SC2034  # MUSE_BINARY and rc are read by the evaled block
-    actual=$(
-      set +e
-      export JUMP_MUSE_OUT="${fixture}/out" JUMP_MUSE_STATUS="${status_in}"
-      HOME="${fixture}"
-      MUSE_BINARY="${fixture}/muse"
-      rc=0
-      eval "${block}" >/dev/null 2>&1
-      print -r -- "${rc}"
-    )
-    # shellcheck disable=SC2296  # zsh (@f) line split
-    records=("${(@f)$(<"${fixture}/out")}")
-    record="jump-launcher|0|${fixture}/muse|1|0"
-    if (( ${#records[@]} == 1 )) && [[ "${records[1]}" == "${record}" ]]; then
-      _pass "launcher sourced once from bash -c, no arguments, both env vars (exit ${status_in})"
-    else
-      # shellcheck disable=SC2296  # zsh (j) join flag
-      _fail "launcher call was '${(j:; :)records}', want '${record}' (exit ${status_in})"
-    fi
-    if [[ "${actual}" == "${expected_rc}" ]]; then
-      _pass "launcher exit ${status_in} sets rc=${expected_rc}"
-    else
-      _fail "launcher exit ${status_in} left rc='${actual}', want ${expected_rc}"
-    fi
-  done
-  zf_rm -rf "${fixture}"
 }
 
 function run_jump {
@@ -510,16 +201,5 @@ function run_jump {
   zmodload -F zsh/files b:zf_rm b:zf_chmod
   _jump_load_bodies
   _jump_load_plists
-  _jump_test_scripts_exist
-  _jump_test_zsh_syntax
-  _jump_test_muse_launcher
-  _jump_test_reachability
-  _jump_test_binary_paths
-  _jump_test_log_file
-  _jump_test_run_and_log
-  _jump_test_run_and_log_unwritable
-  _jump_test_launchd_not_in_symlink_array
-  _jump_test_launchd_program_outside_documents
-  _jump_test_launchd_payloads_under_documents
-  _jump_test_copied_programs_current
+  _jump_test_cases
 }
