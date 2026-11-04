@@ -3,7 +3,7 @@
 #
 # Scans EVERY tracked text file at HEAD with the shared pii-scan core
 # (denylist + MAC/UUID token detector), not just the hunks a commit stages.
-# Added 2026-09-22. Pre-commit sees only staged hunks, so a value that predates
+# Pre-commit sees only staged hunks, so a value that predates
 # its denylist pattern passes every later commit; a new denylist entry is
 # checked against the whole tree on the next ./test. The pre-push hook runs
 # the same tree scan on every pushed tip in a public repository.
@@ -70,19 +70,15 @@ function _pii_tree_oracle {
   : > "${fx}/empty.txt"
   /usr/bin/git -C "${fx}" add -A
   n="$(cd "${fx}" && _pii_tree_materialise "${out}" "${fx}")" || n=""
-  if [[ "${n}" == "${want}" ]]; then
-    _pass "pii-tree materialiser: a fixture repo yields exactly its ${want} text files"
-  else
-    _fail "pii-tree materialiser: fixture count '${n}', expected ${want}"
-  fi
   local missing=""
   for marker in "file a.txt" "file sub/b.txt" "file c d.txt"; do
     [[ -r "${out}" && "$(<"${out}")" == *"${marker}"$'\n'* ]] || missing+=" '${marker}'"
   done
-  if [[ -z "${missing}" ]] && [[ "$(<"${out}")" != *"link.txt"* && "$(<"${out}")" != *"blob.bin"* && "$(<"${out}")" != *"empty.txt"* ]]; then
-    _pass "pii-tree materialiser: every fixture text file is marked and the symlink, binary and empty file are skipped"
+  if [[ "${n}" == "${want}" && -z "${missing}" ]] \
+     && [[ "$(<"${out}")" != *"link.txt"* && "$(<"${out}")" != *"blob.bin"* && "$(<"${out}")" != *"empty.txt"* ]]; then
+    _pass "pii-tree materialiser: a fixture repo yields exactly its ${want} marked text files, and skips the symlink, binary and empty file"
   else
-    _fail "pii-tree materialiser: fixture output wrong; missing:${missing:- none}"
+    _fail "pii-tree materialiser: fixture count '${n}', expected ${want}; missing:${missing:- none}"
   fi
   /bin/rm -rf "${fx}" "${out}"
 }
