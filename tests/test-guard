@@ -110,6 +110,24 @@ function run_test_guard {
     _tg_expect DENY 'cd && cd dot && ./test' 'bare cd, then a relative cd' "${TG_OTHER}"
     _tg_expect DENY 'cd "$X" && ./test' 'a cd with a variable falls back to the cwd'
 
+    _tg_expect DENY 'eval "./test --time"' 'eval arguments are lexed again'
+    _tg_expect DENY 'bash -c "./test" arg0' 'only the -c word is lexed again'
+    _tg_expect DENY "cd dot\\"$'\n'" && ./test" 'a backslash-newline continues the line' "${TG_HOME}"
+
+    # Quoted text is data unless a shell reads it.
+    _tg_expect PASS "node -e \"import('./x.ts').then(m => console.log(m.f('./test')))\"" 'a ./test string inside node -e'
+    _tg_expect PASS "echo 'see \`./test\` in the notes'" 'backticks inside single quotes'
+    _tg_expect PASS 'git commit -m "Run ./test; then push"' 'a separator inside a commit message'
+    _tg_expect PASS 'for s in a b; do ./test "$s"; done' 'a loop over suites (one suite per run)'
+
+    # Over LEX_MAX (4 KiB) the coarse splitter runs: still no miss.
+    local pad
+    pad="$(printf 'x%.0s' {1..5000})"
+    _tg_expect DENY "echo ${pad} && ./test" 'coarse path: a full run after 5 KB'
+    _tg_expect DENY "echo ${pad}; zsh -c 'cd ~/dot && ./test'" 'coarse path: zsh -c with a cd'
+    _tg_expect PASS "echo ${pad} && ./test pii-hook" 'coarse path: one suite'
+    _tg_expect PASS "echo ${pad} && cd ${TG_OTHER} && ./test" 'coarse path: another repository'
+
     # A heredoc body is data, unless a shell reads it.
     _tg_expect PASS "cat >> notes.md <<'EOF'"$'\n'"Not run: \`./test"$'\n'"pretool-dispatch\`."$'\n'"EOF" 'a quoted heredoc body with a backtick ./test line'
     _tg_expect PASS "cat <<EOF"$'\n'"./test"$'\n'"EOF" 'an unquoted heredoc body for cat'
