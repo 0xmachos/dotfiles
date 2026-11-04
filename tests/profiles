@@ -83,57 +83,41 @@ function run_profiles {
     return 0
   fi
 
-  local dupes
+  # Case 1: every PayloadUUID and PayloadIdentifier is unique.
+  local dupes dupe_ids
   dupes="$(_profiles_dupes "${_PROFILES_UUIDS[@]}")"
-  if [[ -z "${dupes}" ]]; then
-    _pass "every PayloadUUID is unique"
+  dupe_ids="$(_profiles_dupes "${_PROFILES_IDS[@]}")"
+  if [[ -z "${dupes}" && -z "${dupe_ids}" ]]; then
+    _pass "every PayloadUUID and PayloadIdentifier is unique"
   else
-    _fail "repeated PayloadUUID: ${dupes//$'\n'/; }"
+    _fail "repeated PayloadUUID: ${dupes//$'\n'/; } PayloadIdentifier: ${dupe_ids//$'\n'/; }"
   fi
 
-  dupes="$(_profiles_dupes "${_PROFILES_IDS[@]}")"
-  if [[ -z "${dupes}" ]]; then
-    _pass "every PayloadIdentifier is unique"
-  else
-    _fail "repeated PayloadIdentifier: ${dupes//$'\n'/; }"
-  fi
-
-  # mobileconfig-UUIDs.txt parity, both directions.
+  # Case 2: mobileconfig-UUIDs.txt parity in both directions, and one
+  # preference domain per ManagedClient.preferences payload.
   local list="${dir}/mobileconfig-UUIDs.txt" listed_raw
   local -a listed in_use
-  local entry u
+  local entry u where n
   listed_raw="$(/usr/bin/grep -Eio '[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}' "${list}" 2>/dev/null)" || listed_raw=""
   listed=( ${(U)${(f)listed_raw}} )
   for entry in "${_PROFILES_UUIDS[@]}"; do
     in_use+=("${entry%%$'\t'*}")
   done
-  local -a missing stale
+  local -a missing stale multi
   for u in "${in_use[@]}"; do
     (( ${listed[(Ie)${u}]} )) || missing+=("${u}")
   done
   for u in "${listed[@]}"; do
     (( ${in_use[(Ie)${u}]} )) || stale+=("${u}")
   done
-  if (( ${#missing} == 0 )); then
-    _pass "mobileconfig-UUIDs.txt lists every UUID in use"
-  else
-    _fail "UUIDs in use but not in mobileconfig-UUIDs.txt: ${(j:, :)missing}"
-  fi
-  if (( ${#stale} == 0 )); then
-    _pass "mobileconfig-UUIDs.txt lists no unused UUID"
-  else
-    _fail "UUIDs in mobileconfig-UUIDs.txt but not in any profile: ${(j:, :)stale}"
-  fi
-
-  # One preference domain per ManagedClient.preferences payload.
-  local where n
   for entry in "${_PROFILES_MCX[@]}"; do
     where="${entry%%$'\t'*}"
     n="${entry#*$'\t'}"
-    if [[ "${n}" == "1" ]]; then
-      _pass "${where}: one preference domain"
-    else
-      _fail "${where}: ${n} preference domains (macOS applies only one)"
-    fi
+    [[ "${n}" == "1" ]] || multi+=("${where}: ${n} preference domains (macOS applies only one)")
   done
+  if (( ${#missing} == 0 && ${#stale} == 0 && ${#multi} == 0 )); then
+    _pass "mobileconfig-UUIDs.txt matches the UUIDs in use and each preferences payload holds one domain"
+  else
+    _fail "UUID list or preference domains: missing from list: ${(j:, :)missing}; not in any profile: ${(j:, :)stale}; ${(j:; :)multi}"
+  fi
 }
