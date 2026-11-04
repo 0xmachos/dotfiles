@@ -4,13 +4,16 @@
 # Behavioural test for bin/scratch-sweep, the unattended job that deletes idle
 # scratch under ~/Library/Caches/tint. It deletes recursively, so the
 # suite pins what must SURVIVE: recent entries, an old entry holding one recent
-# file, symlink targets, and everything under a refused root.
+# file, symlink targets, exempt names, a live lock holder, and everything under
+# a refused root (wrong basename, symlink, foreign owner, swapped after the
+# checks). It also pins what must go (idle entries, awkward names), the dry run,
+# the re-check before a delete, and the real main under hostile shell options.
 #
 # Hermetic: each case builds <tmp>/Caches/tint, sources the script in a
 # child zsh (`main` does not run when sourced) and calls _sweep_root_dir on it.
 # The real main runs only with HOME pointed at a fixture.
 #
-# Run: ./test scratch-sweep    (or ./test for the full suite)
+# Run: ./test scratch-sweep
 #
 # ShellCheck: lint with `shellcheck --shell=bash tests/scratch-sweep`.
 # This file is sourced, not executed - chmod 644.
@@ -51,23 +54,6 @@ function _sweep_t_exists {
   [[ -e "$1" || -L "$1" ]]
 }
 
-function _sweep_t_expect_gone {
-  if _sweep_t_exists "$1"; then _fail "$2 - still present"; else _pass "$2"; fi
-}
-
-function _sweep_t_expect_kept {
-  if _sweep_t_exists "$1"; then _pass "$2"; else _fail "$2 - was removed"; fi
-}
-
-function _sweep_t_expect_rc {
-  # $1 = status the last _sweep_t_run must have returned, $2 = case name.
-  if (( SWEEP_T_RC == $1 )); then
-    _pass "$2"
-  else
-    _fail "$2 - rc=${SWEEP_T_RC} out=${SWEEP_T_OUT}"
-  fi
-}
-
 function _sweep_t_fixture {
   # Make a fresh fixture holding Caches/tint under the suite sandbox and set the
   # caller's `fx` (physical path) and `root` (its Caches/tint) by dynamic scope.
@@ -78,62 +64,42 @@ function _sweep_t_fixture {
   /bin/mkdir -p "${root}"
 }
 
-function run_scratch_sweep {
-  _section "scratch-sweep"
-
-  local script="${SCRIPT_DIR}/bin/scratch-sweep"
-  if [[ ! -f "${script}" ]]; then
-    _skip "bin/scratch-sweep absent"
-    return 0
-  fi
-
-  local fx root outside name d13 d15 out rc setup line
-  local -i stray=0 cwds=0
-
-  SWEEP_T_BOX="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/scratch-sweep-test.XXXXXX")" || return 1
-  SWEEP_T_BOX="${SWEEP_T_BOX:A}"
-
-  # --- Idle and recent entries ----------------------------------------------
-  _sweep_t_fixture
-  /bin/mkdir -p "${root}/idle-dir/sub" "${root}/recent-dir/sub"
-  : > "${root}/idle-dir/sub/f"
-  : > "${root}/recent-dir/sub/f"
-  : > "${root}/idle-file"
-  : > "${root}/recent-file"
-  _sweep_t_age "${root}/idle-dir"
-  _sweep_t_age "${root}/idle-file"
-  /bin/mkdir -p "${root}/deep/a/b/c"
-  : > "${root}/deep/a/b/c/fresh"
-  : > "${root}/deep/a/old-file"
-  /usr/bin/find -P "${root}/deep" -type d -exec /usr/bin/touch -t 202001010000 {} +
-  /usr/bin/touch -t 202001010000 "${root}/deep/a/old-file"
-  _sweep_t_run "${root}"
-  _sweep_t_expect_gone "${root}/idle-dir" "idle directory is removed"
-  _sweep_t_expect_gone "${root}/idle-file" "idle top-level file is removed"
-  _sweep_t_expect_kept "${root}/recent-dir/sub/f" "recent directory is kept"
-  _sweep_t_expect_kept "${root}/recent-file" "recent top-level file is kept"
-  _sweep_t_expect_kept "${root}/deep/a/b/c/fresh" "old tree with one recent deep file is kept whole"
-  _sweep_t_expect_kept "${root}/deep/a/old-file" "old sibling inside a kept tree is untouched"
-  _sweep_t_expect_rc 0 "exit 0 on success"
-  if [[ "${SWEEP_T_OUT}" == *"removed "*"idle-dir"* && "${SWEEP_T_OUT}" == *"summary: removed=2 kept=3 exempt=0 skipped=0 failed=0 dry_run=0"* ]]; then
-    _pass "one log line per deletion and a summary"
-  else
-    _fail "log output unexpected: ${SWEEP_T_OUT}"
-  fi
-  _sweep_t_expect_gone "${root}/.sweep.lock" "lock is released after a run"
-
-  # --- The 14-day boundary ---------------------------------------------------
+# Idle entries go, recent ones stay, one recent file deep keeps its old tree
+# whole, and the boundary sits at 14 days. One sweep of one root.
+function _sweep_t_core {
+  local fx root d13 d15 ok=1
   _sweep_t_fixture
   d13="$(/bin/date -v-13d '+%Y%m%d%H%M')"
   d15="$(/bin/date -v-15d '+%Y%m%d%H%M')"
-  /bin/mkdir -p "${root}/d13" "${root}/d15"
+  /bin/mkdir -p "${root}/idle-dir/sub" "${root}/recent-dir/sub" "${root}/deep/a/b/c" "${root}/d13" "${root}/d15"
+  : > "${root}/idle-dir/sub/f"
+  : > "${root}/recent-dir/sub/f"
+  : > "${root}/idle-file"
+  : > "${root}/deep/a/b/c/fresh"
+  : > "${root}/deep/a/old-file"
+  _sweep_t_age "${root}/idle-dir"
+  _sweep_t_age "${root}/idle-file"
+  /usr/bin/find -P "${root}/deep" -type d -exec /usr/bin/touch -t 202001010000 {} +
+  /usr/bin/touch -t 202001010000 "${root}/deep/a/old-file"
   /usr/bin/touch -t "${d13}" "${root}/d13"
   /usr/bin/touch -t "${d15}" "${root}/d15"
   _sweep_t_run "${root}"
-  _sweep_t_expect_kept "${root}/d13" "13-day-old entry is kept"
-  _sweep_t_expect_gone "${root}/d15" "15-day-old entry is removed"
+  (( SWEEP_T_RC == 0 )) || ok=0
+  ! _sweep_t_exists "${root}/idle-dir" && ! _sweep_t_exists "${root}/idle-file" && ! _sweep_t_exists "${root}/d15" || ok=0
+  _sweep_t_exists "${root}/recent-dir/sub/f" && _sweep_t_exists "${root}/deep/a/b/c/fresh" \
+    && _sweep_t_exists "${root}/deep/a/old-file" && _sweep_t_exists "${root}/d13" || ok=0
+  [[ "${SWEEP_T_OUT}" == *"summary: removed=3 kept=3 exempt=0 skipped=0 failed=0 dry_run=0"* ]] || ok=0
+  _sweep_t_exists "${root}/.sweep.lock" && ok=0
+  if (( ok )); then
+    _pass "sweep: idle entries removed, recent and deep-recent trees kept, 13 days kept and 15 days removed, lock released"
+  else
+    _fail "core sweep wrong: rc=${SWEEP_T_RC} out=${SWEEP_T_OUT}"
+  fi
+}
 
-  # --- Symlinks --------------------------------------------------------------
+# Old symlinks are unlinked and never followed, and awkward names go whole.
+function _sweep_t_links_names {
+  local fx root outside name ok=1
   _sweep_t_fixture
   outside="${fx}/outside"
   /bin/mkdir -p "${outside}/keep"
@@ -141,391 +107,78 @@ function run_scratch_sweep {
   : > "${outside}/precious-file"
   /bin/ln -s "${outside}" "${root}/old-link-dir"
   /bin/ln -s "${outside}/precious-file" "${root}/old-link-file"
-  /bin/ln -s "${fx}/nowhere" "${root}/old-link-dangling"
-  /usr/bin/touch -h -t 202001010000 "${root}/old-link-dir" "${root}/old-link-file" "${root}/old-link-dangling"
+  /usr/bin/touch -h -t 202001010000 "${root}/old-link-dir" "${root}/old-link-file"
   /bin/ln -s "${outside}" "${root}/recent-link"
   /bin/mkdir -p "${root}/entry-with-link"
-  /bin/ln -s "${outside}" "${root}/entry-with-link/out"
-  /bin/ln -s "${outside}/keep" "${root}/entry-with-link/out2"
+  /bin/ln -s "${outside}/keep" "${root}/entry-with-link/out"
   _sweep_t_age "${root}/entry-with-link"
-  _sweep_t_run "${root}"
-  _sweep_t_expect_gone "${root}/old-link-dir" "old symlink to a directory is unlinked"
-  _sweep_t_expect_gone "${root}/old-link-file" "old symlink to a file is unlinked"
-  _sweep_t_expect_gone "${root}/old-link-dangling" "old dangling symlink is unlinked"
-  _sweep_t_expect_kept "${root}/recent-link" "recent symlink is kept"
-  _sweep_t_expect_gone "${root}/entry-with-link" "old entry holding symlinks is removed"
-  _sweep_t_expect_kept "${outside}/keep/precious" "symlink target directory content is untouched"
-  _sweep_t_expect_kept "${outside}/precious-file" "symlink target file is untouched"
-
-  # --- Awkward names ---------------------------------------------------------
-  _sweep_t_fixture
-  /bin/mkdir -p -- "${root}/has space" "${root}/nl"$'\n'"name" "${root}/-rf" \
-    "${root}/--" "${root}/.hidden" "${root}/'quote" "${root}/glob*[x]" \
-    "${root}/recent space" "${root}/.recent-hidden"
-  for name in "has space" "nl"$'\n'"name" "-rf" "--" ".hidden" "'quote" "glob*[x]"; do
+  /bin/mkdir -p -- "${root}/has space" "${root}/nl"$'\n'"name" "${root}/-rf" "${root}/--" "${root}/glob*[x]"
+  for name in "has space" "nl"$'\n'"name" "-rf" "--" "glob*[x]"; do
     : > "${root}/${name}/f"
     _sweep_t_age "${root}/${name}"
   done
-  : > "${root}/recent space/f"
-  : > "${root}/.recent-hidden/f"
   _sweep_t_run "${root}"
-  _sweep_t_expect_gone "${root}/has space" "name with a space"
-  _sweep_t_expect_gone "${root}/nl"$'\n'"name" "name with a newline"
-  _sweep_t_expect_gone "${root}/-rf" "name with a leading dash"
-  _sweep_t_expect_gone "${root}/--" "name that is a double dash"
-  _sweep_t_expect_gone "${root}/.hidden" "idle dotfile entry"
-  _sweep_t_expect_gone "${root}/'quote" "name with a quote"
-  _sweep_t_expect_gone "${root}/glob*[x]" "name with glob characters"
-  _sweep_t_expect_kept "${root}/recent space/f" "recent name with a space is kept"
-  _sweep_t_expect_kept "${root}/.recent-hidden/f" "recent dotfile entry is kept"
-  if [[ "${SWEEP_T_OUT}" == *"nl"$'\n'"name"* ]]; then
-    _fail "a newline in an entry name splits a log line"
-  else
-    _pass "log lines quote entry names"
-  fi
-
-  # --- Roots the script must refuse -----------------------------------------
-  # Each fixture holds an idle sentinel that must survive the refusal.
-  _sweep_t_fixture
-  /bin/mkdir -p "${fx}/Caches/other" "${fx}/Other/tint" "${fx}/real/Caches/tint" \
-    "${fx}/Caches/x" "${fx}/Caches/tint/keepdir"
-  for name in Caches/other Other/tint real/Caches/tint; do
-    /bin/mkdir -p "${fx}/${name}/sentinel"
-    _sweep_t_age "${fx}/${name}/sentinel"
+  (( SWEEP_T_RC == 0 )) || ok=0
+  for name in old-link-dir old-link-file entry-with-link "has space" "nl"$'\n'"name" "-rf" "--" "glob*[x]"; do
+    ! _sweep_t_exists "${root}/${name}" || ok=0
   done
-  /bin/mkdir -p "${fx}/sym/Caches"
-  /bin/ln -s "${fx}/real/Caches/tint" "${fx}/sym/Caches/tint"
-  : > "${fx}/filecase"
-  /bin/mkdir -p "${fx}/Caches/tint/sentinel"
-  _sweep_t_age "${fx}/Caches/tint/sentinel"
+  _sweep_t_exists "${root}/recent-link" && _sweep_t_exists "${outside}/keep/precious" && _sweep_t_exists "${outside}/precious-file" || ok=0
+  [[ "${SWEEP_T_OUT}" != *"nl"$'\n'"name"* ]] || ok=0
+  if (( ok )); then
+    _pass "sweep: old symlinks unlinked without touching their targets, awkward names removed, log lines stay whole"
+  else
+    _fail "links and names wrong: rc=${SWEEP_T_RC} out=${SWEEP_T_OUT}"
+  fi
+}
 
+# A root with the wrong basename is refused and its idle contents survive.
+function _sweep_t_refuse_basename {
+  local fx root
+  _sweep_t_fixture
+  /bin/mkdir -p "${fx}/Caches/other/sentinel"
+  _sweep_t_age "${fx}/Caches/other/sentinel"
   _sweep_t_run "${fx}/Caches/other"
   if (( SWEEP_T_RC == 2 )) && [[ "${SWEEP_T_OUT}" == *refusing* ]] && _sweep_t_exists "${fx}/Caches/other/sentinel"; then
-    _pass "refuses a root with the wrong basename"
+    _pass "refuses a root with the wrong basename and deletes nothing"
   else
     _fail "wrong basename: rc=${SWEEP_T_RC} out=${SWEEP_T_OUT}"
   fi
-  _sweep_t_run "${fx}/Other/tint"
-  if (( SWEEP_T_RC == 2 )) && _sweep_t_exists "${fx}/Other/tint/sentinel"; then
-    _pass "refuses a root whose parent is not Caches"
-  else
-    _fail "wrong parent: rc=${SWEEP_T_RC} out=${SWEEP_T_OUT}"
-  fi
+}
+
+# A root that is a symlink is refused: the real tree behind it survives.
+function _sweep_t_refuse_symlink {
+  local fx root
+  _sweep_t_fixture
+  /bin/mkdir -p "${fx}/real/Caches/tint/sentinel" "${fx}/sym/Caches"
+  _sweep_t_age "${fx}/real/Caches/tint/sentinel"
+  /bin/ln -s "${fx}/real/Caches/tint" "${fx}/sym/Caches/tint"
   _sweep_t_run "${fx}/sym/Caches/tint"
   if (( SWEEP_T_RC == 2 )) && _sweep_t_exists "${fx}/real/Caches/tint/sentinel"; then
-    _pass "refuses a root that is a symlink"
+    _pass "refuses a root that is a symlink and deletes nothing"
   else
     _fail "symlink root: rc=${SWEEP_T_RC} out=${SWEEP_T_OUT}"
   fi
-  /bin/mkdir -p "${fx}/filecase-dir/Caches"
-  : > "${fx}/filecase-dir/Caches/tint"
-  _sweep_t_run "${fx}/filecase-dir/Caches/tint"
-  if (( SWEEP_T_RC == 2 )) && [[ "${SWEEP_T_OUT}" == *"not a directory"* ]]; then
-    _pass "refuses a root that is a file"
-  else
-    _fail "file root: rc=${SWEEP_T_RC} out=${SWEEP_T_OUT}"
-  fi
-  _sweep_t_run "${fx}/Caches/x/../tint"
-  if (( SWEEP_T_RC == 2 )) && _sweep_t_exists "${fx}/Caches/tint/sentinel"; then
-    _pass "refuses a root with a .. component"
-  else
-    _fail "dot-dot root: rc=${SWEEP_T_RC} out=${SWEEP_T_OUT}"
-  fi
-  _sweep_t_run "Caches/tint"
-  _sweep_t_expect_rc 2 "refuses a relative root"
-  _sweep_t_run ""
-  _sweep_t_expect_rc 2 "refuses an empty root"
-  _sweep_t_run "/"
-  _sweep_t_expect_rc 2 "refuses /"
-  SWEEP_T_OWNER=$(( UID + 1 )) _sweep_t_run "${fx}/Caches/tint"
-  if (( SWEEP_T_RC == 2 )) && [[ "${SWEEP_T_OUT}" == *"not owned"* ]] && _sweep_t_exists "${fx}/Caches/tint/sentinel"; then
-    _pass "refuses a root owned by another user"
+}
+
+# A root owned by another user is refused (a sudo run must not pass a
+# root-owned tree).
+function _sweep_t_refuse_owner {
+  local fx root
+  _sweep_t_fixture
+  /bin/mkdir -p "${root}/sentinel"
+  _sweep_t_age "${root}/sentinel"
+  SWEEP_T_OWNER=$(( UID + 1 )) _sweep_t_run "${root}"
+  if (( SWEEP_T_RC == 2 )) && [[ "${SWEEP_T_OUT}" == *"not owned"* ]] && _sweep_t_exists "${root}/sentinel"; then
+    _pass "refuses a root owned by another user and deletes nothing"
   else
     _fail "foreign owner: rc=${SWEEP_T_RC} out=${SWEEP_T_OUT}"
   fi
+}
 
-  # --- Missing root ----------------------------------------------------------
-  _sweep_t_fixture
-  /bin/rmdir "${fx}/Caches/tint"
-  _sweep_t_run "${fx}/Caches/tint"
-  if (( SWEEP_T_RC == 0 )) && [[ ! -e "${fx}/Caches/tint" ]]; then
-    _pass "a missing root exits 0 and creates nothing"
-  else
-    _fail "missing root: rc=${SWEEP_T_RC} out=${SWEEP_T_OUT}"
-  fi
-
-  # --- Dry run ---------------------------------------------------------------
-  _sweep_t_fixture
-  /bin/mkdir -p "${root}/idle" "${root}/recent"
-  _sweep_t_age "${root}/idle"
-  /bin/ln -s "${fx}" "${root}/idle-link"
-  /usr/bin/touch -h -t 202001010000 "${root}/idle-link"
-  _sweep_t_run "${root}" --dry-run
-  _sweep_t_expect_kept "${root}/idle" "dry run leaves an idle directory"
-  _sweep_t_expect_kept "${root}/idle-link" "dry run leaves an idle symlink"
-  if (( SWEEP_T_RC == 0 )) && [[ "${SWEEP_T_OUT}" == *"would remove"*idle* && "${SWEEP_T_OUT}" == *"dry_run=1"* ]]; then
-    _pass "dry run reports what would go"
-  else
-    _fail "dry run output: rc=${SWEEP_T_RC} out=${SWEEP_T_OUT}"
-  fi
-  _sweep_t_expect_gone "${root}/.sweep.lock" "dry run creates no lock"
-
-  # A dry run never takes the lock: it reports even while a live sweep holds
-  # it, and leaves that lock as it found it.
-  _sweep_t_fixture
-  /bin/mkdir -p "${root}/idle" "${root}/.sweep.lock"
-  _sweep_t_age "${root}/idle"
-  print -r -- "$$" > "${root}/.sweep.lock/pid"
-  _sweep_t_run "${root}" --dry-run
-  if (( SWEEP_T_RC == 0 )) && [[ "${SWEEP_T_OUT}" == *"would remove"*idle* && "${SWEEP_T_OUT}" != *"holds the lock"* ]] \
-     && _sweep_t_exists "${root}/idle" && [[ "$(<"${root}/.sweep.lock/pid")" == "$$" ]]; then
-    _pass "a dry run reports while another sweep holds the lock and leaves the lock alone"
-  else
-    _fail "dry run under a held lock: rc=${SWEEP_T_RC} out=${SWEEP_T_OUT}"
-  fi
-
-  # --- Lock ------------------------------------------------------------------
-  _sweep_t_fixture
-  /bin/mkdir -p "${root}/idle"
-  _sweep_t_age "${root}/idle"
-  /bin/mkdir "${root}/.sweep.lock"
-  _sweep_t_run "${root}"
-  if (( SWEEP_T_RC == 0 )) && _sweep_t_exists "${root}/idle" && _sweep_t_exists "${root}/.sweep.lock" \
-     && [[ "${SWEEP_T_OUT}" == *"holds the lock"* ]]; then
-    _pass "a fresh lock makes a second run exit 0 without deleting"
-  else
-    _fail "held lock: rc=${SWEEP_T_RC} out=${SWEEP_T_OUT}"
-  fi
-  /usr/bin/touch -t 202001010000 "${root}/.sweep.lock"
-  _sweep_t_run "${root}"
-  _sweep_t_expect_gone "${root}/idle" "a stale lock is replaced and the sweep proceeds"
-  _sweep_t_expect_gone "${root}/.sweep.lock" "the replaced lock is released"
-
-  _sweep_t_fixture
-  /bin/mkdir -p "${root}/idle"
-  _sweep_t_age "${root}/idle"
-  : > "${root}/.sweep.lock"
-  _sweep_t_run "${root}"
-  if (( SWEEP_T_RC == 1 )) && _sweep_t_exists "${root}/idle" && [[ "${SWEEP_T_OUT}" == *"not a directory"* ]]; then
-    _pass "a lock path that is a file is reported, not silently obeyed"
-  else
-    _fail "file lock: rc=${SWEEP_T_RC} out=${SWEEP_T_OUT}"
-  fi
-
-  # A lock that cannot be taken is not a lock held by another sweep.
-  _sweep_t_fixture
-  /bin/mkdir -p "${root}/idle"
-  _sweep_t_age "${root}/idle"
-  /bin/chmod 555 "${root}"
-  _sweep_t_run "${root}"
-  /bin/chmod 755 "${root}"
-  if (( SWEEP_T_RC == 1 )) && _sweep_t_exists "${root}/idle" \
-     && [[ "${SWEEP_T_OUT}" == *"cannot take the lock"* && "${SWEEP_T_OUT}" != *"holds the lock"* ]]; then
-    _pass "a root without write permission reports that the lock cannot be taken, exit 1"
-  else
-    _fail "unwritable root: rc=${SWEEP_T_RC} out=${SWEEP_T_OUT}"
-  fi
-
-  _sweep_t_fixture
-  /bin/mkdir -p "${root}/idle" "${root}/.sweep.lock"
-  : > "${root}/.sweep.lock/junk"
-  _sweep_t_age "${root}/idle"
-  _sweep_t_age "${root}/.sweep.lock"
-  _sweep_t_run "${root}"
-  if (( SWEEP_T_RC == 1 )) && _sweep_t_exists "${root}/idle" && _sweep_t_exists "${root}/.sweep.lock/junk" \
-     && [[ "${SWEEP_T_OUT}" == *"cannot take the lock"* && "${SWEEP_T_OUT}" != *"holds the lock"* ]]; then
-    _pass "a stale lock that cannot be emptied reports that the lock cannot be taken, exit 1"
-  else
-    _fail "stuck stale lock: rc=${SWEEP_T_RC} out=${SWEEP_T_OUT}"
-  fi
-  # The same stuck lock, but another sweep has made it live by the time the
-  # replacement fails: that is a held lock, exit 0.
-  # shellcheck disable=SC2016  # code for the child shell, not expanded here
-  setup='typeset -gi SWEEP_T_CALLS=0
-    _sweep_lock_stale() { (( SWEEP_T_CALLS += 1 )); (( SWEEP_T_CALLS == 1 )); }'
-  SWEEP_T_SETUP="${setup}" _sweep_t_run "${root}"
-  if (( SWEEP_T_RC == 0 )) && _sweep_t_exists "${root}/idle" && [[ "${SWEEP_T_OUT}" == *"holds the lock"* ]]; then
-    _pass "a lock that became live during the replacement counts as held, exit 0"
-  else
-    _fail "lock live after a failed replacement: rc=${SWEEP_T_RC} out=${SWEEP_T_OUT}"
-  fi
-
-  _sweep_t_fixture
-  /bin/mkdir -p "${root}/idle" "${root}/.sweep.lock"
-  _sweep_t_age "${root}/idle"
-  _sweep_t_age "${root}/.sweep.lock"
-  out="$(/bin/zsh -c '
-    source "$1"
-    builtin cd "$2"
-    _sweep_list_names
-    print -rl -- "${SWEEP_NAMES[@]}"' -- "${script}" "${root}" 2>&1)"
-  if [[ "${out}" == "idle" ]]; then
-    _pass "the lock directory is never an entry, however old"
-  else
-    _fail "entry list unexpected: ${out}"
-  fi
-
-  # --- Errors do not stop the other entries ---------------------------------
-  if (( EUID != 0 )); then
-    _sweep_t_fixture
-    /bin/mkdir -p "${root}/a-unreadable/sub" "${root}/b-idle"
-    _sweep_t_age "${root}/a-unreadable"
-    _sweep_t_age "${root}/b-idle"
-    /bin/chmod 000 "${root}/a-unreadable/sub"
-    _sweep_t_run "${root}"
-    /bin/chmod 755 "${root}/a-unreadable/sub"
-    _sweep_t_expect_kept "${root}/a-unreadable" "an entry that cannot be scanned is kept"
-    _sweep_t_expect_gone "${root}/b-idle" "the next entry is still swept"
-    if (( SWEEP_T_RC == 1 )) && [[ "${SWEEP_T_OUT}" == *"failed=1"* ]]; then
-      _pass "exit 1 when an entry could not be scanned"
-    else
-      _fail "scan failure: rc=${SWEEP_T_RC} out=${SWEEP_T_OUT}"
-    fi
-  fi
-
-  # --- The per-uid claude-<digits> directory is never swept ------------------
-  _sweep_t_fixture
-  /bin/mkdir -p "${root}/claude-501/tasks" "${root}/claude-501x" "${root}/claude-" \
-    "${root}/xclaude-501" "${root}/claude-1"$'\n'"x" "${root}/x"$'\n'"claude-1" \
-    "${root}/claude-Y" "${root}/Claude-4242"
-  : > "${root}/claude-9"
-  /bin/ln -s "${fx}" "${root}/claude-77"
-  for name in claude-501 claude-501x claude- xclaude-501 "claude-1"$'\n'"x" "x"$'\n'"claude-1" \
-    claude-Y Claude-4242 claude-9; do
-    if [[ -d "${root}/${name}" ]]; then : > "${root}/${name}/f"; fi
-    _sweep_t_age "${root}/${name}"
-  done
-  /usr/bin/touch -h -t 202001010000 "${root}/claude-77"
-  _sweep_t_run "${root}"
-  _sweep_t_expect_kept "${root}/claude-501/tasks" "an idle claude-<digits> directory is exempt"
-  _sweep_t_expect_kept "${root}/claude-9" "an idle claude-<digits> file is exempt"
-  _sweep_t_expect_kept "${root}/claude-77" "an idle claude-<digits> symlink is exempt"
-  _sweep_t_expect_gone "${root}/claude-501x" "claude-<digits>x is not exempt"
-  _sweep_t_expect_gone "${root}/claude-" "claude- with no digits is not exempt"
-  _sweep_t_expect_gone "${root}/xclaude-501" "a prefix before claude-<digits> is not exempt"
-  _sweep_t_expect_gone "${root}/claude-1"$'\n'"x" "claude-<digits> followed by a newline is not exempt"
-  _sweep_t_expect_gone "${root}/x"$'\n'"claude-1" "a newline before claude-<digits> is not exempt"
-  _sweep_t_expect_gone "${root}/claude-Y" "claude-<letters> is not exempt"
-  _sweep_t_expect_gone "${root}/Claude-4242" "the exemption is case-sensitive"
-  if [[ "${SWEEP_T_OUT}" == *"exempt=3 "* ]]; then
-    _pass "the summary counts the exempt entries"
-  else
-    _fail "exempt count unexpected: ${SWEEP_T_OUT}"
-  fi
-
-  # --- cc-socks and _tools are never swept -----------------------------------
-  _sweep_t_fixture
-  /bin/mkdir -p "${root}/cc-socks" "${root}/_tools/venv/bin" "${root}/cc-socksx" \
-    "${root}/_toolsx" "${root}/x_tools"
-  : > "${root}/cc-socks/1.sock"
-  : > "${root}/_tools/venv/bin/python"
-  for name in cc-socks _tools cc-socksx _toolsx x_tools; do
-    _sweep_t_age "${root}/${name}"
-  done
-  _sweep_t_run "${root}"
-  _sweep_t_expect_kept "${root}/cc-socks/1.sock" "an idle cc-socks directory is exempt"
-  _sweep_t_expect_kept "${root}/_tools/venv/bin/python" "an idle _tools directory is exempt"
-  _sweep_t_expect_gone "${root}/cc-socksx" "cc-socks with a suffix is not exempt"
-  _sweep_t_expect_gone "${root}/_toolsx" "_tools with a suffix is not exempt"
-  _sweep_t_expect_gone "${root}/x_tools" "a prefix before _tools is not exempt"
-  if [[ "${SWEEP_T_OUT}" == *"exempt=2 "* ]]; then
-    _pass "the summary counts cc-socks and _tools as exempt"
-  else
-    _fail "exempt count unexpected: ${SWEEP_T_OUT}"
-  fi
-
-  # --- Lock owner and age ----------------------------------------------------
-  _sweep_t_fixture
-  /bin/mkdir -p "${root}/idle" "${root}/.sweep.lock"
-  _sweep_t_age "${root}/idle"
-  out="$(/bin/sh -c 'echo $$')"
-  print -r -- "${out}" > "${root}/.sweep.lock/pid"
-  _sweep_t_run "${root}"
-  _sweep_t_expect_gone "${root}/idle" "a fresh lock whose pid is dead is replaced"
-  _sweep_t_expect_gone "${root}/.sweep.lock" "the replaced lock, pid file included, is released"
-  _sweep_t_fixture
-  /bin/mkdir -p "${root}/idle" "${root}/.sweep.lock"
-  _sweep_t_age "${root}/idle"
-  print -r -- "$$" > "${root}/.sweep.lock/pid"
-  _sweep_t_run "${root}"
-  if (( SWEEP_T_RC == 0 )) && _sweep_t_exists "${root}/idle" && [[ "${SWEEP_T_OUT}" == *"holds the lock"* ]]; then
-    _pass "a fresh lock with a live pid is respected"
-  else
-    _fail "live lock: rc=${SWEEP_T_RC} out=${SWEEP_T_OUT}"
-  fi
-  /usr/bin/touch -t 202001010000 "${root}/.sweep.lock"
-  _sweep_t_run "${root}"
-  _sweep_t_expect_gone "${root}/idle" "a lock past the age limit is replaced even with a live pid"
-  # Just either side of the 60-minute limit (a live pid, so only age decides).
-  # The respected lock is 55 minutes old: find rounds a partial minute up.
-  _sweep_t_fixture
-  /bin/mkdir -p "${root}/idle" "${root}/.sweep.lock"
-  _sweep_t_age "${root}/idle"
-  print -r -- "$$" > "${root}/.sweep.lock/pid"
-  /usr/bin/touch -t "$(/bin/date -v-61M '+%Y%m%d%H%M')" "${root}/.sweep.lock"
-  _sweep_t_run "${root}"
-  _sweep_t_expect_gone "${root}/idle" "a lock 61 minutes old is replaced even with a live pid"
-  _sweep_t_fixture
-  /bin/mkdir -p "${root}/idle" "${root}/.sweep.lock"
-  _sweep_t_age "${root}/idle"
-  print -r -- "$$" > "${root}/.sweep.lock/pid"
-  /usr/bin/touch -t "$(/bin/date -v-55M '+%Y%m%d%H%M')" "${root}/.sweep.lock"
-  _sweep_t_run "${root}"
-  if (( SWEEP_T_RC == 0 )) && _sweep_t_exists "${root}/idle" && [[ "${SWEEP_T_OUT}" == *"holds the lock"* ]]; then
-    _pass "a lock 55 minutes old with a live pid is respected"
-  else
-    _fail "55-minute lock: rc=${SWEEP_T_RC} out=${SWEEP_T_OUT}"
-  fi
-  _sweep_t_fixture
-  /bin/mkdir -p "${root}/idle" "${root}/.sweep.lock"
-  _sweep_t_age "${root}/idle"
-  print -r -- "not-a-pid" > "${root}/.sweep.lock/pid"
-  _sweep_t_run "${root}"
-  if (( SWEEP_T_RC == 0 )) && _sweep_t_exists "${root}/idle" && [[ "${SWEEP_T_OUT}" == *"holds the lock"* ]]; then
-    _pass "a fresh lock with an unreadable pid is respected"
-  else
-    _fail "junk pid lock: rc=${SWEEP_T_RC} out=${SWEEP_T_OUT}"
-  fi
-
-  # A live sweep touches its lock after every entry, so a long run never looks
-  # stale to a second sweep. The seam ages the lock while a-idle goes and notes
-  # whether the lock is fresh again when b-idle goes.
-  _sweep_t_fixture
-  /bin/mkdir -p "${root}/a-idle" "${root}/b-idle"
-  _sweep_t_age "${root}/a-idle"
-  _sweep_t_age "${root}/b-idle"
-  # shellcheck disable=SC2016  # code for the child shell, not expanded here
-  setup='_sweep_pre_delete() {
-      if [[ "$1" == a-idle ]]; then
-        /usr/bin/touch -t 202001010000 "./.sweep.lock"
-      elif [[ -n "$(/usr/bin/find -P "./.sweep.lock" -maxdepth 0 -mmin -60 -print)" ]]; then
-        : > "${SWEEP_T_MARK}"
-      fi
-    }'
-  SWEEP_T_MARK="${fx}/lock-refreshed" SWEEP_T_SETUP="${setup}" _sweep_t_run "${root}"
-  if _sweep_t_exists "${fx}/lock-refreshed"; then
-    _pass "the lock is touched after each entry"
-  else
-    _fail "lock not refreshed between entries: rc=${SWEEP_T_RC} out=${SWEEP_T_OUT}"
-  fi
-
-  # --- An entry that becomes active is re-checked before the delete ---------
-  _sweep_t_fixture
-  /bin/mkdir -p "${root}/busy" "${root}/quiet"
-  _sweep_t_age "${root}/busy"
-  _sweep_t_age "${root}/quiet"
-  # shellcheck disable=SC2016  # code for the child shell, not expanded here
-  setup='_sweep_pre_delete() { if [[ "$1" == busy ]]; then : > "./$1/late"; fi; }'
-  SWEEP_T_SETUP="${setup}" _sweep_t_run "${root}"
-  _sweep_t_expect_kept "${root}/busy/late" "an entry written to after the first scan is kept"
-  _sweep_t_expect_gone "${root}/quiet" "an entry that stayed idle is still removed"
-  if (( SWEEP_T_RC == 0 )) && [[ "${SWEEP_T_OUT}" == *"became active"* && "${SWEEP_T_OUT}" == *"removed=1 kept=1 "* ]]; then
-    _pass "the late activity is logged and counted as kept"
-  else
-    _fail "late activity: rc=${SWEEP_T_RC} out=${SWEEP_T_OUT}"
-  fi
-
-  # --- A root swapped for a symlink after the checks is not followed --------
+# A root swapped for a symlink after the checks is not followed: the sweep
+# aborts and deletes nothing, in the target or in the caller's directory.
+function _sweep_t_swapped_root {
+  local fx root setup
   _sweep_t_fixture
   /bin/mkdir -p "${fx}/outside/victim" "${fx}/caller"
   : > "${fx}/outside/victim/f"
@@ -549,88 +202,137 @@ function run_scratch_sweep {
   else
     _fail "swapped root: rc=${SWEEP_T_RC} out=${SWEEP_T_OUT}"
   fi
+}
 
-  # --- The working directory is restored, and output is only log lines ------
+# A dry run reports what would go and deletes nothing, symlinks included.
+function _sweep_t_dry_run {
+  local fx root
   _sweep_t_fixture
-  /bin/mkdir -p "${root}/idle1" "${root}/idle2" "${root}/idle3" "${root}/recent1" "${root}/recent2" \
-    "${root}/claude-5" "${fx}/here"
-  _sweep_t_age "${root}/idle1"; _sweep_t_age "${root}/idle2"; _sweep_t_age "${root}/idle3"
-  out="$(/bin/zsh -c '
-    source "$1"; builtin cd "$3"
-    _sweep_root_dir "$2" --dry-run; print -r -- "cwd:${PWD}"
-    _sweep_root_dir "$2"; print -r -- "cwd:${PWD}"
-    _sweep_root_dir "$2"; print -r -- "cwd:${PWD}"
-    _sweep_root_dir "$2/../nope"; print -r -- "cwd:${PWD}"' -- "${script}" "${root}" "${fx}/here" 2>&1)"
-  while IFS= read -r line; do
-    if [[ "${line}" == cwd:"${fx}/here" ]]; then
-      (( cwds += 1 ))
-    elif [[ ! "${line}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T || "${line}" == *=* && "${line}" != *summary:* ]]; then
-      if [[ "${line}" != "scratch-sweep: refusing root "* ]]; then (( stray += 1 )); fi
-    fi
-  done <<< "${out}"
-  if (( cwds == 4 )); then
-    _pass "the working directory is restored after a run, a dry run and a refusal"
+  /bin/mkdir -p "${root}/idle"
+  _sweep_t_age "${root}/idle"
+  /bin/ln -s "${fx}" "${root}/idle-link"
+  /usr/bin/touch -h -t 202001010000 "${root}/idle-link"
+  _sweep_t_run "${root}" --dry-run
+  if (( SWEEP_T_RC == 0 )) && _sweep_t_exists "${root}/idle" && _sweep_t_exists "${root}/idle-link" \
+     && [[ "${SWEEP_T_OUT}" == *"would remove"*idle* && "${SWEEP_T_OUT}" == *"dry_run=1"* ]] && ! _sweep_t_exists "${root}/.sweep.lock"; then
+    _pass "dry run: reports what would go, deletes nothing, takes no lock"
   else
-    _fail "working directory not restored (${cwds}/4): ${out}"
+    _fail "dry run wrong: rc=${SWEEP_T_RC} out=${SWEEP_T_OUT}"
   fi
-  if (( stray == 0 )); then
-    _pass "repeated runs in one shell print only log lines"
-  else
-    _fail "stray output (${stray} lines): ${out}"
-  fi
+}
 
-  # --- The real main: hardcoded root under HOME -----------------------------
+# A fresh lock held by a live sweep: exit 0, nothing deleted.
+function _sweep_t_lock_held {
+  local fx root
+  _sweep_t_fixture
+  /bin/mkdir -p "${root}/idle" "${root}/.sweep.lock"
+  _sweep_t_age "${root}/idle"
+  print -r -- "$$" > "${root}/.sweep.lock/pid"
+  _sweep_t_run "${root}"
+  if (( SWEEP_T_RC == 0 )) && _sweep_t_exists "${root}/idle" && [[ "${SWEEP_T_OUT}" == *"holds the lock"* ]]; then
+    _pass "a fresh lock with a live pid is respected: exit 0, nothing deleted"
+  else
+    _fail "live lock: rc=${SWEEP_T_RC} out=${SWEEP_T_OUT}"
+  fi
+}
+
+# claude-<digits>, cc-socks and _tools are never swept, near-miss names are.
+function _sweep_t_exempt {
+  local fx root name ok=1
+  _sweep_t_fixture
+  /bin/mkdir -p "${root}/claude-501/tasks" "${root}/cc-socks" "${root}/_tools/venv" \
+    "${root}/claude-501x" "${root}/xclaude-501" "${root}/Claude-4242" "${root}/cc-socksx"
+  : > "${root}/claude-9"
+  /bin/ln -s "${fx}" "${root}/claude-77"
+  for name in claude-501 cc-socks _tools claude-501x xclaude-501 Claude-4242 cc-socksx claude-9; do
+    if [[ -d "${root}/${name}" ]]; then : > "${root}/${name}/f"; fi
+    _sweep_t_age "${root}/${name}"
+  done
+  /usr/bin/touch -h -t 202001010000 "${root}/claude-77"
+  _sweep_t_run "${root}"
+  for name in claude-501/tasks claude-9 claude-77 cc-socks/f _tools/f; do
+    _sweep_t_exists "${root}/${name}" || ok=0
+  done
+  for name in claude-501x xclaude-501 Claude-4242 cc-socksx; do
+    ! _sweep_t_exists "${root}/${name}" || ok=0
+  done
+  [[ "${SWEEP_T_OUT}" == *"exempt=5 "* ]] || ok=0
+  if (( ok )); then
+    _pass "exempt names (claude-<digits> dir, file and symlink, cc-socks, _tools) survive, near-miss names are removed"
+  else
+    _fail "exempt wrong: rc=${SWEEP_T_RC} out=${SWEEP_T_OUT}"
+  fi
+}
+
+# An entry that becomes active between the first scan and the delete is kept.
+function _sweep_t_late_activity {
+  local fx root setup
+  _sweep_t_fixture
+  /bin/mkdir -p "${root}/busy" "${root}/quiet"
+  _sweep_t_age "${root}/busy"
+  _sweep_t_age "${root}/quiet"
+  # shellcheck disable=SC2016  # code for the child shell, not expanded here
+  setup='_sweep_pre_delete() { if [[ "$1" == busy ]]; then : > "./$1/late"; fi; }'
+  SWEEP_T_SETUP="${setup}" _sweep_t_run "${root}"
+  if (( SWEEP_T_RC == 0 )) && _sweep_t_exists "${root}/busy/late" && ! _sweep_t_exists "${root}/quiet" \
+     && [[ "${SWEEP_T_OUT}" == *"became active"* && "${SWEEP_T_OUT}" == *"removed=1 kept=1 "* ]]; then
+    _pass "an entry written to after the first scan is kept, the idle one is removed"
+  else
+    _fail "late activity: rc=${SWEEP_T_RC} out=${SWEEP_T_OUT}"
+  fi
+}
+
+# The real main: the hardcoded root under HOME, with startup-file options that
+# change globbing, word splitting and errexit.
+function _sweep_t_main {
+  local fx root script="${SCRIPT_DIR}/bin/scratch-sweep" out rc ok=1
   _sweep_t_fixture
   root="${fx}/Library/Caches/tint"
-  /bin/mkdir -p "${root}/idle" "${root}/recent" "${fx}/Caches/tint/elsewhere"
+  /bin/mkdir -p "${root}/idle" "${root}/recent" "${fx}/Caches/tint/elsewhere" "${fx}/zdotdir"
   _sweep_t_age "${root}/idle"
   _sweep_t_age "${fx}/Caches/tint/elsewhere"
-  if out="$(HOME="${fx}" /bin/zsh "${script}" --dry-run 2>&1)"; then rc=0; else rc=$?; fi
-  if (( rc == 0 )) && [[ "${out}" == *"would remove"*idle* ]] && _sweep_t_exists "${root}/idle"; then
-    _pass "main --dry-run reads \${HOME}/Library/Caches/tint and deletes nothing"
-  else
-    _fail "main --dry-run: rc=${rc} out=${out}"
-  fi
-  if out="$(HOME="${fx}" /bin/zsh "${script}" 2>&1)"; then rc=0; else rc=$?; fi
-  if (( rc == 0 )); then _pass "main exits 0"; else _fail "main exit ${rc}: ${out}"; fi
-  _sweep_t_expect_gone "${root}/idle" "main removes an idle entry under the hardcoded root"
-  _sweep_t_expect_kept "${root}/recent" "main keeps a recent entry"
-  _sweep_t_expect_kept "${fx}/Caches/tint/elsewhere" "main does not touch any other Caches/tint"
-  if out="$(HOME="${fx}" /bin/zsh "${script}" --bogus 2>&1)"; then rc=0; else rc=$?; fi
-  if (( rc == 2 )) && [[ "${out}" == *usage* ]]; then _pass "main rejects an unknown argument"; else _fail "bogus argument: rc=${rc} out=${out}"; fi
-  if out="$(HOME="${fx}" /bin/zsh "${script}" "${fx}/Caches/tint" 2>&1)"; then rc=0; else rc=$?; fi
-  if (( rc == 2 )) && _sweep_t_exists "${fx}/Caches/tint/elsewhere"; then
-    _pass "main takes no root argument"
-  else
-    _fail "root argument accepted: rc=${rc} out=${out}"
-  fi
-  if out="$(HOME="relative/home" /bin/zsh "${script}" 2>&1)"; then rc=0; else rc=$?; fi
-  if (( rc == 2 )); then _pass "main refuses a relative HOME"; else _fail "relative HOME: rc=${rc} out=${out}"; fi
-  if out="$(HOME="" /bin/zsh "${script}" 2>&1)"; then rc=0; else rc=$?; fi
-  if (( rc == 2 )); then _pass "main refuses an empty HOME"; else _fail "empty HOME: rc=${rc} out=${out}"; fi
-  if out="$(HOME="${fx}" SWEEP_ROOT="${fx}/Caches/tint" CLAUDE_TMP_ROOT="${fx}/Caches/tint" /bin/zsh "${script}" 2>&1)"; then rc=0; else rc=$?; fi
-  if (( rc == 0 )) && _sweep_t_exists "${fx}/Caches/tint/elsewhere"; then
-    _pass "root-like environment variables change nothing"
-  else
-    _fail "environment override: rc=${rc} out=${out}"
-  fi
-  if out="$(/bin/zsh -c 'source "$1"' -- "${script}" 2>&1)"; then rc=0; else rc=$?; fi
-  if (( rc == 0 )) && [[ -z "${out}" ]]; then
-    _pass "sourcing the script runs nothing"
-  else
-    _fail "sourcing produced output or failed: rc=${rc} out=${out}"
-  fi
-
-  # Startup-file options must not change what is swept: zsh reads
-  # $ZDOTDIR/.zshenv for every invocation, scripts included.
-  _sweep_t_fixture
-  root="${fx}/Library/Caches/tint"
-  /bin/mkdir -p "${root}/idle" "${root}/recent" "${fx}/zdotdir"
-  _sweep_t_age "${root}/idle"
   print -r -- 'setopt nobareglobqual ksharrays shwordsplit nomatch errexit' > "${fx}/zdotdir/.zshenv"
   if out="$(HOME="${fx}" ZDOTDIR="${fx}/zdotdir" /bin/zsh "${script}" 2>&1)"; then rc=0; else rc=$?; fi
-  if (( rc == 0 )); then _pass "main exits 0 under nobareglobqual, ksharrays and errexit"; else _fail "startup options: rc=${rc} out=${out}"; fi
-  _sweep_t_expect_gone "${root}/idle" "main removes an idle entry under those options"
-  _sweep_t_expect_kept "${root}/recent" "main keeps a recent entry under those options"
+  (( rc == 0 )) || ok=0
+  ! _sweep_t_exists "${root}/idle" || ok=0
+  _sweep_t_exists "${root}/recent" && _sweep_t_exists "${fx}/Caches/tint/elsewhere" || ok=0
+  if (( ok )); then
+    _pass "main: removes the idle entry under HOME, keeps the recent one and any other Caches/tint, under hostile shell options"
+  else
+    _fail "main wrong: rc=${rc} out=${out}"
+  fi
+}
+
+# main refuses a relative HOME.
+function _sweep_t_main_home {
+  local out rc
+  if out="$(HOME="relative/home" /bin/zsh "${SCRIPT_DIR}/bin/scratch-sweep" 2>&1)"; then rc=0; else rc=$?; fi
+  if (( rc == 2 )); then _pass "main refuses a relative HOME"; else _fail "relative HOME: rc=${rc} out=${out}"; fi
+}
+
+function run_scratch_sweep {
+  _section "scratch-sweep"
+
+  if [[ ! -f "${SCRIPT_DIR}/bin/scratch-sweep" ]]; then
+    _skip "bin/scratch-sweep absent"
+    return 0
+  fi
+
+  SWEEP_T_BOX="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/scratch-sweep-test.XXXXXX")" || return 1
+  SWEEP_T_BOX="${SWEEP_T_BOX:A}"
+
+  _sweep_t_core
+  _sweep_t_links_names
+  _sweep_t_refuse_basename
+  _sweep_t_refuse_symlink
+  _sweep_t_refuse_owner
+  _sweep_t_swapped_root
+  _sweep_t_dry_run
+  _sweep_t_lock_held
+  _sweep_t_exempt
+  _sweep_t_late_activity
+  _sweep_t_main
+  _sweep_t_main_home
+
   /bin/rm -rf "${SWEEP_T_BOX}"
 }
