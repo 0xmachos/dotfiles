@@ -40,6 +40,17 @@
 # a caller's timeout can kill a run that already answered. Interactive keeps
 # it. Session log confirms: at 0 no verify-reminder child starts and the
 # end-of-turn gate is gone.
+#
+# argv0 (2026-11-05, launcher_version 3, Muse 1.4.14): Rex shows the Meta tab
+# icon when the program path or argv0 ends in `muse` (tested in Rex tabs).
+# Meta's launcher ends with `exec "$binary" "$@"`, so the process runs as
+# muse-bin-<version> and Rex shows a plain terminal icon (Rex feedback
+# 1564806747837694213, open). Every path except MUSE_AUTO_SKIP=1 exports a
+# bash function `exec` (BASH_FUNC_exec%%) that the bash launcher imports: a
+# muse-bin-* target runs as `exec -a muse`, after `unset -f exec`, so the
+# function does not reach Muse or its shells. A launcher update that adds a
+# redirect-only `exec >file` would break under it (the redirect binds to the
+# function call): re-check the launcher's `exec` lines after an update.
 
 function muse {
   local arg
@@ -47,15 +58,19 @@ function muse {
     command muse "$@"
     return
   fi
+  # shellcheck disable=SC2016 # bash expands this text, not zsh
+  local shim='() { if [[ ${1-} == */muse-bin-* ]]; then unset -f exec; builtin exec -a muse "$@"; fi; builtin exec "$@"; }'
+  local -a launch=(/usr/bin/env "BASH_FUNC_exec%%=${shim}")
   for arg in "$@"; do
     case "${arg}" in
       exec)
-        MUSE_EXPERIMENTAL_VERIFY_REMINDER="${MUSE_EXPERIMENTAL_VERIFY_REMINDER:-0}" \
-          command muse "$@"
+        "${launch[@]}" \
+          MUSE_EXPERIMENTAL_VERIFY_REMINDER="${MUSE_EXPERIMENTAL_VERIFY_REMINDER:-0}" \
+          muse "$@"
         return
         ;;
       config|export|trace|model-profile|skills|voice|sandbox|schema|serve|session-message|mcp|auth|login|logout|init|plugins)
-        command muse "$@"
+        "${launch[@]}" muse "$@"
         return
         ;;
     esac
@@ -63,10 +78,10 @@ function muse {
   for arg in "$@"; do
     case "${arg}" in
       --permission-profile|--permission-profile=*|--approval-mode|--approval-mode=*|--disable-approval|--disable-sandbox|--yolo)
-        command muse "$@"
+        "${launch[@]}" muse "$@"
         return
         ;;
     esac
   done
-  command muse --approval-mode never --disable-sandbox "$@"
+  "${launch[@]}" muse --approval-mode never --disable-sandbox "$@"
 }
