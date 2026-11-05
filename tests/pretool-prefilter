@@ -3,19 +3,27 @@
 #
 # Checks the prefilter mod (claude/mods/pretool-prefilter, a Claude Code
 # function hook) against the zsh guards it fronts. The mod lets a Bash command
-# through with no process start when it contains none of its TOKENS and none
-# of its SYNTAX characters; anything else, and every Write/Edit/NotebookEdit,
-# runs claude/hooks/pretool-dispatch. The risk is a token list too small: a
-# command a guard would deny slips past unguarded. So this suite
-#   1. parses TOKENS and SYNTAX out of hooks/register.ts and mirrors the
-#      check in zsh (_pf_needs_dispatch);
+# through with no process start when it contains none of its TOKENS, none of
+# its SYNTAX characters and no UV_SHAPE, and its cwd names no config root; it
+# lets a Write/Edit/NotebookEdit through when writeNeedsDispatch() finds no
+# trigger. Anything else runs claude/hooks/pretool-dispatch. The risk is a
+# rule too narrow: a call a guard would deny slips past unguarded. So this
+# suite
+#   1. parses TOKENS out of hooks/register.ts and mirrors the Bash check in
+#      zsh (_pf_needs_dispatch, _pf_cwd_needs_dispatch);
 #   2. runs a denied command per bypass class through the real dispatcher
 #      (must DENY) and the mirror (must dispatch): a plain deny, a backslash
-#      rm, decoration inside a token, a publish shape with no literal gh;
-#   3. checks that a lone high byte dispatches under a UTF-8 locale and that a
-#      token-free command passes the dispatcher and skips it in the mod;
-#   4. checks the deployed dispatcher and mod link exist;
-#   5. runs the mod's own TypeScript tests via `claude plugin test`.
+#      rm, decoration inside a token, a publish shape with no literal gh, a
+#      letter whose zsh case fold is ASCII, a uv-guard shape no token
+#      carries, the bare CLT python path, a token-free command from a cwd in
+#      a config root;
+#   3. checks that other non-ASCII text and a token-free command pass the
+#      dispatcher and skip it in the mod;
+#   4. runs a denied write per write guard through the dispatcher (must DENY)
+#      and the real writeNeedsDispatch() via node (must dispatch), and a
+#      trigger-free write through both (skipped when node cannot import it);
+#   5. checks the deployed dispatcher and mod link exist;
+#   6. runs the mod's own TypeScript tests via `claude plugin test`.
 # Each case feeds one input to the code under test.
 # Fixture tokens are assembled at run time (same convention as the hook
 # suites). Skips when claude/ is not synced to this machine.
@@ -50,15 +58,19 @@ function _pf_load_tokens {
 
 function _pf_needs_dispatch {
   # Mirrors needsDispatch() in register.ts. $1 = command. 0 = dispatch.
-  local cmd="$1" lower stripped tok
-  # Outside printable ASCII (+ tab, newline, CR): dispatch (lower-casing
-  # differs between zsh and JS; controls are rare). Same class as SYNTAX;
-  # a NUL is tested first because zsh's =~ stops at one. The C locale makes
-  # the class byte-wise: under UTF-8 a lone high byte is a regex error, which
-  # fell through where the mod dispatches.
+  local cmd="$1" lower stripped tok seq
+  # SYNTAX: a control character other than tab, newline and CR, or one of
+  # the four letters whose zsh case fold is ASCII (U+0130, U+0131, U+017F,
+  # U+212A). Byte-wise under the C locale: the letters as their UTF-8 byte
+  # sequences, so the caller's locale does not matter. A NUL is tested first
+  # because zsh's =~ stops at one. The mod's lone-surrogate check has no
+  # UTF-8 form, so the mod's own tests cover it.
   local LC_ALL=C
   [[ "${cmd}" == *$'\0'* ]] && return 0
-  [[ "${cmd}" =~ $'[^\t\n\r\x20-\x7e]' ]] && return 0
+  [[ "${cmd}" =~ $'[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]' ]] && return 0
+  for seq in $'\xc4\xb0' $'\xc4\xb1' $'\xc5\xbf' $'\xe2\x84\xaa'; do
+    [[ "${cmd}" == *"${seq}"* ]] && return 0
+  done
   # shellcheck disable=SC2296  # zsh (L) lower-cases
   lower="${(L)cmd}"
   # gh-publish's publish-shape backstop, bounded as the guard bounds it.
@@ -70,9 +82,14 @@ function _pf_needs_dispatch {
   local probe="${lower//\\$'\n'/}"
   probe="${probe//[\\\'\"]/}"
   [[ "${probe}" =~ ${publish} ]] && return 0
+  # uv-guard's shapes behind its bare pip and venv probe (the mod's UV_SHAPE),
+  # on the probe text, then on the stripped text.
+  local uv='pip[[:space:][:digit:]]|-[a-z]*m[[:space:]]*(pip|venv)'
+  [[ "${probe}" =~ ${uv} ]] && return 0
   # Decoration deleted (quotes, backslashes, $ ( ) backtick, newline), as the
   # mod's DECORATION regex does, then the substring check.
   stripped="${lower//[\\\'\"\$()\`$'\n']/}"
+  [[ "${stripped}" =~ ${uv} ]] && return 0
   # shellcheck disable=SC2034  # read through the (L) expansion below
   for tok in "${PF_TOKENS[@]}"; do
     # shellcheck disable=SC2296
@@ -81,8 +98,44 @@ function _pf_needs_dispatch {
   return 1
 }
 
+function _pf_cwd_needs_dispatch {
+  # Mirrors cwdNeedsDispatch() in register.ts. $1 = cwd. 0 = dispatch.
+  local LC_ALL=C cwd="$1"
+  [[ "${cwd}" == *$'\0'* || "${cwd}" =~ $'[^\x20-\x7e]' ]] && return 0
+  # shellcheck disable=SC2296  # zsh (L) lower-cases
+  [[ "${(L)cwd}" == *.claude* || "${(L)cwd}" == *.codex* || "${(L)cwd}" == *muse* ]]
+}
+
 function _pf_bash {
-  jq -cn --arg c "$1" '{tool_name:"Bash", tool_input:{command:$c}, cwd:"/work"}'
+  # $1 = command, $2 = cwd (default /work).
+  jq -cn --arg c "$1" --arg d "${2:-/work}" '{tool_name:"Bash", tool_input:{command:$c}, cwd:$d}'
+}
+
+function _pf_write_needs_dispatch {
+  # Asks the real writeNeedsDispatch() in register.ts. $1 = tool_input JSON,
+  # $2 = cwd. 0 = dispatch, 1 = skip, 2 = node could not answer.
+  local out
+  out="$(printf '%s' "$1" | node "${PF_SB}/write-rule.mjs" "${PF_SRC}" "$2" 2>/dev/null)" || return 2
+  [[ "${out}" == 1 ]] && return 0
+  [[ "${out}" == 0 ]] && return 1
+  return 2
+}
+
+function _pf_try_write {
+  # $1 = label, $2 = DENY or PASS, $3 = tool, $4 = tool_input JSON, $5 = cwd.
+  # DENY: the dispatcher must deny it and the rule must dispatch it. PASS:
+  # the dispatcher must pass it and the rule must skip it.
+  local label="$1" want="$2" tool="$3" input="$4" cwd="$5" verdict rc=0
+  verdict="$(_pf_dispatch "$(jq -cn --arg t "${tool}" --argjson i "${input}" --arg d "${cwd}" '{tool_name:$t, tool_input:$i, cwd:$d}')")"
+  [[ "${verdict}" == "${want}" ]] || _pf_flag "dispatcher gives ${verdict}, not ${want}, for ${label}"
+  _pf_write_needs_dispatch "${input}" "${cwd}" || rc=$?
+  if (( rc == 2 )); then
+    _pf_flag "node could not answer for ${label}"
+  elif [[ "${want}" == DENY ]] && (( rc != 0 )); then
+    _pf_flag "write rule would SKIP a denied write: ${label}"
+  elif [[ "${want}" == PASS ]] && (( rc != 1 )); then
+    _pf_flag "write rule dispatches a trigger-free write: ${label}"
+  fi
 }
 
 function _pf_dispatch {
@@ -159,7 +212,7 @@ function _pf_shape {
 }
 
 function _pf_cases {
-  local gpdir="${PF_SB}/gp"
+  local gpdir="${PF_SB}/gp" verdict
   local -a gh_env
 
   _section "pretool-prefilter: denied commands are dispatched, token-free ones are not"
@@ -183,14 +236,80 @@ function _pf_cases {
   _pf_try_deny 'gh-publish: variable command word, pr create' 'eval "$G pr create -t x --body y"' "${gh_env[@]}"
   _pf_done "a gh publish shape with no literal gh is denied and dispatched"
 
-  # A byte outside printable ASCII dispatches, under a UTF-8 caller locale too
-  # (a lone high byte is not valid UTF-8 and was a regex error that fell
-  # through where the mod dispatches).
-  LC_ALL=en_US.UTF-8 _pf_needs_dispatch $'echo \x80x' || _pf_flag "a lone high byte does not dispatch under a UTF-8 locale"
-  _pf_done "a lone high byte dispatches under a UTF-8 locale"
+  # A letter whose zsh case fold is ASCII: git-bypass lowers g<U+0130>t to
+  # git. The fold needs a UTF-8 locale in the dispatcher, so the case pins one.
+  _pf_try_deny 'git-bypass: U+0130 inside git' $'g\xc4\xb0t commit -n' LC_ALL=en_US.UTF-8
+  _pf_done "a letter whose zsh case fold is ASCII cannot hide a token from the prefilter"
+  # uv-guard's probe is a bare *pip* and *venv*: a tab after pip is a shape
+  # no substring token carries (UV_SHAPE covers it).
+  _pf_try_deny 'uv-guard: tab after pip' $'pip\tinstall requests'
+  _pf_done "a uv-guard shape that no token carries is denied and dispatched"
+  _pf_try_deny 'uv-guard: bare CLT python path' '/usr/bin/python script.py'
+  _pf_done "the bare CLT python path is denied and dispatched"
+  # config-root judges a whole command when the cwd is under a config root.
+  verdict="$(_pf_dispatch "$(_pf_bash 'echo x > settings.json' "${HOME}/.claude")")"
+  [[ "${verdict}" == DENY ]] || _pf_flag "dispatcher does not deny a token-free write from a cwd in ~/.claude (got ${verdict})"
+  ! _pf_needs_dispatch 'echo x > settings.json' || _pf_flag "the fixture holds a token, so it does not test the cwd rule"
+  _pf_cwd_needs_dispatch "${HOME}/.claude" || _pf_flag "prefilter would SKIP a token-free write from a cwd in ~/.claude"
+  ! _pf_cwd_needs_dispatch /work || _pf_flag "prefilter dispatches on an ordinary cwd"
+  _pf_done "a token-free command from a cwd in a config root is denied and dispatched on the cwd alone"
 
+  _pf_try_pass 'non-ASCII text' $'echo caf\xc3\xa9 \xe2\x80\x94 a\xc2\xa0b'
+  _pf_done "other non-ASCII text, a no-break space included, passes the dispatcher and skips it in the prefilter"
   _pf_try_pass 'ls -la' 'ls -la'
   _pf_done "a token-free command passes the dispatcher and skips it in the prefilter"
+}
+
+function _pf_write_cases {
+  _section "pretool-prefilter: denied writes are dispatched, trigger-free ones are not"
+  if ! command -v node >/dev/null 2>&1; then
+    _skip "node not on PATH: cannot ask writeNeedsDispatch()"
+    return 0
+  fi
+  print -r -- "import { pathToFileURL } from 'node:url'
+const [src, cwd] = process.argv.slice(2)
+const m = await import(pathToFileURL(src).href)
+let text = ''
+for await (const chunk of process.stdin) text += chunk
+process.stdout.write(m.writeNeedsDispatch(JSON.parse(text), cwd) ? '1' : '0')" > "${PF_SB}/write-rule.mjs"
+  # A node that cannot import TypeScript skips the section rather than
+  # failing every case.
+  local probe_rc=0
+  _pf_write_needs_dispatch '{"file_path":"/tmp/a","content":"x"}' /work || probe_rc=$?
+  if (( probe_rc == 2 )); then
+    _skip "node $(node --version 2>/dev/null) cannot import register.ts: cannot ask writeNeedsDispatch()"
+    return 0
+  fi
+
+  # Fixture tokens assembled at run time: the literal would trip the guards
+  # on this file's own edits.
+  local md5call='hashlib.m' srv='mcp' proxy='mcp'
+  md5call+='d5(b"x")'
+  srv+='Servers'
+  proxy+='-proxy'
+  function w { jq -cn --arg p "$1" --arg c "$2" '{file_path:$p, content:$c}'; }
+
+  _pf_try_write 'tmp-guard: Write into /tmp' DENY Write "$(w /tmp/a.txt x)" /work
+  _pf_done "a Write into /tmp is denied and dispatched"
+  _pf_try_write 'config-root: Write into ~/.claude' DENY Write "$(w "${HOME}/.claude/x.json" '{}')" /work
+  _pf_done "a Write into ~/.claude is denied and dispatched"
+  _pf_try_write 'config-root: relative Edit from a cwd in ~/.claude' DENY Edit \
+    "$(jq -cn '{file_path:"x.json", old_string:"a", new_string:"b"}')" "${HOME}/.claude"
+  _pf_done "a relative Edit from a cwd in ~/.claude is denied and dispatched"
+  _pf_try_write 'md5-write: an MD5 call in code' DENY Write "$(w /work/a.py "import hashlib
+${md5call}")" /work
+  _pf_done "an MD5 call in written code is denied and dispatched"
+  _pf_try_write 'mcp-secret: a header flag on the proxy in .mcp.json' DENY Write \
+    "$(w /work/.mcp.json "{\"${srv}\":{\"a\":{\"command\":\"${proxy}\",\"args\":[\"-H\",\"x-api-key\",\"k\",\"u\"]}}}")" /work
+  _pf_done "a proxy header flag in .mcp.json is denied and dispatched"
+  # shellcheck disable=SC2016  # literal $Y in the fixture
+  _pf_try_write 'mcp-secret: a $VAR in a -c string in settings.json (basename gate)' DENY Write \
+    "$(w /work/settings.json '{"a":["-c","x $Y"]}')" /work
+  _pf_done "a \$VAR in a -c string in settings.json is denied and dispatched (basename gate, no mcp text)"
+  _pf_try_write 'a plain Edit with non-ASCII text' PASS Edit \
+    "$(jq -cn --arg n $'caf\xc3\xa9 \xe2\x80\x94 ok' '{file_path:"/work/dir/a.txt", old_string:"a", new_string:$n}')" /work
+  _pf_done "a trigger-free Edit passes the dispatcher and skips it in the prefilter"
+  unfunction w
 }
 
 function _pf_plugin_tests {
@@ -230,6 +349,7 @@ function run_pretool_prefilter {
   zmodload -F zsh/files b:zf_mkdir
   _pf_load_tokens
   _pf_cases
+  _pf_write_cases
   _pf_shape
   _pf_plugin_tests
   return 0
