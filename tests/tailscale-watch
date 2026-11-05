@@ -1,0 +1,689 @@
+#!/bin/zsh
+# dotfiles/tests/tailscale-watch
+#
+# Behavioural test for bin/tailscale-watch, the watcher for a Tailscale network
+# extension that stops receiving UDP replies: the baseline, the two-run stall
+# banner with its 6 h cooldown, the recovery banner, counter resets, runs too
+# short to judge, a stopped backend, CLI failures that read as errors, a missing
+# CLI that skips silently, a corrupt state file read as data, a relative HOME
+# refused, the kill switch, banner text passed as argv, and no call that
+# changes Tailscale.
+# Every run uses a fake HOME under the suite sandbox and stub binaries (the
+# Tailscale CLI, osascript, logger) that record their calls, so nothing touches
+# the real Tailscale, notifications or $HOME. The fake CLI behaves like the real
+# one: without TAILSCALE_BE_CLI=1 it prints the GUI-mode message and no data.
+#
+# Scenarios are set through the TW_* globals read by the stubs;
+# TAILSCALE_WATCH_NOW moves the script's clock for cooldown cases.
+# TAILSCALE_WATCH_UNDER_TEST points the suite at another copy of the script
+# (used to prove the suite goes red when a behaviour is broken).
+#
+# Run: ./test tailscale-watch
+#
+# ShellCheck: lint with `shellcheck --shell=bash tests/tailscale-watch`.
+# This file is sourced, not executed - chmod 644.
+#
+# shellcheck source=tests/lib
+
+# shellcheck disable=SC2154  # zsh fills the `match` array on a successful =~
+typeset -g TW_T_BOX='' TW_T_STUBS='' TW_T_SCRIPT='' TW_T_HOME='' TW_T_CALLS='' TW_T_OUT='' TW_T_TS=''
+typeset -gi TW_T_RC=0 TW_T_SEQ=0 TW_T_BASE=0
+
+# Scenario knobs, read by the stubs (see _tw_t_reset for the defaults).
+typeset -g TW_STATUS_MODE='' TW_METRICS_MODE='' TW_SEND='' TW_SEND6='' TW_RECV4='' TW_RECV6=''
+typeset -g TW_OSA_FAIL='' TW_T_DEADLINE=''
+
+readonly TW_T_GUI_MSG='The Tailscale GUI failed to start: cannot open the app in this session'
+
+function _tw_t_make_stubs {
+  local d="${TW_T_STUBS}"
+  /bin/mkdir -p "${d}"
+
+  # The fake Tailscale CLI. It records its argv and whether TAILSCALE_BE_CLI=1
+  # was set; without it, it prints the GUI-mode message and exits 0, as the real
+  # binary does. `status --json` and `debug metrics` answer by scenario mode.
+  cat > "${d}/tailscale" <<'MOCK'
+#!/bin/zsh
+print -r -- "ts|$*|BE=${TAILSCALE_BE_CLI:-unset}" >> "${TW_CALLS}"
+if [[ "${TAILSCALE_BE_CLI:-}" != 1 ]]; then
+  print -r -- "${TW_GUI_MSG}"
+  exit 0
+fi
+case "$1 ${2:-}" in
+  "status --json")
+    case "${TW_STATUS_MODE}" in
+      running) print -r -- '{' '  "Version": "1.104.4",' '  "BackendState": "Running",' '  "Peer": {}' '}' ;;
+      spaced) print -r -- '{"BackendState"   :    "Running"}' ;;
+      stopped) print -r -- '{' '  "BackendState": "Stopped"' '}' ;;
+      nokey) print -r -- '{"Version": "1.104.4"}' ;;
+      gui) print -r -- "${TW_GUI_MSG}" ;;
+      rc127) exit 127 ;;
+      hang) exec /bin/sleep 30 ;;
+    esac ;;
+  "debug metrics")
+    case "${TW_METRICS_MODE}" in
+      normal)
+        print -r -- '# TYPE netcheck_stun_recv_ipv4 counter'
+        [[ -n "${TW_RECV4}" ]] && print -r -- "netcheck_stun_recv_ipv4 ${TW_RECV4}"
+        print -r -- '# TYPE netcheck_stun_recv_ipv6 counter'
+        [[ -n "${TW_RECV6}" ]] && print -r -- "netcheck_stun_recv_ipv6 ${TW_RECV6}"
+        print -r -- '# TYPE netcheck_stun_send_ipv4 counter'
+        [[ -n "${TW_SEND}" ]] && print -r -- "netcheck_stun_send_ipv4 ${TW_SEND}"
+        print -r -- '# TYPE netcheck_stun_send_ipv6 counter'
+        [[ -n "${TW_SEND6}" ]] && print -r -- "netcheck_stun_send_ipv6 ${TW_SEND6}"
+        print -r -- 'netcheck_stun_send_ipv4_extra 12345' ;;
+      gui) print -r -- "${TW_GUI_MSG}" ;;
+    esac ;;
+esac
+exit 0
+MOCK
+
+  # Records the script text (everything before `--`) and the title and body (the
+  # last two arguments), to prove the text never enters the AppleScript.
+  cat > "${d}/osascript" <<'MOCK'
+#!/bin/zsh
+src=''
+for a in "$@"; do
+  [[ "${a}" == -- ]] && break
+  src+="${a} "
+done
+print -r -- "osasrc|${src}" >> "${TW_CALLS}"
+print -r -- "osa|${argv[-2]}|${argv[-1]}" >> "${TW_CALLS}"
+[[ -n "${TW_OSA_FAIL}" ]] && exit 1
+exit 0
+MOCK
+
+  cat > "${d}/logger" <<'MOCK'
+#!/bin/zsh
+print -r -- "logger $*" >> "${TW_CALLS}"
+MOCK
+
+  /bin/chmod 755 "${d}/tailscale" "${d}/osascript" "${d}/logger"
+}
+
+# Fresh fake HOME and a fresh call log; default scenario: healthy backend, no
+# counters. TW_T_TS points at the fake CLI.
+function _tw_t_reset {
+  TW_T_SEQ+=1
+  TW_T_HOME="${TW_T_BOX}/case${TW_T_SEQ}/home"
+  TW_T_CALLS="${TW_T_BOX}/case${TW_T_SEQ}/calls"
+  /bin/mkdir -p "${TW_T_HOME}/Library"
+  : > "${TW_T_CALLS}"
+  TW_T_TS="${TW_T_STUBS}/tailscale"
+  TW_STATUS_MODE=running
+  TW_METRICS_MODE=normal
+  TW_SEND=100
+  TW_SEND6=''
+  TW_RECV4=50
+  TW_RECV6=0
+  TW_OSA_FAIL=''
+  TW_T_DEADLINE=5
+}
+
+# _tw_t_run [OFFSET_SECONDS]: run the script once with the scenario knobs; the
+# script's clock is the suite base time plus the offset. Sets TW_T_RC and TW_T_OUT.
+function _tw_t_run {
+  TW_T_OUT="$(/usr/bin/env -i \
+    PATH=/usr/bin:/bin \
+    HOME="${TW_T_HOME}" \
+    TAILSCALE_WATCH_HOME="${TW_T_HOME}" \
+    TAILSCALE_WATCH_TS="${TW_T_TS}" \
+    TAILSCALE_WATCH_OSASCRIPT="${TW_T_STUBS}/osascript" \
+    TAILSCALE_WATCH_LOGGER="${TW_T_STUBS}/logger" \
+    TAILSCALE_WATCH_DEADLINE="${TW_T_DEADLINE}" \
+    TAILSCALE_WATCH_NOW="$(( TW_T_BASE + ${1:-0} ))" \
+    TW_CALLS="${TW_T_CALLS}" \
+    TW_GUI_MSG="${TW_T_GUI_MSG}" \
+    TW_STATUS_MODE="${TW_STATUS_MODE}" \
+    TW_METRICS_MODE="${TW_METRICS_MODE}" \
+    TW_SEND="${TW_SEND}" \
+    TW_SEND6="${TW_SEND6}" \
+    TW_RECV4="${TW_RECV4}" \
+    TW_RECV6="${TW_RECV6}" \
+    TW_OSA_FAIL="${TW_OSA_FAIL}" \
+    /bin/zsh "${TW_T_SCRIPT}" 2>&1)" && TW_T_RC=0 || TW_T_RC=$?
+}
+
+# _tw_t_step SEND RECV4 [OFFSET] [RECV6]: set the counters, then run once.
+function _tw_t_step {
+  TW_SEND="$1"
+  TW_RECV4="$2"
+  TW_RECV6="${4:-0}"
+  _tw_t_run "${3:-0}"
+}
+
+# Number of recorded calls whose line starts with $1 (result in REPLY).
+function _tw_t_count {
+  local line
+  local -i n=0
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ "${line}" == "$1"* ]] && n+=1
+  done < "${TW_T_CALLS}"
+  REPLY="${n}"
+}
+
+# True if some recorded call line starts with $1 and contains $2.
+function _tw_t_call_has {
+  local line
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ "${line}" == "$1"* && "${line}" == *"$2"* ]] && return 0
+  done < "${TW_T_CALLS}"
+  return 1
+}
+
+function _tw_t_log_has {
+  local line
+  [[ -r "${TW_T_HOME}/Library/Logs/tailscale-watch.log" ]] || return 1
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ "${line}" == *"$1"* ]] && return 0
+  done < "${TW_T_HOME}/Library/Logs/tailscale-watch.log"
+  return 1
+}
+
+function _tw_t_state_has {
+  local line
+  [[ -r "${TW_T_HOME}/Library/Caches/tailscale-watch/state" ]] || return 1
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ "${line}" == "$1" ]] && return 0
+  done < "${TW_T_HOME}/Library/Caches/tailscale-watch/state"
+  return 1
+}
+
+# Whole state file text (empty if absent), to compare before and after a run.
+function _tw_t_state_text {
+  local f="${TW_T_HOME}/Library/Caches/tailscale-watch/state"
+  if [[ -r "${f}" ]]; then REPLY="$(<"${f}")"; else REPLY='<absent>'; fi
+}
+
+# True when no file exists under the fake HOME's state and log locations.
+function _tw_t_untouched {
+  [[ ! -e "${TW_T_HOME}/Library/Caches/tailscale-watch" && ! -e "${TW_T_HOME}/Library/Logs" ]]
+}
+
+# --- Cases ---------------------------------------------------------------
+
+# No Tailscale call may change anything: only `status` and `debug` follow the
+# CLI path variable, and no code line calls down/up/set/logout, kill, pkill or
+# launchctl.
+function _tw_t_static {
+  _section "tailscale-watch: code never changes Tailscale"
+
+  local line first sub
+  local -i bad=0 n_status=0 n_debug=0
+  if [[ ! -x "${TW_T_SCRIPT}" ]]; then _fail "script missing or not executable"; return 0; fi
+  IFS= read -r first < "${TW_T_SCRIPT}"
+  local re_comment='^[[:space:]]*#'
+  local re_sub='W_TS\}"[[:space:]]+([A-Za-z-]+)'
+  local re_bad='(^|[[:space:];&|(])(kill|pkill|killall|launchctl)([[:space:]]|$)|/bin/kill|/bin/launchctl'
+  local re_cmd='[Tt]ailscale[[:space:]]+(down|up|set|logout|login|switch)([[:space:]]|$)'
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ "${line}" =~ $re_comment ]] && continue
+    if [[ "${line}" =~ $re_sub ]]; then
+      sub="${match[1]}"
+      case "${sub}" in
+        status) n_status+=1 ;;
+        debug) n_debug+=1 ;;
+        *) bad+=1 ;;
+      esac
+    fi
+    if [[ "${line}" =~ $re_bad || "${line}" =~ $re_cmd ]]; then
+      bad+=1
+    fi
+  done < "${TW_T_SCRIPT}"
+  if (( bad == 0 && n_status >= 1 && n_debug >= 1 )) && [[ "${first}" == '#!/bin/zsh' ]]; then
+    _pass "code: only status and debug reach the CLI; no down, up, set, logout, kill or launchctl"
+  else
+    _fail "code check failed (${bad} bad lines, status calls ${n_status}, debug calls ${n_debug})"
+  fi
+}
+
+# Every CLI call carries TAILSCALE_BE_CLI=1, even though the test launches the
+# script with an empty environment. The fake CLI returns no data without it, so
+# the run would also log an error instead of a baseline.
+function _tw_t_be_cli {
+  _section "tailscale-watch: TAILSCALE_BE_CLI is set"
+
+  _tw_t_reset
+  _tw_t_run
+  local n_ts n_unset
+  _tw_t_count "ts|"; n_ts="${REPLY}"
+  n_unset=0
+  _tw_t_call_has "ts|" "BE=unset" && n_unset=1
+  if (( TW_T_RC == 0 && n_ts == 2 && n_unset == 0 )) \
+      && _tw_t_call_has "ts|status --json|BE=1" "" && _tw_t_call_has "ts|debug metrics|BE=1" "" \
+      && _tw_t_log_has "baseline"; then
+    _pass "both CLI calls carry TAILSCALE_BE_CLI=1 (status --json, debug metrics)"
+  else
+    _fail "BE_CLI wrong (rc ${TW_T_RC}, ts calls ${n_ts}, unset ${n_unset}): ${TW_T_OUT}"
+  fi
+}
+
+# First run saves the baseline and sends nothing.
+function _tw_t_baseline {
+  _section "tailscale-watch: baseline"
+
+  _tw_t_reset
+  _tw_t_step 100 50
+  local n_osa
+  _tw_t_count "osa|"; n_osa="${REPLY}"
+  if (( TW_T_RC == 0 && n_osa == 0 )) && _tw_t_state_has "send=100" && _tw_t_state_has "recv=50" \
+      && _tw_t_state_has "streak=0" && _tw_t_log_has "decision: baseline"; then
+    _pass "first run: baseline saved, logged, no banner"
+  else
+    _fail "baseline wrong (rc ${TW_T_RC}, banners ${n_osa}): ${TW_T_OUT}"
+  fi
+}
+
+# One bad run is silent; the second sends one stall banner and sets alerted.
+function _tw_t_stall {
+  _section "tailscale-watch: stall banner after two bad runs"
+
+  _tw_t_reset
+  _tw_t_step 100 50 0
+  _tw_t_step 120 50 120
+  local n1 n2
+  _tw_t_count "osa|"; n1="${REPLY}"
+  local ok=1
+  (( n1 == 0 )) && _tw_t_state_has "streak=1" || ok=0
+  _tw_t_log_has "decision: bad dsend=20 drecv=0 streak=1" || ok=0
+  _tw_t_step 140 50 240
+  _tw_t_count "osa|"; n2="${REPLY}"
+  (( n2 == 1 )) || ok=0
+  _tw_t_call_has "osa|" "Tailscale is relaying" || ok=0
+  _tw_t_state_has "streak=2" || ok=0
+  _tw_t_state_has "alerted=1" || ok=0
+  _tw_t_state_has "banner_stall=$(( TW_T_BASE + 240 ))" || ok=0
+  if (( ok )); then _pass "one bad run: silent; two: one stall banner, alerted=1, cooldown stamped"; else _fail "stall wrong (banners ${n1}/${n2}): ${TW_T_OUT}"; fi
+}
+
+# Sends are ipv4 + ipv6: the baseline holds the sum, and a stall with IPv6
+# probes only (ipv4 sends flat, no replies) still counts as bad.
+function _tw_t_ipv6_send {
+  _section "tailscale-watch: IPv6 sends count"
+
+  _tw_t_reset
+  TW_SEND6=200
+  _tw_t_step 100 50 0
+  local ok=1
+  _tw_t_state_has "send=300" || ok=0
+  TW_SEND6=220
+  _tw_t_step 100 50 120
+  _tw_t_log_has "decision: bad dsend=20 drecv=0 streak=1" || ok=0
+  TW_SEND6=240
+  _tw_t_step 100 50 240
+  _tw_t_call_has "osa|" "Tailscale is relaying" || ok=0
+  TW_SEND6=260
+  _tw_t_step 100 51 360
+  _tw_t_log_has "decision: ok dsend=20 drecv=1" || ok=0
+  if (( ok )); then _pass "sends are ipv4 + ipv6; an IPv6-only stall banners and a reply clears it"; else _fail "IPv6 send sum wrong: ${TW_T_OUT}"; fi
+}
+
+# A third bad run inside 6 h is suppressed; after 6 h the banner returns.
+function _tw_t_cooldown {
+  _section "tailscale-watch: stall cooldown"
+
+  _tw_t_reset
+  _tw_t_step 100 50 0
+  _tw_t_step 120 50 120
+  _tw_t_step 140 50 240
+  _tw_t_step 160 50 360
+  local n1 n2 n3 ok=1
+  _tw_t_count "osa|"; n1="${REPLY}"
+  (( n1 == 1 )) || ok=0
+  _tw_t_log_has "banner stall: suppressed by cooldown" || ok=0
+  _tw_t_step 180 50 $(( 240 + 21599 ))
+  _tw_t_count "osa|"; n2="${REPLY}"
+  (( n2 == 1 )) || ok=0
+  _tw_t_step 200 50 $(( 240 + 21600 ))
+  _tw_t_count "osa|"; n3="${REPLY}"
+  (( n3 == 2 )) || ok=0
+  if (( ok )); then _pass "third bad run within 6 h: no banner; at 6 h: banner again"; else _fail "cooldown wrong (banners ${n1}/${n2}/${n3})"; fi
+}
+
+# A failed stall banner sets neither alerted nor the cooldown, and retries.
+function _tw_t_stall_osa_fail {
+  _section "tailscale-watch: failed stall banner retries"
+
+  _tw_t_reset
+  _tw_t_step 100 50 0
+  _tw_t_step 120 50 120
+  TW_OSA_FAIL=1
+  _tw_t_step 140 50 240
+  local ok=1
+  _tw_t_state_has "alerted=0" || ok=0
+  _tw_t_state_has "streak=2" || ok=0
+  _tw_t_state_text
+  [[ "${REPLY}" == *banner_stall=* ]] && ok=0
+  TW_OSA_FAIL=''
+  _tw_t_step 160 50 360
+  _tw_t_state_has "alerted=1" || ok=0
+  _tw_t_log_has "banner stall: sent" || ok=0
+  if (( ok )); then _pass "osascript failure: alerted stays 0, no cooldown, next bad run sends"; else _fail "failed stall wrong: ${TW_T_OUT}"; fi
+}
+
+# Bad, bad, ok: one recovery banner and alerted cleared. A failed recovery
+# keeps alerted=1 and retries on the next ok run.
+function _tw_t_recovery {
+  _section "tailscale-watch: recovery banner"
+
+  _tw_t_reset
+  _tw_t_step 100 50 0
+  _tw_t_step 120 50 120
+  _tw_t_step 140 50 240
+  _tw_t_step 160 60 360
+  local n_osa ok=1
+  _tw_t_count "osa|"; n_osa="${REPLY}"
+  (( n_osa == 2 )) || ok=0
+  _tw_t_call_has "osa|Tailscale is direct again|Tailscale gets UDP replies again." "" || ok=0
+  _tw_t_state_has "alerted=0" || ok=0
+  _tw_t_state_has "streak=0" || ok=0
+  _tw_t_step 180 70 480
+  _tw_t_count "osa|"; n_osa="${REPLY}"
+  (( n_osa == 2 )) || ok=0
+  if (( ok )); then _pass "bad, bad, ok: one recovery banner, alerted cleared, none repeated"; else _fail "recovery wrong (banners ${n_osa}): ${TW_T_OUT}"; fi
+
+  _tw_t_reset
+  _tw_t_step 100 50 0
+  _tw_t_step 120 50 120
+  _tw_t_step 140 50 240
+  TW_OSA_FAIL=1
+  _tw_t_step 160 60 360
+  ok=1
+  _tw_t_state_has "alerted=1" || ok=0
+  _tw_t_log_has "banner recovery: osascript failed" || ok=0
+  TW_OSA_FAIL=''
+  _tw_t_step 180 70 480
+  _tw_t_state_has "alerted=0" || ok=0
+  _tw_t_log_has "banner recovery: sent" || ok=0
+  if (( ok )); then _pass "failed recovery banner keeps alerted=1 and retries on the next run"; else _fail "failed recovery wrong: ${TW_T_OUT}"; fi
+}
+
+# recv_ipv6 adds to recv; a missing recv_ipv6 line counts as 0.
+function _tw_t_ipv6 {
+  _section "tailscale-watch: ipv6 receive counter"
+
+  _tw_t_reset
+  _tw_t_step 100 50 0
+  TW_RECV6=3
+  _tw_t_step 120 50 120 3
+  local ok=1
+  _tw_t_log_has "decision: ok dsend=20 drecv=3" || ok=0
+  _tw_t_state_has "recv=53" || ok=0
+  if (( ok )); then _pass "recv_ipv6 counts toward recv"; else _fail "ipv6 wrong: ${TW_T_OUT}"; fi
+
+  _tw_t_reset
+  _tw_t_step 100 50 0 ''
+  _tw_t_step 120 50 120 ''
+  ok=1
+  _tw_t_log_has "decision: bad dsend=20 drecv=0 streak=1" || ok=0
+  if (( ok )); then _pass "missing recv_ipv6 line counts as 0"; else _fail "missing ipv6 wrong: ${TW_T_OUT}"; fi
+}
+
+# Counters below the baseline mean the extension restarted: new baseline,
+# streak cleared, no banner.
+function _tw_t_reset_counters {
+  _section "tailscale-watch: counter reset"
+
+  _tw_t_reset
+  _tw_t_step 1000 500 0
+  _tw_t_step 1020 500 120
+  _tw_t_state_has "streak=1" || :
+  _tw_t_step 5 2 240
+  local ok=1 n_osa
+  _tw_t_log_has "decision: reset" || ok=0
+  _tw_t_state_has "streak=0" || ok=0
+  _tw_t_state_has "send=5" || ok=0
+  _tw_t_state_has "recv=2" || ok=0
+  _tw_t_step 30 2 360
+  _tw_t_count "osa|"; n_osa="${REPLY}"
+  (( n_osa == 0 )) || ok=0
+  _tw_t_state_has "streak=1" || ok=0
+  if (( ok )); then _pass "lower counters: reset logged, streak cleared, new baseline, next bad run is streak 1"; else _fail "reset wrong (banners ${n_osa}): ${TW_T_OUT}"; fi
+
+  # A lower recv alone is also a reset.
+  _tw_t_reset
+  _tw_t_step 100 50 0
+  _tw_t_step 130 10 120
+  if _tw_t_log_has "decision: reset"; then _pass "lower recv alone: reset"; else _fail "lower recv alone not a reset: ${TW_T_OUT}"; fi
+}
+
+# send rising by fewer than 5 proves nothing: baseline and streak stay.
+function _tw_t_inconclusive {
+  _section "tailscale-watch: inconclusive runs"
+
+  _tw_t_reset
+  _tw_t_step 100 50 0
+  _tw_t_step 120 50 120
+  _tw_t_step 123 50 240
+  local ok=1 n_osa
+  _tw_t_log_has "decision: inconclusive dsend=3" || ok=0
+  _tw_t_state_has "send=120" || ok=0
+  _tw_t_state_has "streak=1" || ok=0
+  # 126 is 6 above the kept baseline (120) but 3 above the last reading (123).
+  _tw_t_step 126 50 360
+  _tw_t_count "osa|"; n_osa="${REPLY}"
+  (( n_osa == 1 )) || ok=0
+  _tw_t_state_has "streak=2" || ok=0
+  if (( ok )); then _pass "dsend under 5: logged, baseline and streak unchanged, old baseline still used"; else _fail "inconclusive wrong (banners ${n_osa}): ${TW_T_OUT}"; fi
+}
+
+# A backend that is not Running: logged skip, state file untouched, no metrics read.
+function _tw_t_backend {
+  _section "tailscale-watch: backend not running"
+
+  _tw_t_reset
+  _tw_t_step 100 50 0
+  _tw_t_step 120 50 120
+  _tw_t_state_text; local before="${REPLY}" after n_debug n_osa
+  TW_STATUS_MODE=stopped
+  _tw_t_step 140 50 240
+  _tw_t_state_text; after="${REPLY}"
+  _tw_t_count "ts|debug"; n_debug="${REPLY}"
+  _tw_t_count "osa|"; n_osa="${REPLY}"
+  if (( TW_T_RC == 0 && n_osa == 0 && n_debug == 2 )) && [[ "${before}" == "${after}" ]] \
+      && _tw_t_log_has "skip (backend Stopped)"; then
+    _pass "Stopped: logged skip, state unchanged, no metrics read, no banner"
+  else
+    _fail "backend skip wrong (rc ${TW_T_RC}, debug calls ${n_debug}, banners ${n_osa})"
+  fi
+
+  # Whitespace after the colon is allowed.
+  _tw_t_reset
+  TW_STATUS_MODE=spaced
+  _tw_t_step 100 50
+  if _tw_t_log_has "decision: baseline"; then _pass "BackendState with spaces around the colon parses"; else _fail "spaced JSON not parsed: ${TW_T_OUT}"; fi
+}
+
+# CLI failures are `error`: logged, state untouched, no banner.
+function _tw_t_errors {
+  _section "tailscale-watch: CLI errors"
+
+  local mode ok n_osa before after
+  for mode in rc127 gui nokey hang; do
+    _tw_t_reset
+    _tw_t_step 100 50 0
+    _tw_t_step 120 50 120
+    _tw_t_state_text; before="${REPLY}"
+    TW_STATUS_MODE="${mode}"
+    [[ "${mode}" == hang ]] && TW_T_DEADLINE=1
+    _tw_t_step 140 50 240
+    _tw_t_step 160 50 360
+    _tw_t_state_text; after="${REPLY}"
+    _tw_t_count "osa|"; n_osa="${REPLY}"
+    ok=1
+    (( TW_T_RC == 0 && n_osa == 0 )) || ok=0
+    [[ "${before}" == "${after}" ]] || ok=0
+    _tw_t_log_has "decision: error" || ok=0
+    if (( ok )); then _pass "status ${mode}: error logged, exit 0, state unchanged, no banner"; else _fail "status ${mode} wrong (rc ${TW_T_RC}, banners ${n_osa})"; fi
+  done
+
+  # Metrics unusable while the backend runs.
+  local what
+  for what in gui nosend norecv4 nonint nonint6; do
+    _tw_t_reset
+    _tw_t_step 100 50 0
+    _tw_t_state_text; before="${REPLY}"
+    case "${what}" in
+      gui) TW_METRICS_MODE=gui ;;
+      nosend) TW_SEND='' ;;
+      norecv4) TW_RECV4='' ;;
+      nonint) TW_SEND='12x' ;;
+      nonint6) TW_SEND6='12x' ;;
+    esac
+    # _tw_t_step would reset the knobs it takes by argument, so set them first.
+    _tw_t_run 120
+    _tw_t_state_text; after="${REPLY}"
+    _tw_t_count "osa|"; n_osa="${REPLY}"
+    ok=1
+    (( TW_T_RC == 0 && n_osa == 0 )) || ok=0
+    [[ "${before}" == "${after}" ]] || ok=0
+    _tw_t_log_has "decision: error (metrics" || ok=0
+    if (( ok )); then _pass "metrics ${what}: error logged, state unchanged, no banner"; else _fail "metrics ${what} wrong (rc ${TW_T_RC}, banners ${n_osa}): ${TW_T_OUT}"; fi
+  done
+}
+
+# No CLI at the path: silent skip, no state directory, no log, no call.
+function _tw_t_missing_cli {
+  _section "tailscale-watch: missing CLI"
+
+  _tw_t_reset
+  TW_T_TS="${TW_T_BOX}/case${TW_T_SEQ}/absent/Tailscale"
+  _tw_t_run
+  _tw_t_run 120
+  local n_calls
+  n_calls="$(wc -l < "${TW_T_CALLS}")"
+  if (( TW_T_RC == 0 && n_calls == 0 )) && _tw_t_untouched && [[ -z "${TW_T_OUT}" ]]; then
+    _pass "missing CLI: exit 0, no output, no state directory, no log"
+  else
+    _fail "missing CLI wrong (rc ${TW_T_RC}, calls ${n_calls}): ${TW_T_OUT}"
+  fi
+}
+
+# A corrupt state file is read as data: nothing in it runs and bad lines drop.
+function _tw_t_corrupt_state {
+  _section "tailscale-watch: corrupt state"
+
+  _tw_t_reset
+  /bin/mkdir -p "${TW_T_HOME}/Library/Caches/tailscale-watch"
+  # shellcheck disable=SC2016  # the command substitutions must stay literal
+  print -r -- 'send=$(/usr/bin/touch '"${TW_T_BOX}"$'/pwned)\nrecv=`/usr/bin/touch '"${TW_T_BOX}"$'/pwned2`\nstreak=7x\nalerted=2\n;;\nbanner_stall=x\njunk' \
+    > "${TW_T_HOME}/Library/Caches/tailscale-watch/state"
+  _tw_t_step 100 50
+  local ok=1
+  (( TW_T_RC == 0 )) || ok=0
+  [[ ! -e "${TW_T_BOX}/pwned" && ! -e "${TW_T_BOX}/pwned2" ]] || ok=0
+  _tw_t_log_has "decision: baseline" || ok=0
+  _tw_t_state_has "send=100" || ok=0
+  _tw_t_state_has "alerted=0" || ok=0
+  if (( ok )); then _pass "corrupt state: nothing executed, no valid baseline, treated as first run"; else _fail "corrupt state wrong (rc ${TW_T_RC}): ${TW_T_OUT}"; fi
+
+  # Valid baseline lines survive next to junk lines.
+  _tw_t_reset
+  /bin/mkdir -p "${TW_T_HOME}/Library/Caches/tailscale-watch"
+  print -r -- $'send=100\nrecv=50\nstreak=zzz\nalerted=maybe\nbanner_stall=-4' \
+    > "${TW_T_HOME}/Library/Caches/tailscale-watch/state"
+  _tw_t_step 120 50
+  ok=1
+  _tw_t_state_has "streak=1" || ok=0
+  _tw_t_state_has "alerted=0" || ok=0
+  _tw_t_log_has "decision: bad dsend=20" || ok=0
+  if (( ok )); then _pass "corrupt state: valid lines kept, invalid lines ignored"; else _fail "partial state wrong: ${TW_T_OUT}"; fi
+}
+
+# An unusable HOME is refused before any work.
+function _tw_t_bad_home {
+  _section "tailscale-watch: unusable HOME"
+
+  local bad
+  for bad in 'relative/home' '/tmp/../escape'; do
+    _tw_t_reset
+    local saved="${TW_T_HOME}"
+    TW_T_HOME="${bad}"
+    _tw_t_run
+    TW_T_HOME="${saved}"
+    if (( TW_T_RC == 1 )) && [[ "${TW_T_OUT}" == *refusing* ]]; then _pass "HOME '${bad}': refused with exit 1"; else _fail "HOME '${bad}': rc=${TW_T_RC} out=${TW_T_OUT}"; fi
+  done
+}
+
+# The kill switch: logged skip, state untouched, no CLI call.
+function _tw_t_kill_switch {
+  _section "tailscale-watch: kill switch"
+
+  _tw_t_reset
+  _tw_t_step 100 50 0
+  _tw_t_step 120 50 120
+  /bin/mkdir -p "${TW_T_HOME}/Library/Application Support/tailscale-watch"
+  : > "${TW_T_HOME}/Library/Application Support/tailscale-watch/disabled"
+  _tw_t_state_text; local before="${REPLY}" after n_ts n_osa
+  _tw_t_count "ts|"; local ts_before="${REPLY}"
+  _tw_t_step 140 50 240
+  _tw_t_state_text; after="${REPLY}"
+  _tw_t_count "ts|"; n_ts="${REPLY}"
+  _tw_t_count "osa|"; n_osa="${REPLY}"
+  if (( TW_T_RC == 0 && n_osa == 0 && n_ts == ts_before )) && [[ "${before}" == "${after}" ]] \
+      && _tw_t_log_has "skip (disabled file present)"; then
+    _pass "kill switch: logged skip, state unchanged, no CLI call, no banner"
+  else
+    _fail "kill switch wrong (rc ${TW_T_RC}, ts ${n_ts}/${ts_before}, banners ${n_osa})"
+  fi
+}
+
+# Banner text is argv to osascript and never part of the -e source.
+function _tw_t_argv {
+  _section "tailscale-watch: banner text is argv"
+
+  _tw_t_reset
+  _tw_t_step 100 50 0
+  _tw_t_step 120 50 120
+  _tw_t_step 140 50 240
+  _tw_t_step 160 60 360
+  local ok=1 line
+  local -i src_lines=0
+  _tw_t_call_has "osa|Tailscale is relaying|Tailscale gets no UDP replies. Disconnect and reconnect Tailscale. If it stays relayed, this network blocks UDP." "" || ok=0
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    if [[ "${line}" == osasrc\|* ]]; then
+      src_lines+=1
+      [[ "${line}" == *"Tailscale"* || "${line}" == *"UDP"* || "${line}" == *relay* ]] && ok=0
+      [[ "${line}" == *'on run argv'* && "${line}" == *'item 2 of argv'* ]] || ok=0
+    fi
+  done < "${TW_T_CALLS}"
+  (( src_lines == 2 )) || ok=0
+  if (( ok )); then _pass "stall and recovery text reach osascript as argv, never in the -e source"; else _fail "argv wrong (source lines ${src_lines})"; fi
+}
+
+function run_tailscale_watch {
+  zmodload zsh/datetime
+
+  TW_T_SCRIPT="${TAILSCALE_WATCH_UNDER_TEST:-${SCRIPT_DIR}/bin/tailscale-watch}"
+  if [[ ! -f "${TW_T_SCRIPT}" ]]; then
+    _fail "tailscale-watch: ${TW_T_SCRIPT} is missing"
+    return 0
+  fi
+
+  TW_T_BOX="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/tailscale-watch-test.XXXXXX")" || return 1
+  TW_T_BOX="${TW_T_BOX:A}"
+  TW_T_STUBS="${TW_T_BOX}/stubs"
+  TW_T_BASE="${EPOCHSECONDS}"
+  _tw_t_make_stubs
+
+  _tw_t_static
+  _tw_t_be_cli
+  _tw_t_baseline
+  _tw_t_stall
+  _tw_t_ipv6_send
+  _tw_t_cooldown
+  _tw_t_stall_osa_fail
+  _tw_t_recovery
+  _tw_t_ipv6
+  _tw_t_reset_counters
+  _tw_t_inconclusive
+  _tw_t_backend
+  _tw_t_errors
+  _tw_t_missing_cli
+  _tw_t_corrupt_state
+  _tw_t_bad_home
+  _tw_t_kill_switch
+  _tw_t_argv
+
+  /bin/rm -rf -- "${TW_T_BOX:?}"
+}

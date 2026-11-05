@@ -1,0 +1,409 @@
+#!/bin/zsh
+# dotfiles/bin/tailscale-watch
+#
+# Watcher for one Tailscale failure on this Mac. Run every 120 s by the
+# com.0xmachos.tailscale-watch LaunchAgent; safe to run by hand.
+#
+#   tailscale-watch
+#
+# The fault: the Tailscale network extension stops receiving UDP replies. Every
+# peer then falls back to the DERP relay, and High Performance Screen Sharing is
+# unusable. Measured 2026-11-05: `tailscale debug metrics` showed
+# netcheck_stun_send_ipv4 rising (+7 to +91 per 30-45 s) while
+# netcheck_stun_recv_ipv4 stayed at +0. After a Tailscale restart, the receive
+# count rose again. The counters reset to low values when the extension restarts.
+#
+# Banner only. The fix is a manual Tailscale Disconnect and Connect. This script
+# never heals, restarts, kills or reconfigures Tailscale: a restart cuts every
+# tailnet session on this Mac, including the SSH sessions that other jobs use.
+#
+# CLI: /Applications/Tailscale.app/Contents/MacOS/Tailscale. TAILSCALE_BE_CLI=1
+# is load-bearing. Without it, in launchd's empty environment, the binary starts
+# in GUI mode, prints "The Tailscale GUI failed to start..." and exits 0 with no
+# data. The script exports it, so a hand run behaves like a launchd run. With no
+# CLI at that path the run exits 0 and does nothing, not even a log line or a
+# state directory.
+#
+# Each run reads `status --json` and `debug metrics`, both under a hard deadline:
+#   - No "BackendState" key, CLI exit 126 or 127, or a deadline hit: `error`.
+#     Log only, state untouched.
+#   - BackendState other than "Running": logged skip, state untouched.
+#   - A missing or non-integer netcheck_stun_send_ipv4 or netcheck_stun_recv_ipv4,
+#     or a non-integer ipv6 line: `error`. A missing ipv6 line counts as 0.
+# send is send_ipv4 + send_ipv6 and recv is recv_ipv4 + recv_ipv6, so a stall
+# with IPv6 probes only still shows. Both are compared with the baseline saved by the last
+# run (send and recv):
+#   - No baseline: save it, no classification.
+#   - A counter lower than the baseline: the extension restarted. Save the new
+#     baseline, clear the streak, no banner.
+#   - send rose by fewer than 5: `inconclusive` (sleep, wake, just connected).
+#     Keep the old baseline, streak unchanged.
+#   - send rose by 5 or more, recv by 0: `bad`. Streak +1, save the baseline.
+#   - send rose by 5 or more, recv by more than 0: `ok`. Streak 0, save it.
+# After 2 consecutive `bad` runs: banner kind `stall`. After an `ok` run that
+# follows a stall banner: one recovery banner.
+#
+# Banners: osascript `display notification`, text passed as argv through
+# `on run argv`, never interpolated into AppleScript source. Cooldown 6 h for the
+# stall banner; the recovery banner has none. A cooldown starts, and `alerted=1`
+# is set, only when osascript succeeded. A failed recovery banner retries on the
+# next run.
+#
+# State: ~/Library/Caches/tailscale-watch/state, KEY=VALUE lines, parsed by hand
+# (never sourced), replaced atomically. Log: ~/Library/Logs/tailscale-watch.log
+# (one line per run, rotated at 1 MiB to .log.1) and syslog tag
+# com.0xmachos.tailscale-watch. Logged skip, state untouched: the kill switch
+# file ~/Library/Application Support/tailscale-watch/disabled.
+#
+# Every external call runs under a perl `alarm` deadline with its output in a
+# temp file, so a hung child cannot hold a pipe open. launchd has no PATH, so
+# binaries are called by absolute path. The exit status is 0 unless the script
+# itself cannot run (unusable HOME or state directory).
+#
+# Test seams (environment): TAILSCALE_WATCH_HOME (replaces HOME for every path),
+# TAILSCALE_WATCH_TS, _OSASCRIPT, _LOGGER, _PERL (program paths),
+# TAILSCALE_WATCH_DEADLINE (seconds, default 10), TAILSCALE_WATCH_NOW (epoch
+# seconds). TAILSCALE_WATCH_UNDER_TEST is read by the suite only. Defaults are
+# the real paths.
+# Deployed as a root-owned copy in /usr/local/bin by `./bittersweet scripts`.
+#
+# ShellCheck: lint with `shellcheck --shell=bash bin/tailscale-watch`.
+# Test: ./test tailscale-watch
+
+# shellcheck disable=SC2154  # zsh fills the `match` array on a successful =~
+emulate -L zsh
+set -uo pipefail
+umask 077
+
+zmodload zsh/datetime
+zmodload -F zsh/stat b:zstat
+
+# Without this the Tailscale binary starts its GUI and prints no data.
+export TAILSCALE_BE_CLI=1
+
+readonly WATCH_TAG='com.0xmachos.tailscale-watch'
+readonly WATCH_COOLDOWN=21600   # 6 h
+readonly WATCH_MIN_SEND=5       # fewer new STUN sends than this prove nothing
+readonly WATCH_ALERT_AFTER=2    # consecutive bad runs
+readonly WATCH_STREAK_MAX=9999
+readonly WATCH_LOG_MAX=1048576  # 1 MiB
+
+# Regular expressions in variables: an unquoted variable on the right of =~ is a
+# regex in zsh, and shellcheck reads it the same way.
+readonly RE_BACKEND='"BackendState"[[:space:]]*:[[:space:]]*"([A-Za-z]{0,30})"'
+readonly RE_METRIC='^([A-Za-z_:][A-Za-z0-9_:]*)[[:space:]]+([^[:space:]]+)[[:space:]]*$'
+readonly RE_INT='^[0-9]{1,15}$'
+
+typeset -g W_HOME='' W_TS='' W_OSA='' W_LOGGER='' W_PERL='' W_STATE_DIR='' W_STATE='' W_LOG=''
+typeset -gi W_DEADLINE=10 W_NOW=0
+
+# State, as loaded from and saved to the state file.
+typeset -gi S_HAVE=0 S_SEND=0 S_RECV=0 S_STREAK=0 S_ALERTED=0 S_BANNER_STALL=0
+
+# Results of the external-call helper.
+typeset -g RUN_OUT=''
+typeset -gi RUN_RC=0
+
+# Backend state and counters read from the CLI.
+typeset -g P_BACKEND=''
+typeset -gi M_SEND=0 M_RECV=0
+
+# Paths and seams only: no file is created, so a skipped host stays untouched.
+function _w_init {
+  W_HOME="${TAILSCALE_WATCH_HOME:-${HOME:-}}"
+  if [[ -z "${W_HOME}" || "${W_HOME}" != /* || "${W_HOME}" == *..* ]]; then
+    print -u2 'tailscale-watch: HOME is unset, empty or relative; refusing'
+    return 1
+  fi
+  W_TS="${TAILSCALE_WATCH_TS:-/Applications/Tailscale.app/Contents/MacOS/Tailscale}"
+  W_OSA="${TAILSCALE_WATCH_OSASCRIPT:-/usr/bin/osascript}"
+  W_LOGGER="${TAILSCALE_WATCH_LOGGER:-/usr/bin/logger}"
+  W_PERL="${TAILSCALE_WATCH_PERL:-/usr/bin/perl}"
+  W_STATE_DIR="${W_HOME}/Library/Caches/tailscale-watch"
+  W_STATE="${W_STATE_DIR}/state"
+  W_LOG="${W_HOME}/Library/Logs/tailscale-watch.log"
+  W_NOW="${TAILSCALE_WATCH_NOW:-${EPOCHSECONDS}}"
+  if [[ "${TAILSCALE_WATCH_DEADLINE:-}" =~ ^[0-9]{1,2}$ ]] && (( TAILSCALE_WATCH_DEADLINE >= 1 )); then
+    W_DEADLINE="${TAILSCALE_WATCH_DEADLINE}"
+  fi
+}
+
+function _w_mkdirs {
+  /bin/mkdir -p "${W_STATE_DIR}" "${W_HOME}/Library/Logs" || {
+    print -u2 'tailscale-watch: cannot create the state or log directory'
+    return 1
+  }
+}
+
+# Log one decision line to the log file and syslog. A failed file write is
+# reported to syslog, the sink that cannot fail.
+function _w_log {
+  local msg="$*" stamp size
+  local -a st
+  stamp="$(strftime '%Y-%m-%dT%H:%M:%S%z' "${W_NOW}")"
+  if [[ -f "${W_LOG}" ]] && zstat -A st +size -- "${W_LOG}" 2>/dev/null; then
+    size="${st[1]}"
+    if (( size > WATCH_LOG_MAX )); then
+      /bin/mv -f -- "${W_LOG}" "${W_LOG}.1" 2>/dev/null || :
+    fi
+  fi
+  if ! print -r -- "${stamp} ${msg}" >> "${W_LOG}" 2>/dev/null; then
+    "${W_LOGGER}" -t "${WATCH_TAG}" "cannot write ${W_LOG}" 2>/dev/null || :
+  fi
+  "${W_LOGGER}" -t "${WATCH_TAG}" -- "${msg}" 2>/dev/null || :
+}
+
+# _w_run SECONDS STDIN_TEXT COMMAND [ARG...]
+# Runs the command under a hard deadline: perl sets alarm(SECONDS) and execs it,
+# and the pending alarm survives exec, so SIGALRM ends a hung command. Output
+# (stdout and stderr) goes to a temp file, not a pipe, so a grandchild that
+# outlives the command cannot block this script. Sets RUN_OUT and RUN_RC. A
+# command ended by the deadline has RUN_RC 142 (128 + SIGALRM).
+function _w_run {
+  local secs="$1" input="$2" tmp
+  shift 2
+  tmp="$(/usr/bin/mktemp "${W_STATE_DIR}/run.XXXXXX")" || {
+    RUN_OUT=''
+    RUN_RC=125
+    return 0
+  }
+  # shellcheck disable=SC2016  # perl code, not shell expansion
+  "${W_PERL}" -e 'alarm shift; exec { $ARGV[0] } @ARGV or exit 127' \
+    "${secs}" "$@" <<< "${input}" > "${tmp}" 2>&1
+  RUN_RC=$?
+  RUN_OUT="$(<"${tmp}")"
+  /bin/rm -f -- "${tmp}"
+  return 0
+}
+
+# --- State ---------------------------------------------------------------
+
+function _w_state_load {
+  local line key val
+  local -i have_send=0 have_recv=0
+  S_HAVE=0
+  S_SEND=0
+  S_RECV=0
+  S_STREAK=0
+  S_ALERTED=0
+  S_BANNER_STALL=0
+  [[ -r "${W_STATE}" ]] || return 0
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    key="${line%%=*}"
+    val="${line#*=}"
+    case "${key}" in
+      send)         [[ "${val}" =~ $RE_INT ]] && { S_SEND=$(( 10#${val} )); have_send=1; } ;;
+      recv)         [[ "${val}" =~ $RE_INT ]] && { S_RECV=$(( 10#${val} )); have_recv=1; } ;;
+      streak)       [[ "${val}" =~ ^[0-9]{1,5}$ ]] && S_STREAK=$(( 10#${val} )) ;;
+      alerted)      [[ "${val}" == 0 || "${val}" == 1 ]] && S_ALERTED="${val}" ;;
+      banner_stall) [[ "${val}" =~ ^[0-9]{1,10}$ ]] && S_BANNER_STALL=$(( 10#${val} )) ;;
+    esac
+  done < "${W_STATE}"
+  (( have_send && have_recv )) && S_HAVE=1
+  return 0
+}
+
+# Atomic replace: temp file in the same directory, then rename.
+function _w_state_save {
+  local tmp rc=0
+  tmp="$(/usr/bin/mktemp "${W_STATE_DIR}/state.XXXXXX")" || {
+    _w_log 'state: cannot create a temp file; state not saved'
+    return 1
+  }
+  {
+    print -r -- "send=${S_SEND}"
+    print -r -- "recv=${S_RECV}"
+    print -r -- "streak=${S_STREAK}"
+    print -r -- "alerted=${S_ALERTED}"
+    if (( S_BANNER_STALL > 0 )); then
+      print -r -- "banner_stall=${S_BANNER_STALL}"
+    fi
+  } > "${tmp}" || rc=1
+  if (( rc == 0 )); then
+    /bin/mv -f -- "${tmp}" "${W_STATE}" || rc=1
+  fi
+  if (( rc != 0 )); then
+    /bin/rm -f -- "${tmp}"
+    _w_log 'state: write failed; state not saved'
+    return 1
+  fi
+}
+
+# --- Banners -------------------------------------------------------------
+
+# _w_banner_send TITLE BODY: osascript with the text as argv items, never in source.
+function _w_banner_send {
+  _w_run 10 '' "${W_OSA}" \
+    -e 'on run argv' \
+    -e 'display notification (item 2 of argv) with title (item 1 of argv)' \
+    -e 'end run' \
+    -- "$1" "$2"
+  (( RUN_RC == 0 ))
+}
+
+# _w_banner_stall: honour the 6 h cooldown, send, and start the cooldown only
+# after a successful send. Returns 0 if it sent.
+function _w_banner_stall {
+  if (( W_NOW - S_BANNER_STALL < WATCH_COOLDOWN )); then
+    _w_log 'banner stall: suppressed by cooldown'
+    return 1
+  fi
+  if _w_banner_send 'Tailscale is relaying' \
+      'Tailscale gets no UDP replies. Disconnect and reconnect Tailscale. If it stays relayed, this network blocks UDP.'; then
+    S_BANNER_STALL="${W_NOW}"
+    _w_log 'banner stall: sent'
+    return 0
+  fi
+  _w_log "banner stall: osascript failed rc=${RUN_RC}"
+  return 1
+}
+
+# --- Probes --------------------------------------------------------------
+
+# Sets P_BACKEND and returns 0 when status --json holds a BackendState. Any
+# other outcome (CLI cannot run, deadline, no key) returns 1 with RUN_RC set.
+function _w_read_status {
+  P_BACKEND=''
+  _w_run "${W_DEADLINE}" '' "${W_TS}" status --json
+  if (( RUN_RC == 126 || RUN_RC == 127 || RUN_RC == 142 )); then
+    return 1
+  fi
+  if [[ "${RUN_OUT}" =~ $RE_BACKEND ]]; then
+    P_BACKEND="${match[1]}"
+    return 0
+  fi
+  return 1
+}
+
+# Sets M_SEND and M_RECV (each ipv4 + ipv6) from `debug metrics`. Returns 1 on
+# a CLI failure, a missing send or recv_ipv4 line, or a non-integer value.
+function _w_read_metrics {
+  local line name val
+  local -a lines
+  local -i have_send=0 have_recv4=0 send4=0 send6=0 recv4=0 recv6=0 bad=0
+  M_SEND=0
+  M_RECV=0
+  _w_run "${W_DEADLINE}" '' "${W_TS}" debug metrics
+  if (( RUN_RC == 126 || RUN_RC == 127 || RUN_RC == 142 )); then
+    return 1
+  fi
+  # shellcheck disable=SC2296  # zsh (@f) line split
+  lines=("${(@f)RUN_OUT}")
+  for line in "${lines[@]}"; do
+    [[ -z "${line}" || "${line}" == '#'* ]] && continue
+    [[ "${line}" =~ $RE_METRIC ]] || continue
+    name="${match[1]}"
+    val="${match[2]}"
+    case "${name}" in
+      netcheck_stun_send_ipv4|netcheck_stun_send_ipv6|netcheck_stun_recv_ipv4|netcheck_stun_recv_ipv6)
+        if [[ ! "${val}" =~ $RE_INT ]]; then
+          bad=1
+          continue
+        fi
+        case "${name}" in
+          netcheck_stun_send_ipv4) send4=$(( 10#${val} )); have_send=1 ;;
+          netcheck_stun_send_ipv6) send6=$(( 10#${val} )) ;;
+          netcheck_stun_recv_ipv4) recv4=$(( 10#${val} )); have_recv4=1 ;;
+          netcheck_stun_recv_ipv6) recv6=$(( 10#${val} )) ;;
+        esac
+        ;;
+    esac
+  done
+  (( bad == 0 && have_send && have_recv4 )) || return 1
+  M_SEND=$(( send4 + send6 ))
+  M_RECV=$(( recv4 + recv6 ))
+}
+
+# --- Handlers ------------------------------------------------------------
+
+# Save the current counters as the new baseline.
+function _w_rebase {
+  S_SEND="${M_SEND}"
+  S_RECV="${M_RECV}"
+  S_HAVE=1
+}
+
+function _w_handle_bad {
+  local -i dsend="$1" drecv="$2"
+  if (( S_STREAK < WATCH_STREAK_MAX )); then
+    S_STREAK+=1
+  fi
+  _w_rebase
+  _w_log "decision: bad dsend=${dsend} drecv=${drecv} streak=${S_STREAK}"
+  if (( S_STREAK >= WATCH_ALERT_AFTER )); then
+    _w_banner_stall && S_ALERTED=1
+  fi
+  return 0
+}
+
+function _w_handle_ok {
+  local -i dsend="$1" drecv="$2"
+  S_STREAK=0
+  _w_rebase
+  _w_log "decision: ok dsend=${dsend} drecv=${drecv} streak=${S_STREAK}"
+  if (( S_ALERTED )); then
+    if _w_banner_send 'Tailscale is direct again' 'Tailscale gets UDP replies again.'; then
+      _w_log 'banner recovery: sent'
+      S_ALERTED=0
+    else
+      _w_log "banner recovery: osascript failed rc=${RUN_RC}; will retry"
+    fi
+  fi
+  return 0
+}
+
+function main {
+  _w_init || return 1
+
+  # Silent skip: no log line, no state directory.
+  if [[ ! -e "${W_TS}" ]]; then
+    return 0
+  fi
+
+  _w_mkdirs || return 1
+
+  if [[ -e "${W_HOME}/Library/Application Support/tailscale-watch/disabled" ]]; then
+    _w_log 'decision: skip (disabled file present)'
+    return 0
+  fi
+
+  _w_state_load
+
+  if ! _w_read_status; then
+    _w_log "decision: error (status unavailable, rc=${RUN_RC}); state unchanged"
+    return 0
+  fi
+  if [[ "${P_BACKEND}" != Running ]]; then
+    _w_log "decision: skip (backend ${P_BACKEND:-empty}); state unchanged"
+    return 0
+  fi
+  if ! _w_read_metrics; then
+    _w_log "decision: error (metrics unusable, rc=${RUN_RC}); state unchanged"
+    return 0
+  fi
+
+  local -i dsend drecv
+  if (( ! S_HAVE )); then
+    _w_rebase
+    _w_log "decision: baseline send=${S_SEND} recv=${S_RECV}"
+  elif (( M_SEND < S_SEND || M_RECV < S_RECV )); then
+    _w_rebase
+    S_STREAK=0
+    _w_log "decision: reset send=${M_SEND} recv=${M_RECV}; streak cleared"
+  else
+    dsend=$(( M_SEND - S_SEND ))
+    drecv=$(( M_RECV - S_RECV ))
+    if (( dsend < WATCH_MIN_SEND )); then
+      _w_log "decision: inconclusive dsend=${dsend} drecv=${drecv} streak=${S_STREAK}; baseline kept"
+      return 0
+    elif (( drecv == 0 )); then
+      _w_handle_bad "${dsend}" "${drecv}"
+    else
+      _w_handle_ok "${dsend}" "${drecv}"
+    fi
+  fi
+  _w_state_save
+  return 0
+}
+
+main "$@"
