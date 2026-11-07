@@ -1,19 +1,30 @@
 #!/bin/zsh
 # dotfiles/bin/tailscale-watch
 #
-# Watcher for one Tailscale failure on this Mac. Run every 120 s by the
+# Watcher for two Tailscale failures on this Mac. Run every 120 s by the
 # com.0xmachos.tailscale-watch LaunchAgent; safe to run by hand.
 #
 #   tailscale-watch
 #
-# The fault: the Tailscale network extension stops receiving UDP replies. Every
-# peer then falls back to the DERP relay, and High Performance Screen Sharing is
-# unusable. Measured 2026-11-05: `tailscale debug metrics` showed
+# Fault 1, STUN replies stop: the Tailscale network extension stops receiving UDP
+# replies. Every peer then falls back to the DERP relay, and High Performance
+# Screen Sharing is unusable. Measured 2026-11-05: `tailscale debug metrics` showed
 # netcheck_stun_send_ipv4 rising (+7 to +91 per 30-45 s) while
 # netcheck_stun_recv_ipv4 stayed at +0. After a Tailscale restart, the receive
 # count rose again. The counters reset to low values when the extension restarts.
 #
-# Banner only. The fix is a manual Tailscale Disconnect and Connect. This script
+# Fault 2, receive loop stopped: the extension loses its IPv4 address for a short
+# time. Its receive loop (ReceiveIPv4) then exits and never restarts (upstream
+# tailscale/tailscale#19504, fixed in 1.104.5). Measured 2026-11-06: about 70 s
+# without IPv4, then every peer relayed through DERP for 11 h. The STUN check
+# stayed silent, because STUN replies still arrived. Tailscale reports this fault
+# itself in `status --json`:
+#   "Health": ["The MagicSock function ReceiveIPv4 is not running. ..."]
+# The function name can also be ReceiveIPv6 or ReceiveDERP. A healthy node shows
+# "Health": [].
+#
+# Banner only. The fix is manual: Disconnect and Connect for fault 1, quit and
+# reopen Tailscale for fault 2. This script
 # never heals, restarts, kills or reconfigures Tailscale: a restart cuts every
 # tailnet session on this Mac, including the SSH sessions that other jobs use.
 #
@@ -43,11 +54,37 @@
 # After 2 consecutive `bad` runs: banner kind `stall`. After an `ok` run that
 # follows a stall banner: one recovery banner.
 #
+# The second detector reads the same `status --json` output, with no new external
+# call. It runs right after a good status read with BackendState Running, before
+# the metrics read. Each run is exactly one of:
+#   - `rx_bad`: the output matches "MagicSock function NAME is not running" (any
+#     case). rx_streak +1.
+#   - `rx_ok`: a top-level "Health" key holds an array, and there is no `rx_bad`
+#     match. rx_streak 0.
+#   - `rx_unknown`: anything else (no Health key, status unusable, deadline hit,
+#     BackendState not Running, kill switch). Unknown never counts as recovered.
+#     rx_streak, rx_alerted and banner_rx stay unchanged.
+# State rules for the second detector:
+#   - Keys rx_streak (integer, capped like streak), rx_alerted (0 or 1) and
+#     banner_rx (epoch of the last rx banner). A state file without them reads
+#     them as 0.
+#   - After 2 consecutive `rx_bad` runs: banner kind `rxdead`, title "Tailscale is
+#     relaying". It has its own 6 h cooldown (banner_rx), separate from the stall
+#     cooldown. The cooldown starts, and rx_alerted=1 is set, only when
+#     osascript succeeded.
+#   - An `rx_ok` run with rx_alerted=1: one recovery banner. rx_alerted clears
+#     only when osascript succeeded. A failed recovery banner retries next run.
+#   - A counter reset (extension restart) does not touch the rx fields. Only the
+#     Health array decides them.
+#   - The rx fields are saved even when the STUN path ends early (metrics
+#     `error` or `inconclusive`). Those paths keep the STUN fields as they were.
+#     With no STUN baseline yet, an early save writes no send or recv line.
+#
 # Banners: osascript `display notification`, text passed as argv through
 # `on run argv`, never interpolated into AppleScript source. Cooldown 6 h for the
-# stall banner; the recovery banner has none. A cooldown starts, and `alerted=1`
-# is set, only when osascript succeeded. A failed recovery banner retries on the
-# next run.
+# stall banner and, separately, for the rxdead banner; the recovery banners have
+# none. A cooldown starts, and `alerted=1` or `rx_alerted=1` is set, only when
+# osascript succeeded. A failed recovery banner retries on the next run.
 #
 # State: ~/Library/Caches/tailscale-watch/state, KEY=VALUE lines, parsed by hand
 # (never sourced), replaced atomically. Log: ~/Library/Logs/tailscale-watch.log
@@ -93,12 +130,18 @@ readonly WATCH_LOG_MAX=1048576  # 1 MiB
 readonly RE_BACKEND='"BackendState"[[:space:]]*:[[:space:]]*"([A-Za-z]{0,30})"'
 readonly RE_METRIC='^([A-Za-z_:][A-Za-z0-9_:]*)[[:space:]]+([^[:space:]]+)[[:space:]]*$'
 readonly RE_INT='^[0-9]{1,15}$'
+# The rx regexes match lowercased text (see _w_rx_classify).
+readonly RE_RX_BAD='magicsock function [a-z0-9]{1,40} is not running'
+readonly RE_RX_HEALTH='"health"[[:space:]]*:[[:space:]]*\['
 
 typeset -g W_HOME='' W_TS='' W_OSA='' W_LOGGER='' W_PERL='' W_STATE_DIR='' W_STATE='' W_LOG=''
 typeset -gi W_DEADLINE=10 W_NOW=0
 
 # State, as loaded from and saved to the state file.
 typeset -gi S_HAVE=0 S_SEND=0 S_RECV=0 S_STREAK=0 S_ALERTED=0 S_BANNER_STALL=0
+typeset -gi S_RX_STREAK=0 S_RX_ALERTED=0 S_BANNER_RX=0
+# 1 when the rx fields changed in this run: the early STUN exits then save them.
+typeset -gi W_RX_CHANGED=0
 
 # Results of the external-call helper.
 typeset -g RUN_OUT=''
@@ -187,6 +230,9 @@ function _w_state_load {
   S_STREAK=0
   S_ALERTED=0
   S_BANNER_STALL=0
+  S_RX_STREAK=0
+  S_RX_ALERTED=0
+  S_BANNER_RX=0
   [[ -r "${W_STATE}" ]] || return 0
   while IFS= read -r line || [[ -n "${line}" ]]; do
     key="${line%%=*}"
@@ -197,6 +243,9 @@ function _w_state_load {
       streak)       [[ "${val}" =~ ^[0-9]{1,5}$ ]] && S_STREAK=$(( 10#${val} )) ;;
       alerted)      [[ "${val}" == 0 || "${val}" == 1 ]] && S_ALERTED="${val}" ;;
       banner_stall) [[ "${val}" =~ ^[0-9]{1,10}$ ]] && S_BANNER_STALL=$(( 10#${val} )) ;;
+      rx_streak)    [[ "${val}" =~ ^[0-9]{1,5}$ ]] && S_RX_STREAK=$(( 10#${val} )) ;;
+      rx_alerted)   [[ "${val}" == 0 || "${val}" == 1 ]] && S_RX_ALERTED="${val}" ;;
+      banner_rx)    [[ "${val}" =~ ^[0-9]{1,10}$ ]] && S_BANNER_RX=$(( 10#${val} )) ;;
     esac
   done < "${W_STATE}"
   (( have_send && have_recv )) && S_HAVE=1
@@ -211,12 +260,21 @@ function _w_state_save {
     return 1
   }
   {
-    print -r -- "send=${S_SEND}"
-    print -r -- "recv=${S_RECV}"
+    # No baseline yet (an early save): write no send or recv line, so the next
+    # run still takes a baseline.
+    if (( S_HAVE )); then
+      print -r -- "send=${S_SEND}"
+      print -r -- "recv=${S_RECV}"
+    fi
     print -r -- "streak=${S_STREAK}"
     print -r -- "alerted=${S_ALERTED}"
     if (( S_BANNER_STALL > 0 )); then
       print -r -- "banner_stall=${S_BANNER_STALL}"
+    fi
+    print -r -- "rx_streak=${S_RX_STREAK}"
+    print -r -- "rx_alerted=${S_RX_ALERTED}"
+    if (( S_BANNER_RX > 0 )); then
+      print -r -- "banner_rx=${S_BANNER_RX}"
     fi
   } > "${tmp}" || rc=1
   if (( rc == 0 )); then
@@ -255,6 +313,23 @@ function _w_banner_stall {
     return 0
   fi
   _w_log "banner stall: osascript failed rc=${RUN_RC}"
+  return 1
+}
+
+# _w_banner_rx: honour its own 6 h cooldown, send, and start the cooldown only
+# after a successful send. Returns 0 if it sent.
+function _w_banner_rx {
+  if (( W_NOW - S_BANNER_RX < WATCH_COOLDOWN )); then
+    _w_log 'banner rx: suppressed by cooldown'
+    return 1
+  fi
+  if _w_banner_send 'Tailscale is relaying' \
+      "Tailscale's receive loop stopped. Quit and reopen Tailscale, then update it."; then
+    S_BANNER_RX="${W_NOW}"
+    _w_log 'banner rx: sent'
+    return 0
+  fi
+  _w_log "banner rx: osascript failed rc=${RUN_RC}"
   return 1
 }
 
@@ -352,6 +427,63 @@ function _w_handle_ok {
   return 0
 }
 
+# Classify the status output in RUN_OUT as `bad`, `ok` or `unknown` (REPLY).
+# Call it before any other _w_run, which replaces RUN_OUT. The text is lowercased
+# so the match ignores case.
+function _w_rx_classify {
+  local text
+  # shellcheck disable=SC2296  # zsh (L) lowercase flag
+  text="${(L)RUN_OUT}"
+  if [[ "${text}" =~ $RE_RX_BAD ]]; then
+    REPLY=bad
+  elif [[ "${text}" =~ $RE_RX_HEALTH ]]; then
+    REPLY=ok
+  else
+    REPLY=unknown
+  fi
+}
+
+# _w_rx_step KIND: apply one rx decision (bad, ok or unknown) to the rx state.
+function _w_rx_step {
+  local kind="$1"
+  local before="${S_RX_STREAK}:${S_RX_ALERTED}:${S_BANNER_RX}"
+  case "${kind}" in
+    bad)
+      if (( S_RX_STREAK < WATCH_STREAK_MAX )); then
+        S_RX_STREAK+=1
+      fi
+      _w_log "rx: bad streak=${S_RX_STREAK}"
+      if (( S_RX_STREAK >= WATCH_ALERT_AFTER )); then
+        _w_banner_rx && S_RX_ALERTED=1
+      fi
+      ;;
+    ok)
+      S_RX_STREAK=0
+      _w_log 'rx: ok'
+      if (( S_RX_ALERTED )); then
+        if _w_banner_send 'Tailscale is direct again' "Tailscale's receive loop runs again."; then
+          _w_log 'banner rx recovery: sent'
+          S_RX_ALERTED=0
+        else
+          _w_log "banner rx recovery: osascript failed rc=${RUN_RC}; will retry"
+        fi
+      fi
+      ;;
+    *)
+      _w_log 'rx: unknown'
+      ;;
+  esac
+  [[ "${before}" == "${S_RX_STREAK}:${S_RX_ALERTED}:${S_BANNER_RX}" ]] || W_RX_CHANGED=1
+  return 0
+}
+
+# Early STUN exits (metrics error, inconclusive) save the state only when the rx
+# fields changed. The STUN fields stay as loaded.
+function _w_rx_persist {
+  (( W_RX_CHANGED )) && _w_state_save
+  return 0
+}
+
 function main {
   _w_init || return 1
 
@@ -377,8 +509,14 @@ function main {
     _w_log "decision: skip (backend ${P_BACKEND:-empty}); state unchanged"
     return 0
   fi
+
+  # The rx decision reads the status output, so it comes before the metrics read.
+  _w_rx_classify
+  _w_rx_step "${REPLY}"
+
   if ! _w_read_metrics; then
-    _w_log "decision: error (metrics unusable, rc=${RUN_RC}); state unchanged"
+    _w_log "decision: error (metrics unusable, rc=${RUN_RC}); STUN state unchanged"
+    _w_rx_persist
     return 0
   fi
 
@@ -395,6 +533,7 @@ function main {
     drecv=$(( M_RECV - S_RECV ))
     if (( dsend < WATCH_MIN_SEND )); then
       _w_log "decision: inconclusive dsend=${dsend} drecv=${drecv} streak=${S_STREAK}; baseline kept"
+      _w_rx_persist
       return 0
     elif (( drecv == 0 )); then
       _w_handle_bad "${dsend}" "${drecv}"

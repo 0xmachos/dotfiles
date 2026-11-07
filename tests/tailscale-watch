@@ -4,7 +4,8 @@
 # Behavioural test for bin/tailscale-watch, the watcher for a Tailscale network
 # extension that stops receiving UDP replies: the baseline, the two-run stall
 # banner with its 6 h cooldown, the recovery banner, counter resets, runs too
-# short to judge, a stopped backend, CLI failures that read as errors, a missing
+# short to judge, the receive-loop-stopped detector (Health text in the status
+# JSON: banner, cooldown, recovery, unknown, saves on early STUN exits), a stopped backend, CLI failures that read as errors, a missing
 # CLI that skips silently, a corrupt state file read as data, a relative HOME
 # refused, the kill switch, banner text passed as argv, and no call that
 # changes Tailscale.
@@ -31,9 +32,12 @@ typeset -gi TW_T_RC=0 TW_T_SEQ=0 TW_T_BASE=0
 
 # Scenario knobs, read by the stubs (see _tw_t_reset for the defaults).
 typeset -g TW_STATUS_MODE='' TW_METRICS_MODE='' TW_SEND='' TW_SEND6='' TW_RECV4='' TW_RECV6=''
-typeset -g TW_OSA_FAIL='' TW_T_DEADLINE=''
+typeset -g TW_OSA_FAIL='' TW_T_DEADLINE='' TW_HEALTH='[]'
 
 readonly TW_T_GUI_MSG='The Tailscale GUI failed to start: cannot open the app in this session'
+readonly TW_T_HEALTH_BAD='["The MagicSock function ReceiveIPv4 is not running. You might experience connectivity issues."]'
+readonly TW_T_RX_TITLE='Tailscale is relaying'
+readonly TW_T_RX_BODY="Tailscale's receive loop stopped. Quit and reopen Tailscale, then update it."
 
 function _tw_t_make_stubs {
   local d="${TW_T_STUBS}"
@@ -52,7 +56,8 @@ fi
 case "$1 ${2:-}" in
   "status --json")
     case "${TW_STATUS_MODE}" in
-      running) print -r -- '{' '  "Version": "1.104.4",' '  "BackendState": "Running",' '  "Peer": {}' '}' ;;
+      running) print -r -- '{' '  "Version": "1.104.4",' '  "BackendState": "Running",' "  \"Health\": ${TW_HEALTH}," '  "Peer": {}' '}' ;;
+      nohealth) print -r -- '{' '  "Version": "1.104.4",' '  "BackendState": "Running",' '  "Peer": {}' '}' ;;
       spaced) print -r -- '{"BackendState"   :    "Running"}' ;;
       stopped) print -r -- '{' '  "BackendState": "Stopped"' '}' ;;
       nokey) print -r -- '{"Version": "1.104.4"}' ;;
@@ -118,6 +123,7 @@ function _tw_t_reset {
   TW_RECV6=0
   TW_OSA_FAIL=''
   TW_T_DEADLINE=5
+  TW_HEALTH='[]'
 }
 
 # _tw_t_run [OFFSET_SECONDS]: run the script once with the scenario knobs; the
@@ -141,6 +147,7 @@ function _tw_t_run {
     TW_RECV4="${TW_RECV4}" \
     TW_RECV6="${TW_RECV6}" \
     TW_OSA_FAIL="${TW_OSA_FAIL}" \
+    TW_HEALTH="${TW_HEALTH}" \
     /bin/zsh "${TW_T_SCRIPT}" 2>&1)" && TW_T_RC=0 || TW_T_RC=$?
 }
 
@@ -651,6 +658,330 @@ function _tw_t_argv {
   if (( ok )); then _pass "stall and recovery text reach osascript as argv, never in the -e source"; else _fail "argv wrong (source lines ${src_lines})"; fi
 }
 
+# --- Receive loop stopped (Health text in the status JSON) ----------------
+
+# Two runs with the ReceiveIPv4 text: one banner with the exact text. A third
+# run inside 6 h: no new banner. Then Health [] : one recovery banner, and the
+# rx fields clear. STUN stays healthy (replies rise) the whole time.
+function _tw_t_rx_banner {
+  _section "tailscale-watch: receive loop stopped banner"
+
+  _tw_t_reset
+  TW_HEALTH="${TW_T_HEALTH_BAD}"
+  _tw_t_step 100 50 0
+  local ok=1 n
+  _tw_t_count "osa|"; n="${REPLY}"
+  (( n == 0 )) || ok=0
+  _tw_t_state_has "rx_streak=1" || ok=0
+  _tw_t_log_has "rx: bad streak=1" || ok=0
+  _tw_t_step 120 60 120
+  _tw_t_count "osa|"; n="${REPLY}"
+  (( n == 1 )) || ok=0
+  _tw_t_call_has "osa|${TW_T_RX_TITLE}|${TW_T_RX_BODY}" "" || ok=0
+  _tw_t_state_has "rx_streak=2" || ok=0
+  _tw_t_state_has "rx_alerted=1" || ok=0
+  _tw_t_state_has "banner_rx=$(( TW_T_BASE + 120 ))" || ok=0
+  _tw_t_state_has "alerted=0" || ok=0
+  _tw_t_log_has "banner rx: sent" || ok=0
+  _tw_t_step 140 70 240
+  _tw_t_count "osa|"; n="${REPLY}"
+  (( n == 1 )) || ok=0
+  _tw_t_state_has "rx_streak=3" || ok=0
+  _tw_t_log_has "banner rx: suppressed by cooldown" || ok=0
+  if (( ok )); then _pass "two rx_bad runs: one rxdead banner with exact text; third run inside 6 h: none"; else _fail "rx banner wrong (banners ${n}): ${TW_T_OUT}"; fi
+
+  # Continues the same case: Health [] sends one recovery banner.
+  TW_HEALTH='[]'
+  _tw_t_step 160 80 360
+  ok=1
+  _tw_t_count "osa|"; n="${REPLY}"
+  (( n == 2 )) || ok=0
+  _tw_t_call_has "osa|Tailscale is direct again|Tailscale's receive loop runs again." "" || ok=0
+  _tw_t_state_has "rx_alerted=0" || ok=0
+  _tw_t_state_has "rx_streak=0" || ok=0
+  _tw_t_log_has "rx: ok" || ok=0
+  _tw_t_log_has "banner rx recovery: sent" || ok=0
+  _tw_t_step 180 90 480
+  _tw_t_count "osa|"; n="${REPLY}"
+  (( n == 2 )) || ok=0
+  if (( ok )); then _pass "Health []: one rx recovery banner, rx_alerted cleared, none repeated"; else _fail "rx recovery wrong (banners ${n}): ${TW_T_OUT}"; fi
+
+  # The cooldown is 6 h and starts at the send time.
+  _tw_t_reset
+  TW_HEALTH="${TW_T_HEALTH_BAD}"
+  _tw_t_step 100 50 0
+  _tw_t_step 120 60 120
+  _tw_t_step 140 70 $(( 120 + 21599 ))
+  _tw_t_count "osa|"; n="${REPLY}"
+  ok=1
+  (( n == 1 )) || ok=0
+  _tw_t_step 160 80 $(( 120 + 21600 ))
+  _tw_t_count "osa|"; n="${REPLY}"
+  (( n == 2 )) || ok=0
+  if (( ok )); then _pass "rx cooldown: none at 6 h minus 1 s, banner again at 6 h"; else _fail "rx cooldown wrong (banners ${n})"; fi
+
+  # The function name may be ReceiveIPv6 or ReceiveDERP, in any letter case.
+  local name
+  for name in ReceiveIPv6 ReceiveDERP; do
+    _tw_t_reset
+    TW_HEALTH='["The magicsock FUNCTION '"${name}"' IS NOT RUNNING. x"]'
+    _tw_t_step 100 50 0
+    _tw_t_step 120 60 120
+    if _tw_t_call_has "osa|${TW_T_RX_TITLE}|${TW_T_RX_BODY}" ""; then _pass "Health text with ${name} (mixed case) banners"; else _fail "${name} not detected: ${TW_T_OUT}"; fi
+  done
+
+  # Other Health text is not a receive-loop fault: rx_ok, no banner.
+  _tw_t_reset
+  TW_HEALTH='["Tailscale could not reach the DERP server. The MagicSock function is fine."]'
+  _tw_t_step 100 50 0
+  _tw_t_step 120 60 120
+  _tw_t_count "osa|"; n="${REPLY}"
+  if (( n == 0 )) && _tw_t_state_has "rx_streak=0" && _tw_t_log_has "rx: ok"; then _pass "other Health text: rx ok, no banner"; else _fail "other Health text wrong (banners ${n}): ${TW_T_OUT}"; fi
+}
+
+# A failed osascript on the rx banner starts no cooldown and leaves rx_alerted 0.
+# The next run retries. A failed rx recovery banner keeps rx_alerted=1 and retries.
+function _tw_t_rx_osa_fail {
+  _section "tailscale-watch: failed rx banner retries"
+
+  _tw_t_reset
+  TW_HEALTH="${TW_T_HEALTH_BAD}"
+  _tw_t_step 100 50 0
+  TW_OSA_FAIL=1
+  _tw_t_step 120 60 120
+  local ok=1
+  _tw_t_state_has "rx_alerted=0" || ok=0
+  _tw_t_state_has "rx_streak=2" || ok=0
+  _tw_t_state_text
+  [[ "${REPLY}" == *banner_rx=* ]] && ok=0
+  _tw_t_log_has "banner rx: osascript failed" || ok=0
+  TW_OSA_FAIL=''
+  _tw_t_step 140 70 240
+  _tw_t_state_has "rx_alerted=1" || ok=0
+  _tw_t_state_has "banner_rx=$(( TW_T_BASE + 240 ))" || ok=0
+  _tw_t_log_has "banner rx: sent" || ok=0
+  if (( ok )); then _pass "osascript failure on the rx banner: rx_alerted stays 0, no cooldown, next run sends"; else _fail "failed rx banner wrong: ${TW_T_OUT}"; fi
+
+  TW_OSA_FAIL=1
+  TW_HEALTH='[]'
+  _tw_t_step 160 80 360
+  ok=1
+  _tw_t_state_has "rx_alerted=1" || ok=0
+  _tw_t_log_has "banner rx recovery: osascript failed" || ok=0
+  TW_OSA_FAIL=''
+  _tw_t_step 180 90 480
+  _tw_t_state_has "rx_alerted=0" || ok=0
+  _tw_t_log_has "banner rx recovery: sent" || ok=0
+  if (( ok )); then _pass "failed rx recovery banner keeps rx_alerted=1 and retries"; else _fail "failed rx recovery wrong: ${TW_T_OUT}"; fi
+}
+
+# The rx fields persist when the STUN path ends early. A metrics error leaves the
+# STUN fields as they were. With no STUN baseline, the early save writes none.
+function _tw_t_rx_metrics_error {
+  _section "tailscale-watch: rx state survives a metrics error"
+
+  _tw_t_reset
+  _tw_t_step 100 50 0
+  TW_HEALTH="${TW_T_HEALTH_BAD}"
+  TW_METRICS_MODE=gui
+  _tw_t_run 120
+  local ok=1 n
+  _tw_t_log_has "decision: error (metrics" || ok=0
+  _tw_t_state_has "rx_streak=1" || ok=0
+  _tw_t_state_has "send=100" || ok=0
+  _tw_t_state_has "recv=50" || ok=0
+  _tw_t_state_has "streak=0" || ok=0
+  _tw_t_run 240
+  _tw_t_state_has "rx_streak=2" || ok=0
+  _tw_t_state_has "rx_alerted=1" || ok=0
+  _tw_t_count "osa|"; n="${REPLY}"
+  (( n == 1 )) || ok=0
+  _tw_t_call_has "osa|${TW_T_RX_TITLE}|${TW_T_RX_BODY}" "" || ok=0
+  _tw_t_state_has "send=100" || ok=0
+  _tw_t_state_has "recv=50" || ok=0
+  if (( ok )); then _pass "metrics error: rx_streak advances and persists, rxdead banner sent, STUN fields untouched"; else _fail "rx on metrics error wrong (banners ${n}): ${TW_T_OUT}"; fi
+
+  # No baseline yet: the early save must not invent one.
+  _tw_t_reset
+  TW_HEALTH="${TW_T_HEALTH_BAD}"
+  TW_METRICS_MODE=gui
+  _tw_t_run 0
+  ok=1
+  _tw_t_state_has "rx_streak=1" || ok=0
+  _tw_t_state_has "send=0" && ok=0
+  _tw_t_state_has "recv=0" && ok=0
+  TW_METRICS_MODE=normal
+  _tw_t_step 100 50 120
+  _tw_t_log_has "decision: baseline" || ok=0
+  _tw_t_state_has "send=100" || ok=0
+  _tw_t_state_has "rx_streak=2" || ok=0
+  if (( ok )); then _pass "metrics error with no baseline: rx saved, no fake STUN baseline, next run takes the baseline"; else _fail "early save without baseline wrong: ${TW_T_OUT}"; fi
+}
+
+# STUN inconclusive: rx fields persist, and the old STUN baseline stays in use.
+function _tw_t_rx_inconclusive {
+  _section "tailscale-watch: rx state survives an inconclusive run"
+
+  _tw_t_reset
+  _tw_t_step 100 50 0
+  TW_HEALTH="${TW_T_HEALTH_BAD}"
+  _tw_t_step 103 50 120
+  local ok=1 n
+  _tw_t_log_has "decision: inconclusive dsend=3" || ok=0
+  _tw_t_state_has "rx_streak=1" || ok=0
+  _tw_t_state_has "send=100" || ok=0
+  _tw_t_step 104 50 240
+  _tw_t_state_has "rx_streak=2" || ok=0
+  _tw_t_state_has "rx_alerted=1" || ok=0
+  _tw_t_state_has "send=100" || ok=0
+  _tw_t_count "osa|"; n="${REPLY}"
+  (( n == 1 )) || ok=0
+  TW_HEALTH='[]'
+  _tw_t_step 110 50 360
+  _tw_t_log_has "decision: bad dsend=10 drecv=0 streak=1" || ok=0
+  _tw_t_state_has "streak=1" || ok=0
+  if (( ok )); then _pass "inconclusive: rx_streak persists, rxdead banner sent, STUN baseline kept"; else _fail "rx on inconclusive wrong (banners ${n}): ${TW_T_OUT}"; fi
+}
+
+# No Health key (or a null one): rx unknown. The rx fields hold, there is no
+# recovery banner, and a status that fails or a backend that is not Running holds
+# them too. A later bad run continues the streak.
+function _tw_t_rx_unknown {
+  _section "tailscale-watch: rx unknown holds the rx state"
+
+  _tw_t_reset
+  /bin/mkdir -p "${TW_T_HOME}/Library/Caches/tailscale-watch"
+  print -r -- $'send=100\nrecv=50\nstreak=0\nalerted=0\nrx_streak=1\nrx_alerted=1\nbanner_rx='"$(( TW_T_BASE - 100 ))" \
+    > "${TW_T_HOME}/Library/Caches/tailscale-watch/state"
+  TW_STATUS_MODE=nohealth
+  _tw_t_step 120 60 0
+  local ok=1 n mode
+  _tw_t_state_has "rx_streak=1" || ok=0
+  _tw_t_state_has "rx_alerted=1" || ok=0
+  _tw_t_state_has "banner_rx=$(( TW_T_BASE - 100 ))" || ok=0
+  _tw_t_log_has "rx: unknown" || ok=0
+  _tw_t_log_has "decision: ok dsend=20 drecv=10" || ok=0
+  _tw_t_count "osa|"; n="${REPLY}"
+  (( n == 0 )) || ok=0
+  TW_STATUS_MODE=running
+  TW_HEALTH=null
+  _tw_t_step 140 70 120
+  _tw_t_state_has "rx_streak=1" || ok=0
+  _tw_t_state_has "rx_alerted=1" || ok=0
+  _tw_t_count "osa|"; n="${REPLY}"
+  (( n == 0 )) || ok=0
+  for mode in stopped nokey rc127; do
+    TW_STATUS_MODE="${mode}"
+    TW_HEALTH="${TW_T_HEALTH_BAD}"
+    _tw_t_step 160 80 240
+    _tw_t_state_has "rx_streak=1" || ok=0
+    _tw_t_state_has "rx_alerted=1" || ok=0
+  done
+  _tw_t_count "osa|"; n="${REPLY}"
+  (( n == 0 )) || ok=0
+  if (( ok )); then _pass "no Health key, null Health, failed status, stopped backend: rx fields unchanged, no recovery banner"; else _fail "rx unknown wrong (banners ${n}): ${TW_T_OUT}"; fi
+
+  # A bad run after unknown runs continues the streak from the held value.
+  _tw_t_reset
+  TW_HEALTH="${TW_T_HEALTH_BAD}"
+  _tw_t_step 100 50 0
+  TW_STATUS_MODE=nohealth
+  _tw_t_step 120 60 120
+  TW_STATUS_MODE=running
+  _tw_t_step 140 70 240
+  _tw_t_count "osa|"; n="${REPLY}"
+  if (( n == 1 )) && _tw_t_state_has "rx_streak=2"; then _pass "bad, unknown, bad: the unknown run neither resets nor counts, the second bad run banners"; else _fail "bad-unknown-bad wrong (banners ${n}): ${TW_T_OUT}"; fi
+}
+
+# An old state file has no rx keys: they read as 0. Invalid rx values read as 0.
+# The streak cap holds.
+function _tw_t_rx_old_state {
+  _section "tailscale-watch: rx keys in old and corrupt state"
+
+  _tw_t_reset
+  /bin/mkdir -p "${TW_T_HOME}/Library/Caches/tailscale-watch"
+  print -r -- $'send=100\nrecv=50\nstreak=1\nalerted=0\nbanner_stall=1' \
+    > "${TW_T_HOME}/Library/Caches/tailscale-watch/state"
+  _tw_t_step 120 60
+  local ok=1 n
+  (( TW_T_RC == 0 )) || ok=0
+  _tw_t_log_has "decision: ok dsend=20 drecv=10" || ok=0
+  _tw_t_log_has "rx: ok" || ok=0
+  _tw_t_state_has "rx_streak=0" || ok=0
+  _tw_t_state_has "rx_alerted=0" || ok=0
+  _tw_t_count "osa|"; n="${REPLY}"
+  (( n == 0 )) || ok=0
+  if (( ok )); then _pass "old state without rx keys: reads as 0, no error, no banner"; else _fail "old state wrong (rc ${TW_T_RC}, banners ${n}): ${TW_T_OUT}"; fi
+
+  _tw_t_reset
+  /bin/mkdir -p "${TW_T_HOME}/Library/Caches/tailscale-watch"
+  print -r -- $'send=100\nrecv=50\nstreak=0\nalerted=0\nrx_streak=zz\nrx_alerted=5\nbanner_rx=-3' \
+    > "${TW_T_HOME}/Library/Caches/tailscale-watch/state"
+  TW_HEALTH="${TW_T_HEALTH_BAD}"
+  _tw_t_step 120 60
+  ok=1
+  _tw_t_state_has "rx_streak=1" || ok=0
+  _tw_t_state_has "rx_alerted=0" || ok=0
+  if (( ok )); then _pass "invalid rx values read as 0"; else _fail "invalid rx state wrong: ${TW_T_OUT}"; fi
+
+  _tw_t_reset
+  /bin/mkdir -p "${TW_T_HOME}/Library/Caches/tailscale-watch"
+  print -r -- $'send=100\nrecv=50\nstreak=0\nalerted=0\nrx_streak=9999\nrx_alerted=1\nbanner_rx='"$(( TW_T_BASE - 10 ))" \
+    > "${TW_T_HOME}/Library/Caches/tailscale-watch/state"
+  TW_HEALTH="${TW_T_HEALTH_BAD}"
+  _tw_t_step 120 60
+  if _tw_t_state_has "rx_streak=9999"; then _pass "rx_streak stays at the cap"; else _fail "rx cap wrong: ${TW_T_OUT}"; fi
+}
+
+# A STUN-only stall still banners as before while Health is []. A STUN stall and
+# a receive-loop stop at the same time send two banners, each with its own cooldown.
+function _tw_t_rx_independent {
+  _section "tailscale-watch: STUN and rx detectors are independent"
+
+  _tw_t_reset
+  _tw_t_step 100 50 0
+  _tw_t_step 120 50 120
+  _tw_t_step 140 50 240
+  local ok=1 n
+  _tw_t_count "osa|"; n="${REPLY}"
+  (( n == 1 )) || ok=0
+  _tw_t_call_has "osa|Tailscale is relaying|Tailscale gets no UDP replies. Disconnect and reconnect Tailscale. If it stays relayed, this network blocks UDP." "" || ok=0
+  _tw_t_state_has "alerted=1" || ok=0
+  _tw_t_state_has "rx_streak=0" || ok=0
+  _tw_t_state_has "rx_alerted=0" || ok=0
+  _tw_t_state_text
+  [[ "${REPLY}" == *banner_rx=* ]] && ok=0
+  _tw_t_log_has "banner rx" && ok=0
+  if (( ok )); then _pass "STUN-only stall with Health []: the stall banner as before, rx fields idle"; else _fail "STUN-only stall wrong (banners ${n}): ${TW_T_OUT}"; fi
+
+  _tw_t_reset
+  TW_HEALTH="${TW_T_HEALTH_BAD}"
+  _tw_t_step 100 50 0
+  _tw_t_step 120 50 120
+  _tw_t_step 140 50 240
+  ok=1
+  _tw_t_count "osa|"; n="${REPLY}"
+  (( n == 2 )) || ok=0
+  _tw_t_call_has "osa|${TW_T_RX_TITLE}|${TW_T_RX_BODY}" "" || ok=0
+  _tw_t_call_has "osa|Tailscale is relaying|Tailscale gets no UDP replies." "" || ok=0
+  _tw_t_state_has "alerted=1" || ok=0
+  _tw_t_state_has "rx_alerted=1" || ok=0
+  _tw_t_state_has "banner_stall=$(( TW_T_BASE + 240 ))" || ok=0
+  _tw_t_state_has "banner_rx=$(( TW_T_BASE + 120 ))" || ok=0
+  if (( ok )); then _pass "STUN stall and rx stop together: two banners, separate cooldown stamps"; else _fail "both detectors wrong (banners ${n}): ${TW_T_OUT}"; fi
+
+  # A counter reset does not touch the rx fields.
+  _tw_t_reset
+  TW_HEALTH="${TW_T_HEALTH_BAD}"
+  _tw_t_step 1000 500 0
+  _tw_t_step 5 2 120
+  ok=1
+  _tw_t_log_has "decision: reset" || ok=0
+  _tw_t_state_has "rx_streak=2" || ok=0
+  _tw_t_state_has "rx_alerted=1" || ok=0
+  if (( ok )); then _pass "counter reset leaves the rx fields alone"; else _fail "reset touched rx: ${TW_T_OUT}"; fi
+}
+
 function run_tailscale_watch {
   zmodload zsh/datetime
 
@@ -684,6 +1015,13 @@ function run_tailscale_watch {
   _tw_t_bad_home
   _tw_t_kill_switch
   _tw_t_argv
+  _tw_t_rx_banner
+  _tw_t_rx_osa_fail
+  _tw_t_rx_metrics_error
+  _tw_t_rx_inconclusive
+  _tw_t_rx_unknown
+  _tw_t_rx_old_state
+  _tw_t_rx_independent
 
   /bin/rm -rf -- "${TW_T_BOX:?}"
 }
