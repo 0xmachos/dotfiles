@@ -1650,9 +1650,28 @@ function open_system_preferences_mdm_profile {
 }
 
 
+function _launchagent_skipped {
+  # _launchagent_skipped LABEL
+  # True when LABEL is a line of the per-host skip file (default
+  # .extra_launchagent_skip, gitignored, # comments allowed). A host where
+  # another repo installs an agent with the same label lists that label there,
+  # so install_launchagents does not overwrite it and load_launchagents does not
+  # load it into gui/<uid>. LAUNCHAGENT_SKIP_FILE overrides the path.
+  local -r skip_file="${LAUNCHAGENT_SKIP_FILE:-${SCRIPT_DIR}/.extra_launchagent_skip}"
+  local line
+  [[ -f "${skip_file}" ]] || return 1
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ -z "${line}" || "${line}" == \#* ]] && continue
+    [[ "${line}" == "$1" ]] && return 0
+  done < "${skip_file}"
+  return 1
+}
+
+
 function install_launchagents {
   # Copies agent plists to ~/Library/LaunchAgents/ and the daemon plist to
-  # /Library/LaunchDaemons/ (root:wheel 644).
+  # /Library/LaunchDaemons/ (root:wheel 644). A label listed in the per-host
+  # skip file (_launchagent_skipped) is left alone.
   #
   # Copied, not symlinked: since macOS Sonoma 14.0 launchd's login scan of
   # ~/Library/LaunchAgents/ does not follow symlinks, so a symlinked plist is
@@ -1672,6 +1691,10 @@ function install_launchagents {
 
   if mkdir -p "${HOME}/Library/LaunchAgents"; then
     for plist in "${LAUNCHAGENT_PLISTS[@]}"; do
+      if _launchagent_skipped "${plist}"; then
+        echo "[ℹ️ ] Skipped ${plist}.plist: listed in the per-host skip file"
+        continue
+      fi
       # __HOME__ expands to the invoking user's home at copy time: launchd does
       # NOT expand ~ or $HOME in path values, and a literal /Users/<name> cannot
       # live in the repo (the username differs between machines). Token-free
@@ -1713,6 +1736,10 @@ function load_launchagents {
   local -r uid=$(id -u)
 
   for plist in "${LAUNCHAGENT_PLISTS[@]}"; do
+    if _launchagent_skipped "${plist}"; then
+      echo "[ℹ️ ] Skipped ${plist}: listed in the per-host skip file"
+      continue
+    fi
     launchctl bootout "gui/${uid}/${plist}" 2>/dev/null || true
     if launchctl bootstrap "gui/${uid}" "${HOME}/Library/LaunchAgents/${plist}.plist"; then
       echo "[✅] Successfully loaded ${plist} LaunchAgent"

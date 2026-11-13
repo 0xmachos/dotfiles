@@ -23,6 +23,8 @@ function _linkage_deployments {
     trap '/bin/rm -rf -- "${fixture_home}"' EXIT
     # HOME is overridden only here: real shell redirects cannot be mocked.
     export HOME="${fixture_home}"
+    # A per-host .extra_launchagent_skip must not hide an agent from this walk.
+    export LAUNCHAGENT_SKIP_FILE=/dev/null
     /bin/mkdir -p "${HOME}/Library/LaunchAgents"
     # Declarations only, never bittersweet's top-level setup/main.
     # shellcheck disable=SC1090,SC1091

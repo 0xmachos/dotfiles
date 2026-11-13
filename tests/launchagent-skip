@@ -1,0 +1,94 @@
+#!/bin/zsh
+# dotfiles/tests/launchagent-skip
+#
+# Checks the per-host LaunchAgent skip file (_launchagent_skipped in
+# bittersweet). install_launchagents and load_launchagents run against a
+# fixture HOME with stub launchctl, sudo and get_sudo; sed, plutil, mv, chmod
+# and xattr are real. A listed label must keep its existing plist byte for byte
+# and get no launchctl call. An unlisted label installs and loads as before.
+# The real ~/Library/LaunchAgents and launchd are never touched.
+#
+# BITTERSWEET_UNDER_TEST points the suite at another copy of bittersweet (used
+# to prove the suite goes red when the skip check is broken).
+#
+# Run: ./test launchagent-skip
+# ShellCheck: lint with `shellcheck --shell=bash tests/launchagent-skip`.
+# This file is sourced, not executed — chmod 644.
+#
+# shellcheck disable=SC2329  # stubs called by sourced code
+
+# _launchagent_skip_case MODE
+#   MODE: listed (the skip file names container-start), unlisted (the skip
+#   file names no real agent), absent (no skip file at the given path).
+#   The fixture starts with a foreign container-start plist.
+#   Prints five tab-separated fields: rc; the container-start plist (foreign =
+#   unchanged, repo = replaced, missing); any launchctl call naming
+#   container-start (yes/no); a bootstrap of container-start (yes/no);
+#   scratch-sweep installed and bootstrapped (yes/no).
+function _launchagent_skip_case {
+  local mode="$1"
+  (
+    local fixture
+    fixture="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/la-skip.XXXXXX")" || return 1
+    trap '/bin/rm -rf -- "${fixture}"' EXIT
+    export HOME="${fixture}/home"
+    local agents="${HOME}/Library/LaunchAgents"
+    local calls="${fixture}/launchctl-calls" skip="${fixture}/skip"
+    /bin/mkdir -p "${agents}"
+    : > "${calls}"
+    print -r -- 'foreign plist bytes' > "${agents}/com.0xmachos.container-start.plist"
+    case "${mode}" in
+      listed) print -l -- '# owned by another repo on this host' 'com.0xmachos.container-start' > "${skip}" ;;
+      unlisted) print -l -- '# nothing real' 'com.0xmachos.not-an-agent' > "${skip}" ;;
+    esac
+    export LAUNCHAGENT_SKIP_FILE="${skip}"
+    # shellcheck disable=SC1090,SC1091
+    source <(/usr/bin/awk '
+      /^function / || /^typeset -ra LAUNCHAGENT_PLISTS=\(/ { block = 1 }
+      block { print }
+      /^}$/ || /^\)$/ { block = 0 }
+    ' "${BITTERSWEET_UNDER_TEST:-${SCRIPT_DIR}/bittersweet}")
+    get_sudo() { :; }
+    sudo() { return 0; }
+    launchctl() {
+      print -r -- "$*" >> "${calls}"
+      [[ "$1" == print ]] && print -r -- $'\tIIOEnableOOP => 1'
+      return 0
+    }
+    local rc=0
+    { install_launchagents && load_launchagents; } > /dev/null 2>&1 || rc=$?
+    local cs_file="${agents}/com.0xmachos.container-start.plist" cs=missing
+    if [[ -f "${cs_file}" ]]; then
+      if [[ "$(<"${cs_file}")" == 'foreign plist bytes' ]]; then cs=foreign; else cs=repo; fi
+    fi
+    local cs_any=no cs_boot=no ss=no
+    /usr/bin/grep -q 'container-start' "${calls}" && cs_any=yes
+    /usr/bin/grep -q '^bootstrap .*com\.0xmachos\.container-start\.plist$' "${calls}" && cs_boot=yes
+    if [[ -f "${agents}/com.0xmachos.scratch-sweep.plist" ]] \
+       && /usr/bin/grep -q '^bootstrap .*com\.0xmachos\.scratch-sweep\.plist$' "${calls}"; then
+      ss=yes
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\n' "${rc}" "${cs}" "${cs_any}" "${cs_boot}" "${ss}"
+  )
+}
+
+function run_launchagent_skip {
+  _section "bittersweet launchagents: per-host skip file"
+
+  local out mode
+  out="$(_launchagent_skip_case listed)"
+  if [[ "${out}" == $'0\tforeign\tno\tno\tyes' ]]; then
+    _pass "a listed label keeps its plist byte for byte and gets no launchctl call; other agents still install and load"
+  else
+    _fail "listed: expected '0 foreign no no yes', got '${out}'"
+  fi
+
+  for mode in unlisted absent; do
+    out="$(_launchagent_skip_case "${mode}")"
+    if [[ "${out}" == $'0\trepo\tyes\tyes\tyes' ]]; then
+      _pass "${mode} skip file: container-start installs and loads as before"
+    else
+      _fail "${mode}: expected '0 repo yes yes yes', got '${out}'"
+    fi
+  done
+}
