@@ -1,7 +1,7 @@
 #!/bin/zsh
 # dotfiles/tests/statusline
 #
-# Feeds stdin JSON to claude/statusline-command and claude/subagent-statusline.
+# Feeds stdin JSON to claude/statusline-command.
 # One case per contract: the exit-0 contract (Claude Code discards the whole
 # status line on non-zero exit: a trailing `[ -n "$x" ] && printf` with x
 # empty, junk times and counts, a newline inside a field, empty input), the
@@ -11,8 +11,7 @@
 # (a delta, and an empty baseline that must not land as spend), its destructive
 # prune and sweeps, orphan recovery and a concurrent append, the cache-alert
 # marker, message and once-only delivery, the herdr label set and the hung-hc
-# deadline, the GUARDS OFF signal (shown, and hidden by a fresh marker) and
-# subagent row parsing (ids and odd characters, a batch past ARG_MAX).
+# deadline, the GUARDS OFF signal (shown, and hidden by a fresh marker).
 # Colours, tier layouts, labels and per-model tables are not asserted here.
 #
 # Hermetic: HOME is a $TMPDIR sandbox with a fresh FX cache of 1 (curl never
@@ -545,41 +544,12 @@ function _sl_guards {
   zf_rm -f -- "${marker}"
 }
 
-# ── subagent-statusline ────────────────────────────────────────────────────
-function _sl_subagent {
-  local script="${SCRIPT_DIR}/claude/subagent-statusline" out rc payload big
-  payload="$(jq -cn '{columns: 100, tasks: [
-    {id: "a", name: "Explore", status: "running", tokenCount: 199999},
-    {id: "j", name: "Explore", description: "tab\there \"q\" back\\slash é\nnext", tokenCount: "junk"},
-    {id: "k\nk\u001fk", name: "Explore"},
-    {id: 7, name: "Explore"}]}')"
-  rc=0
-  out="$(printf '%s' "${payload}" | /bin/zsh "${script}" 2>/dev/null)" || rc=$?
-  # Ids round-trip byte for byte, including a newline and a unit separator
-  # inside one, and a numeric id comes back as its string. Field transport is
-  # lossless for tabs, quotes, backslashes and non-ASCII; a newline inside a
-  # description is flattened to a space (a status row is one line); a
-  # non-numeric tokenCount drops the segment.
-  _sl_expect_eq "subagent: exit 0, one row per task id, odd characters kept, newline flattened" \
-    "${rc}:$(jq -rs '[.[] | .id | @json] | sort | join(" ")' <<< "${out}" 2>/dev/null)|$(jq -r 'select(.id == "j") | .content' <<< "${out}" 2>/dev/null)" \
-    '0:"7" "a" "j" "k\nk\u001fk"|'$'\e[36m'"Explore${RESET} "$'\e[2m'"·${RESET} "$'\e[2m'"tab"$'\t'"here \"q\" back\\slash é next${RESET}"
-
-  # Rows travel to the serialiser on stdin, so a batch far past ARG_MAX still
-  # renders every row
-  big="$(jq -cn '{columns: 40, tasks: [{id: "x", name: ("x" * 600000)}, {id: "y", name: ("y" * 600000)}]}')"
-  rc=0
-  out="$(printf '%s' "${big}" | /bin/zsh "${script}" 2>/dev/null)" || rc=$?
-  _sl_expect_eq "subagent: two 600 KB rows → exit 0, both ids" \
-    "${rc}:$(jq -rs 'map(.id) | join(" ")' <<< "${out}" 2>/dev/null)" "0:x y"
-}
-
 function run_statusline {
   _section "Claude Code status lines"
 
   # claude/ is gitignored and synced out of band: absent scripts skip
-  if [[ ! -f "${SCRIPT_DIR}/claude/statusline-command" \
-        || ! -f "${SCRIPT_DIR}/claude/subagent-statusline" ]]; then
-    _skip "claude/statusline-command or subagent-statusline absent — claude/ not yet synced to this machine"
+  if [[ ! -f "${SCRIPT_DIR}/claude/statusline-command" ]]; then
+    _skip "claude/statusline-command absent — claude/ not yet synced to this machine"
     return 0
   fi
 
@@ -604,7 +574,6 @@ function run_statusline {
   _sl_cache_alert
   _sl_hc_label
   _sl_guards
-  _sl_subagent
   /bin/rm -rf "${_SL_SB}"
   trap - EXIT
 }

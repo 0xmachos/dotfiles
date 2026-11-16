@@ -537,7 +537,6 @@ function install_dotfiles {
   local -ar claude_files=(
     "claude/settings.json:settings.json"
     "claude/statusline-command:statusline-command"
-    "claude/subagent-statusline:subagent-statusline"
     "claude/global-claude.md:CLAUDE.md"
     "claude/hosts:hosts"
     "claude/output-styles:output-styles"
