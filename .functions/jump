@@ -21,9 +21,16 @@ function jump {
 
 
   ## Per-host off switch ##
-  # Before every update step. See .functions/jump_off.
-  if jump_off; then
-    echo "[❌] jump is off on this host (.extra/jump-off): updates here are a deliberate step"
+  # Before every update step. See .functions/jump_off. Only the printed answer
+  # "no-marker" lets jump continue. An empty or different answer refuses,
+  # because an unknown answer is not a go. The exit status is not used: zsh
+  # returns 1 for an autoload function whose file is missing.
+  # The autoload is here for a shell that started before jump_off existed.
+  autoload -Uz jump_off
+  local off_answer=''
+  off_answer="$(jump_off 2>/dev/null)" || true
+  if [[ "${off_answer}" != 'no-marker' ]]; then
+    echo "[❌] jump is off on this host, or its off switch gave no answer (.extra/jump-off, answer '${off_answer}')"
     return 1
   fi
 

@@ -207,39 +207,72 @@ function _jump_off_cases {
   : > "${fixture}/with/dotfiles/.extra/jump-off"
 
   # shellcheck disable=SC1091,SC2030,SC2034
-  on=$(set +e; source .functions/jump_off; JUMP_OFF_FILE="${fixture}/marker"; jump_off; print -r -- "$?")
+  on=$(set +e; source .functions/jump_off; JUMP_OFF_FILE="${fixture}/marker"; jump_off; print -r -- " $?")
   # shellcheck disable=SC1091,SC2030,SC2034
-  off=$(set +e; source .functions/jump_off; JUMP_OFF_FILE="${fixture}/no-marker"; jump_off; print -r -- "$?")
+  off=$(set +e; source .functions/jump_off; JUMP_OFF_FILE="${fixture}/no-marker"; jump_off; print -r -- " $?")
   # shellcheck disable=SC1091,SC2030,SC2031
-  home_on=$(set +e; source .functions/jump_off; unset JUMP_OFF_FILE; HOME="${fixture}/with"; jump_off; print -r -- "$?")
+  home_on=$(set +e; source .functions/jump_off; unset JUMP_OFF_FILE; HOME="${fixture}/with"; jump_off; print -r -- " $?")
   # shellcheck disable=SC1091,SC2030,SC2031
-  home_off=$(set +e; source .functions/jump_off; unset JUMP_OFF_FILE; HOME="${fixture}/without"; jump_off; print -r -- "$?")
-  if [[ "${on}/${off}/${home_on}/${home_off}" == 0/1/0/1 ]]; then
-    _pass "jump_off: true with the marker and false without it, at the override path and at the default path"
+  home_off=$(set +e; source .functions/jump_off; unset JUMP_OFF_FILE; HOME="${fixture}/without"; jump_off; print -r -- " $?")
+  local got_off="${on//$'\n'/}/${off//$'\n'/}/${home_on//$'\n'/}/${home_off//$'\n'/}"
+  if [[ "${got_off}" == 'marker 0/no-marker 1/marker 0/no-marker 1' ]]; then
+    _pass "jump_off: prints marker and returns 0 with the marker, no-marker and 1 without it, at the override path and at the default path"
   else
-    _fail "jump_off: expected 0/1/0/1 (marker, none, default marker, default none), got ${on}/${off}/${home_on}/${home_off}"
+    _fail "jump_off: expected 'marker 0/no-marker 1/marker 0/no-marker 1', got '${got_off}'"
   fi
   zf_rm -rf "${fixture}"
 
   # `jump` refuses before its first command: the guard line comes before every
-  # line that runs a "${..._BINARY}", and its block returns 1.
+  # line that runs a "${..._BINARY}", and its block returns 1. The guard block
+  # itself (autoload line to fi) then runs alone with a stub jump_off: only
+  # the printed answer no-marker passes. A jump_off that does not exist, or
+  # that prints nothing, refuses whatever its status.
   local -a lines
   # shellcheck disable=SC2296  # zsh (@f) line split
   lines=("${(@f)$(<.functions/jump)}")
   local -r binary_re='"\$\{[A-Z_]+_BINARY\}"'
   local -i i guard=0 first_cmd=0
   for (( i = 1; i <= ${#lines[@]}; i++ )); do
-    if (( guard == 0 )) && [[ "${lines[i]}" == '  if jump_off; then' ]]; then
+    if (( guard == 0 )) && [[ "${lines[i]}" == "  if [[ \"\${off_answer}\" != 'no-marker' ]]; then" ]]; then
       guard=${i}
     fi
     if (( first_cmd == 0 )) && [[ "${lines[i]}" =~ ${binary_re} && "${lines[i]}" != *'local -r'* ]]; then
       first_cmd=${i}
     fi
   done
-  if (( guard > 0 && first_cmd > guard )) && [[ "${lines[guard+2]}" == '    return 1' && "${lines[guard+3]}" == '  fi' ]]; then
+  # shellcheck disable=SC2016  # the pinned lines are literal text of jump
+  if (( guard > 3 && first_cmd > guard )) && [[ "${lines[guard+2]}" == '    return 1' && "${lines[guard+3]}" == '  fi' \
+        && "${lines[guard-3]}" == '  autoload -Uz jump_off' && "${lines[guard-2]}" == "  local off_answer=''" \
+        && "${lines[guard-1]}" == '  off_answer="$(jump_off 2>/dev/null)" || true' ]]; then
     _pass "jump: the off-switch check returns 1 before the first update command"
   else
-    _fail "jump: off-switch check at line ${guard}, first command at line ${first_cmd}, or its block does not return 1"
+    _fail "jump: off-switch check at line ${guard}, first command at line ${first_cmd}, or its block is not the pinned shape"
+    return 0
+  fi
+
+  # shellcheck disable=SC2296  # zsh (F) join
+  local block="${(F)lines[guard-3,guard+3]}"
+  local got='' want='pass refuse refuse refuse refuse refuse' mode
+  for mode in no-marker marker silent-0 silent-1 other missing; do
+    # shellcheck disable=SC2034,SC2329
+    got+="$(
+      set +e
+      fpath=()
+      case "${mode}" in
+        no-marker) jump_off() { print -r -- 'no-marker'; return 1; } ;;
+        marker)    jump_off() { print -r -- 'marker'; return 0; } ;;
+        silent-0)  jump_off() { return 0; } ;;
+        silent-1)  jump_off() { return 1; } ;;
+        other)     jump_off() { print -r -- 'no-marker-maybe'; return 1; } ;;
+      esac
+      _guard() { eval "${block}"; return 0; }
+      if _guard > /dev/null 2>&1; then print -n -- 'pass '; else print -n -- 'refuse '; fi
+    )"
+  done
+  if [[ "${got% }" == "${want}" ]]; then
+    _pass "jump: the guard passes on the answer no-marker alone and refuses on marker, on no answer, on another answer and on a missing jump_off"
+  else
+    _fail "jump: guard gave '${got% }' for no-marker, marker, silent-0, silent-1, other and missing; expected '${want}'"
   fi
 }
 

@@ -5,10 +5,13 @@
 #
 #   jump_off
 #
-# True when this host holds the off marker: the gitignored file
-# .extra/jump-off in the dotfiles clone. The file's content is not read. A
-# host that takes updates only as a deliberate step holds the marker, and
-# `jump` refuses there. JUMP_OFF_FILE overrides the path (tests).
+# Prints `marker` and returns 0 when this host holds the off marker: the
+# gitignored file .extra/jump-off in the dotfiles clone. Prints `no-marker`
+# and returns 1 when it does not. The file's content is not read. A host that
+# takes updates only as a deliberate step holds the marker, and `jump` refuses
+# there. `jump` reads the printed word, not the status, so that a function
+# that did not load is not read as "no marker". JUMP_OFF_FILE overrides the
+# path (tests).
 #
 # A function of its own so that a test calls it without a run of `jump`,
 # whose update steps use fixed binary paths.
@@ -17,5 +20,10 @@
 
 function jump_off {
   emulate -L zsh
-  [[ -e "${JUMP_OFF_FILE:-${HOME}/dotfiles/.extra/jump-off}" ]]
+  if [[ -e "${JUMP_OFF_FILE:-${HOME}/dotfiles/.extra/jump-off}" ]]; then
+    print -r -- 'marker'
+    return 0
+  fi
+  print -r -- 'no-marker'
+  return 1
 }
