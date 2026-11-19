@@ -737,7 +737,9 @@ function install_dotfiles {
 function install_scripts {
   # Symlinks bin/ scripts into /usr/local/bin (creating it). launchd-invoked
   # scripts (jump-system, jump-user, scratch-sweep, rex-watch, rex-remote-bridge, tailscale-watch) are COPIED, not symlinked:
-  # see the comment at each.
+  # see the comment at each. jump-system and jump-user are not copied when the
+  # per-host skip file lists their job label (_launchagent_skipped). A copy
+  # that is already there is left alone.
 
   local -ar bin_files=(dns mdview npm-audit-check claude-session-audit git-sign-unpushed bao-mcp-env mcp-proxy-env papercut spawnprof)
   local -ar macos_script_bin_files=(c0design)
@@ -798,26 +800,34 @@ function install_scripts {
 
   # Copy jump-system as root-owned: the LaunchDaemon executes it, so it must not
   # be user-writable (a symlink would be a local privilege escalation).
-  sudo rm -f "/usr/local/bin/jump-system"
-  if sudo cp "${SCRIPT_DIR}/bin/jump-system" "/usr/local/bin/jump-system"; then
-    sudo chown root:wheel "/usr/local/bin/jump-system"
-    sudo chmod 700 "/usr/local/bin/jump-system"
-    echo "[✅] Successfully installed jump-system to /usr/local/bin/jump-system (root:wheel 700)"
+  if _launchagent_skipped "com.0xmachos.jump-system"; then
+    echo "[ℹ️ ] Skipped jump-system: its job label is in the per-host skip file"
   else
-    echo "[❌] Failed to install jump-system to /usr/local/bin/jump-system"
+    sudo rm -f "/usr/local/bin/jump-system"
+    if sudo cp "${SCRIPT_DIR}/bin/jump-system" "/usr/local/bin/jump-system"; then
+      sudo chown root:wheel "/usr/local/bin/jump-system"
+      sudo chmod 700 "/usr/local/bin/jump-system"
+      echo "[✅] Successfully installed jump-system to /usr/local/bin/jump-system (root:wheel 700)"
+    else
+      echo "[❌] Failed to install jump-system to /usr/local/bin/jump-system"
+    fi
   fi
 
   # Copy jump-user rather than symlink: launchd cannot exec a program under
   # ~/Documents/ after a TCC grant reset (macOS 27) and fails with exit 127
   # before the script's first log line. Confirmed 2026-07-28 by controlled
   # probe. root:wheel 755 — the user's agent executes it, cannot modify it.
-  sudo rm -f "/usr/local/bin/jump-user"
-  if sudo cp "${SCRIPT_DIR}/bin/jump-user" "/usr/local/bin/jump-user"; then
-    sudo chown root:wheel "/usr/local/bin/jump-user"
-    sudo chmod 755 "/usr/local/bin/jump-user"
-    echo "[✅] Successfully installed jump-user to /usr/local/bin/jump-user (root:wheel 755)"
+  if _launchagent_skipped "com.0xmachos.jump-user"; then
+    echo "[ℹ️ ] Skipped jump-user: its job label is in the per-host skip file"
   else
-    echo "[❌] Failed to install jump-user to /usr/local/bin/jump-user"
+    sudo rm -f "/usr/local/bin/jump-user"
+    if sudo cp "${SCRIPT_DIR}/bin/jump-user" "/usr/local/bin/jump-user"; then
+      sudo chown root:wheel "/usr/local/bin/jump-user"
+      sudo chmod 755 "/usr/local/bin/jump-user"
+      echo "[✅] Successfully installed jump-user to /usr/local/bin/jump-user (root:wheel 755)"
+    else
+      echo "[❌] Failed to install jump-user to /usr/local/bin/jump-user"
+    fi
   fi
 
   # Copy scratch-sweep rather than symlink, as for jump-user: its LaunchAgent
@@ -1656,7 +1666,8 @@ function _launchagent_skipped {
   # another repo installs an agent with the same label lists that label there,
   # so install_launchagents does not overwrite it and load_launchagents does not
   # load it into gui/<uid>. A host that must not run a job lists its label too:
-  # the daemon com.0xmachos.jump-system obeys the file like an agent.
+  # the daemon com.0xmachos.jump-system obeys the file like an agent, and
+  # install_scripts does not copy the program of a listed jump job.
   # LAUNCHAGENT_SKIP_FILE overrides the path.
   local -r skip_file="${LAUNCHAGENT_SKIP_FILE:-${SCRIPT_DIR}/.extra_launchagent_skip}"
   local line

@@ -9,6 +9,9 @@
 # The sudo stub records its arguments and runs nothing, so the suite sees the
 # daemon steps: a listed daemon label gets no sudo call that names it.
 # The real ~/Library/LaunchAgents and launchd are never touched.
+# install_scripts runs with the same recording sudo stub: every write in it
+# goes through sudo, so nothing reaches /usr/local/bin. A listed jump label
+# gets no sudo call that names its program.
 #
 # BITTERSWEET_UNDER_TEST points the suite at another copy of bittersweet (used
 # to prove the suite goes red when the skip check is broken).
@@ -49,6 +52,7 @@ function _launchagent_skip_case {
       daemon) print -l -- '# this host must not run it' 'com.0xmachos.jump-system' > "${skip}" ;;
       unlisted) print -l -- '# nothing real' 'com.0xmachos.not-an-agent' > "${skip}" ;;
     esac
+    # shellcheck disable=SC2030,SC2031  # each case sets it in its own subshell
     export LAUNCHAGENT_SKIP_FILE="${skip}"
     # shellcheck disable=SC1090,SC1091
     source <(/usr/bin/awk '
@@ -87,8 +91,76 @@ function _launchagent_skip_case {
   )
 }
 
+# _launchagent_skip_scripts_case MODE
+#   MODE: both (the skip file names both jump labels), user (jump-user only),
+#   absent (no skip file).
+#   Prints four tab-separated fields: rc; jump-user copied (yes = rm and cp
+#   asked of sudo, no = no sudo call names the program, part); jump-system
+#   likewise; scratch-sweep copied (yes/no).
+function _launchagent_skip_scripts_case {
+  local mode="$1"
+  (
+    local fixture
+    fixture="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/la-skip-scripts.XXXXXX")" || return 1
+    trap '/bin/rm -rf -- "${fixture}"' EXIT
+    local skip="${fixture}/skip" sudo_calls="${fixture}/sudo-calls"
+    : > "${sudo_calls}"
+    case "${mode}" in
+      both) print -l -- 'com.0xmachos.jump-user' 'com.0xmachos.jump-system' > "${skip}" ;;
+      user) print -l -- 'com.0xmachos.jump-user' > "${skip}" ;;
+    esac
+    # shellcheck disable=SC2030,SC2031  # each case sets it in its own subshell
+    export LAUNCHAGENT_SKIP_FILE="${skip}"
+    # shellcheck disable=SC1090,SC1091
+    source <(/usr/bin/awk '
+      /^function / || /^typeset -ra LAUNCHAGENT_PLISTS=\(/ { block = 1 }
+      block { print }
+      /^}$/ || /^\)$/ { block = 0 }
+    ' "${BITTERSWEET_UNDER_TEST:-${SCRIPT_DIR}/bittersweet}")
+    get_sudo() { :; }
+    _bin_target_is_foreign() { return 1; }
+    _retire_bao_mcp_link() { :; }
+    sudo() { print -r -- "$*" >> "${sudo_calls}"; return 0; }
+    local rc=0
+    install_scripts > /dev/null 2>&1 || rc=$?
+    local name state
+    local -a states=()
+    for name in jump-user jump-system scratch-sweep; do
+      state=part
+      if ! /usr/bin/grep -q "/usr/local/bin/${name}\$" "${sudo_calls}"; then
+        state=no
+      elif /usr/bin/grep -q "^rm -f /usr/local/bin/${name}\$" "${sudo_calls}" \
+           && /usr/bin/grep -q "^cp .*/bin/${name} /usr/local/bin/${name}\$" "${sudo_calls}"; then
+        state=yes
+      fi
+      states+=("${state}")
+    done
+    printf '%s\t%s\t%s\t%s\n' "${rc}" "${states[1]}" "${states[2]}" "${states[3]}"
+  )
+}
+
 function run_launchagent_skip {
   _section "bittersweet launchagents: per-host skip file"
+
+  local scripts_out
+  scripts_out="$(_launchagent_skip_scripts_case both)"
+  if [[ "${scripts_out}" == $'0\tno\tno\tyes' ]]; then
+    _pass "install_scripts: both jump labels listed, no sudo call names either program; other programs still install"
+  else
+    _fail "install_scripts both: expected '0 no no yes', got '${scripts_out}'"
+  fi
+  scripts_out="$(_launchagent_skip_scripts_case user)"
+  if [[ "${scripts_out}" == $'0\tno\tyes\tyes' ]]; then
+    _pass "install_scripts: only the listed jump program is skipped"
+  else
+    _fail "install_scripts user: expected '0 no yes yes', got '${scripts_out}'"
+  fi
+  scripts_out="$(_launchagent_skip_scripts_case absent)"
+  if [[ "${scripts_out}" == $'0\tyes\tyes\tyes' ]]; then
+    _pass "install_scripts: with no skip file both jump programs install as before"
+  else
+    _fail "install_scripts absent: expected '0 yes yes yes', got '${scripts_out}'"
+  fi
 
   local out mode
   out="$(_launchagent_skip_case listed)"
