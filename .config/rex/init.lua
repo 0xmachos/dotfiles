@@ -2,9 +2,10 @@
 -- `rex config reload`.
 --
 -- Cmd+W asks before it closes a pane whose program still runs (an agent, an
--- editor, a build). Rex has no close confirmation or undo of its own yet
--- (accepted feature request, 2026-10-27). Remove this when Rex ships one.
--- Limits: the tab close button and the menu items still close at once.
+-- editor, a build). Rex asks by itself only for a program that reports a
+-- status (working, blocked, unread or just finished), so a build or an editor
+-- still closes at once. Remove this when Rex asks for any running program.
+-- Limits: the tab close button and the menu items use only the Rex prompt.
 
 local login_shells = { bash = true, fish = true, sh = true, zsh = true }
 
@@ -41,7 +42,25 @@ function run(argv) {
 }
 ]]
 
+-- Asks in the command palette when the server has rex.ui.pick (Rex for Mac
+-- preview.32 with server preview.21). Cancel is the first row, so Return
+-- keeps the pane. Escape and no answer in 20 s also keep the pane. When no
+-- app can show the question (an older server or app, or a busy palette), the
+-- osascript alert asks.
 local function confirmed(program)
+  if rex.ui and rex.ui.pick then
+    local choice, why = rex.ui.pick{
+      title = program .. " is still running. Close this pane?",
+      placeholder = "Closing the pane ends " .. program,
+      timeout = 20,
+      items = {
+        { id = "cancel", title = "Cancel", subtitle = "Keep the pane" },
+        { id = "close", title = "Close Pane", subtitle = "End " .. program },
+      },
+    }
+    if choice ~= nil then return choice == "close" end
+    if why == "cancelled" or why == "timeout" then return false end
+  end
   local r = rex.exec({ "/usr/bin/osascript", "-l", "JavaScript", "-e", confirm_script, program }, { timeout = 25 })
   return r ~= nil and r.ok and r.stdout:match("^close") ~= nil
 end
