@@ -6,6 +6,8 @@
 # fixture HOME with stub launchctl, sudo and get_sudo; sed, plutil, mv, chmod
 # and xattr are real. A listed label must keep its existing plist byte for byte
 # and get no launchctl call. An unlisted label installs and loads as before.
+# The sudo stub records its arguments and runs nothing, so the suite sees the
+# daemon steps: a listed daemon label gets no sudo call that names it.
 # The real ~/Library/LaunchAgents and launchd are never touched.
 #
 # BITTERSWEET_UNDER_TEST points the suite at another copy of bittersweet (used
@@ -18,13 +20,16 @@
 # shellcheck disable=SC2329  # stubs called by sourced code
 
 # _launchagent_skip_case MODE
-#   MODE: listed (the skip file names container-start), unlisted (the skip
-#   file names no real agent), absent (no skip file at the given path).
+#   MODE: listed (the skip file names container-start), daemon (the skip file
+#   names the jump-system daemon), unlisted (the skip file names no real
+#   agent), absent (no skip file at the given path).
 #   The fixture starts with a foreign container-start plist.
-#   Prints five tab-separated fields: rc; the container-start plist (foreign =
+#   Prints six tab-separated fields: rc; the container-start plist (foreign =
 #   unchanged, repo = replaced, missing); any launchctl call naming
 #   container-start (yes/no); a bootstrap of container-start (yes/no);
-#   scratch-sweep installed and bootstrapped (yes/no).
+#   scratch-sweep installed and bootstrapped (yes/no); the jump-system daemon
+#   (yes = plist copy and bootstrap both asked of sudo, no = no sudo call
+#   names it, part = any other mix).
 function _launchagent_skip_case {
   local mode="$1"
   (
@@ -34,11 +39,14 @@ function _launchagent_skip_case {
     export HOME="${fixture}/home"
     local agents="${HOME}/Library/LaunchAgents"
     local calls="${fixture}/launchctl-calls" skip="${fixture}/skip"
+    local sudo_calls="${fixture}/sudo-calls"
     /bin/mkdir -p "${agents}"
     : > "${calls}"
+    : > "${sudo_calls}"
     print -r -- 'foreign plist bytes' > "${agents}/com.0xmachos.container-start.plist"
     case "${mode}" in
       listed) print -l -- '# owned by another repo on this host' 'com.0xmachos.container-start' > "${skip}" ;;
+      daemon) print -l -- '# this host must not run it' 'com.0xmachos.jump-system' > "${skip}" ;;
       unlisted) print -l -- '# nothing real' 'com.0xmachos.not-an-agent' > "${skip}" ;;
     esac
     export LAUNCHAGENT_SKIP_FILE="${skip}"
@@ -49,7 +57,7 @@ function _launchagent_skip_case {
       /^}$/ || /^\)$/ { block = 0 }
     ' "${BITTERSWEET_UNDER_TEST:-${SCRIPT_DIR}/bittersweet}")
     get_sudo() { :; }
-    sudo() { return 0; }
+    sudo() { print -r -- "$*" >> "${sudo_calls}"; return 0; }
     launchctl() {
       print -r -- "$*" >> "${calls}"
       [[ "$1" == print ]] && print -r -- $'\tIIOEnableOOP => 1'
@@ -68,7 +76,14 @@ function _launchagent_skip_case {
        && /usr/bin/grep -q '^bootstrap .*com\.0xmachos\.scratch-sweep\.plist$' "${calls}"; then
       ss=yes
     fi
-    printf '%s\t%s\t%s\t%s\t%s\n' "${rc}" "${cs}" "${cs_any}" "${cs_boot}" "${ss}"
+    local daemon=part
+    if ! /usr/bin/grep -q 'jump-system' "${sudo_calls}"; then
+      daemon=no
+    elif /usr/bin/grep -q '^cp .*/LaunchDaemons/com\.0xmachos\.jump-system\.plist /Library/LaunchDaemons/com\.0xmachos\.jump-system\.plist$' "${sudo_calls}" \
+         && /usr/bin/grep -q '^launchctl bootstrap system /Library/LaunchDaemons/com\.0xmachos\.jump-system\.plist$' "${sudo_calls}"; then
+      daemon=yes
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${rc}" "${cs}" "${cs_any}" "${cs_boot}" "${ss}" "${daemon}"
   )
 }
 
@@ -77,18 +92,25 @@ function run_launchagent_skip {
 
   local out mode
   out="$(_launchagent_skip_case listed)"
-  if [[ "${out}" == $'0\tforeign\tno\tno\tyes' ]]; then
-    _pass "a listed label keeps its plist byte for byte and gets no launchctl call; other agents still install and load"
+  if [[ "${out}" == $'0\tforeign\tno\tno\tyes\tyes' ]]; then
+    _pass "a listed label keeps its plist byte for byte and gets no launchctl call; other agents and the daemon still install and load"
   else
-    _fail "listed: expected '0 foreign no no yes', got '${out}'"
+    _fail "listed: expected '0 foreign no no yes yes', got '${out}'"
+  fi
+
+  out="$(_launchagent_skip_case daemon)"
+  if [[ "${out}" == $'0\trepo\tyes\tyes\tyes\tno' ]]; then
+    _pass "a listed daemon label gets no sudo call that names it; the agents still install and load"
+  else
+    _fail "daemon: expected '0 repo yes yes yes no', got '${out}'"
   fi
 
   for mode in unlisted absent; do
     out="$(_launchagent_skip_case "${mode}")"
-    if [[ "${out}" == $'0\trepo\tyes\tyes\tyes' ]]; then
-      _pass "${mode} skip file: container-start installs and loads as before"
+    if [[ "${out}" == $'0\trepo\tyes\tyes\tyes\tyes' ]]; then
+      _pass "${mode} skip file: container-start and the daemon install and load as before"
     else
-      _fail "${mode}: expected '0 repo yes yes yes', got '${out}'"
+      _fail "${mode}: expected '0 repo yes yes yes yes', got '${out}'"
     fi
   done
 }

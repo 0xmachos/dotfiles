@@ -1655,7 +1655,9 @@ function _launchagent_skipped {
   # .extra_launchagent_skip, gitignored, # comments allowed). A host where
   # another repo installs an agent with the same label lists that label there,
   # so install_launchagents does not overwrite it and load_launchagents does not
-  # load it into gui/<uid>. LAUNCHAGENT_SKIP_FILE overrides the path.
+  # load it into gui/<uid>. A host that must not run a job lists its label too:
+  # the daemon com.0xmachos.jump-system obeys the file like an agent.
+  # LAUNCHAGENT_SKIP_FILE overrides the path.
   local -r skip_file="${LAUNCHAGENT_SKIP_FILE:-${SCRIPT_DIR}/.extra_launchagent_skip}"
   local line
   [[ -f "${skip_file}" ]] || return 1
@@ -1670,7 +1672,7 @@ function _launchagent_skipped {
 function install_launchagents {
   # Copies agent plists to ~/Library/LaunchAgents/ and the daemon plist to
   # /Library/LaunchDaemons/ (root:wheel 644). A label listed in the per-host
-  # skip file (_launchagent_skipped) is left alone.
+  # skip file (_launchagent_skipped) is left alone, agent or daemon.
   #
   # Copied, not symlinked: since macOS Sonoma 14.0 launchd's login scan of
   # ~/Library/LaunchAgents/ does not follow symlinks, so a symlinked plist is
@@ -1716,6 +1718,12 @@ function install_launchagents {
     echo "[❌] Failed to create ~/Library/LaunchAgents/"
   fi
 
+  # The daemon obeys the same skip file as the agents.
+  if _launchagent_skipped "com.0xmachos.jump-system"; then
+    echo "[ℹ️ ] Skipped com.0xmachos.jump-system.plist: listed in the per-host skip file"
+    return 0
+  fi
+
   get_sudo "to install LaunchDaemon"
 
   if sudo cp "${SCRIPT_DIR}/LaunchDaemons/com.0xmachos.jump-system.plist" "/Library/LaunchDaemons/com.0xmachos.jump-system.plist"; then
@@ -1753,6 +1761,11 @@ function load_launchagents {
   gui_env="$(launchctl print "gui/${uid}" 2>/dev/null)" || gui_env=""
   if ! grep -Eq '^[[:space:]]+IIOEnableOOP => 1$' <<< "${gui_env}"; then
     echo "[❌] com.0xmachos.imageio-oop loaded but IIOEnableOOP not set in launchd"
+  fi
+
+  if _launchagent_skipped "com.0xmachos.jump-system"; then
+    echo "[ℹ️ ] Skipped com.0xmachos.jump-system: listed in the per-host skip file"
+    return 0
   fi
 
   get_sudo "to load LaunchDaemon"

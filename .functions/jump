@@ -20,6 +20,14 @@ function jump {
   local rc=0
 
 
+  ## Per-host off switch ##
+  # Before every update step. See .functions/jump_off.
+  if jump_off; then
+    echo "[❌] jump is off on this host (.extra/jump-off): updates here are a deliberate step"
+    return 1
+  fi
+
+
   ## macOS ##
   if ! [[ -x "${SWUPDATE_BINARY}" ]]; then
     echo "Cannot execute /usr/sbin/softwareupdate"

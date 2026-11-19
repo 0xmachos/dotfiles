@@ -1,0 +1,21 @@
+#!/usr/bin/env zsh
+# dotfiles/.functions/jump_off
+#
+# Used by `jump` (autoloaded) before its first update step.
+#
+#   jump_off
+#
+# True when this host holds the off marker: the gitignored file
+# .extra/jump-off in the dotfiles clone. The file's content is not read. A
+# host that takes updates only as a deliberate step holds the marker, and
+# `jump` refuses there. JUMP_OFF_FILE overrides the path (tests).
+#
+# A function of its own so that a test calls it without a run of `jump`,
+# whose update steps use fixed binary paths.
+#
+# ShellCheck: lint with `shellcheck --shell=bash .functions/jump_off`.
+
+function jump_off {
+  emulate -L zsh
+  [[ -e "${JUMP_OFF_FILE:-${HOME}/dotfiles/.extra/jump-off}" ]]
+}
