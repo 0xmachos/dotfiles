@@ -5,7 +5,10 @@
 # denies pip install, python -m pip/venv, virtualenv, conda, mamba, pyenv and
 # the literal /usr/bin/python3, and points at uv). One input per case. Covers:
 # DENY for pip install (with the deny reason that names uv and offers no
-# bypass), python -m venv, conda and the CLT interpreter by literal path; DENY
+# bypass), python -m venv, conda and the CLT interpreter by literal path; the
+# exact text of the two deny reasons (the tool text for pip, conda and the CLT
+# python with -m pip, the CLT text for every other CLT python run, also through
+# the process path); DENY
 # for the quoted command word and a shell -c string (bypass spellings); no
 # override (an exported UV_GUARD_SKIP exempts nothing, process path); PASS for
 # a command under `uv run` and for the one sanctioned CLT use, bin/agent-reset
@@ -29,6 +32,17 @@ function _uv_guard_expect {
   fi
 }
 
+# Seam run that pins the deny reason: $1 = the exact reason, $2 = command.
+function _uv_guard_expect_reason {
+  local want="$1" cmd="$2" label="${3:-$2}"
+  _hook_run_seam "${SCRIPT_DIR}/claude/hooks/uv-guard-hook" Bash "${cmd}"
+  if [[ "${HOOK_SEAM_VERDICT}" == DENY && "${HOOK_SEAM_REASON}" == "${want}" ]]; then
+    _pass "DENY with the exact reason: ${label}"
+  else
+    _fail "${label} - expected DENY with '${want}', got ${HOOK_SEAM_VERDICT} (${HOOK_SEAM_OUT:0:200})"
+  fi
+}
+
 function run_uv_guard {
   _section "uv guard hook (pip, venv, conda, CLT python)"
 
@@ -43,21 +57,56 @@ function run_uv_guard {
   fi
 
   local out
+  # The two deny reasons, pinned whole. Each is one line of at most 120
+  # characters with no JSON-special character.
+  local tool_reason='pip, venv, conda and pyenv blocked: use uv add, uv sync or uv run. A relaxed resolve needs a uv.toml the user approves.'
+  local clt_reason='/usr/bin/python3 blocked: use uv run --no-project python -I with the same arguments, or uv run in a project.'
 
   # 1. pip install denies, and the reason names uv and offers no bypass.
   _hook_run_seam "${SCRIPT_DIR}/claude/hooks/uv-guard-hook" Bash 'pip install requests'
-  if [[ "${HOOK_SEAM_VERDICT}" == DENY && "${HOOK_SEAM_REASON}" == *"uv sync, uv run, uv add"* \
-     && "${HOOK_SEAM_REASON}" == *"per-project uv.toml"* && "${HOOK_SEAM_REASON}" == *"the user approves"* \
+  if [[ "${HOOK_SEAM_VERDICT}" == DENY && "${HOOK_SEAM_REASON}" == "${tool_reason}" \
+     && ${#HOOK_SEAM_REASON} -le 120 \
      && "${HOOK_SEAM_REASON}" != *SKIP* && "${HOOK_SEAM_REASON}" != *bypass* && "${HOOK_SEAM_REASON}" != *override* ]]; then
-    _pass "DENY: pip install, reason names uv sync, uv run, uv add and the uv.toml route, no bypass"
+    _pass "DENY: pip install, the exact tool reason (uv add, uv sync, uv run, the uv.toml route), no bypass"
   else
     _fail "pip install: ${HOOK_SEAM_VERDICT} ${HOOK_SEAM_OUT:0:200}"
   fi
 
   # 2 to 4. Other tools denied: python -m venv, conda, the CLT interpreter.
+  # conda takes the tool reason. The CLT interpreter takes its own reason,
+  # which names the one-off form.
   _uv_guard_expect DENY 'python3 -m venv .venv'
-  _uv_guard_expect DENY 'conda install numpy'
-  _uv_guard_expect DENY '/usr/bin/python3 script.py' 'CLT interpreter by literal path'
+  _uv_guard_expect_reason "${tool_reason}" 'conda install numpy'
+  _hook_run_seam "${SCRIPT_DIR}/claude/hooks/uv-guard-hook" Bash '/usr/bin/python3 script.py'
+  if [[ "${HOOK_SEAM_VERDICT}" == DENY && "${HOOK_SEAM_REASON}" == "${clt_reason}" \
+     && ${#HOOK_SEAM_REASON} -le 120 \
+     && "${HOOK_SEAM_REASON}" != *SKIP* && "${HOOK_SEAM_REASON}" != *bypass* && "${HOOK_SEAM_REASON}" != *override* ]]; then
+    _pass "DENY: CLT interpreter by literal path, the exact CLT reason (uv run --no-project python -I), no bypass"
+  else
+    _fail "CLT interpreter by literal path: ${HOOK_SEAM_VERDICT} ${HOOK_SEAM_OUT:0:200}"
+  fi
+
+  # The reason follows the denied command, not the interpreter path: a JSON
+  # parser in a pipe and a stdlib module take the CLT reason, and the CLT
+  # interpreter that runs pip takes the tool reason.
+  _uv_guard_expect_reason "${clt_reason}" \
+    "brew info --json=v2 jq | /usr/bin/python3 -c 'import json,sys; print(len(json.load(sys.stdin)))'" \
+    'CLT interpreter -c in a pipe'
+  _uv_guard_expect_reason "${clt_reason}" '/usr/bin/python3 -m json.tool f.json' 'CLT interpreter -m stdlib module'
+  _uv_guard_expect_reason "${tool_reason}" '/usr/bin/python3 -m pip install x' 'CLT interpreter -m pip'
+  # A tool segment after a passed CLT segment keeps the tool reason.
+  _uv_guard_expect_reason "${tool_reason}" '/usr/bin/python3 bin/agent-reset self-test; mamba install x' \
+    'tool after the sanctioned CLT use'
+
+  # The CLT reason through the process path: the JSON verdict stays valid.
+  out="$(jq -n --arg c '/usr/bin/python3 - <<EOF' '{tool_name:"Bash", tool_input:{command:$c}}' \
+    | /bin/zsh "${SCRIPT_DIR}/claude/hooks/uv-guard-hook")"
+  if [[ "$(_hook_verdict "${out}")" == DENY \
+     && "$(jq -r '.hookSpecificOutput.permissionDecisionReason' <<< "${out}")" == "${clt_reason}" ]]; then
+    _pass "DENY with the exact reason: CLT interpreter on stdin (process path)"
+  else
+    _fail "CLT interpreter on stdin (process path): ${out:0:200}"
+  fi
 
   # 5 and 6. Bypass spellings: a quoted command word, a shell -c string.
   _uv_guard_expect DENY '"pip" install x' 'quoted command word'
