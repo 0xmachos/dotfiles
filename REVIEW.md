@@ -27,11 +27,13 @@ Each item is an invariant. A change that breaks one is a finding.
   installer path, a genuinely Linux target, and the 1Password wrapper scripts in
   `~/.local/bin` (that directory precedes Homebrew on `PATH`, so they shadow the
   real binaries). Flag scratch data in `/tmp` or `/var/folders`.
-- **The three copy exceptions in deployment.** Deployment is symlink-by-default.
+- **The copy exceptions in deployment.** Deployment is symlink-by-default.
   Flag a change that turns any of these back into a symlink: launchd plists (the
   login scan skips symlinks); `jump-system` and `jump-user` (root must not
   execute through a user-writable path; a Documents-folder permission limit);
-  `.config/1Password/ssh/agent.toml` (the app does not follow symlinks). Flag a
+  the launchd-invoked `scratch-sweep`, `rex-watch`, `rex-remote-bridge` and
+  `tailscale-watch`; `.config/1Password/ssh/agent.toml` (the app does not follow
+  symlinks). Flag a
   new `bin/` tool, plist or top-level file that nothing deploys: `tests/linkage`
   expects an owner for each.
 - **Git hooks stay pipeline-free.** Flag a pipeline in a hook (scan targets go
