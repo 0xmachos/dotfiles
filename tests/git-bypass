@@ -91,6 +91,16 @@ function run_git_bypass {
     'a pseudo-terminal around git is blocked: give the user the exact command to run.'
   _hbg_one DENY 'git log origin/main..HEAD && git push' 'git log and git push in one command' \
     'git log and git push in one command: run the log alone, read it, then push.'
+  _hbg_one DENY 'git push origin main && git log -1 --oneline' 'git push then git log in one command' \
+    'git push and git log in one command: run the push alone, then the log alone.'
+  _hbg_one DENY 'git log -1; git push; git log -1' 'a log on each side of the push keeps the log-first reason' \
+    'git log and git push in one command: run the log alone, read it, then push.'
+  _hbg_one DENY "sh -c 'git log origin/main..main' && git push" 'a nested log before a top-level push keeps the log-first reason' \
+    'git log and git push in one command: run the log alone, read it, then push.'
+  _hbg_one DENY "sh -c 'git log origin/main..main' && git push && git log -1" 'a nested log before a top-level push and log keeps the log-first reason' \
+    'git log and git push in one command: run the log alone, read it, then push.'
+  _hbg_one DENY "sh -c 'git push && git log -1'" 'git push then git log inside one sh -c string' \
+    'git push and git log in one command: run the push alone, then the log alone.'
 
   # Where a bypass is found.
   _hbg_one DENY 'git push origin main --no-verify' '--no-verify on another subcommand'
