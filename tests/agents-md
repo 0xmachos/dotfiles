@@ -361,7 +361,7 @@ function _agents_check_deploy_parity {
 }
 
 # Skills Codex shares through ~/.agents/skills copies.
-typeset -a _AGENTS_SHARED_SKILLS=(git-history-repair zsh-style macos-security-footguns bao-admin swift-conventions rust-conventions npm-conventions python-conventions objc-conventions ci-conventions)
+typeset -a _AGENTS_SHARED_SKILLS=(git-history-repair zsh-style ste100 papercuts macos-builtins macos-security-footguns bao-admin swift-conventions rust-conventions npm-conventions python-conventions objc-conventions ci-conventions)
 
 # $1 home dir. ~/.claude/CLAUDE.md must link to claude/global-claude.md;
 # ~/.codex/AGENTS.md and ~/.config/muse/AGENTS.md to claude/global-agents.md.
