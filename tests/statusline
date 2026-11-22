@@ -11,8 +11,9 @@
 # (a delta, and an empty baseline that must not land as spend), its destructive
 # prune and sweeps, orphan recovery and a concurrent append, the cache-alert
 # marker, message and once-only delivery, the herdr label set and the hung-hc
-# deadline, the GUARDS OFF signal (shown, and hidden by a fresh marker).
-# Colours, tier layouts, labels and per-model tables are not asserted here.
+# deadline, the GUARDS OFF signal (shown, and hidden by a fresh marker), and the
+# Fable 5.2 expired-cache price row and default effort.
+# Colours, tier layouts, labels and the other per-model tables are not asserted here.
 #
 # Hermetic: HOME is a $TMPDIR sandbox with a fresh FX cache of 1 (curl never
 # fires, £ equals USD) and a settings.json with autoCompactWindow.
@@ -336,11 +337,6 @@ function _sl_ledger_prune {
   local f got
   _sl_usage_reset
   zf_mkdir -p -- "${u}"
-  # The daily sweep in the prune also removes cache-state hand-offs: a warm
-  # session rewrites its own every render, so an old one is a dead session's
-  printf '1 2 x\n' > "${c}/cache-state-stale"
-  printf '1 2 x\n' > "${c}/cache-state-fresh"
-  _sl_touch_old "${c}/cache-state-stale" 90000
   : > "${c}/git-stale"
   _sl_touch_old "${c}/git-stale" 90000
   # Lines 7h, 21601 s, 21599 s and 5h old; a 5h sample over a minute old, so
@@ -365,18 +361,17 @@ function _sl_ledger_prune {
   _sl_touch_old "${c}/hc-cache-fresh" 169200
   _sl_touch_old "${c}/guards-stale" 90000
   _sl_touch_old "${c}/guards-fresh" 82800
-  _sl_touch_old "${c}/cache-state-fresh" 82800
   _sl_run 140 "$(_sl_json '.session_id = "pr" | .cost.total_cost_usd = 2
     | .rate_limits.five_hour.used_percentage = 30')"
   got=""
   for f in last-stale last-fresh; do _sl_kg "${u}/${f}"; got+="${REPLY}"; done
-  for f in cache-state-stale cache-state-fresh guards-stale guards-fresh git-stale hc-cache-stale hc-cache-fresh; do
+  for f in guards-stale guards-fresh git-stale hc-cache-stale hc-cache-fresh; do
     _sl_kg "${c}/${f}"; got+="${REPLY}"
   done
-  _sl_expect_eq "prune and sweeps: spend and 5h samples cut at 6h, old baselines, hand-offs and caches removed, newer kept" \
+  _sl_expect_eq "prune and sweeps: spend and 5h samples cut at 6h, old baselines and caches removed, newer kept" \
     "$(<"${u}/spend")|$(<"${u}/five")|${got}" \
-    "$(( _SL_NOW - 21599 )) 2.0"$'\n'"$(( _SL_NOW - 18000 )) 1.0"$'\n'"${_SL_NOW} 1.000000|$(( _SL_NOW - 18000 )) 20"$'\n'"${_SL_NOW} 30|gkgkgkggk"
-  zf_rm -f -- "${c}/hc-cache-fresh" "${c}/cache-state-fresh" "${c}/guards-fresh"
+    "$(( _SL_NOW - 21599 )) 2.0"$'\n'"$(( _SL_NOW - 18000 )) 1.0"$'\n'"${_SL_NOW} 1.000000|$(( _SL_NOW - 18000 )) 20"$'\n'"${_SL_NOW} 30|gkgkggk"
+  zf_rm -f -- "${c}/hc-cache-fresh" "${c}/guards-fresh"
   # An append during the prune survives. Deterministic: the hook appends
   # between the prune's rename and its rewrite.
   _sl_usage_reset
@@ -425,7 +420,7 @@ function _sl_ledger_orphans {
   _sl_usage_reset
 }
 
-# ── cache alert: marker claim, notification, hand-off, sweep ───────────────
+# ── cache alert: marker claim, notification, sweep ─────────────────────────
 function _sl_alert_payload {
   # <session_id or null> <warm> <seconds left> <recache tokens>
   _sl_json ".session_id = $1 | .prompt_cache = {warm: $2, caching_observed: true,
@@ -455,15 +450,39 @@ function _sl_cache_alert {
   got="${gone}${REPLY}"
   [[ -d "${marker}" ]] && got+=" marker"
   [[ "$(<"${log}")" == *". · Opus — cache goes cold in 4m (160K tokens to re-cache)"* ]] && got+=" message"
-  _sl_expect_eq "cache_alert: claims its marker, posts the message, hands off the state, sweeps 25 h old markers" \
-    "${got}|$(<"${c}/cache-state-s1")" \
-    "gk marker message|$(( _SL_NOW + 240 )) 160000 . · Opus"
+  _sl_expect_eq "cache_alert: claims its marker, posts the message, sweeps 25 h old markers" \
+    "${got}" "gk marker message"
 
   _sl_run 140 "$(_sl_alert_payload '"s1"' true 240 160000)"
   zselect -t 50 || :
   _sl_expect_eq "cache_alert fires once per session+expires_at" \
     "$(print -r -- "$(<"${log}")" | /usr/bin/grep -c 'cache goes cold')" "1"
   _sl_rm_glob "${c}/cache-alert-*"
+}
+
+# ── Fable 5.2: expired-cache price row and default effort ──────────────────
+# Fable 5.2 is $8 per 1M input tokens (5.1 was $10): 500K tokens at the 1h
+# premium of 2 is 8 × 0.5 × 2 = $8.00, and the sandbox FX rate of 1 keeps £
+# equal to USD. An unlisted model shows tokens only, with no £ figure. Fable
+# 5.2 defaults to medium effort: that badge is dim with no arrow, high gets ↑.
+function _sl_fable52 {
+  local fmodel='.model = {id: "claude-fable-5-2[1m]", display_name: "Fable 5.2 (1M context)"}'
+  local cold='.prompt_cache = {warm: false, caching_observed: true, ttl: "1h",
+    recache_tokens_if_cold: 500000}'
+  local dim=$'\e[2m' row
+  _sl_run 140 "$(_sl_json "${fmodel} | .session_id = \"f52\" | ${cold}")"
+  row="$(_sl_plain "${_SL_OUT}")"
+  _sl_expect_has "fable 5.2 price row: 500K tokens at 8 USD per 1M, 1h premium, is £8.00" \
+    "${row}" "500K tokens to Fable is £8.00"
+  _sl_run 140 "$(_sl_json "${fmodel} | .model.id = \"claude-fable-5-9[1m]\" | .session_id = \"f59\" | ${cold}")"
+  _sl_expect_lacks "fable price row: an unlisted model shows no £ figure" \
+    "$(_sl_plain "${_SL_OUT}")" "£"
+  _sl_run 140 "$(_sl_json "${fmodel} | .effort = {level: \"medium\"}")"
+  _sl_expect_has "fable 5.2 effort: medium is the default, dim and with no arrow" \
+    "$(_sl_line 1)" "${dim}◆ med${RESET}"
+  _sl_run 140 "$(_sl_json "${fmodel} | .effort = {level: \"high\"}")"
+  _sl_expect_has "fable 5.2 effort: high is above the medium default, so ↑" \
+    "$(_sl_plain "$(_sl_line 1)")" "▲ high ↑"
 }
 
 # ── herdr-core terminal label ──────────────────────────────────────────────
@@ -572,6 +591,7 @@ function run_statusline {
   _sl_ledger_prune
   _sl_ledger_orphans
   _sl_cache_alert
+  _sl_fable52
   _sl_hc_label
   _sl_guards
   /bin/rm -rf "${_SL_SB}"
