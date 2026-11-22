@@ -200,6 +200,24 @@ STUB
   _gp_test_expect DENY "gh issue create -t t --body-file ${_gp_dir}/wrongos.md" 'env macOS version does not match the live version'
   _gp_test_expect DENY 'gh api repos/o/r/issues -f title=x' 'gh api write via -f'
 
+  # --- DENY: only the clause that matched is printed ------------------------
+  # A GraphQL read that only a live variable stops: the whole reason is the
+  # run-alone line. _gp_test_expect matches a substring, so this case compares
+  # the full text.
+  _gp_test_seam 'for q in a b; do gh search issues "$q"; done; gh api graphql -f query='\''query{viewer{login}}'\'
+  if [[ "${HOOK_SEAM_VERDICT}" == DENY \
+      && "${HOOK_SEAM_REASON}" == 'gh with other shell: run gh alone, no cd, &&, ;, pipes, $() or variables (>/dev/null is fine).' ]]; then
+    _pass "DENY: a GraphQL read beside a live variable gets the run-alone line only"
+  else
+    _fail "a GraphQL read beside a live variable — expected DENY with the run-alone line only, got ${HOOK_SEAM_VERDICT} (${HOOK_SEAM_OUT:0:200})"
+  fi
+  _gp_test_expect DENY 'for q in a b; do gh search issues "$q"; done; gh api graphql -f query='\''mutation{x}'\' \
+    'a GraphQL mutation beside a live variable keeps the gh api write line' '' 1 1 'gh api write'
+  _gp_test_expect DENY 'gh api graphql -f query="$Q"' \
+    'a GraphQL query from a variable keeps the gh api write line' '' 1 1 'gh api write'
+  _gp_test_expect DENY 'gh api repos/o/r/issues -f title=x | jq .' \
+    'a gh api write in a pipeline keeps the gh api write line' '' 1 1 'gh api write'
+
   # --- DENY: size cap, fail-closed reads ------------------------------------
   # An over-cap body also denies through the "could not be read in full"
   # branch, so only the reason text tells the cap branch from that fallback.
