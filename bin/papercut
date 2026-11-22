@@ -35,13 +35,24 @@
 #
 # Agent label: --agent, else $PAPERCUT_AGENT, else "claude" when $CLAUDECODE is
 # set (a session of that tool exports it), else "shell". Repo: basename of the
-# git toplevel (characters outside [A-Za-z0-9._-] become "_", cut to 32), else
+# main checkout (characters outside [A-Za-z0-9._-] become "_", cut to 32), else
 # "none"; --repo overrides. Both are validated against [A-Za-z0-9._-]{1,32}
 # when supplied. `list` numbers entries by file order across all repos, so the
 # number is what `resolve` takes whether or not --repo filtered the listing.
 #
-# `count` is the fast path for status lines: no lock, no network, and the one
-# git call only when the file holds open entries and --repo is absent.
+# The main checkout is the parent of the common git directory when that
+# directory is named ".git". A linked worktree shares it, so an entry made in
+# .../worktrees/agent-<id> logs under the repository's name and the repo filter
+# finds it. Any other common git directory (a submodule's
+# <super>/.git/modules/<name>, a bare repository, --separate-git-dir) has a
+# parent that is not the checkout, so those fall back to the basename of the
+# git toplevel: a submodule keeps its own directory name, a bare repository
+# has no toplevel and gives "none", and a worktree linked to either keeps the
+# worktree's directory name.
+#
+# `count` is the fast path for status lines: no lock, no network, and git runs
+# only when the file holds open entries and --repo is absent (one call in a
+# normal clone or its worktrees, two in the fallback cases above).
 #
 # Exit codes: 0 success; 64 usage error (nothing written); 1 failure (lock,
 # unreadable or malformed file, no such entry).
@@ -104,8 +115,13 @@ function check_label {
 }
 
 function detect_repo {
-  local top name
-  top="$(git rev-parse --show-toplevel 2>/dev/null)" || top=''
+  local common top name
+  common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || common=''
+  if [[ "${common}" == */.git ]]; then
+    top="${common%/.git}"
+  else
+    top="$(git rev-parse --show-toplevel 2>/dev/null)" || top=''
+  fi
   name="${top##*/}"
   name="${name//[^A-Za-z0-9._-]/_}"
   name="${name:0:32}"

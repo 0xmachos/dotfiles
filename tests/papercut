@@ -18,6 +18,9 @@
 #     while count fails open with "0 0 -" and exit 0;
 #   - one append resolves agent (PAPERCUT_AGENT over CLAUDECODE), repo (git
 #     toplevel, sanitised) and collapses a newline and a tab to one line;
+#   - a linked worktree (.claude/worktrees/agent-<id>) logs and counts under
+#     the main checkout's name; a submodule keeps its own directory name and a
+#     bare repository gives "none" (neither takes a name from the git directory);
 #   - the lock: a held lock fails an append with exit 1 after about 5 s and
 #     leaves the file byte-identical; concurrent appends all land.
 #
@@ -246,6 +249,103 @@ function _pc_test_fields {
   fi
 }
 
+# Runs git in directory $1 with a fixed identity and no signing. HOME is the
+# sandbox (see _pc_exec), so the user's global git config and hooks do not load.
+function _pc_git {
+  local dir="$1"
+  shift
+  ( _pc_exec "${dir}" /usr/bin/git -c user.name=papercut-test -c user.email=papercut-test \
+      -c commit.gpgsign=false -c protocol.file.allow=always "$@" ) >/dev/null 2>&1
+}
+
+# Makes work/mainrepo with one commit and a linked worktree in the layout a
+# worktree agent gets: work/mainrepo/.claude/worktrees/agent-abc123.
+function _pc_make_worktree {
+  _pc_git "${PC_CWD}" init -q "${PC_T}/work/mainrepo" \
+    && _pc_git "${PC_T}/work/mainrepo" commit -q --allow-empty -m init \
+    && _pc_git "${PC_T}/work/mainrepo" worktree add -q -b agent \
+         "${PC_T}/work/mainrepo/.claude/worktrees/agent-abc123"
+}
+
+function _pc_test_worktree_append {
+  local line
+  _section "papercut: linked worktree, append"
+  _pc_fresh
+
+  if ! _pc_make_worktree; then _fail "worktree fixture: git could not make the linked worktree"; return; fi
+  PC_CWD="${PC_T}/work/mainrepo/.claude/worktrees/agent-abc123"
+  _pc_run 'in a worktree Fix: x'
+  line="$(_pc_last_entry)"
+  if (( PC_RC == 0 )) && [[ "$(_pc_field "${line}" 3)" == mainrepo ]] \
+      && [[ "$(<"${PC_T}/out")" == 'Logged papercut (mainrepo) to '* ]]; then
+    _pass "append in a linked worktree logs under the main checkout's name, not agent-<id>"
+  else
+    _fail "worktree append wrong (rc ${PC_RC}): ${line}"
+  fi
+}
+
+function _pc_test_worktree_count {
+  _section "papercut: linked worktree, count"
+  _pc_fresh
+
+  if ! _pc_make_worktree; then _fail "worktree fixture: git could not make the linked worktree"; return; fi
+  _pc_seed '- [ ] 2026-09-25T10:00:00Z · shell · mainrepo · one Fix: x' \
+           '- [ ] 2026-09-26T10:00:00Z · shell · agent-abc123 · two Fix: y' \
+           '- [ ] 2026-09-27T10:00:00Z · shell · mainrepo · three Fix: z'
+  PC_CWD="${PC_T}/work/mainrepo/.claude/worktrees/agent-abc123"
+  _pc_run count
+  if (( PC_RC == 0 )) && [[ "$(<"${PC_T}/out")" == '3 2 2026-09-25' ]]; then
+    _pass "count in a linked worktree counts the main checkout's entries"
+  else
+    _fail "worktree count wrong (rc ${PC_RC}): $(<"${PC_T}/out")"
+  fi
+}
+
+# A submodule's git directory is <super>/.git/modules/<name>, so a name taken
+# from the git directory's parent would be "modules".
+function _pc_test_submodule {
+  local line
+  _section "papercut: submodule"
+  _pc_fresh
+
+  if ! { _pc_git "${PC_CWD}" init -q "${PC_T}/work/origin" \
+      && _pc_git "${PC_T}/work/origin" commit -q --allow-empty -m init \
+      && _pc_git "${PC_CWD}" init -q "${PC_T}/work/super" \
+      && _pc_git "${PC_T}/work/super" submodule add -q "${PC_T}/work/origin" subdir; }; then
+    _fail "submodule fixture: git could not add the submodule"
+    return
+  fi
+  PC_CWD="${PC_T}/work/super/subdir"
+  _pc_run 'in a submodule Fix: x'
+  line="$(_pc_last_entry)"
+  if (( PC_RC == 0 )) && [[ "$(_pc_field "${line}" 3)" == subdir ]]; then
+    _pass "append in a submodule logs under the submodule's directory name"
+  else
+    _fail "submodule wrong (rc ${PC_RC}): ${line}"
+  fi
+}
+
+# A bare repository has no work tree, and its git directory's parent is only
+# the folder that holds it ("work" here).
+function _pc_test_bare {
+  local line
+  _section "papercut: bare repository"
+  _pc_fresh
+
+  if ! _pc_git "${PC_CWD}" init -q --bare "${PC_T}/work/store.git"; then
+    _fail "bare fixture: git could not make the bare repository"
+    return
+  fi
+  PC_CWD="${PC_T}/work/store.git"
+  _pc_run 'in a bare repo Fix: x'
+  line="$(_pc_last_entry)"
+  if (( PC_RC == 0 )) && [[ "$(_pc_field "${line}" 3)" == none ]]; then
+    _pass "append in a bare repository logs under none"
+  else
+    _fail "bare wrong (rc ${PC_RC}): ${line}"
+  fi
+}
+
 # Waits up to 5 s for the holder to write its pid, which means it has the lock.
 function _pc_wait_held {
   local i
@@ -329,6 +429,10 @@ function run_papercut {
   _pc_test_refused_bad_repo
   _pc_test_malformed
   _pc_test_fields
+  _pc_test_worktree_append
+  _pc_test_worktree_count
+  _pc_test_submodule
+  _pc_test_bare
   _pc_test_lock
   _pc_test_concurrent
   _pc_teardown
