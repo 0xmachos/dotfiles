@@ -27,7 +27,9 @@
 # "double" or 'single' quoted) from the START of that argument: the safe shape
 # is NAME="$F" exec prog ..., where the shell hands $F to prog as environment.
 # A prefix that is not at the start (`exec env X="$F" prog`) is refused. A
-# value holding command substitution is never stripped. (2) A field VALUE of 8
+# value holding command substitution is never stripped. Since 2026-11-27 a bare
+# value holding any of ; & | < > ( ) or a quote or a backslash is not stripped
+# either, and a double-quoted value holding a backslash is not stripped. (2) A field VALUE of 8
 # or more characters appearing as a substring of any argument (a pasted
 # literal) is refused. Shorter values (ports, short hosts) are skipped on
 # purpose: they would match ordinary text. Field names are not special-cased.
@@ -136,6 +138,12 @@ _bme_strip_assignments() {
                 _bme_body="${_bme_rest#\"}"
                 case "$_bme_body" in *\"*) ;; *) break ;; esac
                 _bme_val="${_bme_body%%\"*}"
+                # 2026-11-27: inside double quotes the shell reads backslash-quote
+                # as an escaped quote and keeps the string open. This function ends
+                # the value at the first quote, so the two could disagree on where
+                # the value ends. Leave an argument with a backslash in a
+                # double-quoted value in place.
+                case "$_bme_val" in *\\*) break ;; esac
                 _bme_tail="${_bme_body#*\"}" ;;
             \'*)
                 _bme_body="${_bme_rest#\'}"
@@ -144,7 +152,19 @@ _bme_strip_assignments() {
                 _bme_tail="${_bme_body#*\'}" ;;
             *)
                 _bme_val="${_bme_rest%%[ ${_bme_tab}${_bme_nl}]*}"
-                _bme_tail="${_bme_rest#"$_bme_val"}" ;;
+                _bme_tail="${_bme_rest#"$_bme_val"}"
+                # 2026-11-27: a bare value ends at a blank, but the shell also ends
+                # a word at ; & | < > ( ). `X=1;prog${IFS}--key=$F` has no
+                # blank, so the whole argument was stripped and the reference to
+                # $F could go unchecked. Leave such an argument in place so the
+                # field check below sees the text after the control character.
+                # A quote or a backslash inside a bare value changes where the
+                # shell ends the word: a quote runs to its closing quote, and that
+                # closing quote could read here as the start of a new prefix.
+                # Leave such an argument in place too.
+                case "$_bme_val" in
+                    *\;*|*\&*|*\|*|*\<*|*\>*|*\(*|*\)*|*\"*|*\'*|*\\*) break ;;
+                esac ;;
         esac
         case "$_bme_val" in *'$('*|*'`'*) break ;; esac
         case "$_bme_tail" in

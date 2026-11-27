@@ -245,6 +245,53 @@ function _bme_test_cases {
   else
     _fail "pasted literal refusal wrong:${BME_BAD}"
   fi
+
+  # 9. A prefix stays in place when the shell would end its value at another
+  #    point than the strip does: a bare value that holds ; & | < > ( ), a quote
+  #    or a backslash, and a double-quoted value that holds a backslash. The
+  #    reference after it is then refused. Each shape is one plain argument:
+  #    the check reads the text and never runs it.
+  local shape wrong=''
+  for shape in \
+    'X=1;prog${IFS}--key=$MCP_API_KEY' \
+    'X=1&prog$MCP_API_KEY' \
+    'X=1|prog$MCP_API_KEY' \
+    'X=1<prog$MCP_API_KEY' \
+    'X=1>prog$MCP_API_KEY' \
+    'X=1(prog$MCP_API_KEY' \
+    'X=1)prog$MCP_API_KEY' \
+    'X=a" Y=" prog $MCP_API_KEY Z=" W=1"' \
+    "X=a' Y=' prog \$MCP_API_KEY Z=' W=1'" \
+    'X=a\ Y=" prog $MCP_API_KEY Z=" W=1' \
+    'X="a\" Y=" prog $MCP_API_KEY Z=" W=1"' \
+    'X="a\" Y=" prog $MCP_API_KEY Z=" W="'; do
+    BME_EXTRA=("${json}")
+    _bme_refusal_problems MCP_API_KEY "${BME_CHILD}" "${shape}"
+    [[ -z "${BME_BAD}" ]] || wrong+=" [${shape}:${BME_BAD}]"
+  done
+  if [[ -z "${wrong}" ]]; then
+    _pass "a prefix whose value holds a control character, a quote or a backslash does not hide a \$F reference (12 shapes)"
+  else
+    _fail "prefix shapes that hide a \$F reference:${wrong}"
+  fi
+
+  # 10. Control: the same characters inside a quoted value, or with no field
+  #     reference, do not cause a refusal.
+  wrong=''
+  for shape in \
+    'X="a;b" Y="$MCP_API_KEY"' \
+    "X='a|b' Y=\$MCP_API_KEY" \
+    'X=1;echo hello' \
+    'X=a,b Y=$MCP_API_KEY'; do
+    BME_EXTRA=("${json}")
+    _bme_run mcp/example-service "${BME_CHILD}" "${shape}"
+    (( BME_RC == 0 )) && [[ -e "${BME_REC}/child-ran" ]] || wrong+=" [${shape}: rc=${BME_RC}]"
+  done
+  if [[ -z "${wrong}" ]]; then
+    _pass "a quoted control character and a prefix with no field reference still pass (4 shapes)"
+  else
+    _fail "permitted prefix shapes were refused:${wrong}"
+  fi
 }
 
 function run_bao_mcp_env {
